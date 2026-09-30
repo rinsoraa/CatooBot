@@ -8,8 +8,11 @@ the indexer is incremental.
 
 from __future__ import annotations
 
+import hashlib
+from pathlib import Path
+
 from app.ai.models import ChatMessage
-from app.media.models import ExpressionContext, MediaContent
+from app.media.models import ExpressionContext, MediaContent, VisionResult
 from app.media.normalizer import MessageMediaNormalizer
 from app.media.sticker import (
     ExpressionDecisionEngine,
@@ -257,3 +260,95 @@ class TestIndexer:
         stats2 = await indexer.scan()
         assert stats2["duplicate"] == 1 and stats2["done"] == 0
         await database.close()
+
+
+class TestVisionCollection:
+    """v1.2: vision-confirmed memes are collected AND the file really lands."""
+
+    def _runtime(self, tmp_path, fetcher):
+        from app.config.settings import MediaConfig
+        from app.media.runtime import MediaRuntime
+
+        return MediaRuntime(
+            config=MediaConfig(sticker_dir=str(tmp_path / "stickers")),
+            engine=None,
+            database=self._db,
+            file_fetcher=fetcher,
+        )
+
+    async def _make_db(self, tmp_path):
+        from app.config.settings import DatabaseConfig
+        from app.database.database import Database
+
+        self._db = Database(DatabaseConfig(url=f"sqlite:///{tmp_path / 'm.db'}"))
+        await self._db.connect()
+
+    async def test_vision_meme_is_collected_and_file_downloaded(self, tmp_path) -> None:
+        png = b"\x89PNG\r\n\x1a\nfake-cat-image"
+        async def fetcher(url):  # type: ignore[no-untyped-def]
+            return png, "image/png"
+
+        await self._make_db(tmp_path)
+        runtime = self._runtime(tmp_path, fetcher)
+        item = self._image(url="https://multimedia.example/cat.png")
+        vision = VisionResult(
+            summary="一只戴粉色小熊帽的猫，可爱表情包",
+            ocr_text=["你在干森么呢"],
+            confidence=0.9,
+        )
+        assert runtime.looks_like_sticker(vision)
+        candidate = runtime.as_sticker_candidate(item)
+        assert candidate.is_sticker_source
+
+        decision = await runtime.consider_collect(candidate, vision=vision)
+        assert decision.decision == "save"
+        assets = await runtime.library.all()
+        assert len(assets) == 1
+        saved = assets[0]
+        saved_path = Path(saved.file_path)
+        assert saved_path.exists(), "the sticker file must actually be on disk"
+        assert saved_path.parent.name == "library"
+        assert saved.file_size == len(png)
+        assert saved.sha256 == hashlib.sha256(png).hexdigest()
+        assert saved.ocr_text == "你在干森么呢"
+        await self._db.close()
+
+    async def test_duplicate_download_rejected_by_sha256(self, tmp_path) -> None:
+        png = b"\x89PNG\r\n\x1a\nfake-cat-image"
+        async def fetcher(url):  # type: ignore[no-untyped-def]
+            return png, "image/png"
+
+        await self._make_db(tmp_path)
+        runtime = self._runtime(tmp_path, fetcher)
+        item = runtime.as_sticker_candidate(self._image(url="https://x.example/a.png"))
+        vision = VisionResult(summary="可爱表情包", confidence=0.9)
+        await runtime.consider_collect(item, vision=vision)
+        decision = await runtime.consider_collect(item, vision=vision)
+        assert decision.decision == "reject"
+        await self._db.close()
+
+    async def test_plain_photo_is_not_collected(self, tmp_path) -> None:
+        await self._make_db(tmp_path)
+        runtime = self._runtime(tmp_path, None)
+        vision = VisionResult(summary="一张办公室白板照片", confidence=0.8)
+        assert not runtime.looks_like_sticker(vision)
+
+    async def test_failed_download_keeps_metadata(self, tmp_path) -> None:
+        async def broken(url):  # type: ignore[no-untyped-def]
+            raise RuntimeError("network down")
+
+        await self._make_db(tmp_path)
+        runtime = self._runtime(tmp_path, broken)
+        item = runtime.as_sticker_candidate(self._image(url="https://x.example/b.png"))
+        vision = VisionResult(summary="可爱表情包", confidence=0.9)
+        decision = await runtime.consider_collect(item, vision=vision)
+        assert decision.decision == "save"
+        assets = await runtime.library.all()
+        assert assets[0].file_path == "" or not Path(assets[0].file_path).exists()
+        await self._db.close()
+
+    @staticmethod
+    def _image(url: str) -> MediaContent:
+        return MediaContent(
+            media_type="image", source_type="qq_image", url=url, is_animated=True
+        )

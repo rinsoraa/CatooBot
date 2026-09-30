@@ -279,6 +279,18 @@ class CharacterPlugin(Plugin):
                     if seen:
                         media_context = f"{media_context}；图片：{seen}".lstrip("；")
                         narrate().say("vision", f"看懂了：{seen}")
+                        caption = "；".join(vision.ocr_text).strip()
+                        if caption:
+                            media_context += (
+                                f"；图上的配字「{caption}」就是对方想表达的话——"
+                                "直接回应配字内容就好，不要描述或评价表情包本身"
+                            )
+                        # v1.2: a vision-confirmed meme becomes a real sticker
+                        # candidate — saved silently in the background.
+                        if media.looks_like_sticker(vision):
+                            self._schedule_collection(
+                                None, [media.as_sticker_candidate(item)], vision=vision
+                            )
                     else:
                         narrate().say(
                             "vision",
@@ -530,7 +542,9 @@ class CharacterPlugin(Plugin):
             for seg in event.message
         )
 
-    def _schedule_collection(self, event: MessageEvent, items: list[Any]) -> None:
+    def _schedule_collection(
+        self, event: MessageEvent | None, items: list[Any], *, vision: Any = None
+    ) -> None:
         """Background sticker acquisition — never blocks the reply (§18)."""
         media = getattr(self.bot, "media", None)
         if media is None or not items:
@@ -539,7 +553,7 @@ class CharacterPlugin(Plugin):
         async def collect() -> None:
             for item in items:
                 try:
-                    await media.consider_collect(item)
+                    await media.consider_collect(item, vision=vision)
                 except Exception:  # noqa: BLE001 - collection must never break chat
                     self.bot.log.exception("[Media] sticker collection failed")
 
