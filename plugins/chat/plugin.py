@@ -2,12 +2,15 @@
 
 Since v0.4 the plugin is deliberately thin — it contains no behaviour rules:
 
+    Conversation runtime decides *how messages become turns* (v1.2)
     Behaviour engine decides *whether* to speak (and why)
     Character runtime decides *what* to say (persona + memory + state)
-    Response planner/delivery decide *how* to say it (delay, bubbles)
+    Response planner/delivery decide *how* to say it (delay, sequence)
 
-Triggers: private messages always, group messages when @-ed or when the
-participation gate allows it. Management stays in the WebUI.
+v1.2 wiring: when ``conversation.enabled`` the plugin only *submits* messages
+to the ConversationTurnRuntime and binds the respond/deliver/post-reply
+callbacks; the legacy direct path stays intact for ``conversation.enabled =
+false`` (spec §187.27 — everything can be turned off).
 """
 
 from __future__ import annotations
@@ -70,15 +73,30 @@ BUSY_REPLIES = (
     "啊，刚才没听清，再说一遍嘛。",
 )
 
+_MEDIA_PLACEHOLDER = {
+    "image": "一张图片",
+    "native_face": "一个表情",
+    "sticker": "一个表情包",
+}
+
 
 class CharacterPlugin(Plugin):
     name = "character"
-    version = "0.4.0"
-    description = "Natural-language character chat with behaviour engine"
+    version = "1.2.0"
+    description = "Natural-language character chat with conversation turns + continuity"
 
     async def on_load(self, bot: Bot) -> None:
         bot.event_bus.on("message.private", self._on_private)
         bot.event_bus.on("message.group", self._on_group)
+        runtime = getattr(bot, "conversation", None)
+        if runtime is not None:
+            runtime.bind(
+                respond=self._respond_for_turn,
+                deliver=self._deliver_for_turn,
+                post_reply=self._post_reply,
+                turn_finished=self._turn_finished,
+                social_provider=self._social_for_turn,
+            )
 
     # ------------------------------------------------------------- triggers
 
@@ -91,13 +109,18 @@ class CharacterPlugin(Plugin):
         if not text and not self._has_media(event):
             return
         decision = await self.bot.behavior.consider_private(event, text)
-        story = narrate()
         if not decision.respond:
             self.bot.log.info("[Behavior] private reply skipped (%s)", decision.reason)
-            story.quiet("这条先不回", detail=REASON_TEXT.get(decision.reason, decision.reason))
+            narrate().quiet("这条先不回", detail=REASON_TEXT.get(decision.reason, decision.reason))
             return
-        story.judge("私聊 → 要回", detail=REASON_TEXT.get(decision.reason, decision.reason))
-        await self._respond(event, text, is_group=False)
+
+        runtime = getattr(self.bot, "conversation", None)
+        if runtime is None or not runtime.enabled:
+            narrate().judge("私聊 → 要回", detail=REASON_TEXT.get(decision.reason, decision.reason))
+            await self._respond(event, text, is_group=False)
+            return
+
+        await self._submit(event, text, mentioned=False, reply_to_bot=False)
 
     async def _on_group(self, event: MessageEvent) -> None:
         if not self._ready():
@@ -111,11 +134,299 @@ class CharacterPlugin(Plugin):
         text = prompt_view.text.strip()
         if not text and not self._has_media(event):
             return
+        reply_to_bot = self._replies_to_bot(event, str(event.group_id))
 
+        runtime = getattr(self.bot, "conversation", None)
+        if runtime is None or not runtime.enabled:
+            await self._legacy_group(event, text, mentioned, reply_to_bot)
+            return
+
+        # v1.2 path: every raw message is observed; the burst is decided later.
+        social = getattr(self.bot, "social", None)
+        if social is not None and getattr(social, "enabled", False):
+            await social.observe_only(
+                group_id=str(event.group_id),
+                message_id=str(getattr(event, "message_id", "") or ""),
+                user_id=str(event.user_id),
+                nickname=event.sender.display_name,
+                text=text,
+                reply_to_bot=reply_to_bot,
+            )
+        await self.bot.behavior.note_user_activity(f"group:{event.group_id}")
+        await self._submit(event, text, mentioned=mentioned, reply_to_bot=reply_to_bot)
+
+    # ---------------------------------------------------------- v1.2 submit
+
+    async def _submit(
+        self,
+        event: MessageEvent,
+        text: str,
+        *,
+        mentioned: bool,
+        reply_to_bot: bool,
+    ) -> None:
+        bot = self.bot
+        runtime = bot.conversation
+        session_id = self._session_id(event)
+        media_note, items, deferred = self._submit_media(event)
+        if not text and items:
+            first = items[0].media_type
+            text = f"（发来{_MEDIA_PLACEHOLDER.get(first, '一条媒体消息')}）"
+        if bot.continuity is not None:
+            try:
+                await bot.continuity.observe_message(
+                    str(event.user_id), text, session_id=session_id
+                )
+            except Exception:  # noqa: BLE001
+                bot.log.exception("[Continuity] observe_message failed")
+        await runtime.submit(
+            {
+                "session_id": session_id,
+                "is_group": event.is_group,
+                "group_id": str(event.group_id) if event.is_group else None,
+                "user_id": str(event.user_id),
+                "nickname": event.sender.display_name,
+                "message_id": str(getattr(event, "message_id", "") or ""),
+                "text": text,
+                "mentioned": mentioned,
+                "reply_to_bot": reply_to_bot,
+                "media_count": len(items),
+                "meta": {
+                    "media_items": items,
+                    "deferred_images": deferred,
+                    "media_note": media_note,
+                },
+            }
+        )
+
+    def _submit_media(self, event: MessageEvent) -> tuple[str, list[Any], list[Any]]:
+        """Cheap media classification now; vision deferred to respond time (§88)."""
+        media = getattr(self.bot, "media", None)
+        if media is None or not media.enabled:
+            return "", [], []
+        items = media.normalize(
+            event.message,
+            source_message_id=str(getattr(event, "message_id", "") or ""),
+            source_user_id=str(event.user_id),
+            source_group_id=str(event.group_id) if event.is_group else "",
+        )
+        if not items:
+            return "", [], []
+        notes: list[str] = []
+        deferred: list[Any] = []
+        for item in items:
+            if item.media_type == "image":
+                deferred.append(item)
+            elif item.media_type == "native_face":
+                face = media.faces.get(item.face_id)
+                note = f"表情：{face.display_name or 'QQ 表情'}" if face else "表情：QQ 表情"
+                notes.append(note)
+                narrate().say("vision", note)
+            elif item.media_type == "sticker":
+                summary = item.emoji_summary or item.emoji_key or "表情包"
+                notes.append(f"表情包：{summary}")
+                narrate().say("vision", f"收到表情包：{summary}")
+        stickers = [item for item in items if item.is_sticker_source]
+        if stickers:
+            self._schedule_collection(event, stickers)
+        return "；".join(notes), items, deferred
+
+    # --------------------------------------------------- v1.2 turn callbacks
+
+    async def _social_for_turn(self, turn: Any) -> Any:
+        """Group participation decided once per merged burst (§82/§83)."""
+        if not turn.group_id:
+            return None
+        social = getattr(self.bot, "social", None)
+        if social is None or not getattr(social, "enabled", False):
+            if not (turn.mentioned or turn.reply_to_bot):
+                from app.social.models import ParticipationDecision
+
+                return ParticipationDecision(
+                    decision="ignore", reason_code="social_disabled"
+                )
+            return None
+        group_enabled = await self._group_enabled(int(turn.group_id))
+        return await social.decide_for_turn(
+            group_id=str(turn.group_id),
+            user_id=turn.user_id,
+            nickname=turn.nickname,
+            text=turn.text,
+            mentioned=turn.mentioned,
+            reply_to_bot=turn.reply_to_bot,
+            group_enabled=group_enabled,
+        )
+
+    async def _respond_for_turn(self, turn: Any, decision: Any, generation: Any) -> Any:
+        """One turn → one ResponsePlan (the injected respond callback)."""
+        bot = self.bot
+        if not generation.is_current():
+            return None
+        session_id = turn.session_id
+        is_group = turn.group_id is not None
+        bot.metrics.inc("ai_requests")
+
+        meta = turn.meta
+        media_context = str(meta.get("media_note", "") or "")
+        media_items = list(meta.get("media_items", []) or [])
+        deferred = list(meta.get("deferred_images", []) or [])
+        if deferred:
+            media = getattr(bot, "media", None)
+            if media is not None:
+                for item in deferred:
+                    vision = await media.understand_image(item)
+                    seen = vision.as_text()
+                    if seen:
+                        media_context = f"{media_context}；图片：{seen}".lstrip("；")
+                        narrate().say("vision", f"看懂了：{seen}")
+                    else:
+                        narrate().say(
+                            "vision",
+                            "这张图没看懂",
+                            detail="视觉模型不可用 / 分析失败（详情见日志）",
+                        )
+        text = turn.text
+
+        history = await bot.ai.conversations.get_context(session_id)
+        last_at = history[-1].created_at if history and hasattr(history[-1], "created_at") else None
+        elapsed = time.time() - (last_at or 0) if last_at else None
+
+        response_goal = str(meta.get("response_goal", "") or "")
+        extra = f"（你此刻的回应目标：{response_goal}）" if response_goal else None
+        if decision.response_style == "brief":
+            extra = f"{extra or ''}（这条简短回应就好）".strip()
+
+        # v1.2 continuity layers (all optional, all relevance-gated).
+        continuity_block: dict | None = None
+        profile = None
+        shared: list[str] | None = None
+        if bot.continuity is not None:
+            state = bot.continuity.state
+            loops = await bot.continuity.open_loop_context(turn.user_id)
+            if any(
+                (
+                    state.current_interest,
+                    state.unfinished_thought,
+                    state.recent_events,
+                    state.last_response_context,
+                    loops,
+                )
+            ):
+                continuity_block = {
+                    "current_interest": state.current_interest,
+                    "unfinished_thought": state.unfinished_thought,
+                    "recent_events": state.recent_events[-3:],
+                    "last_response_context": state.last_response_context,
+                    "open_loops": [loop.summary for loop in loops[:3]],
+                }
+            profile = await bot.continuity.profile(turn.user_id)
+            shared_experiences = await bot.continuity.recall_shared(turn.user_id, text)
+            shared = [exp.summary for exp in shared_experiences] or None
+
+        trace: dict = {}
+        try:
+            reply = await bot.character.respond(
+                session_id,
+                int(turn.user_id) if str(turn.user_id).isdigit() else turn.user_id,
+                text,
+                history=history,
+                user_name=turn.nickname or None,
+                is_group=is_group,
+                time_context=bot.behavior.time_context(),
+                extra_instruction=extra,
+                media_context=media_context,
+                continuity=continuity_block,
+                interaction_profile=profile,
+                shared_experiences=shared,
+                context_trace=trace,
+            )
+        except AIError as exc:
+            bot.metrics.inc("ai_errors")
+            bot.log.warning("Character request failed for session=%s: %s", session_id, exc)
+            narrate().warn("没想出来，先随便应一句", detail=str(exc)[:80])
+            return bot.response_planner.plan_reply(
+                random.choice(BUSY_REPLIES),
+                state=await bot.character.states.load(),
+                force_single_message=True,
+            )
+        # §17: the answer may be obsolete by the time the model returns.
+        if not generation.is_current():
+            return None
+
+        await bot.behavior.observe_conversation(text, reply)
+        await bot.ai.conversations.append_user_message(session_id, text)
+        await bot.ai.conversations.append_assistant_message(session_id, reply)
+
+        plan = bot.response_planner.plan_reply(
+            reply,
+            state=await bot.character.states.load(),
+            relationship=await bot.relationships.get(
+                int(turn.user_id) if str(turn.user_id).isdigit() else turn.user_id
+            ),
+            time_context=bot.behavior.time_context(),
+            seconds_since_last_exchange=elapsed,
+        )
+        await self._attach_expression(plan, turn, text, media_items, is_group)
+        turn.meta["context_trace"] = trace
+        return plan
+
+    async def _deliver_for_turn(self, plan: Any, turn: Any, is_current: Any) -> list[str]:
+        if turn.group_id:
+            target = DeliveryTarget(group_id=int(turn.group_id))
+        else:
+            target = DeliveryTarget(user_id=int(turn.user_id))
+        return await self.bot.response_delivery.deliver(target, plan, is_current=is_current)
+
+    async def _post_reply(self, turn: Any, decision: Any, reply: str) -> None:
+        bot = self.bot
+        session_id = turn.session_id
+        is_group = turn.group_id is not None
+        if is_group:
+            group_id = str(turn.group_id)
+            sent_id = str(bot.response_delivery.last_sent_ids.get(f"group:{group_id}", "") or "")
+            social = getattr(bot, "social", None)
+            if social is not None and getattr(social, "enabled", False):
+                await social.after_reply(
+                    group_id=group_id,
+                    message_id=sent_id,
+                    content=reply,
+                    topic=getattr(social, "topic", "") or "",
+                    participants=[turn.user_id],
+                )
+        if bot.character.extractor is not None:
+            extract_group_id = str(turn.group_id) if is_group else None
+            await bot.character.extractor.schedule(
+                session_id, turn.user_id, extract_group_id, turn.text, reply
+            )
+            from app.behavior.models import BehaviorEvent as _Event
+
+            await bot.behavior.log_event(
+                _Event(
+                    type="reply_sent",
+                    scope_key=session_id,
+                    user_id=turn.user_id,
+                    group_id=extract_group_id,
+                    reason=decision.intent or "direct",
+                    created_at=int(time.time()),
+                    status="done",
+                )
+            )
+        if bot.continuity is not None:
+            bot.continuity.schedule_update_after_reply(turn, decision, reply)
+
+    async def _turn_finished(self, turn: Any) -> None:
+        continuity = getattr(self.bot, "continuity", None)
+        if continuity is not None:
+            await continuity.store.save_turn(turn)
+
+    # ------------------------------------------------------------- legacy path
+
+    async def _legacy_group(
+        self, event: MessageEvent, text: str, mentioned: bool, reply_to_bot: bool
+    ) -> None:
         group_enabled = await self._group_enabled(event.group_id)
         group_id = str(event.group_id)
         message_id = str(getattr(event, "message_id", "") or "")
-        reply_to_bot = self._replies_to_bot(event, group_id)
 
         social = getattr(self.bot, "social", None)
         if social is not None and getattr(social, "enabled", False):
@@ -219,60 +530,14 @@ class CharacterPlugin(Plugin):
             for seg in event.message
         )
 
-    async def _incoming_media(self, event: MessageEvent) -> tuple[str, list[Any]]:
-        """Normalize incoming media and build a character-visible context line.
-
-        A plain image becomes an understanding summary (never a sticker); a
-        sticker/face becomes a short semantic note. Never blocks for a sticker.
-        """
-        media = getattr(self.bot, "media", None)
-        if media is None or not media.enabled:
-            return "", []
-        items = media.normalize(
-            event.message,
-            source_message_id=str(getattr(event, "message_id", "") or ""),
-            source_user_id=str(event.user_id),
-            source_group_id=str(event.group_id) if event.is_group else "",
-        )
-        if not items:
-            return "", []
-        parts: list[str] = []
-        for item in items:
-            if item.media_type == "image":
-                vision = await media.understand_image(item)
-                text = vision.as_text()
-                if text:
-                    parts.append(f"图片：{text}")
-                    # operator-facing: what she actually saw in the picture
-                    narrate().say("vision", f"看懂了：{text}")
-                else:
-                    narrate().say(
-                        "vision",
-                        "这张图没看懂",
-                        detail="视觉模型不可用 / 分析失败（详情见日志）",
-                    )
-            elif item.media_type == "native_face":
-                face = media.faces.get(item.face_id)
-                if face is not None:
-                    parts.append(f"表情：{face.display_name or 'QQ 表情'}")
-                    narrate().say("vision", f"收到表情：{face.display_name or 'QQ 表情'}")
-            elif item.media_type == "sticker":
-                summary = item.emoji_summary or item.emoji_key or "表情包"
-                parts.append(f"表情包：{summary}")
-                narrate().say("vision", f"收到表情包：{summary}")
-        return "；".join(parts), items
-
     def _schedule_collection(self, event: MessageEvent, items: list[Any]) -> None:
         """Background sticker acquisition — never blocks the reply (§18)."""
         media = getattr(self.bot, "media", None)
         if media is None or not items:
             return
-        stickers = [item for item in items if item.is_sticker_source]
-        if not stickers:
-            return
 
         async def collect() -> None:
-            for item in stickers:
+            for item in items:
                 try:
                     await media.consider_collect(item)
                 except Exception:  # noqa: BLE001 - collection must never break chat
@@ -281,7 +546,7 @@ class CharacterPlugin(Plugin):
         asyncio.create_task(collect())
 
     async def _attach_expression(
-        self, plan: Any, event: MessageEvent, text: str, media_items: list[Any], is_group: bool
+        self, plan: Any, turn: Any, text: str, media_items: list[Any], is_group: bool
     ) -> None:
         """Decide whether to attach a sticker to the outgoing reply (§23-§29)."""
         media = getattr(self.bot, "media", None)
@@ -299,11 +564,21 @@ class CharacterPlugin(Plugin):
             elif first.media_type == "native_face":
                 face = media.faces.get(first.face_id)
                 semantics = face.display_name if face else ""
+        # v1.2 §90: turn-level affect hints the expression choice.
+        emotion_hint = ""
+        continuity = getattr(self.bot, "continuity", None)
+        if continuity is not None:
+            affect = continuity.state.affect
+            if affect.level("amusement") >= 0.5:
+                emotion_hint = "好笑"
+            elif affect.level("warmth") >= 0.5:
+                emotion_hint = "开心"
         context = ExpressionContext(
             incoming_media_type=incoming_type,
             incoming_sticker_semantics=semantics,
+            emotion_hint=emotion_hint,
         )
-        scope_key = f"group:{event.group_id}" if is_group else f"private:{event.user_id}"
+        scope_key = turn.session_id
         decision = media.decide_expression(context, user_text=text, scope_key=scope_key)
         if not decision.selection_required:
             return
@@ -323,11 +598,11 @@ class CharacterPlugin(Plugin):
         participation: bool = False,
         social: Any = None,
     ) -> None:
+        """Legacy direct path — used when the conversation runtime is off."""
         bot = self.bot
         session_id = self._session_id(event)
         bot.metrics.inc("ai_requests")
 
-        # The user spoke: clear any pending proactive invitation.
         await bot.behavior.note_user_activity(session_id)
         if is_group:
             await bot.behavior.note_user_activity(f"group:{event.group_id}")
@@ -348,11 +623,9 @@ class CharacterPlugin(Plugin):
         if not text and not media_items:
             return
         if not text:
-            media_kind = {
-                "image": "一张图片",
-                "native_face": "一个表情",
-                "sticker": "一个表情包",
-            }.get(media_items[0].media_type, "一条媒体消息")
+            media_kind = _MEDIA_PLACEHOLDER.get(
+                media_items[0].media_type if media_items else "", "一条媒体消息"
+            )
             text = f"（发来{media_kind}）"
 
         try:
@@ -387,7 +660,7 @@ class CharacterPlugin(Plugin):
 
         await bot.behavior.observe_conversation(text, reply)
         await bot.ai.conversations.append_user_message(session_id, text)
-        await bot.ai.conversations.append_assistant_message(session_id, reply)
+        await bot.ai.conversations.append_assistant_message(reply)
 
         plan = bot.response_planner.plan_reply(
             reply,
@@ -428,3 +701,37 @@ class CharacterPlugin(Plugin):
                     status="done",
                 )
             )
+
+    async def _incoming_media(self, event: MessageEvent) -> tuple[str, list[Any]]:
+        """Legacy: normalize + understand media synchronously (v1.1 path)."""
+        media = getattr(self.bot, "media", None)
+        if media is None or not media.enabled:
+            return "", []
+        items = media.normalize(
+            event.message,
+            source_message_id=str(getattr(event, "message_id", "") or ""),
+            source_user_id=str(event.user_id),
+            source_group_id=str(event.group_id) if event.is_group else "",
+        )
+        if not items:
+            return "", []
+        parts: list[str] = []
+        for item in items:
+            if item.media_type == "image":
+                vision = await media.understand_image(item)
+                text = vision.as_text()
+                if text:
+                    parts.append(f"图片：{text}")
+                    narrate().say("vision", f"看懂了：{text}")
+                else:
+                    narrate().say(
+                        "vision", "这张图没看懂", detail="视觉模型不可用 / 分析失败（详情见日志）"
+                    )
+            elif item.media_type == "native_face":
+                face = media.faces.get(item.face_id)
+                if face is not None:
+                    parts.append(f"表情：{face.display_name or 'QQ 表情'}")
+            elif item.media_type == "sticker":
+                summary = item.emoji_summary or item.emoji_key or "表情包"
+                parts.append(f"表情包：{summary}")
+        return "；".join(parts), items

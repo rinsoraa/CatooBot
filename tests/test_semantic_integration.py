@@ -65,6 +65,7 @@ class TestSemanticChatPipeline:
                 category="project", importance=0.9,
             )
             await bot.event_bus.emit(private_event("之前那个听歌的东西做好了吗", user_id=777))
+            await bot.conversation.wait_idle()
             system = provider.calls[0]["messages"][0].content
             assert "音乐播放器" in system or "网站" in system
             assert "参考资料" in system  # labelled as reference, not instructions
@@ -80,6 +81,7 @@ class TestSemanticChatPipeline:
                 "user", "777", "用户喜欢 Minecraft", category="interest", importance=0.5
             )
             await bot.event_bus.emit(private_event("今天天气不错", user_id=777))
+            await bot.conversation.wait_idle()
             system = provider.calls[0]["messages"][0].content
             assert "Minecraft" not in system  # relevance guard kept it out
         finally:
@@ -93,6 +95,7 @@ class TestSemanticChatPipeline:
                 "user", "A", "用户 A 喜欢猫", category="preference", importance=0.9
             )
             await bot.event_bus.emit(private_event("我喜欢什么动物", user_id=999))
+            await bot.conversation.wait_idle()
             system = provider.calls[0]["messages"][0].content
             assert "用户 A 喜欢猫" not in system
         finally:
@@ -108,6 +111,7 @@ class TestSemanticChatPipeline:
                 "user", "42", "用户私下说在准备比赛", category="event", importance=0.9
             )
             await bot.event_bus.emit(group_event("大家在聊什么", user_id=42, at_bot=True))
+            await bot.conversation.wait_idle()
             system = provider.calls[0]["messages"][0].content
             assert "准备比赛" not in system  # private memory stays private
         finally:
@@ -121,6 +125,7 @@ class TestSemanticChatPipeline:
                 "user", "777", "用户喜欢猫", category="preference", importance=0.9
             )
             await bot.event_bus.emit(private_event("猫猫好可爱", user_id=777))
+            await bot.conversation.wait_idle()
             refreshed = await bot.memory.repository.get(memory.id)
             assert refreshed.use_count >= 1
         finally:
@@ -152,6 +157,7 @@ class TestDegradation:
         try:
             await bot.memory.remember("user", "1", "用户喜欢猫", category="preference")
             await bot.event_bus.emit(private_event("猫", user_id=1))
+            await bot.conversation.wait_idle()
             assert bot.adapter.sent_texts() == ["在的在的"]  # chat unaffected
             assert bot.embeddings.failures >= 1
         finally:
@@ -164,6 +170,7 @@ class TestDegradation:
         try:
             await bot.database.close()  # yank the database out
             await bot.event_bus.emit(private_event("在吗", user_id=5))
+            await bot.conversation.wait_idle()
             assert bot.adapter.sent_texts() == ["还在呢"]
         finally:
             await bot.shutdown()
@@ -174,6 +181,7 @@ class TestDegradation:
         bot.character.memory = None
         try:
             await bot.event_bus.emit(private_event("你好", user_id=5))
+            await bot.conversation.wait_idle()
             assert bot.adapter.sent_texts() == ["嗯"]
         finally:
             await bot.shutdown()

@@ -49,6 +49,10 @@ async def make_agent_bot(tmp_path, replies: list[str], **agent_overrides):
         bot.character.extractor.config.extraction.enabled = False
 
     await bot.database.connect()
+    if bot.continuity is not None:
+        await bot.continuity.start()
+    bot.config.conversation.debounce.direct_message_ms = 20
+    bot.config.conversation.debounce.group_message_ms = 30
     bot.tools = ToolRuntime(config.tools, bot.database)
     await bot.tools.start()
     bot.tools.registry.unregister("weather")
@@ -79,6 +83,7 @@ class TestMultiStepFlow:
         bot, provider = await make_agent_bot(tmp_path, replies)
         try:
             await bot.event_bus.emit(private_event(MULTI_STEP_QUESTION, user_id=7))
+            await bot.conversation.wait_idle()
             text = bot.adapter.sent_texts()[-1]  # type: ignore[attr-defined]
 
             assert "周日更适合" in text
@@ -102,6 +107,7 @@ class TestMultiStepFlow:
         bot, provider = await make_agent_bot(tmp_path, replies)
         try:
             await bot.event_bus.emit(private_event(MULTI_STEP_QUESTION, user_id=7))
+            await bot.conversation.wait_idle()
             final_prompt = provider.calls[-1]["messages"][-1].content
             assert "任务结果" in final_prompt
             assert "外部参考数据" in final_prompt
@@ -116,6 +122,7 @@ class TestMultiStepFlow:
         bot, _ = await make_agent_bot(tmp_path, replies)
         try:
             await bot.event_bus.emit(private_event(MULTI_STEP_QUESTION, user_id=7))
+            await bot.conversation.wait_idle()
             tasks = await bot.agent.list_tasks()
             detail = await bot.agent.task_detail(tasks[0]["task_id"])
             assert detail["goal"]["description"] == MULTI_STEP_QUESTION
@@ -132,6 +139,7 @@ class TestRouting:
         bot, provider = await make_agent_bot(tmp_path, ["哈哈，今天确实挺舒服的"])
         try:
             await bot.event_bus.emit(private_event("今天心情不错", user_id=7))
+            await bot.conversation.wait_idle()
             assert bot.adapter.sent_texts() == ["哈哈，今天确实挺舒服的"]  # type: ignore[attr-defined]
             assert await bot.agent.list_tasks() == []
             assert len(provider.calls) == 1
@@ -145,6 +153,7 @@ class TestRouting:
         bot, _ = await make_agent_bot(tmp_path, [decision, "明天有雨，带伞吧。"])
         try:
             await bot.event_bus.emit(private_event("明天天气怎么样", user_id=7))
+            await bot.conversation.wait_idle()
             assert "带伞" in bot.adapter.sent_texts()[-1]  # type: ignore[attr-defined]
             assert await bot.agent.list_tasks() == []  # no plan was made
         finally:
@@ -156,6 +165,7 @@ class TestRouting:
         bot, _ = await make_agent_bot(tmp_path, replies)
         try:
             await bot.event_bus.emit(group_event(MULTI_STEP_QUESTION, user_id=9, at_bot=True))
+            await bot.conversation.wait_idle()
             tasks = await bot.agent.list_tasks()
             assert len(tasks) == 1
             assert tasks[0]["session_id"].startswith("group:")
@@ -178,6 +188,7 @@ class TestNaturalControls:
             bot.agent._active_by_session["private:7"] = "task-live"  # noqa: SLF001
 
             await bot.event_bus.emit(private_event("不用查了", user_id=7))
+            await bot.conversation.wait_idle()
             assert (await bot.agent.get("task-live"))["status"] == "cancelled"
             assert "不查了" in bot.adapter.sent_texts()[-1]  # type: ignore[attr-defined]
             assert await bot.agent.list_tasks(status="completed") == []
@@ -198,9 +209,11 @@ class TestNaturalControls:
             bot.agent._active_by_session["private:8"] = "task-pause"  # noqa: SLF001
 
             await bot.event_bus.emit(private_event("先停一下", user_id=8))
+            await bot.conversation.wait_idle()
             assert (await bot.agent.get("task-pause"))["status"] == "paused"
 
             await bot.event_bus.emit(private_event("继续吧", user_id=8))
+            await bot.conversation.wait_idle()
             assert (await bot.agent.get("task-pause"))["status"] == "running"
         finally:
             await bot.shutdown()
@@ -215,6 +228,7 @@ class TestFailureHandling:
         bot, provider = await make_agent_bot(tmp_path, replies, budget={"max_replans": 0})
         try:
             await bot.event_bus.emit(private_event(MULTI_STEP_QUESTION, user_id=7))
+            await bot.conversation.wait_idle()
             text = bot.adapter.sent_texts()[-1]  # type: ignore[attr-defined]
             assert "没查到" in text
             assert "℃" not in text and "80%" not in text  # nothing invented
@@ -232,6 +246,7 @@ class TestFailureHandling:
         bot, _ = await make_agent_bot(tmp_path, ["这个我暂时答不上来呢"])
         try:
             await bot.event_bus.emit(private_event(MULTI_STEP_QUESTION, user_id=7))
+            await bot.conversation.wait_idle()
             assert bot.adapter.sent_texts()  # something was said
             assert "{" not in bot.adapter.sent_texts()[-1]  # type: ignore[attr-defined]
         finally:
@@ -247,6 +262,7 @@ class TestFailureHandling:
             await bot.event_bus.emit(
                 private_event("帮我查一下周六和周日天气，然后告诉我哪天适合出去玩", user_id=7)
             )
+            await bot.conversation.wait_idle()
             # the reply may be delivered as several bubbles — judge the whole answer
             text = "".join(bot.adapter.sent_texts())  # type: ignore[attr-defined]
             assert "哪个城市" in text
@@ -269,6 +285,7 @@ class TestPersonaAndMemoryIsolation:
         bot, _ = await make_agent_bot(tmp_path, replies)
         try:
             await bot.event_bus.emit(private_event(MULTI_STEP_QUESTION, user_id=7))
+            await bot.conversation.wait_idle()
             await bot.character.extractor.wait_idle() if bot.character.extractor else None
             if bot.memory is not None:
                 memories = await bot.memory.list_memories()
@@ -285,6 +302,7 @@ class TestPersonaAndMemoryIsolation:
         bot, provider = await make_agent_bot(tmp_path, replies)
         try:
             await bot.event_bus.emit(private_event(MULTI_STEP_QUESTION, user_id=7))
+            await bot.conversation.wait_idle()
             system_prompt = provider.calls[-1]["messages"][0].content
             # persona/style rules are still in force for the agent's final answer
             assert "像真人朋友一样自然聊天" in system_prompt
@@ -299,6 +317,8 @@ class TestQQSurface:
         try:
             for text in ("/agent", "/plan", "/task", "/tools", "/execute"):
                 await bot.event_bus.emit(private_event(text, user_id=7))
+                await bot.conversation.wait_idle()
+            await bot.conversation.wait_idle()
             texts = bot.adapter.sent_texts()  # type: ignore[attr-defined]
             assert len(texts) == 5  # every one was treated as ordinary chat
             assert await bot.agent.list_tasks(status="completed") == []
@@ -314,6 +334,7 @@ class TestAgentConfigOff:
         )
         try:
             await bot.event_bus.emit(private_event(MULTI_STEP_QUESTION, user_id=7))
+            await bot.conversation.wait_idle()
             assert bot.adapter.sent_texts()  # chat still works
             assert await bot.agent.list_tasks() == []  # but no task was created
         finally:
@@ -329,6 +350,7 @@ class TestWebsiteAgentPages:
         bot, _ = await make_agent_bot(tmp_path, replies)
         try:
             await bot.event_bus.emit(private_event(MULTI_STEP_QUESTION, user_id=7))
+            await bot.conversation.wait_idle()
             service = AgentAdminService(bot)
 
             dashboard = await service.dashboard()

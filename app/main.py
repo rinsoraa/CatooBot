@@ -12,7 +12,7 @@ from app.utils import console
 from app.utils.logger import get_logger, setup_logging
 from app.utils.narrator import narrate
 
-VERSION = "v1.1"
+VERSION = "v1.2"
 TITLE = "C a t o o B o t"
 SUBTITLE = "Multimodal + Sticker Runtime"
 DEVELOPER = "Rinsora"

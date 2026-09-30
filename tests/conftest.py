@@ -79,7 +79,11 @@ def make_bot(tmp_path, adapter: FakeAdapter | None = None) -> Bot:
         behavior={"reply": {"enabled": False}},
     )
     adapter = adapter or FakeAdapter()
-    return Bot(config, adapter)
+    bot = Bot(config, adapter)
+    # v1.2: turn runtime replies are async — keep the debounce tiny in tests.
+    bot.config.conversation.debounce.direct_message_ms = 20
+    bot.config.conversation.debounce.group_message_ms = 30
+    return bot
 
 
 async def make_ready_bot(tmp_path, adapter: FakeAdapter | None = None) -> Bot:

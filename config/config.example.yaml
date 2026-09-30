@@ -427,6 +427,34 @@ world:
 # 三件事：@ / 直接回复她的消息 → 必回；无 @ 的连续追问 → 续话识别；普通群聊 → 每 5 条观察一次。
 # 旧的 behavior.group.participation_probability 保留为低权重兜底，不再主导决策。
 # ============================================================
+# ============================================================
+# 对话轮次运行时（v1.2）
+# 连续发送的消息先合并成一个 Turn（动态 debounce，不是固定等待），
+# 一次 Turn 只产生一次自然回复；用户改口/打断时旧回复作废，绝不发出。
+# ============================================================
+conversation:
+  enabled: true
+  debounce:
+    enabled: true
+    direct_message_ms: 1200   # 私聊：连续消息的合并窗口（动态调整的基础值）
+    group_message_ms: 1800    # 群聊：同一个 burst 的合并窗口
+
+# ============================================================
+# 角色延续状态（v1.2）
+# 短时间尺度的“还是刚才那个我”：近期关注、未完成的事（Open Loop）、
+# 共同经历、用户聊天习惯、轮次级情感。全部结构化、按各自 TTL 衰减。
+# ============================================================
+continuity:
+  enabled: true
+  recent_emotion_ttl_minutes: 90      # 轮次级情绪的半衰期量级
+  current_interest_ttl_hours: 12      # “最近一直在关注”的存活时间
+  unfinished_thought_ttl_hours: 6
+  open_loop_ttl_days: 14              # 未完成的事过期即标记 expired
+  micro_event_ttl_minutes: 90         # 世界小事只在短期内有效
+  max_recent_events: 8
+  max_open_loops: 12
+  shared_experience_min_confidence: 0.60
+
 social:
   enabled: true
   # decision_model 已移到 models.decision（观察/续话用的快速模型；留空走路由默认）

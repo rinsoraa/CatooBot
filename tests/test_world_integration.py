@@ -106,6 +106,7 @@ class TestContextInjection:
                 (await world.goals.all(status="active"))[0].goal_id
             )
             await bot.event_bus.emit(private_event("在干嘛", user_id=777))
+            await bot.conversation.wait_idle()
             system = provider.calls[0]["messages"][0].content
             assert "建房子" in system
             assert "把房子盖完" in system
@@ -119,6 +120,7 @@ class TestContextInjection:
         try:
             bot.character.world = None
             await bot.event_bus.emit(private_event("在干嘛", user_id=777))
+            await bot.conversation.wait_idle()
             assert "现实边界" not in provider.calls[0]["messages"][0].content
         finally:
             await bot.shutdown()
@@ -132,6 +134,7 @@ class TestUserInteraction:
             world, _fake = await attach_world(bot)
             activity_before = world.state.state.activity
             await bot.event_bus.emit(private_event("在吗", user_id=777))
+            await bot.conversation.wait_idle()
             # v1.0: chat is an interaction overlay, never a new primary activity.
             assert world.state.state.interaction_overlay == "chatting"
             assert world.state.state.activity == activity_before
@@ -147,6 +150,7 @@ class TestUserInteraction:
         try:
             world, _fake = await attach_world(bot)
             await bot.event_bus.emit(private_event("在吗", user_id=777))
+            await bot.conversation.wait_idle()
             assert await world.events.stats() is not None
             rows = await bot.database.fetchall("SELECT COUNT(*) AS n FROM memories")
             assert rows[0]["n"] == 0

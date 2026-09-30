@@ -51,10 +51,16 @@ def attach_ai(bot, provider: MockAIProvider, models: list[str]) -> AIEngine:  # 
 
 async def make_character_bot(tmp_path, provider: MockAIProvider, models: list[str] | None = None):  # type: ignore[no-untyped-def]
     bot = make_bot(tmp_path)
-    attach_ai(bot, provider, models or ["A", "B"])
+    attach_ai(bot, provider, models or ["A"])
     await bot.database.connect()
     bot.event_bus.on("message", bot.core_router.on_message)
     await bot.plugins.load_all()
+    if bot.continuity is not None:
+        await bot.continuity.start()
+    # v1.2: replies go through the turn runtime — keep the debounce tiny so
+    # tests emit → wait_idle() → assert without real waiting.
+    bot.config.conversation.debounce.direct_message_ms = 20
+    bot.config.conversation.debounce.group_message_ms = 30
     return bot
 
 
@@ -64,6 +70,7 @@ class TestPrivateChat:
         bot = await make_character_bot(tmp_path, provider, models=["A"])
         try:
             await bot.event_bus.emit(private_event("你好", user_id=777))
+            await bot.conversation.wait_idle()
             assert bot.adapter.sent_texts() == ["嗨嗨，今天怎么样？"]  # type: ignore[attr-defined]
         finally:
             await bot.shutdown()
@@ -74,6 +81,7 @@ class TestPrivateChat:
         bot = await make_character_bot(tmp_path, provider, models=["A"])
         try:
             await bot.event_bus.emit(private_event("/ping", user_id=777))
+            await bot.conversation.wait_idle()
             assert provider.calls[0]["last_user"] == "/ping"
             assert bot.adapter.sent_texts() == ["Pong 是什么呀？"]  # type: ignore[attr-defined]
         finally:
@@ -85,7 +93,9 @@ class TestPrivateChat:
         bot.config.memory.extraction.enabled = False  # keep the mock call list chat-only
         try:
             await bot.event_bus.emit(private_event("我叫小明", user_id=777))
+            await bot.conversation.wait_idle()
             await bot.event_bus.emit(private_event("我叫什么？", user_id=777))
+            await bot.conversation.wait_idle()
             first, second = provider.calls[0], provider.calls[1]
             assert second["n_messages"] == first["n_messages"] + 2
             assert any(m.content == "我叫小明" for m in second["messages"])
@@ -97,6 +107,7 @@ class TestPrivateChat:
         bot = await make_character_bot(tmp_path, provider, models=["A"])
         try:
             await bot.event_bus.emit(private_event("你是什么？", user_id=777))
+            await bot.conversation.wait_idle()
             system = provider.calls[0]["messages"][0].content
             assert "NapCat" in system  # boundary instruction text, not a leak
             assert "不要输出功能菜单" in system
@@ -134,6 +145,7 @@ class TestPrivateChat:
             }
             event = PrivateMessageEvent.model_validate(raw)
             await bot.event_bus.emit(event)
+            await bot.conversation.wait_idle()
             texts = bot.adapter.sent_texts()  # type: ignore[attr-defined]
             assert texts and texts[0] == "这个表情好可爱"
             assert provider.calls and provider.calls[0]["last_user"] == "（发来一个表情包）"
@@ -153,6 +165,7 @@ class TestGroupChat:
         bot = await make_character_bot(tmp_path, provider, models=["A"])
         try:
             await bot.event_bus.emit(group_event("你好", user_id=888, at_bot=True))
+            await bot.conversation.wait_idle()
             assert bot.adapter.sent_texts() == ["来啦来啦"]  # type: ignore[attr-defined]
         finally:
             await bot.shutdown()
@@ -162,6 +175,7 @@ class TestGroupChat:
         bot = await make_character_bot(tmp_path, provider, models=["A"])
         try:
             await bot.event_bus.emit(group_event("大家好", user_id=888))
+            await bot.conversation.wait_idle()
             assert provider.calls == []
             assert bot.adapter.sent_texts() == []  # type: ignore[attr-defined]
         finally:
@@ -174,7 +188,9 @@ class TestSessionIsolation:
         bot = await make_character_bot(tmp_path, provider, models=["A"])
         try:
             await bot.event_bus.emit(private_event("我叫用户一", user_id=1))
+            await bot.conversation.wait_idle()
             await bot.event_bus.emit(private_event("我叫用户二", user_id=2))
+            await bot.conversation.wait_idle()
             ctx1 = await bot.ai.conversations.get_context("private:1")
             ctx2 = await bot.ai.conversations.get_context("private:2")
             assert [m.content for m in ctx1] == ["我叫用户一", "答A"]
@@ -190,6 +206,7 @@ class TestSessionIsolation:
                 bot.event_bus.emit(private_event("甲的问题", user_id=1)),
                 bot.event_bus.emit(private_event("乙的问题", user_id=2)),
             )
+            await bot.conversation.wait_idle()
             ctx1 = await bot.ai.conversations.get_context("private:1")
             ctx2 = await bot.ai.conversations.get_context("private:2")
             assert [m.content for m in ctx1] == ["甲的问题", "r1"]
@@ -206,6 +223,7 @@ class TestFailureHandling:
         bot = await make_character_bot(tmp_path, provider, models=["A", "B"])
         try:
             await bot.event_bus.emit(private_event("你好", user_id=777))
+            await bot.conversation.wait_idle()
             texts = bot.adapter.sent_texts()  # type: ignore[attr-defined]
             assert len(texts) == 1
             assert texts[0] in BUSY_REPLIES
@@ -213,6 +231,7 @@ class TestFailureHandling:
             provider_ok = MockAIProvider(behaviors={"A": ["又好啦"]})
             attach_ai(bot, provider_ok, ["A"])
             await bot.event_bus.emit(private_event("还在吗", user_id=777))
+            await bot.conversation.wait_idle()
             assert bot.adapter.sent_texts()[-1] == "又好啦"  # type: ignore[attr-defined]
         finally:
             await bot.shutdown()
@@ -224,6 +243,7 @@ class TestFailureHandling:
         bot = await make_character_bot(tmp_path, provider, models=["A"])
         try:
             await bot.event_bus.emit(private_event("你好", user_id=777))
+            await bot.conversation.wait_idle()
             texts = bot.adapter.sent_texts()  # type: ignore[attr-defined]
             assert len(texts) == 1
             assert texts[0] in BUSY_REPLIES
@@ -236,6 +256,7 @@ class TestFailureHandling:
         bot = await make_character_bot(tmp_path, provider, models=["A"])
         try:
             await bot.event_bus.emit(private_event("讲个长故事", user_id=777))
+            await bot.conversation.wait_idle()
             texts = bot.adapter.sent_texts()  # type: ignore[attr-defined]
             assert len(texts) >= 2
             assert all(len(t) <= 2000 for t in texts)
@@ -252,6 +273,7 @@ class TestAiDisabled:
         await bot.plugins.load_all()
         try:
             await bot.event_bus.emit(private_event("你好", user_id=777))
+            await bot.conversation.wait_idle()
             assert bot.adapter.sent_texts() == []  # type: ignore[attr-defined]
         finally:
             await bot.shutdown()
@@ -266,6 +288,7 @@ class TestPluginReload:
         bot.config.memory.extraction.enabled = False
         try:
             await bot.event_bus.emit(private_event("你好", user_id=5))
+            await bot.conversation.wait_idle()
             first = len(bot.adapter.sent_texts())  # type: ignore[attr-defined]
             assert first == 1
 
@@ -273,6 +296,7 @@ class TestPluginReload:
             await bot.plugins.load_all()
 
             await bot.event_bus.emit(private_event("在吗", user_id=5))
+            await bot.conversation.wait_idle()
             texts = bot.adapter.sent_texts()  # type: ignore[attr-defined]
             assert len(texts) == first + 1, f"duplicated reply: {texts}"
         finally:
@@ -306,6 +330,7 @@ class TestMemoryExtractionFlow:
         bot.config.memory.extraction.model = "E"  # pin extraction to model E
         try:
             await bot.event_bus.emit(private_event("我最喜欢猫了！", user_id=42))
+            await bot.conversation.wait_idle()
             await bot.character.extractor.wait_idle()
             memories = await bot.memory.list_memories(scope_key="user:42")
             assert any("猫" in m.content for m in memories)

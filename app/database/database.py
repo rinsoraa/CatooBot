@@ -590,6 +590,91 @@ CREATE TABLE IF NOT EXISTS native_faces (
 );
 """,
     ),
+    (
+        12,
+        "conversation turns + character continuity",
+        """
+CREATE TABLE IF NOT EXISTS conversation_turns (
+    turn_id         TEXT PRIMARY KEY,
+    generation_id   INTEGER NOT NULL DEFAULT 0,
+    session_id      TEXT NOT NULL,
+    user_id         TEXT NOT NULL,
+    group_id        TEXT NOT NULL DEFAULT '',
+    classification  TEXT NOT NULL DEFAULT 'single',
+    status          TEXT NOT NULL DEFAULT 'open',
+    text            TEXT NOT NULL DEFAULT '',
+    silence_reason  TEXT NOT NULL DEFAULT '',
+    message_ids     TEXT NOT NULL DEFAULT '[]',
+    started_at      REAL NOT NULL,
+    ended_at        REAL
+);
+
+CREATE INDEX IF NOT EXISTS idx_conversation_turns_session
+    ON conversation_turns(session_id, started_at DESC);
+
+CREATE TABLE IF NOT EXISTS open_loops (
+    id          TEXT PRIMARY KEY,
+    type        TEXT NOT NULL DEFAULT 'plan',
+    summary     TEXT NOT NULL,
+    detail      TEXT NOT NULL DEFAULT '',
+    status      TEXT NOT NULL DEFAULT 'open',
+    scope_key   TEXT NOT NULL DEFAULT '',
+    progress    REAL NOT NULL DEFAULT 0.0,
+    source      TEXT NOT NULL DEFAULT '',
+    confidence  REAL NOT NULL DEFAULT 0.5,
+    created_at  REAL NOT NULL,
+    updated_at  REAL NOT NULL,
+    expires_at  REAL
+);
+
+CREATE INDEX IF NOT EXISTS idx_open_loops_status ON open_loops(status, updated_at DESC);
+
+CREATE TABLE IF NOT EXISTS shared_experiences (
+    id                TEXT PRIMARY KEY,
+    user_id           TEXT NOT NULL,
+    type              TEXT NOT NULL DEFAULT 'shared_event',
+    summary           TEXT NOT NULL,
+    detail            TEXT NOT NULL DEFAULT '',
+    keywords          TEXT NOT NULL DEFAULT '[]',
+    times_referenced  INTEGER NOT NULL DEFAULT 0,
+    confidence        REAL NOT NULL DEFAULT 0.5,
+    source            TEXT NOT NULL DEFAULT '',
+    created_at        REAL NOT NULL,
+    updated_at        REAL NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_shared_experiences_user
+    ON shared_experiences(user_id, updated_at DESC);
+
+CREATE TABLE IF NOT EXISTS interaction_profiles (
+    user_id          TEXT PRIMARY KEY,
+    patterns         TEXT NOT NULL DEFAULT '{}',
+    favorite_topics  TEXT NOT NULL DEFAULT '[]',
+    updated_at       INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE TABLE IF NOT EXISTS micro_events (
+    id                TEXT PRIMARY KEY,
+    summary           TEXT NOT NULL,
+    kind              TEXT NOT NULL DEFAULT 'ambient',
+    related_activity  TEXT NOT NULL DEFAULT '',
+    reason_code       TEXT NOT NULL DEFAULT '',
+    created_at        REAL NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_micro_events_time ON micro_events(created_at DESC);
+
+CREATE TABLE IF NOT EXISTS affective_events (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    dimension    TEXT NOT NULL,
+    delta        REAL NOT NULL DEFAULT 0.0,
+    reason_code  TEXT NOT NULL DEFAULT '',
+    created_at   INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_affective_events_time ON affective_events(created_at DESC);
+""",
+    ),
 ]
 
 
@@ -646,10 +731,13 @@ class Database:
         return applied
 
     async def close(self) -> None:
-        if self._conn is not None:
-            await asyncio.to_thread(self._conn.close)
-            self._conn = None
-            self._log.info("SQLite connection closed")
+        # Serialise with in-flight queries: closing a connection that another
+        # to_thread call is still using segfaults sqlite3 on Windows.
+        async with self._lock:
+            if self._conn is not None:
+                await asyncio.to_thread(self._conn.close)
+                self._conn = None
+                self._log.info("SQLite connection closed")
 
     # --------------------------------------------------------------- helpers
 

@@ -95,6 +95,7 @@ class TestReplyPipeline:
         bot.response_delivery = MessageDelivery(bot, sleep=sleeper)
         try:
             await bot.event_bus.emit(private_event("在干嘛", user_id=7))
+            await bot.conversation.wait_idle()
             texts = bot.adapter.sent_texts()  # type: ignore[attr-defined]
             assert texts == ["今天挖矿挖了好久。", "手都酸了想歇会儿。"]  # two bubbles
             assert len(sleeper.calls) == 2  # initial delay + inter-chunk gap
@@ -109,6 +110,7 @@ class TestReplyPipeline:
         bot.response_delivery = MessageDelivery(bot, sleep=sleeper)
         try:
             await bot.event_bus.emit(private_event("在干嘛", user_id=7))
+            await bot.conversation.wait_idle()
             assert sleeper.calls == []  # no artificial wait
             joined = bot.adapter.sent_texts()  # type: ignore[attr-defined]
             assert len(joined) == 1 and "今天挖矿挖了好久。" in joined[0]
@@ -121,6 +123,7 @@ class TestReplyPipeline:
         bot.response_delivery = MessageDelivery(bot, sleep=RecordingSleep())
         try:
             await bot.event_bus.emit(private_event("在干嘛", user_id=7))
+            await bot.conversation.wait_idle()
             actions = [c[0] for c in bot.adapter.calls]  # type: ignore[attr-defined]
             assert actions.count("send_private_msg") == 2  # chunks of ONE reply
             joined = "".join(bot.adapter.sent_texts())  # type: ignore[attr-defined]
@@ -134,6 +137,7 @@ class TestReplyPipeline:
         bot = await make_bot_with_behavior(tmp_path, timing=False, chunking=False)
         try:
             await bot.event_bus.emit(group_event("大家好", user_id=9, at_bot=False))
+            await bot.conversation.wait_idle()
             assert bot.adapter.sent_texts() == []  # type: ignore[attr-defined]
         finally:
             await bot.shutdown()
@@ -144,6 +148,7 @@ class TestReplyPipeline:
         bot = await make_bot_with_behavior(tmp_path, timing=False, chunking=False)
         try:
             await bot.event_bus.emit(group_event("在干嘛", user_id=9, at_bot=True))
+            await bot.conversation.wait_idle()
             assert bot.adapter.sent_texts()  # type: ignore[attr-defined]
         finally:
             await bot.shutdown()
@@ -153,6 +158,7 @@ class TestReplyPipeline:
         provider = bot.character.engine._providers["mock"]  # noqa: SLF001
         try:
             await bot.event_bus.emit(private_event("几点了", user_id=7))
+            await bot.conversation.wait_idle()
             system = provider.calls[0]["messages"][0].content
             assert "现在是" in system  # natural-language time context
             assert "T" not in system.split("现在是")[1][:12]  # no ISO timestamp

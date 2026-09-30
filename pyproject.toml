@@ -7,7 +7,7 @@ include = ["app*"]
 
 [project]
 name = "catoobot"
-version = "1.1.0"
+version = "1.2.0"
 description = "CatooBot - A self-developed QQ Bot core runtime (OneBot 11 / NapCat) with AI chat"
 requires-python = ">=3.12"
 dependencies = [

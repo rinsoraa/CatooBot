@@ -84,6 +84,58 @@ class SocialCognitionEngine:
 
     # ---------------------------------------------------------------- decide
 
+    async def observe_only(
+        self,
+        *,
+        group_id: str,
+        message_id: str,
+        user_id: str,
+        nickname: str,
+        text: str,
+        reply_to_bot: bool,
+    ) -> None:
+        """v1.2: record one raw group message WITHOUT deciding (§82/§83).
+
+        The Conversation Runtime feeds bursts here so the monitor keeps a
+        faithful transcript; the participation decision happens once per turn
+        via :meth:`decide` with ``record=False``.
+        """
+        if not self.enabled:
+            return
+        group_id = str(group_id)
+        self.monitor.record(
+            group_id, message_id, user_id, nickname, text,
+            timestamp=self._clock(), reply_to=str(message_id) if reply_to_bot else None,
+        )
+
+    async def decide_for_turn(
+        self,
+        *,
+        group_id: str,
+        user_id: str,
+        nickname: str,
+        text: str,
+        mentioned: bool,
+        reply_to_bot: bool,
+        group_enabled: bool,
+    ) -> ParticipationDecision:
+        """v1.2 adapter: run the social decision on a merged turn burst.
+
+        The raw messages were already observed via :meth:`observe_only`, so
+        this records nothing (spec §83: one burst = one decision).
+        """
+        return await self.decide(
+            group_id=group_id,
+            message_id=f"turn_{int(self._clock())}",
+            user_id=user_id,
+            nickname=nickname,
+            text=text,
+            mentioned=mentioned,
+            reply_to_bot=reply_to_bot,
+            group_enabled=group_enabled,
+            record=False,
+        )
+
     async def decide(
         self,
         *,
@@ -95,16 +147,18 @@ class SocialCognitionEngine:
         mentioned: bool,
         reply_to_bot: bool,
         group_enabled: bool,
+        record: bool = True,
     ) -> ParticipationDecision:
         if not self.enabled:
             return ParticipationDecision(decision="ignore", reason_code="social_disabled")
 
         group_id = str(group_id)
         now = self._clock()
-        self.monitor.record(
-            group_id, message_id, user_id, nickname, text,
-            timestamp=now, reply_to=str(message_id) if reply_to_bot else None,
-        )
+        if record:
+            self.monitor.record(
+                group_id, message_id, user_id, nickname, text,
+                timestamp=now, reply_to=str(message_id) if reply_to_bot else None,
+            )
 
         # ---- hard priority: direct address / reply-to-bot (spec §20/§21) ----
         if mentioned:

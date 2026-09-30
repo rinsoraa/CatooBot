@@ -194,3 +194,6 @@ class ExpressionContext(BaseModel):
     incoming_sticker_semantics: str = ""
     image_context: str = ""
     expression_opportunity: float = 0.0
+    # v1.2 §90: character affect feeds the expression choice (e.g. high
+    # turn-level amusement suggests a cheerful sticker even for flat text).
+    emotion_hint: str = ""

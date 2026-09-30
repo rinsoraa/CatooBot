@@ -399,6 +399,19 @@ class ExpressionDecisionEngine:
         last = self._last_sent.get(scope_key)
         if last is not None and self._clock() - last < self._cooldown:
             return ExpressionDecision(response_mode="text")
+        # v1.2: a strong turn-level affect can open the expression door on
+        # emotionally flat text (amusement from a shared joke, warmth from a
+        # close relationship) — still structured, never a dice (§122).
+        hint = (getattr(context, "emotion_hint", "") or "").strip()
+        if (
+            not media_type
+            and not _infer_emotion(user_text)
+            and hint in ("开心", "好笑")
+        ):
+            return ExpressionDecision(
+                response_mode="text_and_sticker", sticker_intent="回应",
+                emotion=hint, intensity=0.4, selection_required=True,
+            )
         # A sticker in is a strong cue that a sticker out is natural.
         if media_type in ("sticker", "native_face"):
             return ExpressionDecision(

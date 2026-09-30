@@ -57,8 +57,23 @@ class MessageDelivery:
         #: Used by the social engine to detect "reply to the bot".
         self.last_sent_ids: dict[str, int] = {}
 
-    async def deliver(self, target: DeliveryTarget, plan: ResponsePlan) -> list[str]:
-        """Send every chunk, honouring the planned delay before the first one."""
+    async def deliver(
+        self,
+        target: DeliveryTarget,
+        plan: ResponsePlan,
+        *,
+        is_current: Callable[[], bool] | None = None,
+    ) -> list[str]:
+        """Send the planned sequence, honouring delays and the staleness guard.
+
+        ``is_current`` (v1.2 §17): consulted before the first send and between
+        every step — when it turns False (the user corrected/interrupted), the
+        remaining steps are dropped and nothing stale reaches QQ.
+        """
+
+        def stale() -> bool:
+            return is_current is not None and not is_current()
+
         if plan.is_empty:
             return []
         where = "群聊" if target.is_group else "私聊"
@@ -69,25 +84,30 @@ class MessageDelivery:
                 detail=f"{where} · {len(plan.chunks)} 条 · {plan.reason or 'rhythm'}",
             )
             await self._sleep(plan.delay)
+        if stale():
+            self._log.info("[Response] delivery aborted: generation went stale before send")
+            return []
 
         sent: list[str] = []
         last_id = -1
-        for index, chunk in enumerate(plan.chunks):
-            if index > 0:
-                gap = (
-                    plan.inter_chunk_delays[index - 1]
-                    if index - 1 < len(plan.inter_chunk_delays)
-                    else 0.0
+        steps = plan.sequence_steps()
+        for step in steps:
+            if step.type == "pause":
+                if step.duration > 0:
+                    await self._sleep(step.duration)
+                continue
+            if stale():
+                self._log.info(
+                    "[Response] delivery aborted mid-sequence: generation went stale"
                 )
-                if gap > 0:
-                    await self._sleep(gap)
-            last_id = await self._send_one(target, chunk)
-            sent.append(chunk)
-            story.reply(chunk, index=index + 1, total=len(plan.chunks))
-
-        # v1.1: an optional sticker/face attachment after the text (never a plain image).
-        if plan.attachment is not None:
-            last_id = await self._send_attachment(target, plan.attachment)
+                break
+            if step.type == "text":
+                last_id = await self._send_one(target, step.text)
+                sent.append(step.text)
+                index = len(sent)
+                story.reply(step.text, index=index, total=sum(1 for s in steps if s.type == "text"))
+            elif step.type == "sticker" and step.attachment is not None:
+                last_id = await self._send_attachment(target, step.attachment)
 
         self._bot.metrics.inc("replies_sent")
         if last_id and last_id > 0:

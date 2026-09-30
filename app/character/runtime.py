@@ -103,6 +103,10 @@ class CharacterRuntime:
         extra_instruction: str | None = None,
         record_interaction: bool = True,
         media_context: str = "",
+        continuity: dict | None = None,
+        interaction_profile: Any = None,
+        shared_experiences: list | None = None,
+        context_trace: dict | None = None,
     ) -> str:
         """Generate one character reply (already screened). Raises AIError."""
         persona = self.personas.persona
@@ -127,6 +131,10 @@ class CharacterRuntime:
             extra_instruction=extra_instruction,
             world=await self._world_context(),
             media_context=media_context,
+            continuity=continuity,
+            interaction_profile=interaction_profile,
+            shared_experiences=shared_experiences,
+            context_trace=context_trace,
         )
         temp = (
             temperature

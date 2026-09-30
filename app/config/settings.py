@@ -632,6 +632,40 @@ class MediaConfig(BaseModel):
     import_as_sticker: bool = True     # files dropped into sticker_dir ARE stickers
 
 
+class ConversationDebounceConfig(BaseModel):
+    """Dynamic turn-closing window (v1.2 §11/§12) — never a fixed wait."""
+
+    enabled: bool = True
+    direct_message_ms: int = Field(default=1200, ge=0)
+    group_message_ms: int = Field(default=1800, ge=0)
+
+
+class ConversationConfig(BaseModel):
+    """Conversation Turn Runtime (v1.2): bursts become one turn, one reply."""
+
+    enabled: bool = True
+    debounce: ConversationDebounceConfig = Field(
+        default_factory=ConversationDebounceConfig
+    )
+
+
+class ContinuityConfig(BaseModel):
+    """Character Continuity (v1.2 §23-§31): short-timescale "same person" state.
+
+    Every field decays by its own TTL — nothing here is permanent (§105/§106).
+    """
+
+    enabled: bool = True
+    recent_emotion_ttl_minutes: int = Field(default=90, ge=5)
+    current_interest_ttl_hours: int = Field(default=12, ge=1)
+    unfinished_thought_ttl_hours: int = Field(default=6, ge=1)
+    open_loop_ttl_days: int = Field(default=14, ge=1)
+    micro_event_ttl_minutes: int = Field(default=90, ge=5)
+    max_recent_events: int = Field(default=8, ge=1, le=30)
+    max_open_loops: int = Field(default=12, ge=1, le=50)
+    shared_experience_min_confidence: float = Field(default=0.60, ge=0.0, le=1.0)
+
+
 class AppConfig(BaseModel):
     bot: BotConfig = Field(default_factory=BotConfig)
     onebot: OneBotConfig = Field(default_factory=OneBotConfig)
@@ -645,6 +679,8 @@ class AppConfig(BaseModel):
     behavior: BehaviorConfig = Field(default_factory=BehaviorConfig)
     social: SocialConfig = Field(default_factory=SocialConfig)
     media: MediaConfig = Field(default_factory=MediaConfig)
+    conversation: ConversationConfig = Field(default_factory=ConversationConfig)
+    continuity: ContinuityConfig = Field(default_factory=ContinuityConfig)
     tools: ToolsConfig = Field(default_factory=ToolsConfig)
     agent: AgentConfig = Field(default_factory=AgentConfig)
     world: WorldConfig = Field(default_factory=WorldConfig)

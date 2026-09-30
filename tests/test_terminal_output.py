@@ -201,6 +201,7 @@ class TestNarrationInChat:
         try:
             with caplog.at_level(logging.INFO, logger="CatooBot.Narration"):
                 await bot.event_bus.emit(private_event("在吗", user_id=777))
+                await bot.conversation.wait_idle()
             joined = console.strip("\n".join(r.getMessage() for r in caplog.records))
             assert "感知" in joined
             assert "判断" in joined

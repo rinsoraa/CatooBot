@@ -59,6 +59,7 @@ class Bot:
         self.config = config
         self.adapter: Adapter = adapter
         self.log = get_logger("CatooBot")
+        self._clock = time.time
 
         self.event_bus = EventBus()
         self.commands = CommandRegistry()
@@ -161,6 +162,29 @@ class Bot:
             config=config.media, engine=self.ai, database=self.database
         )
 
+        # v1.2 character continuity + conversation turn runtime. The runtime
+        # only buffers/classifies/decides; the chat plugin binds the actual
+        # respond/deliver callbacks (adapter pattern, minimal intrusion).
+        from app.continuity import ContinuityStore
+        from app.continuity.manager import ContinuityManager
+        from app.conversation.decision import ConversationDecisionEngine
+        from app.conversation.runtime import ConversationTurnRuntime
+
+        self.continuity: ContinuityManager | None = None
+        if config.continuity.enabled:
+            self.continuity = ContinuityManager(
+                ContinuityStore(self.database, config.continuity),
+                clock=self._clock,
+            )
+        self.conversation = ConversationTurnRuntime(
+            config.conversation,
+            ConversationDecisionEngine(config.conversation),
+            clock=self._clock,
+        )
+        # v1.2 §100: world micro events feed continuity (optional hook).
+        if self.world is not None and self.continuity is not None:
+            self.world.continuity = self.continuity
+
         self.lifecycle = Lifecycle(self)
         self.router = CommandRouter(self, self.commands, prefix=config.bot.command_prefix)
         self.core_router = CoreRouter(self)
@@ -245,6 +269,15 @@ class Bot:
         except Exception:  # noqa: BLE001
             self.log.exception("Character runtime failed to start (chat continues without persona)")
             story.boot_step("角色运行时启动失败（降级为普通聊天）", ok=False)
+
+        # v1.2 continuity state loads from DB (with TTL decay) before chatting.
+        if self.continuity is not None:
+            try:
+                await self.continuity.start()
+                story.boot_step("角色延续状态已就绪", detail="continuity loaded")
+            except Exception:  # noqa: BLE001
+                self.log.exception("Continuity failed to start (chat continues without it)")
+                self.continuity = None
 
         # Memory wiring: topic-aware retrieval + background consolidation.
         self.character.topics = self.behavior.topics
@@ -501,6 +534,7 @@ class Bot:
         if self.consolidation_scheduler is not None:
             await self.consolidation_scheduler.stop()
         await self.scheduler.stop()
+        await self.conversation.shutdown()
         await self.plugins.unload_all()
         if self.web is not None:
             try:

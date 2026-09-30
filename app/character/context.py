@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import time
 from datetime import datetime
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from app.ai.models import ChatMessage
 from app.behavior.models import TimeContext
@@ -119,8 +119,19 @@ class CharacterContextBuilder:
         extra_instruction: str | None = None,
         world: dict | None = None,
         media_context: str = "",
+        continuity: dict | None = None,
+        interaction_profile: Any = None,
+        shared_experiences: list | None = None,
+        context_trace: dict | None = None,
     ) -> list[ChatMessage]:
         system_parts: list[str] = []
+
+        def trace(layer: str, included: bool, reason: str = "") -> None:
+            """Context fusion trace for the WebUI inspector (v1.2 §135)."""
+            if context_trace is not None:
+                context_trace.setdefault("layers", []).append(
+                    {"layer": layer, "included": included, "reason": reason}
+                )
 
         # 1. System rules + knowledge boundary (always first, never overridden)
         system_parts.append(
@@ -132,7 +143,9 @@ class CharacterContextBuilder:
         system_parts.append(_INTERNAL_BOUNDARY)
 
         # 2. Character identity / persona
-        system_parts.extend(self._persona_blocks(persona))
+        persona_blocks = self._persona_blocks(persona)
+        system_parts.extend(persona_blocks)
+        trace("persona", bool(persona_blocks), "always first")
 
         # 2b. Sense of time — natural language, never a raw timestamp (spec §62)
         if time_context is not None:
@@ -163,6 +176,14 @@ class CharacterContextBuilder:
         world_block = self._world_block(world)
         if world_block:
             system_parts.append(world_block)
+        trace("world", bool(world_block), "world runtime on/off")
+
+        # 3c. Character continuity (v1.2): the short-timescale "same person"
+        # state — current interest, unfinished things, last exchange (§52-§54).
+        continuity_block = self._continuity_block(continuity)
+        if continuity_block:
+            system_parts.append(continuity_block)
+        trace("continuity", bool(continuity_block), "continuity layer empty or off")
 
         # 4. Relationship with this user
         user_label = user_name or f"用户{relationship.user_id}"
@@ -175,14 +196,32 @@ class CharacterContextBuilder:
         if relationship.notes:
             relationship_line += f"。备注: {relationship.notes}"
         system_parts.append(relationship_line)
+        trace("relationship", True)
+
+        # 4b. How this user usually chats (v1.2 §38-§43): observed habits with
+        # confidence — user-specific context, never persona mutation (§115).
+        profile_block = self._profile_block(interaction_profile)
+        if profile_block:
+            system_parts.append(profile_block)
+        trace("interaction_profile", bool(profile_block), "insufficient confidence yet")
+
         if is_group:
-            system_parts.append("这是群聊场景：只回应 @你的消息，其他人聊天不要插话。")
+            # §85: participation is decided by Social Cognition upstream; the
+            # prompt no longer carries the old "only answer @" hard rule.
+            system_parts.append("这是群聊场景，像群里一个自然聊天的成员一样说话。")
 
         # 5. Relevant long-term memories (structured + explicitly "reference only")
         if memories:
             from app.memory.presentation import format_memories
 
             system_parts.append(format_memories(memories))
+        trace("memory", bool(memories), "retrieval returned nothing relevant")
+
+        # 5b. Shared experiences (v1.2 §32-§37): relevance-gated recall.
+        shared_block = self._shared_block(shared_experiences)
+        if shared_block:
+            system_parts.append(shared_block)
+        trace("shared_experience", bool(shared_block), "no topic-related shared history")
 
         if extra_instruction:
             system_parts.append(extra_instruction.strip())
@@ -242,6 +281,78 @@ class CharacterContextBuilder:
     def _history_timezone(time_context: TimeContext | None) -> str | None:
         name = getattr(time_context, "timezone", "") if time_context is not None else ""
         return name or None
+
+    def _continuity_block(self, continuity: dict | None) -> str:
+        """The v1.2 continuity layer (§52-§54): compact, natural, optional."""
+        if not continuity:
+            return ""
+        bits: list[str] = []
+        interest = str(continuity.get("current_interest") or "").strip()
+        if interest:
+            bits.append(f"最近一直在关注: {interest}")
+        loops = [
+            str(item).strip() for item in (continuity.get("open_loops") or []) if str(item).strip()
+        ]
+        if loops:
+            bits.append("还没完成的事: " + "；".join(loops[:3]))
+        unfinished = str(continuity.get("unfinished_thought") or "").strip()
+        if unfinished:
+            bits.append(f"刚才还在想: {unfinished}")
+        recent = [
+            str(item).strip()
+            for item in (continuity.get("recent_events") or [])
+            if str(item).strip()
+        ]
+        if recent:
+            bits.append("刚才发生的小事: " + "；".join(recent[:3]))
+        last = str(continuity.get("last_response_context") or "").strip()
+        if last:
+            bits.append(f"你上一句刚说过: {last}")
+        if not bits:
+            return ""
+        return (
+            "你最近的延续状态（自然带入，不要逐条汇报，被问到时可以自然提起）: "
+            + "；".join(bits)
+        )
+
+    @staticmethod
+    def _profile_block(interaction_profile: Any) -> str:
+        """Observed user habits (§38-§43): only confident, decayed patterns."""
+        if interaction_profile is None:
+            return ""
+        patterns = getattr(interaction_profile, "patterns", {}) or {}
+        bits: list[str] = []
+        if patterns.get("multi_message_habit", None) is None:
+            burst = patterns.get("burst_length")
+            if burst is not None and burst.confidence >= 0.6 and burst.value >= 0.5:
+                bits.append("常连着发几条消息")
+        follow = patterns.get("follow_up_habit")
+        if follow is not None and follow.confidence >= 0.6 and follow.value >= 0.5:
+            bits.append("喜欢接着追问")
+        late = patterns.get("late_night_habit")
+        if late is not None and late.confidence >= 0.6 and late.value >= 0.5:
+            bits.append("常在深夜出现")
+        length = patterns.get("message_length")
+        if length is not None and length.confidence >= 0.6:
+            bits.append("偏短消息" if length.value < 0.35 else "消息偏长")
+        if not bits:
+            return ""
+        return (
+            "这位用户的聊天习惯（观察到的倾向，参考即可，不要说破）: " + "、".join(bits) + "。"
+        )
+
+    @staticmethod
+    def _shared_block(shared_experiences: list | None) -> str:
+        """Shared-history layer (§32-§37): natural reference, never a report."""
+        if not shared_experiences:
+            return ""
+        bits = [str(item).strip() for item in shared_experiences if str(item).strip()]
+        if not bits:
+            return ""
+        return (
+            "你们之间的共同经历（可在相关话题时自然提起，像朋友记得往事一样，"
+            "不要逐条复述也不要解释「梗」本身）: " + "；".join(bits[:3]) + "。"
+        )
 
     def _world_block(self, world: dict | None) -> str:
         """Her ongoing life, compressed to a couple of lines (v0.8 §41).

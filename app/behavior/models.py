@@ -107,11 +107,23 @@ class InitiativeState(BaseModel):
 
 
 @dataclass
+class ResponseStep:
+    """One outgoing step (v1.2 §72/§73): text / sticker / pause."""
+
+    type: str                 # text | sticker | pause
+    text: str = ""
+    attachment: Any = None
+    duration: float = 0.0
+
+
+@dataclass
 class ResponsePlan:
     """What the delivery layer should do with one generated reply (spec §11).
 
     ``attachment`` is an optional sticker/face (v1.1) sent after the text — a
-    character expression, never a generic image (§33/§52).
+    character expression, never a generic image (§33/§52). ``steps`` (v1.2) is
+    the full response sequence; when present, delivery walks it and the legacy
+    chunks/delays/attachment fields stay as the fallback for older callers.
     """
 
     chunks: list[str] = field(default_factory=list)
@@ -119,14 +131,34 @@ class ResponsePlan:
     inter_chunk_delays: list[float] = field(default_factory=list)
     reason: str = ""
     attachment: Any = None
+    steps: list[ResponseStep] = field(default_factory=list)
 
     @property
     def is_empty(self) -> bool:
-        return not self.chunks and self.attachment is None
+        return not self.chunks and self.attachment is None and not self.steps
 
     @property
     def has_text(self) -> bool:
         return bool(self.chunks)
+
+    def sequence_steps(self) -> list[ResponseStep]:
+        """The plan as an ordered sequence (chunks → pauses → attachment)."""
+        if self.steps:
+            return self.steps
+        steps: list[ResponseStep] = []
+        for index, chunk in enumerate(self.chunks):
+            if index > 0:
+                gap = (
+                    self.inter_chunk_delays[index - 1]
+                    if index - 1 < len(self.inter_chunk_delays)
+                    else 0.0
+                )
+                if gap > 0:
+                    steps.append(ResponseStep(type="pause", duration=gap))
+            steps.append(ResponseStep(type="text", text=chunk))
+        if self.attachment is not None:
+            steps.append(ResponseStep(type="sticker", attachment=self.attachment))
+        return steps
 
 
 @dataclass

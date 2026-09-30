@@ -517,6 +517,7 @@ class TestChatWithTools:
         bot, provider = await make_tool_bot(tmp_path, replies)
         try:
             await bot.event_bus.emit(private_event("明天新加坡会不会下雨？", user_id=7))
+            await bot.conversation.wait_idle()
             texts = bot.adapter.sent_texts()  # type: ignore[attr-defined]
             assert texts == ["看了一下，明天大概率有阵雨，出门带把伞吧。"]
             # the tool ran for real (fake provider) and the model saw its result
@@ -533,6 +534,7 @@ class TestChatWithTools:
         bot, _ = await make_tool_bot(tmp_path, replies)
         try:
             await bot.event_bus.emit(private_event("23891 × 731 是多少？", user_id=7))
+            await bot.conversation.wait_idle()
             text = bot.adapter.sent_texts()[-1]  # type: ignore[attr-defined]
             assert "17464321" in text  # the calculator's answer
             lowered = text.lower()
@@ -545,6 +547,7 @@ class TestChatWithTools:
         bot, provider = await make_tool_bot(tmp_path, ["哈哈，今天确实挺舒服的"])
         try:
             await bot.event_bus.emit(private_event("今天心情不错", user_id=7))
+            await bot.conversation.wait_idle()
             assert bot.adapter.sent_texts() == ["哈哈，今天确实挺舒服的"]  # type: ignore[attr-defined]
             assert len(provider.calls) == 1  # exactly one model call, no tool round
         finally:
@@ -556,6 +559,7 @@ class TestChatWithTools:
         try:
             await bot.tools.set_tool_enabled("weather", False)
             await bot.event_bus.emit(private_event("明天会下雨吗", user_id=7))
+            await bot.conversation.wait_idle()
             text = bot.adapter.sent_texts()[-1]  # type: ignore[attr-defined]
             assert "查不到" in text
             assert "℃" not in text and "度" not in text  # never fabricates a forecast
@@ -572,8 +576,10 @@ class TestChatWithTools:
         bot.tools.registry.register(WeatherTool(providers=[FakeWeatherProvider(fail=True)]))
         try:
             await bot.event_bus.emit(private_event("明天会下雨吗", user_id=7))
+            await bot.conversation.wait_idle()
             assert "没拿到结果" in bot.adapter.sent_texts()[-1]  # type: ignore[attr-defined]
             await bot.event_bus.emit(private_event("还在吗", user_id=7))
+            await bot.conversation.wait_idle()
             assert len(bot.adapter.sent_texts()) == 2  # type: ignore[attr-defined]
         finally:
             await bot.shutdown()
@@ -587,6 +593,7 @@ class TestChatWithTools:
         bot, _ = await make_tool_bot(tmp_path, replies)
         try:
             await bot.event_bus.emit(private_event("明天新加坡天气怎么样", user_id=7))
+            await bot.conversation.wait_idle()
             if bot.memory is not None:
                 memories = await bot.memory.list_memories()
                 assert all("29" not in m.content for m in memories)

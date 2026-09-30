@@ -98,6 +98,9 @@ class WorldRuntime:
         self.messaging_queue: PendingInitiativeQueue | None = None
         # Set from logging.narrate_world_ticks: print a status line every tick.
         self.narrate_ticks = False
+        # v1.2 §100: optional ContinuityManager — world micro events feed her
+        # recent events. Assigned by the bot when continuity is enabled.
+        self.continuity: Any = None
 
     # -------------------------------------------------------------- toggles
 
@@ -278,6 +281,16 @@ class WorldRuntime:
             await self.activity._persist(episode)  # noqa: SLF001 - episode owner updates its counter
             self._log.debug("[World] ambient (episode=%s): %s", episode.id, outcome)
             narrate().world(outcome, detail="（她生活里的小事，不一定要说出口）")
+            # v1.2 §98-§100: ambient events feed character continuity (recent
+            # events) — the hook is optional and never blocks the world tick.
+            continuity = getattr(self, "continuity", None)
+            if continuity is not None:
+                try:
+                    await continuity.note_world_micro_event(
+                        outcome, activity=episode.activity_key
+                    )
+                except Exception:  # noqa: BLE001 - cosmetic only
+                    self._log.debug("[World] continuity micro event failed", exc_info=True)
 
     def activity_is_sleep(self, activity: str) -> bool:
         if not activity:
