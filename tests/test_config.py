@@ -28,18 +28,28 @@ class TestLoadConfig:
         path.write_text(content, encoding="utf-8")
         return path
 
+    @staticmethod
+    def _load(config_path, tmp_path, **kwargs):  # type: ignore[no-untyped-def]
+        """load_config isolated from the developer machine's overrides.yaml."""
+        return load_config(
+            config_path,
+            env_file=tmp_path / "no.env",
+            overrides_path=tmp_path / "no-overrides.yaml",
+            **kwargs,
+        )
+
     def test_yaml_int_superuser_accepted(self, tmp_path, monkeypatch) -> None:
         monkeypatch.delenv("CATOOBOT_ONEBOT_ACCESS_TOKEN", raising=False)
         config_path = self._write(
             tmp_path / "config.yaml",
             "permissions:\n  superusers:\n    - 123456789\n",
         )
-        config = load_config(config_path, env_file=tmp_path / "no.env")
+        config = self._load(config_path, tmp_path)
         assert config.permissions.superusers == ["123456789"]
 
     def test_defaults_when_no_file(self, tmp_path, monkeypatch) -> None:
         monkeypatch.delenv("CATOOBOT_ONEBOT_ACCESS_TOKEN", raising=False)
-        config = load_config(tmp_path / "missing.yaml", env_file=tmp_path / "no.env")
+        config = self._load(tmp_path / "missing.yaml", tmp_path)
         assert config.onebot.port == 8080
         assert config.onebot.path == "/onebot/v11/ws"
         assert config.bot.command_prefix == "/"
@@ -48,7 +58,7 @@ class TestLoadConfig:
         monkeypatch.setenv("CATOOBOT_ONEBOT_PORT", "9999")
         monkeypatch.setenv("CATOOBOT_ONEBOT_ACCESS_TOKEN", "secret")
         self._write(tmp_path / "config.yaml", "onebot:\n  port: 8080\n")
-        config = load_config(tmp_path / "config.yaml", env_file=tmp_path / "no.env")
+        config = self._load(tmp_path / "config.yaml", tmp_path)
         assert config.onebot.port == 9999
         assert config.onebot.access_token == "secret"
 
