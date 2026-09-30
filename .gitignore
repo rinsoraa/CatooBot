@@ -1,0 +1,30 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+
+# CatooBot runtime data
+data/*.db
+data/*.db-*
+logs/*.log*
+
+# Local secrets / config
+.env
+config/config.yaml
+
+# OS / IDE
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+
+# WebUI-managed overrides (machine-written, operator-local)
+config/overrides.yaml
+
+# Runtime data / logs (recreated on first run)
+data/
+logs/

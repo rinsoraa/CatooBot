@@ -1,0 +1,485 @@
+# CatooBot 配置示例
+# 复制为 config/config.yaml 后修改；敏感值建议放 .env（CATOOBOT_ONEBOT_ACCESS_TOKEN）
+
+bot:
+  name: CatooBot
+  debug: true
+  # 命令前缀：消息以该字符串开头才视为命令（群聊中允许前面 @机器人）
+  command_prefix: "/"
+
+onebot:
+  enabled: true
+  # CatooBot 作为 WebSocket Server，NapCat 作为客户端主动连接（反向 WS）
+  host: 127.0.0.1
+  port: 8080
+  path: /onebot/v11/ws
+  # 留空表示不校验 Token；推荐配置并与 NapCat 保持一致
+  # 敏感场景请使用 .env: CATOOBOT_ONEBOT_ACCESS_TOKEN
+  access_token: ""
+  # 调用 OneBot API 的超时时间（秒）
+  api_timeout: 10.0
+
+logging:
+  level: INFO              # DEBUG / INFO / WARNING / ERROR
+  color: true              # 终端彩色日志（管道/重定向时自动变纯文本，NO_COLOR 优先）
+  narrate: true            # 打印角色的内心播报：心理历程 / 思考 / 心流 / 碎碎念 / 世界状态
+  narrate_world_ticks: false  # 每次世界 tick 都打印状态（默认只在变化时打印）
+  log_dir: logs
+
+database:
+  url: sqlite:///data/catoobot.db
+
+permissions:
+  # 超级管理员 QQ 号（带引号的字符串或不带引号的数字都可以）
+  superusers: []
+    # - "123456789"
+  admins: []
+
+# ==================== AI 聊天（v0.2） ====================
+# 只有私聊、群里 @机器人、/chat 命令会触发 AI；普通群消息不会调用 API。
+ai:
+  # 改为 true 并配置好下方 models 后生效
+  enabled: false
+
+  # System Prompt（不要硬编码在代码里，在这里配置）
+  system_prompt: |
+    你是 CatooBot，一个运行在 QQ 上的 AI 助手。
+    使用自然、简洁、友好的中文回答。
+
+  # 调用 AI API 的超时时间（秒）
+  timeout: 60
+
+  # 默认采样温度
+  default_temperature: 0.8
+
+  # 短期上下文：每个会话保留最近 N 条消息（user+assistant）
+  context:
+    enabled: true
+    max_messages: 20
+
+  # 模型冷却：收到 429 后该模型暂停参与路由的时间
+  cooldown:
+    rate_limit_seconds: 30
+    server_error_seconds: 10
+
+  # ↓ 模型与 provider 已统一放到下面的「models:」总表里配置。
+
+# ==================== 模型总表（所有 AI 模型只在这里配置） ====================
+# 全项目唯一的模型入口：聊天、视觉、embedding、记忆抽取、以及社交认知 / Agent /
+# 表情收藏用的内部"快模型"，全部在这里声明。其它配置节里散落的 providers / *_model
+# 字段都已移到这里；运行时由 load_config 自动展开回各内部小节。
+models:
+  # —— 服务商 Provider（每个平台的地址 + API Key 环境变量名）——
+  # API Key 只放 .env，不要写进本文件；这里只写"读哪个环境变量"。
+  providers:
+    siliconflow:
+      type: openai_compatible
+      base_url: "https://api.siliconflow.cn/v1"   # ← 换成你的平台 / 地址
+      api_key_env: "SILICONFLOW_API_KEY"
+    # 可继续添加其他平台（换 base_url 和 api_key_env 即可）：
+    # deepseek:
+    #   type: openai_compatible
+    #   base_url: "https://api.deepseek.com/v1"
+    #   api_key_env: "DEEPSEEK_API_KEY"
+
+  # —— 聊天模型（按顺序做故障转移：primary 失败(429/5xx/超时) → secondary → fallback）——
+  # name 自己起；provider 填上面 providers 里的名字；model 填平台提供的模型 ID。
+  # 以下是示例模型，请替换成你的平台真实模型。
+  chat:
+    - name: primary
+      provider: siliconflow
+      model: "Qwen/Qwen2.5-7B-Instruct"
+    - name: secondary
+      provider: siliconflow
+      model: "THUDM/glm-4-9b-chat"
+    - name: fallback
+      provider: siliconflow
+      model: "deepseek-ai/DeepSeek-V3"
+
+  # —— 额外注册的模型（按 name 供下面的 vision 等引用）——
+  # 视觉等多模态模型建议放这里，例如：
+  # extra:
+  #   - name: vision
+  #     provider: siliconflow
+  #     model: "Qwen/Qwen2.5-VL-72B-Instruct"
+  extra: []
+
+  # —— 视觉模型（图片 / 表情分析）：填上面 chat/extra 里已注册的 name；留空 = 用 chat 第一个 ——
+  vision: ""
+
+  # —— 语义记忆 Embedding ——
+  embedding:
+    provider: siliconflow    # 填上面 providers 里的名字（复用其地址与 Key）
+    model: "BAAI/bge-m3"     # ← embedding 模型 ID
+    dimensions: null         # 向量维度，留空由模型决定
+    timeout: 10
+
+  # —— 记忆抽取模型（把聊天沉淀成长记忆）：填 chat/extra 里的 name；留空 = 用 chat 第一个 ——
+  extraction: ""
+
+  # —— 内部"快模型"（都填 chat/extra 里的 name；留空 = 用 chat 默认）——
+  decision: ""                # 社交认知：观察 / 续话判断
+  planner: ""                 # Agent：任务规划
+  evaluator: ""               # Agent：结果评估（默认用规则，不调模型）
+  acquisition: ""             # 表情收藏判断（默认用规则 + 视觉）
+
+# ==================== 角色系统（v0.3） ====================
+# 角色信息默认留空——全部通过 WebUI（/character 页面）填写并热加载。
+# 这里只作为初始默认值；WebUI 保存后会持久化到数据库。
+character:
+  timezone: "Asia/Singapore"   # 角色时间感所用时区（不要写死在代码里）
+  identity: {}        # name / nickname / age / birthday / gender / occupation / location / background
+  personality: {}     # traits / likes / dislikes / habits / interests
+  speaking_style: {}  # language / tone / emoji / kaomoji / length_preference / notes
+  behavior_rules: []  # 角色必须遵守的硬规则（每行一条）
+  system_prompt: ""   # 角色自由补充 prompt
+
+# ==================== 语义长期记忆（v0.5） ====================
+# 混合检索：语义向量 + 关键词 + 重要度/置信度/新近度/关系，权重可调。
+memory:
+  retrieval:
+    top_k: 8
+    weights:
+      semantic: 0.40      # 语义相似度（需要 embedding）
+      keyword: 0.20
+      importance: 0.15
+      confidence: 0.10
+      recency: 0.10
+      relationship: 0.05
+    min_final_score: 0.18   # 低于此总分不注入（相关性下限）
+    min_relevance: 0.05     # 语义/关键词至少要有一点证据，元数据不能单独入选
+    keyword_candidates: 20
+    semantic_candidates: 20
+    topic_bonus: 0.12       # 命中当前话题时的加成
+    cache_ttl_seconds: 60   # 短时间内重复查询复用结果
+
+  # 语义检索（Embedding）。开启后能按"意思相近"召回记忆；未开启/调用失败时
+  # 自动降级为关键词+元数据检索，聊天不受影响。需要先在 models.embedding 里配好模型。
+  semantic:
+    enabled: false
+    # ↓ embedding 的 provider/model/dimensions/timeout 已移到 models.embedding
+
+  # 记忆巩固（后台执行，不阻塞聊天）
+  consolidation:
+    enabled: true
+    duplicate_threshold: 0.92   # 余弦相似度超过则视为重复并合并
+    conflict_threshold: 0.75    # 聚类/关联判定
+    schedule: daily             # daily | hourly | manual
+    compression_min_cluster: 5  # 多少条相关 episodic 压缩成 1 条 semantic
+    compression_use_llm: false  # 预留：用 LLM 生成摘要
+    max_scan: 500
+
+  retention:
+    episodic_days: 180      # 超过则归档（不删除）
+
+  policy:
+    max_active_per_user: 500
+    max_active_per_group: 300
+
+# ==================== 角色行为引擎（v0.4） ====================
+# 行为与语言分离：LLM 只负责说什么，何时说/说几条/是否主动由这里决定。
+behavior:
+  enabled: true
+
+  # 回复节奏：延迟是区间 + 抖动，不是固定值
+  reply:
+    enabled: true
+    min_delay: 0.8          # 最短延迟（秒）
+    max_delay: 8.0          # 最长延迟（秒）
+    per_char_delay: 0.045   # 每个字额外耗时（拟"打字"）
+    busy_factor: 1.6        # 角色在忙（打游戏/工作）时变慢
+    sleeping_factor: 2.2    # 睡眠时段变慢
+    jitter: 0.2
+
+  # 消息分段：像群聊一样偶尔分成两条，不是每次都拆
+  chunking:
+    enabled: true
+    chunk_probability: 0.20
+    max_chunks: 3
+    min_chunk_length: 6
+    paragraph_always_split: true
+
+  # 作息（角色世界的作息，不影响 Bot 在线；睡眠时回复更慢、不主动说话）
+  schedule:
+    sleep_enabled: true
+    sleep_start: "00:30"
+    sleep_end: "08:00"
+    dnd_enabled: false
+    dnd_start: "23:00"
+    dnd_end: "08:00"
+    dnd_blocks_replies: false   # DND 是否也阻止被动回复（默认不阻止）
+    night_start: "23:00"
+    night_end: "06:00"
+
+  # 角色活动（虚构状态，不是现实监控）
+  activity:
+    enabled: true
+    roll_interval_minutes: 45
+    idle_activity: idle
+    pool: []                 # 留空用内置时段默认；可填 gaming/reading/...
+    period_preferences: {}   # 例如 {night: [gaming, reading]}
+
+  # 群聊参与（默认关闭：只响应 @）
+  group:
+    participation_enabled: false
+    participation_probability: 0.04
+    cooldown_seconds: 300
+    hourly_limit: 3
+    min_message_length: 3
+    topic_bonus: 0.15
+    ignore_when_other_mentioned: true
+    mention_always_replies: true
+
+  # 主动聊天（默认关闭；开启后仍受多重硬限制）
+  initiative:
+    enabled: false
+    min_interval_minutes: 120
+    daily_limit: 3
+    hourly_limit: 1
+    min_relationship_stage: familiar   # new/familiar/close/very_close
+    idle_hours: 6.0
+    base_probability: 0.35
+    relationship_bonus: 0.2
+    topic_bonus: 0.35
+    max_unanswered: 1                  # 未回复时不再追问
+    duplicate_similarity: 0.6
+
+# WebUI 管理后台（QQ 端没有任何管理指令，这里是唯一管理入口）
+web:
+  enabled: false      # 改为 true 后访问 http://127.0.0.1:8500
+  host: 127.0.0.1
+  port: 8500
+  username: admin
+  # 密码从环境变量读取（推荐写进 .env），只在首次启动创建账号时使用
+  password_env: "CATOOBOT_WEB_PASSWORD"
+  password: ""        # 不推荐直接写在这里
+
+# ==================== 工具运行时（v0.6） ====================
+# 角色可以在需要时调用工具（时间/计算/天气/搜索），QQ 用户看不到任何调用细节。
+# 工具管理、测试、执行日志、凭据全部在 WebUI（/tools、/credentials）。
+tools:
+  # 打开后角色才会使用工具；关闭时聊天完全不受影响
+  enabled: false
+
+  # json  = 模型输出结构化决策（任何模型都能用，默认）
+  # native = 使用平台原生的 function calling（需要模型支持）
+  decision_mode: json
+
+  # 每次最多把多少个相关工具介绍给模型（避免把全部工具塞进 prompt）
+  candidate_tools: 5
+
+  # 执行限制（全部由代码强制，不交给模型判断）
+  default_timeout: 10        # 单个工具默认超时（秒）
+  max_calls_per_turn: 3      # 一条消息内最多几次工具调用
+  max_execution_time: 30     # 一轮对话工具总耗时上限（秒）
+  max_concurrent: 4          # 并发执行的工具数上限
+  max_retries: 1             # 瞬时错误最多重试一次
+  cache_enabled: true        # 使用工具自己声明的缓存 TTL
+
+  # 限流（每个工具都可以在 WebUI 里单独覆盖）
+  rate_limit:
+    per_user_per_minute: 10
+    per_group_per_minute: 20
+    global_per_minute: 60
+
+  # 安全边界：v0.6 只允许 low-risk 工具；不存在 shell/代码执行类工具
+  permissions:
+    allowed_risk_levels: ["low"]
+    default_enabled: true
+
+  # 单个工具的覆盖配置（WebUI 保存后也会写在这里对应的小节）
+  configs:
+    weather:
+      enabled: true
+      timeout: 8
+      cache_ttl_seconds: 600
+      settings:
+        # open_meteo 免费且无需 Key；weatherapi 需要凭据（api_key_env）
+        provider: open_meteo
+        default_location: ""
+    web_search:
+      enabled: true
+      timeout: 12
+      cache_ttl_seconds: 300
+      settings:
+        # 未配置凭据时工具会明确说"查不到"，绝不编造结果
+        provider: ""
+        max_results: 5
+        api_key_env: "TAVILY_API_KEY"
+    time:
+      enabled: true
+    calculator:
+      enabled: true
+
+# ==================== Agent 运行时（v0.7） ====================
+# 多步任务才会进入 Agent：理解目标 → 规划 → 执行 → 观察 → 评估 → （必要时重规划）→ 结果。
+# QQ 用户只会看到自然回复；计划/步骤/工具调用只能在 WebUI 的 /agent 查看。
+agent:
+  enabled: true
+  # manual | assisted | normal（危险操作仍然被 Tool Policy 拦住）
+  autonomy: normal
+
+  # 哪些任务类别允许被 Agent 处理
+  mode:
+    simple: true
+    tool_assisted: true
+    multi_step: true
+    long_running: false    # v0.7 仅预留，不开放长期后台任务
+
+  # 硬上限：任何一项用完就立即停止（不会无限循环）
+  budget:
+    max_steps: 8
+    max_tool_calls: 6
+    max_replans: 2
+    max_execution_seconds: 60
+    max_parallel_tools: 3
+
+  # 规划/评估可以用单独的模型；留空则走 Model Router（默认）
+  planner:
+    timeout: 30
+    # model 已移到 models.planner
+  evaluator:
+    timeout: 20
+    use_llm: false         # 默认用规则判断是否完成
+    # model 已移到 models.evaluator
+
+  # 后台长期 Agent：v0.7 未开放
+  background:
+    enabled: false
+
+  # 喂回模型的观察数量上限（旧步骤会被压缩，不会无限塞 prompt）
+  max_observations_in_context: 6
+
+  # 自然语言控制（不是命令）：说这些话就能取消 / 暂停 / 继续
+  cancel_phrases: ["算了", "不用查了", "别查了", "不用继续了", "不用找了", "不查了", "取消"]
+  pause_phrases: ["先停一下", "停一下", "暂停", "先别查了", "等会儿再"]
+  resume_phrases: ["继续吧", "你继续", "接着查", "继续看看", "接着弄"]
+
+  # 判定为"多步任务"的信号词
+  multi_step_markers: ["然后", "再帮", "并且", "顺便", "比较", "对比", "哪个更", "哪个适合",
+                       "分别", "同时", "一次性", "都查", "和周日", "和明天", "之后再", "接着"]
+
+# ============================================================
+# 持久世界 / 后台生活（v0.8）
+# 没人聊天的时候，角色继续过自己的日子：作息、活动、目标、小事、时间线。
+# 全部管理都在 WebUI 的 /world 页面；QQ 端永远只有自然对话，没有任何指令。
+# 现实边界：这些生活只存在于角色自己的虚拟世界里（房间、游戏、剧、歌、朋友），
+# 不会声称现实世界中真实发生、可被验证的行为。
+# ============================================================
+world:
+  enabled: true
+  timezone: ""              # 留空则跟随 character.timezone
+  tick_seconds: 60          # 世界心跳（挂在唯一的 BehaviorScheduler 上，不另起循环）
+  state_persist_seconds: 60
+
+  # 重启后错过的世界事件怎么处理：skip = 直接跳过（默认）；catch_up = 合并成一条说明
+  missed_event_policy: skip
+
+  # 作息：每个时段允许做什么（WebUI /world/routine 可直接编辑）
+  # 活动 Episode 模型（v1.0）：活动是有生命周期的片段，不再是每分钟的状态标签
+  activity:
+    transition_window_minutes: 5   # 预计结束前提前多久开始评估 continue/extend/transition
+    planning_horizon_minutes: 240  # 滚动规划窗口
+    max_transitions_per_hour: 6    # 每小时的切换上限（超出则优先继续当前活动）
+    profiles: {}                   # 每个活动可覆盖 min/typical/max/momentum/…，留空用内置 profile
+  routine:
+    enabled: true
+    transition_minutes: 20  # 活动切换的平滑窗口：这段时间内不会换别的事做
+    periods: {}             # 例：{ "afternoon": ["打游戏", "看剧"], "night": ["听歌"] }
+
+  # 长期目标：只小步推进，且有每天的推进上限
+  goals:
+    enabled: true
+    max_active: 5
+    max_progress_events_per_day: 3
+    auto_advance: false     # 后台自动推进（默认关闭，打开后按下面间隔慢慢长）
+    advance_interval_hours: 12
+
+  # 环境小事：低频率、跟着当前活动走（"打游戏的时候卡关了"这种）
+  ambient:
+    enabled: true
+    min_interval_minutes: 60
+    max_per_day: 4
+
+  # 事件爆发保护：世界不会自己刷屏
+  events:
+    max_per_hour: 10
+    max_per_day: 40
+    type_max_per_day: {}       # 例：{ "ambient": 4 }
+    type_cooldown_minutes: {}  # 例：{ "ambient": 60 }
+
+  # 快照：定期保存世界状态，重启时按快照恢复（不会重放一堆错过的事件）
+  snapshot:
+    interval_minutes: 30
+    keep: 30
+
+  # 后台消息 ≠ 后台生活：主动消息仍要过 Initiative Gate，并受这里的每日额度限制
+  messaging:
+    enabled: true
+    max_background_messages_per_day: 3
+    pending_ttl_minutes: 120  # QQ 不在线时挂起的主动消息，过期直接丢弃（不批量补发）
+
+  rest_mode: false          # 休息模式：几乎不产生事件，适合长时间不想打扰时
+
+# ============================================================
+# 社交认知引擎（v0.9）
+# 把「群聊参与 = 概率随机」升级为结构化社交判断：她先听，再判断自己有没有必要说话。
+# 三件事：@ / 直接回复她的消息 → 必回；无 @ 的连续追问 → 续话识别；普通群聊 → 每 5 条观察一次。
+# 旧的 behavior.group.participation_probability 保留为低权重兜底，不再主导决策。
+# ============================================================
+social:
+  enabled: true
+  # decision_model 已移到 models.decision（观察/续话用的快速模型；留空走路由默认）
+
+  group_context:
+    max_messages: 30        # 每个群只保留最近 30 条（更早的历史由 Topic/Memory 提供）
+
+  continuation:
+    enabled: true
+    window_minutes: 10      # Bot 发言后多久内，无 @ 的消息会被识别为「在跟她继续说话」
+    max_messages: 8
+
+  observer:
+    batch_size: 5           # 每 5 条外部消息触发一次观察器（Bot 自己的消息不计数）
+    min_context_messages: 20
+    max_staleness_messages: 5
+
+  participation:
+    daily_limit: 30         # 每天的自主群聊参与上限（@ 与续话不受此限）
+    cooldown_seconds: 90
+
+  thresholds:               # 决策阈值——分数是规则，不是概率
+    follow_up: 0.75
+    topic_relevance: 0.70
+    social_fit: 0.65
+    contribution_value: 0.65
+
+  attention:
+    enabled: true           # 社交注意（动量/衰减）
+  fatigue:
+    enabled: true           # 社交疲劳（只软化判断，不强制沉默）
+  topic:
+    enabled: true
+
+  observation_retention_days: 30   # 观察记录保留天数
+
+# ============================================================
+# 多模态消息 + 表情包运行时（v1.1）
+# 角色能看懂图片、识别表情，能自主收藏/检索/选择表情包。
+# 硬边界：普通 image 永远不是表情包（除非来自 mface/face/带 emoji 元数据/手动导入）。
+# ============================================================
+media:
+  enabled: true
+  # vision_model / acquisition_model 已移到 models.vision / models.acquisition
+  sticker_dir: data/stickers  # 手动导入目录（放进来的文件 = 明确的表情包来源）
+  media_dir: data/media
+
+  expression_enabled: true    # 是否允许回复时自主附加表情
+  sticker_cooldown_seconds: 60
+  max_stickers_per_turn: 1
+
+  auto_collect: true          # 收到用户 mface/face 时，后台自主判断是否收藏
+  max_library_size: 5000
+
+  indexer_enabled: true       # 启动时后台增量扫描（不阻塞 QQ 上线）
+  analysis_version: "v1"

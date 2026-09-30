@@ -1,0 +1,63 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["app*"]
+
+[project]
+name = "catoobot"
+version = "1.1.0"
+description = "CatooBot - A self-developed QQ Bot core runtime (OneBot 11 / NapCat) with AI chat"
+requires-python = ">=3.12"
+dependencies = [
+    "websockets>=13.0",
+    "pydantic>=2.0",
+    "PyYAML>=6.0",
+    "python-dotenv>=1.0",
+    "httpx>=0.27",
+    "aiohttp>=3.9",
+    "tzdata>=2024.1",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.23",
+    "ruff>=0.4",
+    "mypy>=1.10",
+    "types-PyYAML",
+]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+filterwarnings = ["ignore::DeprecationWarning"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "SIM"]
+ignore = ["SIM105", "SIM108"]
+
+[tool.ruff.lint.per-file-ignores]
+# Server-rendered HTML templates have naturally long string lines.
+"app/web/server.py" = ["E501"]
+"app/web/ui.py" = ["E501"]
+"app/web/pages/*.py" = ["E501"]
+"app/media/*.py" = ["E501"]
+
+[tool.mypy]
+python_version = "3.12"
+warn_unused_ignores = true
+warn_redundant_casts = true
+no_implicit_optional = true
+check_untyped_defs = true
+disallow_untyped_defs = false
+exclude = ["^.venv/"]
+
+[[tool.mypy.overrides]]
+module = "tests.*"
+disallow_untyped_defs = false
