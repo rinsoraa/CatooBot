@@ -108,6 +108,7 @@ class CharacterPlugin(Plugin):
         text = event.message.text.strip()
         if not text and not self._has_media(event):
             return
+        await self._sandbox_external(event, text, mentioned=False, reply_to_bot=False)
         decision = await self.bot.behavior.consider_private(event, text)
         if not decision.respond:
             self.bot.log.info("[Behavior] private reply skipped (%s)", decision.reason)
@@ -135,6 +136,7 @@ class CharacterPlugin(Plugin):
         if not text and not self._has_media(event):
             return
         reply_to_bot = self._replies_to_bot(event, str(event.group_id))
+        await self._sandbox_external(event, text, mentioned=mentioned, reply_to_bot=reply_to_bot)
 
         runtime = getattr(self.bot, "conversation", None)
         if runtime is None or not runtime.enabled:
@@ -154,6 +156,48 @@ class CharacterPlugin(Plugin):
             )
         await self.bot.behavior.note_user_activity(f"group:{event.group_id}")
         await self._submit(event, text, mentioned=mentioned, reply_to_bot=reply_to_bot)
+
+    # ------------------------------------------------------ v2.0 sandbox
+
+    async def _sandbox_external(
+        self, event: MessageEvent, text: str, *, mentioned: bool, reply_to_bot: bool
+    ) -> None:
+        """QQ is the outside world: the message enters her sandbox (§49-§53)."""
+        sandbox = getattr(self.bot, "sandbox", None)
+        if sandbox is None or not getattr(sandbox, "enabled", False):
+            return
+        from app.sandbox.models import EventPriority, ExternalEvent
+
+        config = self.bot.config.sandbox
+        user_id = str(event.user_id)
+        is_core = user_id in {str(uid) for uid in config.core_friend_ids}
+        space_id = ""
+        if event.is_group and event.group_id is not None:
+            mapped = config.social_space_map.get(str(event.group_id), "")
+            space_id = mapped or f"qq:{event.group_id}"
+        try:
+            await sandbox.notify(
+                ExternalEvent(
+                    id=f"evt_{event.message_id or ''}",
+                    kind="group_mention" if (mentioned and event.is_group) else "user_message",
+                    priority=EventPriority.high if (is_core or mentioned or reply_to_bot)
+                    else EventPriority.normal,
+                    summary=f"{event.sender.display_name or user_id}: {text[:40]}",
+                    reason_code="qq_message",
+                    user_id=user_id,
+                    group_id=str(event.group_id) if event.is_group else "",
+                    social_space_id=space_id,
+                    data={
+                        "text": text,
+                        "is_core_friend": is_core,
+                        "familiar": reply_to_bot or is_core or mentioned,
+                        "mentioned": mentioned,
+                        "reply_to_bot": reply_to_bot,
+                    },
+                )
+            )
+        except Exception:  # noqa: BLE001 - sandbox trouble must not break chat
+            self.bot.log.exception("[Sandbox] external event failed")
 
     # ---------------------------------------------------------- v1.2 submit
 

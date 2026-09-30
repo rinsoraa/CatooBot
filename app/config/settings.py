@@ -666,6 +666,26 @@ class ContinuityConfig(BaseModel):
     shared_experience_min_confidence: float = Field(default=0.60, ge=0.0, le=1.0)
 
 
+class SandboxConfig(BaseModel):
+    """Character Life Sandbox (v2.0 §16/§67/§202): the character *lives* here.
+
+    ``enabled`` makes this the world core; the legacy WorldRuntime stays off.
+    """
+
+    enabled: bool = True
+    tick_seconds: int = Field(default=600, ge=30)
+    simulation_seed: int = 0
+    bible_path: str = "config/character_bible.md"
+    allow_ai_decisions: bool = True      # LLM only for ambiguous choices (§194)
+    reset_on_bible_change: bool = True   # re-initialize when the bible changes
+    max_events_keep: int = Field(default=500, ge=50)
+    snapshot_keep: int = Field(default=48, ge=1, le=500)
+    #: QQ 用户号 → 核心朋友（空凛），影响打断优先级与回复速度
+    core_friend_ids: list[str] = Field(default_factory=list)
+    #: QQ 群号 → SocialSpace id（游戏群/猫图群…）；未映射的群自动成为 qq:<gid>
+    social_space_map: dict[str, str] = Field(default_factory=dict)
+
+
 class AppConfig(BaseModel):
     bot: BotConfig = Field(default_factory=BotConfig)
     onebot: OneBotConfig = Field(default_factory=OneBotConfig)
@@ -681,6 +701,7 @@ class AppConfig(BaseModel):
     media: MediaConfig = Field(default_factory=MediaConfig)
     conversation: ConversationConfig = Field(default_factory=ConversationConfig)
     continuity: ContinuityConfig = Field(default_factory=ContinuityConfig)
+    sandbox: SandboxConfig = Field(default_factory=SandboxConfig)
     tools: ToolsConfig = Field(default_factory=ToolsConfig)
     agent: AgentConfig = Field(default_factory=AgentConfig)
     world: WorldConfig = Field(default_factory=WorldConfig)

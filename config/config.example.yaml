@@ -360,6 +360,22 @@ agent:
                        "分别", "同时", "一次性", "都查", "和周日", "和明天", "之后再", "接着"]
 
 # ============================================================
+# ============================================================
+# 角色生活沙盒（v2.0）
+# 她的世界核心：实体（自己/小喵/物品）、空间、库存、需求、动作、规则、模式。
+# 大部分 tick 只做 CPU/DB 计算，不调用模型；QQ 消息是外部事件。
+# 人物档案 config/character_bible.md 是唯一权威设定来源（改档案会自动重置旧角色数据）。
+# ============================================================
+sandbox:
+  enabled: true
+  tick_seconds: 600          # 生活节奏：10 分钟一跳（确定性推进，不刷屏）
+  simulation_seed: 0         # 可复现模拟种子
+  bible_path: "config/character_bible.md"
+  allow_ai_decisions: true   # 只在多个候选都合理时叫模型裁决；false = 纯规则
+  reset_on_bible_change: true
+  core_friend_ids: []        # ← 空凛的 QQ 号填在这里（更快回复/联机优先/深夜拉回）
+  social_space_map: {}       # 例：QQ 群号 → "game_group"/"cat_group"/"minecraft_server"
+
 # 持久世界 / 后台生活（v0.8）
 # 没人聊天的时候，角色继续过自己的日子：作息、活动、目标、小事、时间线。
 # 全部管理都在 WebUI 的 /world 页面；QQ 端永远只有自然对话，没有任何指令。
@@ -367,7 +383,7 @@ agent:
 # 不会声称现实世界中真实发生、可被验证的行为。
 # ============================================================
 world:
-  enabled: true
+  enabled: false         # v2.0：legacy（沙盒接管后天数由 sandbox 驱动）
   timezone: ""              # 留空则跟随 character.timezone
   tick_seconds: 60          # 世界心跳（挂在唯一的 BehaviorScheduler 上，不另起循环）
   state_persist_seconds: 60

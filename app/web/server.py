@@ -18,7 +18,13 @@ from aiohttp import web
 
 from app.web import ui
 from app.web.auth import AuthService
-from app.web.pages import config_page, conversation_page, correction_page, social_page
+from app.web.pages import (
+    config_page,
+    conversation_page,
+    correction_page,
+    sandbox_page,
+    social_page,
+)
 from app.web.services.admin import AdminService
 from app.web.services.agent import AgentAdminService
 from app.web.services.behavior import BehaviorService
@@ -170,6 +176,13 @@ class WebServer:
         app.router.add_post("/social/policy", self._social_policy_save)
         app.router.add_get("/conversation", self._conversation_page)
         app.router.add_get("/conversation/continuity", self._conversation_continuity_page)
+        app.router.add_get("/sandbox", self._sandbox_page)
+        app.router.add_get("/sandbox/inspectors", self._sandbox_inspectors_page)
+        app.router.add_get("/sandbox/needs", self._sandbox_needs_page)
+        app.router.add_get("/sandbox/bible", self._sandbox_bible_page)
+        app.router.add_get("/sandbox/trace", self._sandbox_trace_page)
+        app.router.add_post("/sandbox/simulate", self._sandbox_simulate)
+        app.router.add_post("/api/sandbox/control", self._api_sandbox_control)
         app.router.add_get("/memory/correction", self._memory_correction_page)
         app.router.add_post("/memory/correction", self._memory_correction_page)
         app.router.add_post("/memory/correction/apply", self._memory_correction_apply)
@@ -2694,6 +2707,141 @@ class WebServer:
                         subtitle="她最近关注什么、有什么没做完、和谁的共同经历（v1.2）"),
             content_type="text/html",
         )
+
+    # ------------------------------------------------------------------ sandbox
+
+    def _sandbox_data(self) -> dict[str, Any]:
+        sandbox = getattr(self._bot, "sandbox", None)
+        data: dict[str, Any] = {"enabled": sandbox is not None}
+        if sandbox is None:
+            return data
+        data.update(
+            {
+                "phase": sandbox.phase.value,
+                "context": sandbox.context(),
+                "spaces": [s.model_dump(mode="json") for s in sandbox.spaces.all()],
+                "objects": [o.model_dump(mode="json") for o in sandbox.objects.all()],
+                "inventories": {
+                    key: inv.items for key, inv in sandbox.inventories.all().items()
+                },
+                "needs": {
+                    key: need.model_dump(mode="json")
+                    for key, need in sandbox.needs.all().items()
+                },
+                "action": (
+                    sandbox.current_action.model_dump(mode="json")
+                    if sandbox.current_action else None
+                ),
+                "action_defs": [
+                    d.model_dump(mode="json")
+                    for d in sandbox.actions.definitions.values()
+                ],
+                "pet": sandbox.pet_system.snapshot(),
+                "social_spaces": [
+                    s.model_dump(mode="json") for s in sandbox.social_spaces.values()
+                ],
+                "bible": sandbox.bible.model_dump(mode="json"),
+            }
+        )
+        return data
+
+    async def _sandbox_page(self, request: web.Request) -> web.Response:
+        data = self._sandbox_data()
+        sandbox = self._bot.sandbox
+        if sandbox is not None:
+            data["recent_events"] = await sandbox.store.recent_events(limit=12)
+        body = sandbox_page._tabs("/sandbox") + sandbox_page.dashboard(data)
+        return web.Response(
+            text=layout("生活沙盒", "/sandbox", body, subtitle="她本来就在过自己的日子（v2.0）"),
+            content_type="text/html",
+        )
+
+    async def _sandbox_inspectors_page(self, request: web.Request) -> web.Response:
+        body = sandbox_page._tabs("/sandbox/inspectors") + sandbox_page.inspectors(
+            self._sandbox_data()
+        )
+        return web.Response(
+            text=layout("沙盒 · 实体与空间", "/sandbox", body, subtitle="小喵、公寓、冰箱、库存"),
+            content_type="text/html",
+        )
+
+    async def _sandbox_needs_page(self, request: web.Request) -> web.Response:
+        body = sandbox_page._tabs("/sandbox/needs") + sandbox_page.needs_page(
+            self._sandbox_data()
+        )
+        return web.Response(
+            text=layout("沙盒 · 需求与动作", "/sandbox", body, subtitle="她为什么做这件事"),
+            content_type="text/html",
+        )
+
+    async def _sandbox_bible_page(self, request: web.Request) -> web.Response:
+        msg = request.query.get("msg", "")
+        body = sandbox_page._tabs("/sandbox/bible") + sandbox_page.bible_page(
+            self._sandbox_data()
+        )
+        if msg:
+            body = (
+                f"<div class='card'><p class='muted'>{ui.esc(msg)}</p></div>" + body
+            )
+        return web.Response(
+            text=layout("沙盒 · 人物档案", "/sandbox", body, subtitle="Canonical Source 与覆盖率"),
+            content_type="text/html",
+        )
+
+    async def _sandbox_trace_page(self, request: web.Request) -> web.Response:
+        data = self._sandbox_data()
+        sandbox = self._bot.sandbox
+        if sandbox is not None:
+            data["replay"] = await sandbox.replay(limit=120)
+        body = sandbox_page._tabs("/sandbox/trace") + sandbox_page.trace_page(data)
+        return web.Response(
+            text=layout("沙盒 · 回放", "/sandbox", body, subtitle="结构化轨迹（不含思维链）"),
+            content_type="text/html",
+        )
+
+    async def _sandbox_simulate(self, request: web.Request) -> web.Response:
+        form = await request.post()
+        try:
+            hours = min(168.0, max(1.0, float(str(form.get("hours", "24")))))
+        except ValueError:
+            hours = 24.0
+        sandbox = getattr(self._bot, "sandbox", None)
+        if sandbox is None:
+            raise web.HTTPFound("/sandbox/trace?msg=沙盒未启用")
+        backup = sandbox._backup_state()  # noqa: SLF001 - simulator is admin-gated
+        before = sandbox.current_action
+        try:
+            sim = await sandbox.simulate(hours=hours)
+        finally:
+            sandbox._restore_state(backup)  # noqa: SLF001 - dry run never sticks
+            sandbox.current_action = before
+        self._bot.log.info("[Web] sandbox dry-run %.0fh: %s", hours, sim)
+        raise web.HTTPFound("/sandbox/trace?msg=" + quote(f"干跑 {hours:.0f}h 完成（未发送任何 QQ）"))
+
+    async def _api_sandbox_control(self, request: web.Request) -> web.Response:
+        import json as _json
+
+        payload = _json.loads(await request.text() or "{}")
+        action = str(payload.get("action", ""))
+        sandbox = getattr(self._bot, "sandbox", None)
+        lifecycle = getattr(self._bot, "lifecycle_manager", None)
+        result: dict[str, Any] = {"ok": False}
+        if sandbox is None:
+            result["reason"] = "sandbox_disabled"
+        elif action == "pause":
+            sandbox.phase = sandbox.phase.__class__.paused
+            result = {"ok": True, "phase": sandbox.phase.value}
+        elif action == "resume":
+            sandbox.phase = sandbox.phase.__class__.running
+            result = {"ok": True, "phase": sandbox.phase.value}
+        elif action == "reset" and lifecycle is not None:
+            result = await lifecycle.reset_character(confirm=bool(payload.get("confirm")))
+        elif action == "reinitialize":
+            await sandbox.reinitialize()
+            result = {"ok": True}
+        elif action == "reset_report" and lifecycle is not None:
+            result = {"ok": True, "report": await lifecycle.reset_report()}
+        return web.json_response(result)
 
     async def _social_policy_page(self, request: web.Request) -> web.Response:
         msg = request.query.get("msg", "")

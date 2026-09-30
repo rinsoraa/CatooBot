@@ -675,6 +675,131 @@ CREATE TABLE IF NOT EXISTS affective_events (
 CREATE INDEX IF NOT EXISTS idx_affective_events_time ON affective_events(created_at DESC);
 """,
     ),
+    (
+        13,
+        "character life sandbox",
+        """
+CREATE TABLE IF NOT EXISTS sandbox_entities (
+    id          TEXT PRIMARY KEY,
+    type        TEXT NOT NULL DEFAULT 'object',
+    name        TEXT NOT NULL DEFAULT '',
+    space_id    TEXT NOT NULL DEFAULT '',
+    data        TEXT NOT NULL DEFAULT '{}',
+    updated_at  REAL NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS sandbox_spaces (
+    id          TEXT PRIMARY KEY,
+    name        TEXT NOT NULL DEFAULT '',
+    parent_id   TEXT NOT NULL DEFAULT '',
+    kind        TEXT NOT NULL DEFAULT 'room',
+    data        TEXT NOT NULL DEFAULT '{}',
+    updated_at  REAL NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS sandbox_objects (
+    id          TEXT PRIMARY KEY,
+    name        TEXT NOT NULL DEFAULT '',
+    space_id    TEXT NOT NULL DEFAULT '',
+    kind        TEXT NOT NULL DEFAULT 'object',
+    data        TEXT NOT NULL DEFAULT '{}',
+    updated_at  REAL NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS sandbox_inventories (
+    key         TEXT PRIMARY KEY,
+    data        TEXT NOT NULL DEFAULT '{}',
+    updated_at  REAL NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS sandbox_actions (
+    id            TEXT PRIMARY KEY,
+    definition_id TEXT NOT NULL DEFAULT '',
+    status        TEXT NOT NULL DEFAULT 'active',
+    started_at    REAL NOT NULL DEFAULT 0,
+    ended_at      REAL NOT NULL DEFAULT 0,
+    data          TEXT NOT NULL DEFAULT '{}'
+);
+
+CREATE INDEX IF NOT EXISTS idx_sandbox_actions_status
+    ON sandbox_actions(status, started_at DESC);
+
+CREATE TABLE IF NOT EXISTS sandbox_events (
+    id           TEXT PRIMARY KEY,
+    kind         TEXT NOT NULL DEFAULT 'micro',
+    priority     TEXT NOT NULL DEFAULT 'normal',
+    source       TEXT NOT NULL DEFAULT 'system',
+    summary      TEXT NOT NULL DEFAULT '',
+    reason_code  TEXT NOT NULL DEFAULT '',
+    data         TEXT NOT NULL DEFAULT '{}',
+    created_at   REAL NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_sandbox_events_time ON sandbox_events(created_at DESC);
+
+CREATE TABLE IF NOT EXISTS sandbox_traces (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts           REAL NOT NULL,
+    kind         TEXT NOT NULL DEFAULT 'tick',
+    summary      TEXT NOT NULL DEFAULT '',
+    factors      TEXT NOT NULL DEFAULT '[]',
+    reason_code  TEXT NOT NULL DEFAULT '',
+    data         TEXT NOT NULL DEFAULT '{}'
+);
+
+CREATE INDEX IF NOT EXISTS idx_sandbox_traces_time ON sandbox_traces(ts DESC);
+
+CREATE TABLE IF NOT EXISTS sandbox_snapshots (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    created_at   REAL NOT NULL,
+    elapsed_min  REAL NOT NULL DEFAULT 0,
+    data         TEXT NOT NULL DEFAULT '{}'
+);
+
+CREATE TABLE IF NOT EXISTS sandbox_commissions (
+    id           TEXT PRIMARY KEY,
+    kind         TEXT NOT NULL DEFAULT 'mc_build',
+    status       TEXT NOT NULL DEFAULT 'open',
+    progress     REAL NOT NULL DEFAULT 0,
+    deadline     REAL,
+    reward       REAL NOT NULL DEFAULT 0,
+    data         TEXT NOT NULL DEFAULT '{}',
+    updated_at   REAL NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS sandbox_social_spaces (
+    id           TEXT PRIMARY KEY,
+    name         TEXT NOT NULL DEFAULT '',
+    kind         TEXT NOT NULL DEFAULT 'simulated',
+    data         TEXT NOT NULL DEFAULT '{}',
+    updated_at   REAL NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS sandbox_knowledge (
+    key          TEXT PRIMARY KEY,
+    known        INTEGER NOT NULL DEFAULT 0,
+    source       TEXT NOT NULL DEFAULT '',
+    learned_at   REAL NOT NULL DEFAULT 0,
+    data         TEXT NOT NULL DEFAULT '{}'
+);
+
+CREATE TABLE IF NOT EXISTS sandbox_state (
+    key          TEXT PRIMARY KEY,
+    value        TEXT NOT NULL DEFAULT '',
+    updated_at   REAL NOT NULL DEFAULT 0
+);
+
+CREATE TABLE IF NOT EXISTS character_bible (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    version      TEXT NOT NULL DEFAULT '',
+    source_hash  TEXT NOT NULL DEFAULT '',
+    compiled     TEXT NOT NULL DEFAULT '{}',
+    coverage     TEXT NOT NULL DEFAULT '{}',
+    report       TEXT NOT NULL DEFAULT '{}',
+    created_at   REAL NOT NULL
+);
+""",
+    ),
 ]
 
 

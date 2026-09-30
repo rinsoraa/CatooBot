@@ -46,6 +46,7 @@ async def make_web_bot(tmp_path, port: int, **world_overrides) -> Bot:
             "password": "pw123",
         },
         world=world_overrides or {"enabled": True},
+        sandbox={"enabled": False},
     )
     bot = Bot(config, DummyAdapter())
     await bot.database.connect()

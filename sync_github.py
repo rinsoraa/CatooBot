@@ -29,7 +29,7 @@ from pathlib import Path
 SOURCE = Path(__file__).resolve().parent
 TARGET = SOURCE.parent / "CatooBot_github"
 
-MIRRORED_DIRS = ("app", "plugins", "tests")
+MIRRORED_DIRS = ("app", "plugins", "tests", "docs")
 ROOT_FILES = (
     "pyproject.toml",
     "run.py",
@@ -39,7 +39,7 @@ ROOT_FILES = (
     ".gitattributes",
     "sync_github.py",
 )
-CONFIG_DIR_FILES = ("config.example.yaml",)
+CONFIG_DIR_FILES = ("config.example.yaml", "character_bible.md")
 
 EXCLUDED_DIR_PATTERNS = ("__pycache__", "*.egg-info", ".mypy_cache", ".pytest_cache", ".ruff_cache")
 

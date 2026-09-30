@@ -176,6 +176,7 @@ class TestWorldJobsOnSharedScheduler:
             database={"url": f"sqlite:///{tmp_path / 'jobs.db'}"},
             logging={"log_dir": str(tmp_path / "logs")},
             world={"enabled": True, "tick_seconds": 90},
+            sandbox={"enabled": False},
         )
         bot = Bot(config, FakeAdapter())
         await bot.database.connect()
@@ -193,6 +194,7 @@ class TestWorldJobsOnSharedScheduler:
             database={"url": f"sqlite:///{tmp_path / 'noworld.db'}"},
             logging={"log_dir": str(tmp_path / "logs")},
             world={"enabled": False},
+            sandbox={"enabled": False},
         )
         bot = Bot(config, FakeAdapter())
         await bot.database.connect()
@@ -211,6 +213,7 @@ class TestWorldJobsOnSharedScheduler:
             logging={"log_dir": str(tmp_path / "logs")},
             behavior={"enabled": True, "initiative": {"enabled": False}},
             world={"enabled": False},
+            sandbox={"enabled": False},
             memory={"consolidation": {"schedule": "daily"}},
         )
         bot = Bot(config, FakeAdapter())

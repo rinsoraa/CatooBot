@@ -1,0 +1,431 @@
+"""Sandbox persistence: entity/object/needs/action/event/trace/snapshot I/O.
+
+State deltas land in targeted tables; full snapshots are periodic (§74).
+A blind DB failure degrades the sandbox, never crashes the bot (§168).
+"""
+
+from __future__ import annotations
+
+import json
+import logging
+import time
+from typing import Any
+
+from app.sandbox.bible import CharacterBible
+from app.sandbox.models import (
+    ActionInstance,
+    DecisionTrace,
+    SandboxEventRecord,
+    SandboxSnapshot,
+)
+
+logger = logging.getLogger("CatooBot.Sandbox.Store")
+
+
+class SandboxStore:
+    def __init__(self, database: Any, *, clock: Any = time.time) -> None:
+        self._db = database
+        self._clock = clock
+
+    @property
+    def available(self) -> bool:
+        return self._db is not None
+
+    # -------------------------------------------------------------- entities
+
+    async def save_entity(
+        self, entity_id: str, *, type: str, name: str, space_id: str, data: dict[str, Any],
+    ) -> None:
+        if not self.available:
+            return
+        try:
+            await self._db.execute(
+                """INSERT INTO sandbox_entities (id, type, name, space_id, data, updated_at)
+                   VALUES (?, ?, ?, ?, ?, ?)
+                   ON CONFLICT(id) DO UPDATE SET type=excluded.type, name=excluded.name,
+                       space_id=excluded.space_id, data=excluded.data,
+                       updated_at=excluded.updated_at""",
+                (entity_id, type, name, space_id, _json(data), float(self._clock())),
+            )
+        except Exception:  # noqa: BLE001
+            logger.exception("[Sandbox] entity save failed: %s", entity_id)
+
+    async def load_entities(self) -> dict[str, dict[str, Any]]:
+        if not self.available:
+            return {}
+        try:
+            rows = await self._db.fetchall("SELECT * FROM sandbox_entities")
+        except Exception:  # noqa: BLE001
+            return {}
+        return {
+            row["id"]: {**json.loads(row["data"] or "{}"), "_type": row["type"]}
+            for row in rows
+        }
+
+    # --------------------------------------------------------------- spaces
+
+    async def save_space(self, space_id: str, *, name: str, parent_id: str, kind: str,
+                         data: dict[str, Any]) -> None:
+        if not self.available:
+            return
+        try:
+            await self._db.execute(
+                """INSERT INTO sandbox_spaces (id, name, parent_id, kind, data, updated_at)
+                   VALUES (?, ?, ?, ?, ?, ?)
+                   ON CONFLICT(id) DO UPDATE SET name=excluded.name,
+                       parent_id=excluded.parent_id, kind=excluded.kind,
+                       data=excluded.data, updated_at=excluded.updated_at""",
+                (space_id, name, parent_id, kind, _json(data), float(self._clock())),
+            )
+        except Exception:  # noqa: BLE001
+            logger.exception("[Sandbox] space save failed: %s", space_id)
+
+    async def load_spaces(self) -> list[dict[str, Any]]:
+        if not self.available:
+            return []
+        try:
+            rows = await self._db.fetchall("SELECT * FROM sandbox_spaces")
+        except Exception:  # noqa: BLE001
+            return []
+        return [json.loads(row["data"] or "{}") for row in rows]
+
+    # ------------------------------------------------------------- objects
+
+    async def save_object(self, object_id: str, *, name: str, space_id: str, kind: str,
+                          data: dict[str, Any]) -> None:
+        if not self.available:
+            return
+        try:
+            await self._db.execute(
+                """INSERT INTO sandbox_objects (id, name, space_id, kind, data, updated_at)
+                   VALUES (?, ?, ?, ?, ?, ?)
+                   ON CONFLICT(id) DO UPDATE SET name=excluded.name,
+                       space_id=excluded.space_id, kind=excluded.kind,
+                       data=excluded.data, updated_at=excluded.updated_at""",
+                (object_id, name, space_id, kind, _json(data), float(self._clock())),
+            )
+        except Exception:  # noqa: BLE001
+            logger.exception("[Sandbox] object save failed: %s", object_id)
+
+    async def load_objects(self) -> list[dict[str, Any]]:
+        if not self.available:
+            return []
+        try:
+            rows = await self._db.fetchall("SELECT * FROM sandbox_objects")
+        except Exception:  # noqa: BLE001
+            return []
+        return [json.loads(row["data"] or "{}") for row in rows]
+
+    # ----------------------------------------------------------- inventories
+
+    async def save_inventory(self, key: str, data: dict[str, Any]) -> None:
+        if not self.available:
+            return
+        try:
+            await self._db.execute(
+                """INSERT INTO sandbox_inventories (key, data, updated_at) VALUES (?, ?, ?)
+                   ON CONFLICT(key) DO UPDATE SET data=excluded.data,
+                       updated_at=excluded.updated_at""",
+                (key, _json(data), float(self._clock())),
+            )
+        except Exception:  # noqa: BLE001
+            logger.exception("[Sandbox] inventory save failed: %s", key)
+
+    async def load_inventories(self) -> dict[str, dict[str, Any]]:
+        if not self.available:
+            return {}
+        try:
+            rows = await self._db.fetchall("SELECT * FROM sandbox_inventories")
+        except Exception:  # noqa: BLE001
+            return {}
+        return {row["key"]: json.loads(row["data"] or "{}") for row in rows}
+
+    # --------------------------------------------------------------- actions
+
+    async def save_action(self, action: ActionInstance) -> None:
+        if not self.available:
+            return
+        try:
+            await self._db.execute(
+                """INSERT INTO sandbox_actions
+                   (id, definition_id, status, started_at, ended_at, data)
+                   VALUES (?, ?, ?, ?, ?, ?)
+                   ON CONFLICT(id) DO UPDATE SET status=excluded.status,
+                       ended_at=excluded.ended_at, data=excluded.data""",
+                (
+                    action.id, action.definition_id, action.status.value,
+                    action.started_at, action.ended_at,
+                    _json(action.model_dump(mode="json")),
+                ),
+            )
+        except Exception:  # noqa: BLE001
+            logger.exception("[Sandbox] action save failed: %s", action.id)
+
+    async def active_action(self) -> ActionInstance | None:
+        if not self.available:
+            return None
+        try:
+            row = await self._db.fetchone(
+                "SELECT data FROM sandbox_actions WHERE status = 'active'"
+                " ORDER BY started_at DESC LIMIT 1"
+            )
+        except Exception:  # noqa: BLE001
+            return None
+        if row is None:
+            return None
+        try:
+            return ActionInstance.model_validate(json.loads(row["data"]))
+        except (TypeError, ValueError):
+            return None
+
+    # ---------------------------------------------------------------- events
+
+    async def append_event(self, event: SandboxEventRecord) -> None:
+        if not self.available:
+            return
+        try:
+            await self._db.execute(
+                """INSERT INTO sandbox_events
+                   (id, kind, priority, source, summary, reason_code, data, created_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    event.id, event.kind, event.level.value, event.source.value,
+                    event.summary, event.reason_code, _json(event.data), event.created_at,
+                ),
+            )
+        except Exception:  # noqa: BLE001
+            logger.exception("[Sandbox] event save failed")
+
+    async def recent_events(self, *, limit: int = 20) -> list[dict[str, Any]]:
+        if not self.available:
+            return []
+        try:
+            rows = await self._db.fetchall(
+                "SELECT * FROM sandbox_events ORDER BY created_at DESC LIMIT ?", (limit,)
+            )
+        except Exception:  # noqa: BLE001
+            return []
+        return [dict(row) for row in rows]
+
+    async def timeline(self, *, limit: int = 150) -> list[dict[str, Any]]:
+        return await self.recent_events(limit=limit)
+
+    # ---------------------------------------------------------------- traces
+
+    async def append_trace(self, trace: DecisionTrace) -> None:
+        if not self.available:
+            return
+        try:
+            await self._db.execute(
+                """INSERT INTO sandbox_traces (ts, kind, summary, factors, reason_code, data)
+                   VALUES (?, ?, ?, ?, ?, ?)""",
+                (
+                    trace.ts, trace.kind, trace.summary,
+                    _json(trace.factors), trace.reason_code, _json(trace.data),
+                ),
+            )
+        except Exception:  # noqa: BLE001
+            logger.exception("[Sandbox] trace save failed")
+
+    async def recent_traces(self, *, limit: int = 200) -> list[dict[str, Any]]:
+        if not self.available:
+            return []
+        try:
+            rows = await self._db.fetchall(
+                "SELECT * FROM sandbox_traces ORDER BY ts DESC LIMIT ?", (limit,)
+            )
+        except Exception:  # noqa: BLE001
+            return []
+        out = []
+        for row in rows:
+            item = dict(row)
+            item["factors"] = json.loads(item.get("factors") or "[]")
+            out.append(item)
+        return out
+
+    # ------------------------------------------------------------- snapshots
+
+    async def save_snapshot(self, snapshot: SandboxSnapshot, *, keep: int = 48) -> None:
+        if not self.available:
+            return
+        try:
+            await self._db.execute(
+                "INSERT INTO sandbox_snapshots (created_at, elapsed_min, data) VALUES (?, ?, ?)",
+                (
+                    snapshot.created_at,
+                    snapshot.elapsed_minutes,
+                    _json(snapshot.model_dump(mode="json")),
+                ),
+            )
+            await self._db.execute(
+                "DELETE FROM sandbox_snapshots WHERE id NOT IN"
+                " (SELECT id FROM sandbox_snapshots ORDER BY id DESC LIMIT ?)",
+                (keep,),
+            )
+        except Exception:  # noqa: BLE001
+            logger.exception("[Sandbox] snapshot save failed")
+
+    async def latest_snapshot(self) -> SandboxSnapshot | None:
+        if not self.available:
+            return None
+        try:
+            row = await self._db.fetchone(
+                "SELECT data FROM sandbox_snapshots ORDER BY id DESC LIMIT 1"
+            )
+        except Exception:  # noqa: BLE001
+            return None
+        if row is None:
+            return None
+        try:
+            return SandboxSnapshot.model_validate(json.loads(row["data"]))
+        except (TypeError, ValueError):
+            return None
+
+    # -------------------------------------------------- social / commissions
+
+    async def save_social_space(self, space_id: str, *, name: str, kind: str,
+                                data: dict[str, Any]) -> None:
+        if not self.available:
+            return
+        try:
+            await self._db.execute(
+                """INSERT INTO sandbox_social_spaces (id, name, kind, data, updated_at)
+                   VALUES (?, ?, ?, ?, ?)
+                   ON CONFLICT(id) DO UPDATE SET name=excluded.name, kind=excluded.kind,
+                       data=excluded.data, updated_at=excluded.updated_at""",
+                (space_id, name, kind, _json(data), float(self._clock())),
+            )
+        except Exception:  # noqa: BLE001
+            logger.exception("[Sandbox] social space save failed")
+
+    async def load_social_spaces(self) -> list[dict[str, Any]]:
+        if not self.available:
+            return []
+        try:
+            rows = await self._db.fetchall("SELECT * FROM sandbox_social_spaces")
+        except Exception:  # noqa: BLE001
+            return []
+        return [json.loads(row["data"] or "{}") for row in rows]
+
+    async def save_commission(self, commission_id: str, *, kind: str, status: str,
+                              progress: float, deadline: float, reward: float,
+                              data: dict[str, Any]) -> None:
+        if not self.available:
+            return
+        try:
+            await self._db.execute(
+                """INSERT INTO sandbox_commissions
+                   (id, kind, status, progress, deadline, reward, data, updated_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                   ON CONFLICT(id) DO UPDATE SET status=excluded.status,
+                       progress=excluded.progress, deadline=excluded.deadline,
+                       reward=excluded.reward, data=excluded.data,
+                       updated_at=excluded.updated_at""",
+                (commission_id, kind, status, progress, deadline, reward,
+                 _json(data), float(self._clock())),
+            )
+        except Exception:  # noqa: BLE001
+            logger.exception("[Sandbox] commission save failed")
+
+    async def load_commissions(self) -> list[dict[str, Any]]:
+        if not self.available:
+            return []
+        try:
+            rows = await self._db.fetchall("SELECT * FROM sandbox_commissions")
+        except Exception:  # noqa: BLE001
+            return []
+        return [json.loads(row["data"] or "{}") for row in rows]
+
+    # ------------------------------------------------------------- knowledge
+
+    async def save_knowledge(self, key: str, *, known: bool, source: str,
+                             learned_at: float, data: dict[str, Any]) -> None:
+        if not self.available:
+            return
+        try:
+            await self._db.execute(
+                """INSERT INTO sandbox_knowledge (key, known, source, learned_at, data)
+                   VALUES (?, ?, ?, ?, ?)
+                   ON CONFLICT(key) DO UPDATE SET known=excluded.known,
+                       source=excluded.source, learned_at=excluded.learned_at,
+                       data=excluded.data""",
+                (key, 1 if known else 0, source, learned_at, _json(data)),
+            )
+        except Exception:  # noqa: BLE001
+            logger.exception("[Sandbox] knowledge save failed")
+
+    async def load_knowledge(self) -> dict[str, dict[str, Any]]:
+        if not self.available:
+            return {}
+        try:
+            rows = await self._db.fetchall("SELECT * FROM sandbox_knowledge")
+        except Exception:  # noqa: BLE001
+            return {}
+        return {row["key"]: dict(row) for row in rows}
+
+    # ------------------------------------------------------------ runtime kv
+
+    async def state_get(self, key: str) -> str:
+        if not self.available:
+            return ""
+        try:
+            row = await self._db.fetchone(
+                "SELECT value FROM sandbox_state WHERE key = ?", (key,)
+            )
+        except Exception:  # noqa: BLE001
+            return ""
+        return str(row["value"]) if row is not None else ""
+
+    async def state_set(self, key: str, value: str) -> None:
+        if not self.available:
+            return
+        try:
+            await self._db.execute(
+                """INSERT INTO sandbox_state (key, value, updated_at) VALUES (?, ?, ?)
+                   ON CONFLICT(key) DO UPDATE SET value=excluded.value,
+                       updated_at=excluded.updated_at""",
+                (key, value, float(self._clock())),
+            )
+        except Exception:  # noqa: BLE001
+            logger.exception("[Sandbox] state set failed: %s", key)
+
+    # ----------------------------------------------------------------- bible
+
+    async def save_bible(self, bible: CharacterBible) -> None:
+        if not self.available:
+            return
+        try:
+            await self._db.execute(
+                """INSERT INTO character_bible
+                  (version, source_hash, compiled, coverage, report, created_at)
+                  VALUES (?, ?, ?, ?, ?, ?)""",
+                (
+                    bible.version, bible.source_hash,
+                    _json(bible.model_dump(mode="json")),
+                    _json(bible.coverage),
+                    _json({"unresolved": bible.unresolved, "conflicts": bible.conflicts}),
+                    float(self._clock()),
+                ),
+            )
+        except Exception:  # noqa: BLE001
+            logger.exception("[Sandbox] bible save failed")
+
+    async def latest_bible(self) -> CharacterBible | None:
+        if not self.available:
+            return None
+        try:
+            row = await self._db.fetchone(
+                "SELECT compiled FROM character_bible ORDER BY id DESC LIMIT 1"
+            )
+        except Exception:  # noqa: BLE001
+            return None
+        if row is None:
+            return None
+        try:
+            return CharacterBible.model_validate(json.loads(row["compiled"]))
+        except (TypeError, ValueError):
+            return None
+
+
+def _json(value: Any) -> str:
+    return json.dumps(value, ensure_ascii=False, default=str)

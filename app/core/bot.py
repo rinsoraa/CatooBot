@@ -23,7 +23,7 @@ from app.character.persona_manager import PersonaManager
 from app.character.runtime import CharacterRuntime
 from app.commands.registry import CommandRegistry
 from app.commands.router import CommandRouter
-from app.config.settings import AppConfig
+from app.config.settings import PROJECT_ROOT, AppConfig
 from app.core.event_bus import EventBus
 from app.core.lifecycle import Lifecycle
 from app.core.metrics import Metrics
@@ -130,7 +130,8 @@ class Bot:
         # v0.8 persistent world: background life that continues between messages.
         # It rides the ONE scheduler above — no second loop in the process.
         self.world: WorldRuntime | None = None
-        if config.world.enabled:
+        # v2.0: the sandbox replaces the legacy world entirely when enabled (§17-§19).
+        if config.world.enabled and not config.sandbox.enabled:
             self.world = build_world(
                 config.world,
                 database=self.database,
@@ -185,6 +186,40 @@ class Bot:
         if self.world is not None and self.continuity is not None:
             self.world.continuity = self.continuity
 
+        # v2.0 Character Life Sandbox: when enabled it IS her world — the
+        # legacy WorldRuntime does not start at all (§17-§19).
+        self.sandbox = None
+        self.lifecycle_manager = None
+        if config.sandbox.enabled:
+            try:
+                from app.sandbox import (
+                    BibleCompiler,
+                    CharacterLifecycleManager,
+                    SandboxRuntime,
+                    SandboxStore,
+                )
+                from app.sandbox.ai import SandboxAIDecider
+
+                bible = BibleCompiler(
+                    PROJECT_ROOT / config.sandbox.bible_path
+                ).compile()
+                store = SandboxStore(self.database, clock=self._clock)
+                self.sandbox = SandboxRuntime(
+                    config.sandbox,
+                    store,
+                    bible=bible,
+                    bot=self,
+                    clock=self._clock,
+                    ai_decider=SandboxAIDecider(self.ai),
+                )
+                self.lifecycle_manager = CharacterLifecycleManager(
+                    self.database, clock=self._clock
+                )
+                self.character.sandbox = self.sandbox
+            except Exception:  # noqa: BLE001 - sandbox failure must not stop startup
+                self.log.exception("Sandbox initialization failed; continuing without it")
+                self.sandbox = None
+
         self.lifecycle = Lifecycle(self)
         self.router = CommandRouter(self, self.commands, prefix=config.bot.command_prefix)
         self.core_router = CoreRouter(self)
@@ -233,6 +268,40 @@ class Bot:
 
     # ------------------------------------------------------------ lifecycle
 
+    async def _boot_sandbox(self) -> None:
+        """Start (or reset-and-seed) the character life sandbox (v2.0 §120)."""
+        assert self.sandbox is not None
+        sandbox = self.sandbox
+        stored_version = await sandbox.store.state_get("bible_version")
+        first_v2_boot = not stored_version
+        changed = bool(stored_version) and stored_version != sandbox.bible.version
+        # §3/§120: v2.0's first boot (or a changed bible) wipes the old
+        # character's data once — archived to data/character_reset_backup first.
+        if (changed or first_v2_boot) and self.config.sandbox.reset_on_bible_change:
+            assert self.lifecycle_manager is not None
+            self.log.warning(
+                "[Sandbox] %s; resetting character data",
+                (
+                    f"bible changed ({stored_version} → {sandbox.bible.version})"
+                    if changed
+                    else "first v2.0 boot"
+                ),
+            )
+            report = await self.lifecycle_manager.reset_character(confirm=True)
+            await sandbox.store.state_set("bible_version", sandbox.bible.version)
+            self.log.info(
+                "[Sandbox] character reset: %d tables cleared (backup=%s)",
+                len(report.get("removed", {})),
+                report.get("backup", "-"),
+            )
+            if self.continuity is not None:
+                await self.continuity.reload()
+        await sandbox.start()
+        narrate().world(
+            f"她已经在过自己的日子了（{sandbox.status_line()}）",
+            detail=f"沙盒就绪 · 模式 {'+'.join(sandbox.modes.ids()) or 'home'}",
+        )
+
     async def start(self) -> None:
         """Load DB + plugins, wire the event bus, start adapter and WebUI."""
         self.started_at = time.time()
@@ -269,6 +338,14 @@ class Bot:
         except Exception:  # noqa: BLE001
             self.log.exception("Character runtime failed to start (chat continues without persona)")
             story.boot_step("角色运行时启动失败（降级为普通聊天）", ok=False)
+
+        # v2.0: bible change → one clean character reset, then seed the sandbox.
+        if self.sandbox is not None:
+            try:
+                await self._boot_sandbox()
+            except Exception:  # noqa: BLE001
+                self.log.exception("Sandbox boot failed; chat continues without it")
+                self.sandbox = None
 
         # v1.2 continuity state loads from DB (with TTL decay) before chatting.
         if self.continuity is not None:
@@ -365,13 +442,18 @@ class Bot:
             )
 
         await self._start_world()
+        await self._start_sandbox_jobs()
 
         # v1.1: background sticker indexer (never blocks QQ from coming up, §16).
         if self.media.enabled and self.config.media.indexer_enabled:
             asyncio.create_task(self._run_sticker_indexer())
 
         # One scheduler for the whole process: behaviour, world, memory upkeep.
-        if self.behavior.enabled or (self.world is not None and self.world.enabled):
+        if (
+            self.behavior.enabled
+            or (self.world is not None and self.world.enabled)
+            or self.sandbox is not None
+        ):
             await self.scheduler.start()
             story.boot_step(
                 "后台调度器已启动",
@@ -524,6 +606,28 @@ class Bot:
             ),
         )
 
+    async def _start_sandbox_jobs(self) -> None:
+        """Sandbox tick on the shared scheduler (v2.0 §67) — no second loop."""
+        sandbox = self.sandbox
+        if sandbox is None or not sandbox.enabled:
+            return
+        self.scheduler.register_job(
+            ScheduledJob(
+                name="sandbox_tick",
+                handler=sandbox.tick,
+                interval_seconds=float(self.config.sandbox.tick_seconds),
+                run_immediately=False,   # start() already settled the gap
+                misfire_policy="skip",
+            )
+        )
+        self.log.info(
+            "[Sandbox] active (tick=%ss, phase=%s, modes=%s, location=%s)",
+            self.config.sandbox.tick_seconds,
+            sandbox.phase.value,
+            "+".join(sandbox.modes.ids()) or "-",
+            sandbox.character.location,
+        )
+
     async def shutdown(self) -> None:
         """Graceful stop: schedulers, plugins, web, adapter, database."""
         if self.world is not None and self.world.enabled:
@@ -534,6 +638,11 @@ class Bot:
         if self.consolidation_scheduler is not None:
             await self.consolidation_scheduler.stop()
         await self.scheduler.stop()
+        if self.sandbox is not None:
+            try:
+                await self.sandbox.shutdown()
+            except Exception:  # noqa: BLE001
+                self.log.exception("[Sandbox] shutdown persist failed (ignored)")
         await self.conversation.shutdown()
         await self.plugins.unload_all()
         if self.web is not None:

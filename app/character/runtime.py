@@ -69,7 +69,8 @@ class CharacterRuntime:
         self.topics = topics  # optional TopicManager: boosts related memories
         self.tools = tools    # optional ToolRuntime: enables contextual tool use
         self.agent = agent    # optional AgentRuntime: enables multi-step goals
-        self.world: Any = None  # optional WorldRuntime (v0.8): her persistent life
+        self.world: Any = None  # optional WorldRuntime (v0.8, legacy)
+        self.sandbox: Any = None  # optional SandboxRuntime (v2.0): her life
         self.builder = CharacterContextBuilder()
         self.processor = CharacterResponseProcessor(logger=self._log)
         self._clock = clock
@@ -440,7 +441,18 @@ class CharacterRuntime:
     # ---------------------------------------------------------------- world
 
     async def _world_context(self) -> dict | None:
-        """Everything the prompt legitimately needs about her own life (v0.8)."""
+        """Everything the prompt legitimately needs about her own life.
+
+        v2.0: the sandbox is the source of truth when enabled; the legacy
+        WorldRuntime (v0.8) still answers when the sandbox is off.
+        """
+        sandbox = getattr(self, "sandbox", None)
+        if sandbox is not None and getattr(sandbox, "enabled", False):
+            try:
+                return sandbox.context()
+            except Exception:  # noqa: BLE001 - sandbox trouble must not affect chat
+                self._log.debug("Sandbox context unavailable", exc_info=True)
+                return None
         world = self.world
         if world is None or not getattr(world, "enabled", False):
             return None
@@ -455,6 +467,15 @@ class CharacterRuntime:
             return None
 
     async def _note_world_interaction(self, session_id: str, user_id: int | str) -> None:
+        sandbox = getattr(self, "sandbox", None)
+        if sandbox is not None and getattr(sandbox, "enabled", False):
+            try:
+                await sandbox.note_user_interaction(
+                    user_id=str(user_id), session_id=session_id
+                )
+            except Exception:  # noqa: BLE001
+                self._log.debug("Sandbox interaction note failed", exc_info=True)
+            return
         world = self.world
         if world is None or not getattr(world, "enabled", False):
             return
