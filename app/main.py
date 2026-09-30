@@ -47,7 +47,7 @@ async def run() -> int:
             f"ai={'on' if config.ai.enabled else 'off'}, "
             f"tools={'on' if config.tools.enabled else 'off'}, "
             f"agent={'on' if config.agent.enabled else 'off'}, "
-            f"world={'on' if config.world.enabled else 'off'}"
+            f"sandbox={'on' if config.sandbox.enabled else 'off'}"
         ),
     )
     log.info("Starting CatooBot %s (developer: %s)", VERSION, DEVELOPER)

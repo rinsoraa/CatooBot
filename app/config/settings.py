@@ -526,90 +526,6 @@ class AgentConfig(BaseModel):
     )
 
 
-class WorldRoutineConfig(BaseModel):
-    """The character's fictional daily rhythm (spec §17 — never hardcoded)."""
-
-    enabled: bool = True
-    # period -> candidate activities; empty means "use the built-in period map"
-    periods: dict[str, list[str]] = Field(default_factory=dict)
-    transition_minutes: int = Field(default=20, ge=0)  # smoothing window
-
-
-class WorldGoalsConfig(BaseModel):
-    enabled: bool = True
-    max_active: int = Field(default=5, ge=1, le=20)
-    max_progress_events_per_day: int = Field(default=3, ge=0)
-    auto_advance: bool = False        # background advancement is opt-in (spec §77)
-    advance_interval_hours: float = Field(default=12.0, gt=0)
-
-
-class WorldAmbientConfig(BaseModel):
-    enabled: bool = True
-    min_interval_minutes: int = Field(default=60, ge=5)
-    max_per_day: int = Field(default=4, ge=0)
-
-
-class WorldEventsConfig(BaseModel):
-    max_per_hour: int = Field(default=10, ge=1)
-    max_per_day: int = Field(default=40, ge=1)
-    # Per-type protection (spec §49): "今天这个剧情已经出现三次了，别再刷"
-    type_max_per_day: dict[str, int] = Field(default_factory=dict)
-    type_cooldown_minutes: dict[str, int] = Field(default_factory=dict)
-
-
-class WorldSnapshotConfig(BaseModel):
-    interval_minutes: int = Field(default=30, ge=1)
-    keep: int = Field(default=30, ge=1, le=200)
-
-
-class WorldMessagingConfig(BaseModel):
-    """Background *messaging* limits — separate from background *life* (spec §42/§105)."""
-
-    enabled: bool = True
-    max_background_messages_per_day: int = Field(default=3, ge=0)
-    pending_ttl_minutes: int = Field(default=120, ge=1)
-
-
-class WorldActivityConfig(BaseModel):
-    """Activity Episode model (v1.0 §16/§32/§73).
-
-    Activity is now a *lifecycle*, not a per-tick label. The planner only runs
-    inside the transition window, never every tick.
-    """
-
-    transition_window_minutes: int = Field(default=5, ge=0)
-    planning_horizon_minutes: int = Field(default=240, ge=10)
-    max_transitions_per_hour: int = Field(default=6, ge=1)
-    #: per-activity profile overrides (min/typical/max/momentum/…), WebUI-managed
-    profiles: dict[str, dict[str, Any]] = Field(default_factory=dict)
-
-
-class WorldConfig(BaseModel):
-    """Persistent world / background life runtime (v0.8)."""
-
-    enabled: bool = True
-    timezone: str = ""                # empty -> character.timezone
-    tick_seconds: int = Field(default=60, ge=5)
-    state_persist_seconds: int = Field(default=60, ge=5)
-    routine: WorldRoutineConfig = Field(default_factory=WorldRoutineConfig)
-    goals: WorldGoalsConfig = Field(default_factory=WorldGoalsConfig)
-    ambient: WorldAmbientConfig = Field(default_factory=WorldAmbientConfig)
-    events: WorldEventsConfig = Field(default_factory=WorldEventsConfig)
-    snapshot: WorldSnapshotConfig = Field(default_factory=WorldSnapshotConfig)
-    messaging: WorldMessagingConfig = Field(default_factory=WorldMessagingConfig)
-    activity: WorldActivityConfig = Field(default_factory=WorldActivityConfig)
-    missed_event_policy: str = "skip"  # skip | catch_up (spec §33/§34)
-    rest_mode: bool = False           # character "on vacation": fewer events (spec §68)
-
-    @field_validator("missed_event_policy")
-    @classmethod
-    def _validate_missed_policy(cls, value: str) -> str:
-        policy = (value or "skip").strip().lower()
-        if policy not in ("skip", "catch_up"):
-            raise ValueError("missed_event_policy must be 'skip' or 'catch_up'")
-        return policy
-
-
 class MediaConfig(BaseModel):
     """Multimodal + sticker runtime (v1.1 §5-§58)."""
 
@@ -681,6 +597,10 @@ class SandboxConfig(BaseModel):
     max_events_keep: int = Field(default=500, ge=50)
     snapshot_keep: int = Field(default=48, ge=1, le=500)
     #: QQ 用户号 → 核心朋友（空凛），影响打断优先级与回复速度
+    #: 主动消息（后台消息 ≠ 后台生活）的每日额度
+    max_background_messages_per_day: int = Field(default=3, ge=0)
+    #: 启动时把人物档案同步成 WebUI 的 /character 角色设定（唯一权威来源）
+    sync_persona_from_bible: bool = True
     core_friend_ids: list[str] = Field(default_factory=list)
     #: QQ 群号 → SocialSpace id（游戏群/猫图群…）；未映射的群自动成为 qq:<gid>
     social_space_map: dict[str, str] = Field(default_factory=dict)
@@ -704,7 +624,6 @@ class AppConfig(BaseModel):
     sandbox: SandboxConfig = Field(default_factory=SandboxConfig)
     tools: ToolsConfig = Field(default_factory=ToolsConfig)
     agent: AgentConfig = Field(default_factory=AgentConfig)
-    world: WorldConfig = Field(default_factory=WorldConfig)
 
 
 def _coerce(value: str) -> Any:

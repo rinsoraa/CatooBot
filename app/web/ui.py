@@ -363,7 +363,6 @@ NAV: tuple[tuple[str, str, str, str], ...] = (
     ("/", "仪表盘", "◎", "总览：连接状态、当前模型、消息与 AI 指标"),
     ("/character", "角色", "☺", "人设、身份与当前状态（心情/精力/活动）"),
     ("/behavior", "行为", "◔", "回复节奏、分段、作息、主动性、群聊参与"),
-    ("/world", "世界", "🌍", "v0.8 持久世界：她现在在做什么、时间线、目标、预演"),
     ("/conversation", "对话", "⇄", "v1.2 对话轮次与延续状态：Turn、过期响应、Open Loop、共同经历"),
     ("/sandbox", "沙盒", "🏠", "v2.0 生活沙盒：她此刻在哪个房间、做什么、小喵在干嘛、冰箱还剩什么"),
     ("/topics", "话题", "❝", "未聊完的话题与重要度管理"),
@@ -386,7 +385,7 @@ NAV: tuple[tuple[str, str, str, str], ...] = (
 #: sections so the sidebar stays readable as pages accumulate
 NAV_GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("概览", ("/", "/runtime", "/logs")),
-    ("角色", ("/character", "/behavior", "/sandbox", "/world", "/conversation", "/topics")),
+    ("角色", ("/character", "/behavior", "/sandbox", "/conversation", "/topics")),
     ("数据", ("/memory", "/users", "/groups", "/sessions")),
     ("能力", ("/models", "/config", "/prompts", "/credentials", "/tools", "/agent", "/social", "/stickers")),
 )

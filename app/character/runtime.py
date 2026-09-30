@@ -69,7 +69,6 @@ class CharacterRuntime:
         self.topics = topics  # optional TopicManager: boosts related memories
         self.tools = tools    # optional ToolRuntime: enables contextual tool use
         self.agent = agent    # optional AgentRuntime: enables multi-step goals
-        self.world: Any = None  # optional WorldRuntime (v0.8, legacy)
         self.sandbox: Any = None  # optional SandboxRuntime (v2.0): her life
         self.builder = CharacterContextBuilder()
         self.processor = CharacterResponseProcessor(logger=self._log)
@@ -169,7 +168,11 @@ class CharacterRuntime:
         narrate().flow(
             "想法成形",
             detail=f"{time.perf_counter() - started:.1f}s · {len(content)} 字"
-            + (f" · 心情 {await self._current_mood()}" if self.world is not None else ""),
+            + (
+                f" · 心情 {await self._current_mood()}"
+                if getattr(self, "sandbox", None) is not None
+                else ""
+            ),
         )
         return content
 
@@ -262,19 +265,19 @@ class CharacterRuntime:
             timezone=getattr(time_context, "timezone", "") or "Asia/Singapore",
             current_datetime=getattr(time_context, "local_time", ""),
             is_group=is_group,
-            # Read-only view of her world for tools/agent (§18): they may know
-            # what she is doing, but only WorldStateService ever writes it.
-            metadata=self._world_metadata(),
+            # Read-only view of her life for tools/agent (§18): they may know
+            # what she is doing, but only the sandbox ever writes it.
+            metadata=self._life_metadata(),
         )
 
-    def _world_metadata(self) -> dict[str, str]:
-        world = self.world
-        if world is None or not getattr(world, "enabled", False):
+    def _life_metadata(self) -> dict[str, str]:
+        sandbox = getattr(self, "sandbox", None)
+        if sandbox is None or not getattr(sandbox, "enabled", False):
             return {}
         try:
-            line = world.state.describe()
-        except Exception:  # noqa: BLE001 - the world is an optional input
-            self._log.debug("World metadata unavailable", exc_info=True)
+            line = sandbox.context().get("state_line", "")
+        except Exception:  # noqa: BLE001 - her life is an optional input
+            self._log.debug("Sandbox metadata unavailable", exc_info=True)
             return {}
         return {"world": line} if line else {}
 
@@ -443,59 +446,40 @@ class CharacterRuntime:
     async def _world_context(self) -> dict | None:
         """Everything the prompt legitimately needs about her own life.
 
-        v2.0: the sandbox is the source of truth when enabled; the legacy
-        WorldRuntime (v0.8) still answers when the sandbox is off.
+        The v2.0 sandbox is the source of truth (``sandbox.context()``).
         """
         sandbox = getattr(self, "sandbox", None)
-        if sandbox is not None and getattr(sandbox, "enabled", False):
-            try:
-                return sandbox.context()
-            except Exception:  # noqa: BLE001 - sandbox trouble must not affect chat
-                self._log.debug("Sandbox context unavailable", exc_info=True)
-                return None
-        world = self.world
-        if world is None or not getattr(world, "enabled", False):
+        if sandbox is None or not getattr(sandbox, "enabled", False):
             return None
         try:
-            return {
-                "state_line": world.state.describe(),
-                "goal": await world.goals.prompt_line(),
-                "events": await world.timeline.prompt_lines(limit=3, hours=48),
-            }
-        except Exception:  # noqa: BLE001 - world trouble must not affect chat
-            self._log.debug("World context unavailable", exc_info=True)
+            return sandbox.context()
+        except Exception:  # noqa: BLE001 - sandbox trouble must not affect chat
+            self._log.debug("Sandbox context unavailable", exc_info=True)
             return None
 
     async def _note_world_interaction(self, session_id: str, user_id: int | str) -> None:
         sandbox = getattr(self, "sandbox", None)
-        if sandbox is not None and getattr(sandbox, "enabled", False):
-            try:
-                await sandbox.note_user_interaction(
-                    user_id=str(user_id), session_id=session_id
-                )
-            except Exception:  # noqa: BLE001
-                self._log.debug("Sandbox interaction note failed", exc_info=True)
-            return
-        world = self.world
-        if world is None or not getattr(world, "enabled", False):
+        if sandbox is None or not getattr(sandbox, "enabled", False):
             return
         try:
-            await world.note_user_interaction(user_id=str(user_id), session_id=session_id)
+            await sandbox.note_user_interaction(
+                user_id=str(user_id), session_id=session_id
+            )
         except Exception:  # noqa: BLE001
-            self._log.debug("World interaction note failed", exc_info=True)
+            self._log.debug("Sandbox interaction note failed", exc_info=True)
 
     async def _note_agent_result(
         self, result: Any, *, session_id: str, user_id: int | str
     ) -> None:
-        """Task finished → the *world* records it; the agent never writes state."""
-        world = self.world
-        if world is None or not getattr(world, "enabled", False):
+        """Task finished → her life notes it; the agent never writes state."""
+        sandbox = getattr(self, "sandbox", None)
+        if sandbox is None or not getattr(sandbox, "enabled", False):
             return
         status = getattr(result, "status", "")
         done = status in ("completed", "partial")
         text = "帮人把一件事办完了" if done else "有件事折腾半天没办成"
         try:
-            await world.note_agent_result(
+            await sandbox.note_agent_result(
                 task_type=getattr(result, "goal_id", "") or "agent_task",
                 status=status,
                 summary=text,
@@ -503,7 +487,7 @@ class CharacterRuntime:
                 user_id=str(user_id),
             )
         except Exception:  # noqa: BLE001
-            self._log.debug("World agent-result note failed", exc_info=True)
+            self._log.debug("Sandbox agent-result note failed", exc_info=True)
 
     # ------------------------------------------------------------ internals
 

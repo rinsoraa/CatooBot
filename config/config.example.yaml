@@ -376,67 +376,6 @@ sandbox:
   core_friend_ids: []        # ← 空凛的 QQ 号填在这里（更快回复/联机优先/深夜拉回）
   social_space_map: {}       # 例：QQ 群号 → "game_group"/"cat_group"/"minecraft_server"
 
-# 持久世界 / 后台生活（v0.8）
-# 没人聊天的时候，角色继续过自己的日子：作息、活动、目标、小事、时间线。
-# 全部管理都在 WebUI 的 /world 页面；QQ 端永远只有自然对话，没有任何指令。
-# 现实边界：这些生活只存在于角色自己的虚拟世界里（房间、游戏、剧、歌、朋友），
-# 不会声称现实世界中真实发生、可被验证的行为。
-# ============================================================
-world:
-  enabled: false         # v2.0：legacy（沙盒接管后天数由 sandbox 驱动）
-  timezone: ""              # 留空则跟随 character.timezone
-  tick_seconds: 60          # 世界心跳（挂在唯一的 BehaviorScheduler 上，不另起循环）
-  state_persist_seconds: 60
-
-  # 重启后错过的世界事件怎么处理：skip = 直接跳过（默认）；catch_up = 合并成一条说明
-  missed_event_policy: skip
-
-  # 作息：每个时段允许做什么（WebUI /world/routine 可直接编辑）
-  # 活动 Episode 模型（v1.0）：活动是有生命周期的片段，不再是每分钟的状态标签
-  activity:
-    transition_window_minutes: 5   # 预计结束前提前多久开始评估 continue/extend/transition
-    planning_horizon_minutes: 240  # 滚动规划窗口
-    max_transitions_per_hour: 6    # 每小时的切换上限（超出则优先继续当前活动）
-    profiles: {}                   # 每个活动可覆盖 min/typical/max/momentum/…，留空用内置 profile
-  routine:
-    enabled: true
-    transition_minutes: 20  # 活动切换的平滑窗口：这段时间内不会换别的事做
-    periods: {}             # 例：{ "afternoon": ["打游戏", "看剧"], "night": ["听歌"] }
-
-  # 长期目标：只小步推进，且有每天的推进上限
-  goals:
-    enabled: true
-    max_active: 5
-    max_progress_events_per_day: 3
-    auto_advance: false     # 后台自动推进（默认关闭，打开后按下面间隔慢慢长）
-    advance_interval_hours: 12
-
-  # 环境小事：低频率、跟着当前活动走（"打游戏的时候卡关了"这种）
-  ambient:
-    enabled: true
-    min_interval_minutes: 60
-    max_per_day: 4
-
-  # 事件爆发保护：世界不会自己刷屏
-  events:
-    max_per_hour: 10
-    max_per_day: 40
-    type_max_per_day: {}       # 例：{ "ambient": 4 }
-    type_cooldown_minutes: {}  # 例：{ "ambient": 60 }
-
-  # 快照：定期保存世界状态，重启时按快照恢复（不会重放一堆错过的事件）
-  snapshot:
-    interval_minutes: 30
-    keep: 30
-
-  # 后台消息 ≠ 后台生活：主动消息仍要过 Initiative Gate，并受这里的每日额度限制
-  messaging:
-    enabled: true
-    max_background_messages_per_day: 3
-    pending_ttl_minutes: 120  # QQ 不在线时挂起的主动消息，过期直接丢弃（不批量补发）
-
-  rest_mode: false          # 休息模式：几乎不产生事件，适合长时间不想打扰时
-
 # ============================================================
 # 社交认知引擎（v0.9）
 # 把「群聊参与 = 概率随机」升级为结构化社交判断：她先听，再判断自己有没有必要说话。

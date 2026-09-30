@@ -330,19 +330,28 @@ class SocialCognitionEngine:
         memories = await self._relevant_memories(group_id, batch)
         relationships = await self._speaker_stages(batch)
 
-        # v1.0: the world now exposes an episode-aware activity context.
-        world = getattr(bot, "world", None)
+        # v2.0: the sandbox is her life — expose its current-world slice.
+        sandbox = getattr(bot, "sandbox", None)
         activity_context: dict | None = None
-        if world is not None and getattr(world, "enabled", False):
+        if sandbox is not None and getattr(sandbox, "enabled", False):
             try:
-                activity_context = world.activity.world_context()
+                activity_context = {
+                    "primary_activity": (
+                        sandbox.current_action.definition_id
+                        if sandbox.current_action else None
+                    ),
+                    "activity_detail": (
+                        sandbox.current_action.detail if sandbox.current_action else ""
+                    ),
+                    "location": sandbox.spaces.name(sandbox.character.location),
+                    "context_line": sandbox.context().get("state_line", ""),
+                }
             except Exception:  # noqa: BLE001 - context is best-effort
                 activity_context = None
 
         return self.context.character_block(
             persona=persona,
             state=state,
-            world=world,
             topics=topics,
             memories=memories,
             relationships=relationships,

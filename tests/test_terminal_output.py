@@ -209,52 +209,23 @@ class TestNarrationInChat:
         finally:
             await bot.shutdown()
 
-    async def test_world_changes_are_narrated(self, tmp_path, caplog) -> None:
-        from tests.world_helpers import make_world
+    async def test_sandbox_tick_narration_is_opt_in(self, tmp_path, caplog) -> None:
+        """v2.0: the sandbox narrates her tick when narrate ticks is on."""
+        from app.config.settings import SandboxConfig
+        from app.sandbox import BibleCompiler, SandboxRuntime, SandboxStore
 
-        world, database, fake = await make_world(tmp_path)
-        with caplog.at_level(logging.INFO, logger="CatooBot.Narration"):
-            fake.advance(3600)
-            await world.tick()
-        joined = console.strip("\n".join(r.getMessage() for r in caplog.records))
-        activity = world.state.state.activity
-        assert "世界" in joined
-        assert activity and activity in joined       # the console mirrors her world
-        await database.close()
-
-    async def test_state_shift_is_narrated(self, tmp_path, caplog) -> None:
-        """The 心理历程 channel fires on mood/schedule/energy shifts, not noise."""
-        from tests.world_helpers import make_world
-
-        world, database, _fake = await make_world(tmp_path)
-        with caplog.at_level(logging.INFO, logger="CatooBot.Narration"):
-            await world.state.nudge_mood(1, source="test")
-        joined = console.strip(
-            "\n".join(r.getMessage() for r in caplog.records)
+        bible = BibleCompiler("config/character_bible.md").compile()
+        runtime = SandboxRuntime(
+            SandboxConfig(simulation_seed=3), SandboxStore(None), bible=bible
         )
-        assert "心情" in joined and "happy" in joined
-        assert "有人来找她说话" in joined or "手动调整" in joined or "test" in joined
-        await database.close()
-
-    async def test_tiny_energy_drift_is_not_narrated(self, tmp_path, caplog) -> None:
-        from tests.world_helpers import make_world
-
-        world, database, _fake = await make_world(tmp_path)
-        with caplog.at_level(logging.INFO, logger="CatooBot.Narration"):
-            await world.state.change("time_passage", energy=0.79)  # 0.8 -> 0.79
-        beats = [r for r in caplog.records if r.name == "CatooBot.Narration"]
-        assert beats == []
-        await database.close()
-
-    async def test_world_tick_narration_is_opt_in(self, tmp_path, caplog) -> None:
-        from tests.world_helpers import make_world
-
-        world, database, fake = await make_world(tmp_path)
-        await world.tick()  # settles: one activity beat is fine
-        world.narrate_ticks = True
+        await runtime.start()
+        runtime.narrate_ticks = False
         caplog.clear()
         with caplog.at_level(logging.INFO, logger="CatooBot.Narration"):
-            fake.advance(60)
-            await world.tick()
-        assert any("世界心跳" in console.strip(r.getMessage()) for r in caplog.records)
-        await database.close()
+            await runtime.tick(minutes=10)
+        assert not any("沙盒心跳" in console.strip(r.getMessage()) for r in caplog.records)
+        runtime.narrate_ticks = True
+        caplog.clear()
+        with caplog.at_level(logging.INFO, logger="CatooBot.Narration"):
+            await runtime.tick(minutes=10)
+        assert any("沙盒心跳" in console.strip(r.getMessage()) for r in caplog.records)

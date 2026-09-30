@@ -169,3 +169,52 @@ class BehaviorDecision:
     reason: str = ""
     probability: float = 0.0
     detail: dict[str, Any] = field(default_factory=dict)
+
+@dataclass
+class ScheduledJob:
+    """A job registered on the ONE shared scheduler.
+
+    There is deliberately no second scheduler: the behaviour engine already
+    owns the process-wide tick, so sandbox ticks, memory maintenance and
+    agent housekeeping all ride the same loop with isolation per job.
+    """
+
+    name: str
+    handler: Any                    # async callable, no arguments
+    interval_seconds: float
+    enabled: bool = True
+    run_immediately: bool = False
+    misfire_policy: str = "skip"    # skip | catch_up
+    max_runs_per_day: int = 0       # 0 = unlimited
+    last_run: float = 0.0
+    runs_today: int = 0
+    day_key: str = ""
+    runs: int = 0
+    failures: int = 0
+    detail: str = ""
+
+    def due(self, now: float, day_key: str) -> bool:
+        if not self.enabled:
+            return False
+        if day_key != self.day_key:
+            self.day_key = day_key
+            self.runs_today = 0
+        if self.max_runs_per_day and self.runs_today >= self.max_runs_per_day:
+            return False
+        if self.last_run == 0:
+            return self.run_immediately
+        return (now - self.last_run) >= self.interval_seconds
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "name": self.name,
+            "interval_seconds": self.interval_seconds,
+            "enabled": self.enabled,
+            "misfire_policy": self.misfire_policy,
+            "max_runs_per_day": self.max_runs_per_day,
+            "last_run": self.last_run or None,
+            "runs_today": self.runs_today,
+            "runs": self.runs,
+            "failures": self.failures,
+            "detail": self.detail,
+        }

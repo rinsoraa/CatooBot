@@ -17,6 +17,7 @@ from app.adapters.onebot_v11.api import BotApi
 from app.agent.runtime import AgentRuntime
 from app.ai.engine import AIEngine
 from app.behavior.engine import CharacterBehaviorEngine
+from app.behavior.models import ScheduledJob
 from app.behavior.presence import PresenceResolver
 from app.behavior.scheduler import BehaviorScheduler
 from app.character.persona_manager import PersonaManager
@@ -45,8 +46,6 @@ from app.tools.runtime import ToolRuntime
 from app.utils import console
 from app.utils.logger import get_logger
 from app.utils.narrator import narrate
-from app.world.models import ScheduledJob
-from app.world.runtime import WorldRuntime, build_world
 
 if TYPE_CHECKING:
     from app.web.server import WebServer
@@ -127,22 +126,6 @@ class Bot:
         self.response_delivery = MessageDelivery(self)
         self.scheduler = BehaviorScheduler(self, self.behavior)
 
-        # v0.8 persistent world: background life that continues between messages.
-        # It rides the ONE scheduler above — no second loop in the process.
-        self.world: WorldRuntime | None = None
-        # v2.0: the sandbox replaces the legacy world entirely when enabled (§17-§19).
-        if config.world.enabled and not config.sandbox.enabled:
-            self.world = build_world(
-                config.world,
-                database=self.database,
-                state_manager=self.character.states,
-                timezone=config.character.timezone,
-                presence=self.presence,
-            )
-            self.character.world = self.world
-            self.behavior.world = self.world  # world owns activity while enabled
-            self.world.narrate_ticks = config.logging.narrate_world_ticks
-
         # v0.6 tool runtime: registry + policy + executor (tools are opt-in).
         self.tools = ToolRuntime(config.tools, self.database)
         self.character.tools = self.tools
@@ -182,10 +165,6 @@ class Bot:
             ConversationDecisionEngine(config.conversation),
             clock=self._clock,
         )
-        # v1.2 §100: world micro events feed continuity (optional hook).
-        if self.world is not None and self.continuity is not None:
-            self.world.continuity = self.continuity
-
         # v2.0 Character Life Sandbox: when enabled it IS her world — the
         # legacy WorldRuntime does not start at all (§17-§19).
         self.sandbox = None
@@ -216,6 +195,11 @@ class Bot:
                     self.database, clock=self._clock
                 )
                 self.character.sandbox = self.sandbox
+                # The sandbox owns her life: the v0.4 roller steps aside and
+                # v1.2 continuity receives the sandbox's meaningful events.
+                self.behavior.activity_external = True
+                self.sandbox.narrate_ticks = config.logging.narrate_world_ticks
+                self.sandbox.continuity = self.continuity
             except Exception:  # noqa: BLE001 - sandbox failure must not stop startup
                 self.log.exception("Sandbox initialization failed; continuing without it")
                 self.sandbox = None
@@ -297,6 +281,19 @@ class Bot:
             if self.continuity is not None:
                 await self.continuity.reload()
         await sandbox.start()
+        # §2: the bible is the canonical source for who she is — the WebUI
+        # /character page and the chat prompt both read this persona.
+        if self.config.sandbox.sync_persona_from_bible:
+            try:
+                from app.character.persona import Persona
+                from app.sandbox.persona import build_persona_payload
+
+                payload = build_persona_payload(sandbox.bible)
+                persona = Persona.model_validate(payload)
+                await self.personas.save(persona)
+                await self.character.personas.load()
+            except Exception:  # noqa: BLE001 - persona sync must not stop boot
+                self.log.exception("[Sandbox] persona sync from bible failed")
         narrate().world(
             f"她已经在过自己的日子了（{sandbox.status_line()}）",
             detail=f"沙盒就绪 · 模式 {'+'.join(sandbox.modes.ids()) or 'home'}",
@@ -368,7 +365,7 @@ class Bot:
                 "长期记忆已就绪",
                 detail="语义+关键词混合检索" if semantic else "关键词检索（Embedding 未启用/降级）",
             )
-        shared_loop = self.behavior.enabled or (self.world is not None and self.world.enabled)
+        shared_loop = self.behavior.enabled or self.sandbox is not None
         if self.consolidation_scheduler is not None and self.consolidation_scheduler.enabled:
             if shared_loop:
                 # Rides the shared scheduler instead of owning a second loop (§34).
@@ -441,7 +438,6 @@ class Bot:
                 ),
             )
 
-        await self._start_world()
         await self._start_sandbox_jobs()
 
         # v1.1: background sticker indexer (never blocks QQ from coming up, §16).
@@ -449,11 +445,7 @@ class Bot:
             asyncio.create_task(self._run_sticker_indexer())
 
         # One scheduler for the whole process: behaviour, world, memory upkeep.
-        if (
-            self.behavior.enabled
-            or (self.world is not None and self.world.enabled)
-            or self.sandbox is not None
-        ):
+        if self.behavior.enabled or self.sandbox is not None:
             await self.scheduler.start()
             story.boot_step(
                 "后台调度器已启动",
@@ -533,23 +525,22 @@ class Bot:
                 f"角色       {persona.identity.name or persona.name}"
                 f"  ·  {persona.identity.occupation or '——'}"
             )
-        if self.world is not None and self.world.enabled:
-            moment = self.world.clock.snapshot()
-            state = self.world.state.state
-            where = f"（{state.location}）" if state.location else ""
+        if self.sandbox is not None and self.sandbox.enabled:
+            context = self.sandbox.context()
             lines.append(
-                f"世界       {moment.time_text} {moment.period}"
-                f"  ·  {state.activity or '发呆'}{where}  ·  心情 {state.mood}"
+                f"沙盒       {context.get('location', '-')}"
+                f"  ·  {context.get('action') or '闲着'}"
+                f"  ·  {'+'.join(context.get('modes', [])) or '-'}"
             )
-            jobs = ", ".join(job.name for job in self.scheduler.jobs())
-            lines.append(f"后台任务   {jobs or '无'}")
+        jobs = ", ".join(job.name for job in self.scheduler.jobs())
+        lines.append(f"后台任务   {jobs or '无'}")
         story.blank()
         story.panel("CatooBot 已就绪 · developer Rinsora", lines, accent="bright_green")
         story.blank()
         story.say(
             "world",
             console.paint("她已经开始过自己的日子了", "bright_cyan"),
-            detail="QQ 里直接说话即可，管理看 WebUI /world",
+            detail="QQ 里直接说话即可，管理看 WebUI /sandbox",
         )
 
     async def _run_sticker_indexer(self) -> None:
@@ -561,50 +552,6 @@ class Bot:
             )
         except Exception:  # noqa: BLE001 - indexing must never kill the bot
             self.log.exception("[Media.Indexer] startup scan failed")
-
-    async def _start_world(self) -> None:
-        """Recover the persistent world and put its jobs on the shared scheduler."""
-        world = self.world
-        if world is None or not world.enabled:
-            return
-        try:
-            await world.state.load()
-            report = await world.restore()
-        except Exception:  # noqa: BLE001 - the world must never block startup
-            self.log.exception("[World] Start-up recovery failed; continuing")
-            return
-
-        self.scheduler.register_job(
-            ScheduledJob(
-                name="world_tick",
-                handler=world.tick,
-                interval_seconds=float(self.config.world.tick_seconds),
-                run_immediately=True,   # settle the world as soon as the bot is up
-                misfire_policy=self.config.world.missed_event_policy,
-            )
-        )
-        self.scheduler.register_job(
-            ScheduledJob(
-                name="world_prune",
-                handler=lambda: world.events.prune(keep_days=60),
-                interval_seconds=86400.0,
-                run_immediately=False,
-                misfire_policy="skip",
-                max_runs_per_day=1,
-            )
-        )
-        self.log.info(
-            "[World] active (tz=%s, period=%s, activity=%s, tick=%ss, recovery=%s)",
-            world.clock.timezone_name,
-            world.clock.snapshot().period,
-            world.state.state.activity or "-",
-            self.config.world.tick_seconds,
-            (
-                f"{report['downtime_seconds'] / 60:.0f}min/{report['policy']}"
-                if report.get("downtime_seconds")
-                else "fresh"
-            ),
-        )
 
     async def _start_sandbox_jobs(self) -> None:
         """Sandbox tick on the shared scheduler (v2.0 §67) — no second loop."""
@@ -630,11 +577,6 @@ class Bot:
 
     async def shutdown(self) -> None:
         """Graceful stop: schedulers, plugins, web, adapter, database."""
-        if self.world is not None and self.world.enabled:
-            try:
-                await self.world.save_snapshot()
-            except Exception:  # noqa: BLE001 - a failed snapshot must not block exit
-                self.log.exception("[World] Final snapshot failed (ignored)")
         if self.consolidation_scheduler is not None:
             await self.consolidation_scheduler.stop()
         await self.scheduler.stop()
@@ -663,9 +605,9 @@ class Bot:
         await self.database.close()
         self.lifecycle.mark_stopped()
         farewell = ""
-        if self.world is not None and self.world.enabled:
+        if self.sandbox is not None and self.sandbox.enabled:
             try:
-                farewell = f"下线前她正在{self.world.status_line()}"
+                farewell = f"下线前她正在{self.sandbox.status_line()}"
             except Exception:  # noqa: BLE001 - cosmetic only
                 farewell = ""
         narrate().quiet("世界已存档，CatooBot 退出了", detail=farewell)

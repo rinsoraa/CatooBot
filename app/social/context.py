@@ -9,10 +9,7 @@ Memory store into the observer prompt (§31).
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING, Any
-
-if TYPE_CHECKING:
-    from app.world.runtime import WorldRuntime
+from typing import Any
 
 
 class SocialContextBuilder:
@@ -24,7 +21,6 @@ class SocialContextBuilder:
         *,
         persona: Any,
         state: Any,
-        world: WorldRuntime | None = None,
         topics: list[str] | None = None,
         memories: list[str] | None = None,
         relationships: dict[str, str] | None = None,
@@ -73,13 +69,6 @@ class SocialContextBuilder:
                     "assisting_user": "正在帮用户处理任务",
                 }.get(str(overlay), str(overlay))
                 lines.append(f"当前交互：{overlay_text}（不影响正在做的事）")
-        elif world is not None and getattr(world, "enabled", False):
-            try:
-                world_line = world.state.describe()
-                if world_line:
-                    lines.append(f"此刻：{world_line}")
-            except Exception:  # noqa: BLE001 - context is best-effort
-                pass
 
         if topics:
             lines.append("活跃话题：" + "、".join(topics[:5]))

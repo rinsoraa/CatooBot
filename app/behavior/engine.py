@@ -55,8 +55,9 @@ class CharacterBehaviorEngine:
         self._rng = rng or random.Random()
         self._clock = clock
         self._group_recent: dict[str, float] = {}
-        # Optional WorldRuntime (v0.8): when enabled it owns the activity roll.
-        self.world: Any = None
+        # v2.0: when the sandbox (or any external owner) runs her life, the
+        # v0.4 activity roller steps aside so the two never fight.
+        self.activity_external = False
 
         self.activity = ActivityManager(
             config.activity, presence, states, logger=self._log, rng=self._rng, clock=clock
@@ -197,15 +198,13 @@ class CharacterBehaviorEngine:
     async def tick(self) -> None:
         """Periodic upkeep: activity roll + state decay (spec §48).
 
-        Since v0.8 the persistent world owns the character's activity when it is
-        running (spec §8/§21) — this roller is then only the fallback for
-        installations with the world switched off.
+        When the sandbox drives her life (v2.0), this roller is disabled via
+        ``activity_external`` — the sandbox owns location/activity exclusively.
         """
         if not self.enabled:
             return
         await self.states.load()
-        world = getattr(self, "world", None)
-        if world is None or not getattr(world, "enabled", False):
+        if not self.activity_external:
             await self.activity.roll()
         await self.states.update()  # persists decayed mood
 

@@ -17,8 +17,7 @@ import logging
 import time
 from typing import TYPE_CHECKING, Any
 
-from app.behavior.models import BehaviorEvent
-from app.world.models import ScheduledJob
+from app.behavior.models import BehaviorEvent, ScheduledJob
 
 if TYPE_CHECKING:
     from app.behavior.engine import CharacterBehaviorEngine
@@ -95,7 +94,6 @@ class BehaviorScheduler:
         await self._safe("activity", self._behavior.tick())
         if self._behavior.initiative.enabled:
             await self._safe("initiative", self._initiative_pass())
-        await self._safe("pending_initiative", self._flush_pending_initiative())
         # Agent housekeeping rides the existing scheduler (spec §103/§104):
         # timeouts and stale tasks only — no personality work here.
         agent = getattr(self._bot, "agent", None)
@@ -152,78 +150,7 @@ class BehaviorScheduler:
             self._log.exception("[Scheduler] Job %s failed", job.name)
 
     def _day_key(self) -> str:
-        world = getattr(self._bot, "world", None)
-        if world is not None and getattr(world, "enabled", False):
-            try:
-                return world.clock.today_key()
-            except Exception:  # noqa: BLE001 - fall back to the host clock
-                self._log.debug("[Scheduler] world clock unavailable", exc_info=True)
         return time.strftime("%Y-%m-%d")
-
-    # ------------------------------------------------- pending initiative TTL
-
-    async def _flush_pending_initiative(self) -> None:
-        """Deliver at most one parked proactive message, if it is still fresh."""
-        world = getattr(self._bot, "world", None)
-        if world is None or not getattr(world, "enabled", False):
-            return
-        queue = getattr(world, "messaging_queue", None)
-        if queue is None:
-            return
-        adapter = self._bot.adapter
-        online = bool(getattr(adapter, "connected", False))
-        budget = await world.background_budget_left()
-        await queue.flush(
-            lambda item: self._deliver_pending(item, world),
-            online=online,
-            budget_left=budget,
-            skip=self._user_recently_active,
-        )
-
-    async def _deliver_pending(self, item: dict[str, Any], world) -> bool:
-        if self._bot.character is None:
-            return False
-        user_id = str(item.get("user_id") or "")
-        if not user_id:
-            return False
-        scope_key = str(item.get("scope_key") or f"private:{user_id}")
-        message = str(item.get("text") or "")
-        plan = self._bot.response_planner.plan_reply(
-            message,
-            state=await self._bot.character.states.load(),
-            relationship=await self._bot.relationships.get(user_id),
-            time_context=self._behavior.time_context(),
-        )
-        target = self._bot.response_delivery.target_for_user(int(user_id))
-        sent = await self._bot.response_delivery.deliver(target, plan)
-        if not sent:
-            return False
-        await self._behavior.initiative.record_sent(
-            scope_key,
-            message,
-            reason=item.get("reason") or "pending",
-            user_id=user_id,
-            topic=item.get("topic") or "",
-        )
-        await self._bot.ai.conversations.append_assistant_message(scope_key, message)
-        self._log.info("[Scheduler] Parked initiative delivered to %s", scope_key)
-        return True
-
-    async def _user_recently_active(
-        self, item: dict[str, Any], *, window_seconds: float = 1800.0
-    ) -> bool:
-        """A parked message is pointless if the user is already talking to her."""
-        user_id = str(item.get("user_id") or "")
-        if not user_id:
-            return False
-        try:
-            relationship = await self._bot.relationships.get(user_id)
-        except Exception:  # noqa: BLE001 - unknown activity means "not active"
-            return False
-        last_seen = getattr(relationship, "last_seen", None)
-        if not last_seen:
-            return False
-        return (time.time() - float(last_seen)) < window_seconds
 
     async def _background_budget_ok(self) -> bool:
         """Global daily cap on *background* messages (spec §42/§105).
@@ -231,32 +158,28 @@ class BehaviorScheduler:
         Background life may happen all day; messaging someone about it is a
         separate, much smaller budget.
         """
-        world = getattr(self._bot, "world", None)
-        if world is None or not getattr(world, "enabled", False):
+        sandbox = getattr(self._bot, "sandbox", None)
+        if sandbox is None or not getattr(sandbox, "enabled", False):
             return True
-        left = await world.background_budget_left()
+        left = await sandbox.background_budget_left()
         if left <= 0:
             self._log.info(
                 "[Initiative] Daily background-message budget spent (%s)",
-                self._bot.config.world.messaging.max_background_messages_per_day,
+                self._bot.config.sandbox.max_background_messages_per_day,
             )
             return False
         return True
 
     async def _world_moment(self) -> tuple[str, str]:
-        """A recent life event worth mentioning — surfaced at most once."""
-        world = getattr(self._bot, "world", None)
-        if world is None or not getattr(world, "enabled", False):
+        """A recent shareable life event — surfaced at most once (v2.0)."""
+        sandbox = getattr(self._bot, "sandbox", None)
+        if sandbox is None or not getattr(sandbox, "enabled", False):
             return "", ""
         try:
-            for event in await world.events.surfaced_unseen(limit=8):
-                # Only genuinely shareable things: finishing something, or a
-                # project step. Daily progress pings stay private (§42).
-                if event.type in ("milestone", "project") and event.importance >= 0.4:
-                    return event.summary, event.event_id
-        except Exception:  # noqa: BLE001 - the world is an optional input
-            self._log.debug("[Initiative] World moment lookup failed", exc_info=True)
-        return "", ""
+            return await sandbox.life_moment()
+        except Exception:  # noqa: BLE001 - her life is an optional input
+            self._log.debug("[Initiative] Life moment lookup failed", exc_info=True)
+            return "", ""
 
     async def _safe(self, name: str, coro) -> None:
         try:
@@ -274,7 +197,8 @@ class BehaviorScheduler:
             return
         if not await self._background_budget_ok():
             return
-        moment_text, _moment_event = await self._world_moment()
+        moment_text, moment_event = await self._world_moment()
+        self._last_moment_event = moment_event
         relationships = await self._bot.relationships.all()
         for relationship in relationships:
             scope_key = f"private:{relationship.user_id}"
@@ -334,7 +258,9 @@ class BehaviorScheduler:
         target = bot.response_delivery.target_for_user(int(user_id))
         sent = await bot.response_delivery.deliver(target, plan)
         if not sent:
-            await self._park_initiative(scope_key, user_id, message, candidate)
+            self._log.info(
+                "[Initiative] Delivery failed (QQ offline?) — dropped, scope=%s", scope_key
+            )
             return False
 
         await self._behavior.initiative.record_sent(
@@ -352,34 +278,19 @@ class BehaviorScheduler:
         return True
 
     async def _mark_moment_surfaced(self, candidate) -> None:
-        """A life event that became a message is never mentioned twice (§26)."""
+        """A life moment that became a message is never mentioned twice."""
         if getattr(candidate, "reason", "") != "life_event":
             return
-        world = getattr(self._bot, "world", None)
-        if world is None or not getattr(world, "enabled", False):
+        event_id = getattr(self, "_last_moment_event", "")
+        if not event_id:
+            return
+        sandbox = getattr(self._bot, "sandbox", None)
+        if sandbox is None or not getattr(sandbox, "enabled", False):
             return
         try:
-            events = await world.events.surfaced_unseen(limit=5)
-            ids = [e.event_id for e in events if e.summary == candidate.topic]
-            await world.events.mark_surfaced(ids)
+            await sandbox.note_moment_surfaced(event_id)
         except Exception:  # noqa: BLE001
             self._log.debug("[Initiative] Marking moment surfaced failed", exc_info=True)
-
-    async def _park_initiative(
-        self, scope_key: str, user_id: str, message: str, candidate
-    ) -> None:
-        """Delivery failed (usually QQ offline): park it under the TTL policy."""
-        world = getattr(self._bot, "world", None)
-        queue = getattr(world, "messaging_queue", None) if world is not None else None
-        if queue is None or not getattr(world, "enabled", False):
-            return
-        await queue.add(
-            scope_key=scope_key,
-            user_id=str(user_id),
-            text=message,
-            reason=getattr(candidate, "reason", "") or "initiative",
-            topic=getattr(candidate, "topic", "") or "",
-        )
 
     async def _user_initiative_enabled(self, user_id: str) -> bool:
         try:

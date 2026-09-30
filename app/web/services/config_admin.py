@@ -223,7 +223,7 @@ class ConfigAdminService:
         self._apply_logging(before, config)
         self._apply_permissions(before, config)
         self._apply_memory(before, config)
-        self._apply_behavior_world(before, config)
+        self._apply_behavior_settings(before, config)
         self._apply_character(before, config)
         for path, label in RESTART_FIELDS.items():
             if self._changed(before, config, path):
@@ -266,8 +266,9 @@ class ConfigAdminService:
             color=after.logging.color,
             narrate=after.logging.narrate,
         )
-        if self.bot.world is not None:
-            self.bot.world.narrate_ticks = after.logging.narrate_world_ticks
+        sandbox = getattr(self.bot, "sandbox", None)
+        if sandbox is not None:
+            sandbox.narrate_ticks = after.logging.narrate_world_ticks
 
     def _apply_permissions(self, before: AppConfig, after: AppConfig) -> None:
         if before.permissions.model_dump() == after.permissions.model_dump():
@@ -288,7 +289,7 @@ class ConfigAdminService:
         if extractor is not None:
             extractor.config = after.memory
 
-    def _apply_behavior_world(self, before: AppConfig, after: AppConfig) -> None:
+    def _apply_behavior_settings(self, before: AppConfig, after: AppConfig) -> None:
         try:
             if before.behavior.model_dump() != after.behavior.model_dump():
                 from app.web.services.behavior import BehaviorService
@@ -296,14 +297,6 @@ class ConfigAdminService:
                 BehaviorService(self.bot)._apply(after.behavior)  # noqa: SLF001
         except Exception:  # noqa: BLE001
             self._log.exception("[Config] behaviour hot-apply failed")
-        try:
-            if before.world.model_dump() != after.world.model_dump():
-                from app.web.services.world import WorldAdminService
-
-                world_admin = WorldAdminService(self.bot)
-                world_admin._apply(after.world)  # noqa: SLF001
-        except Exception:  # noqa: BLE001
-            self._log.exception("[Config] world hot-apply failed")
 
     def _apply_character(self, before: AppConfig, after: AppConfig) -> None:
         if before.character.timezone == after.character.timezone:

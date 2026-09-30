@@ -103,6 +103,10 @@ class SandboxRuntime:
         self._notes: list[str] = []            # micro-continuity feed
         self._restored = False
         self._private_chat_until = 0.0          # online-social window after a chat
+        #: narrative-on-every-tick switch (logging.narrate_world_ticks)
+        self.narrate_ticks = False
+        #: optional ContinuityManager — meaningful events feed recent_events
+        self.continuity: Any = None
 
         # ------------------------------------------------------------ systems
         self.spaces = SpaceSystem(build_spaces())
@@ -224,6 +228,12 @@ class SandboxRuntime:
         if self._should_snapshot():
             await self._snapshot()
         await self._persist_deltas()
+        if self.narrate_ticks:
+            pressing = self.needs.summary_line() if self.needs.pressing() else ""
+            detail = "沙盒心跳" + (f"（{pressing}）" if pressing else "")
+            narrate().world(
+                f"{self.status_line()}  ·  {'+'.join(self.modes.ids())}", detail=detail
+            )
         return report
 
     def _tick_minutes(self) -> float:
@@ -465,6 +475,88 @@ class SandboxRuntime:
     async def notify(self, event: ExternalEvent) -> dict[str, Any]:
         """Event-driven wakeup (§70): handle immediately, don't wait for tick."""
         return await self.handle_external(event)
+
+    # -------------------------------------------------- initiative support
+
+    def _day_key(self) -> str:
+        import time as _time
+
+        stamp = _time.localtime(float(self._clock()))
+        return f"{stamp.tm_year}-{stamp.tm_mon}-{stamp.tm_mday}"
+
+    async def background_budget_left(self) -> int:
+        """Daily cap on *background messages* (separate from her life)."""
+        cap = int(getattr(self.config, "max_background_messages_per_day", 3))
+        key = await self.store.state_get("bg_msgs_day")
+        used_raw = await self.store.state_get("bg_msgs_used")
+        used = int(used_raw or 0) if key == self._day_key() else 0
+        return max(0, cap - used)
+
+    async def note_background_message(self) -> None:
+        key = self._day_key()
+        stored = await self.store.state_get("bg_msgs_day")
+        used = int(await self.store.state_get("bg_msgs_used") or 0) if stored == key else 0
+        await self.store.state_set("bg_msgs_day", key)
+        await self.store.state_set("bg_msgs_used", str(used + 1))
+
+    async def life_moment(self) -> tuple[str, str]:
+        """A recent shareable life event (finished something / project news).
+
+        Feeds the initiative topic pool — she may mention each moment at most
+        once (surfaced ids ride ``sandbox_state``).
+        """
+        try:
+            events = await self.store.recent_events(limit=12)
+        except Exception:  # noqa: BLE001 - her life is an optional input
+            return "", ""
+        surfaced = await self._surfaced_moments()
+        shareable = {"action_completed", "commission", "delivery", "sandbox_initialized"}
+        for row in events:
+            kind = str(row.get("kind", ""))
+            event_id = str(row.get("id", ""))
+            if kind in shareable and event_id not in surfaced:
+                summary = str(row.get("summary", "")).strip()
+                if summary:
+                    return summary, event_id
+        return "", ""
+
+    async def _surfaced_moments(self) -> set[str]:
+        raw = await self.store.state_get("surfaced_moments")
+        if not raw:
+            return set()
+        try:
+            import json as _json
+
+            data = _json.loads(raw)
+            return {str(item) for item in data} if isinstance(data, list) else set()
+        except (TypeError, ValueError):
+            return set()
+
+    async def note_moment_surfaced(self, event_id: str) -> None:
+        """A life moment became a message — never mention it twice."""
+        if not event_id:
+            return
+        import json as _json
+
+        surfaced = await self._surfaced_moments()
+        surfaced.add(str(event_id))
+        keep = list(surfaced)[-50:]
+        await self.store.state_set("surfaced_moments", _json.dumps(keep))
+
+    async def note_agent_result(
+        self, *, task_type: str, status: str, summary: str,
+        session_id: str = "", user_id: str = "",
+    ) -> None:
+        """An agent task finished — a life event, not a state command (§93-§94)."""
+        done = status in ("completed", "partial")
+        self.needs.add("social_need", -0.05 if done else 0.0)
+        self._notes.append(summary)
+        await self._append_event(
+            "agent_result", summary,
+            source=EventSource.user_interaction,
+            level=EventLevel.micro,
+            reason=f"agent:{task_type}:{status}",
+        )
 
     async def note_user_interaction(self, *, user_id: str, session_id: str) -> None:
         """A QQ user started talking: a social stimulus, not a command (§52)."""
@@ -738,6 +830,18 @@ class SandboxRuntime:
             reason_code=reason, created_at=float(self._clock()),
         )
         await self.store.append_event(record)
+        # v1.2 §139: meaningful world events become her recent continuity.
+        if (
+            self.continuity is not None
+            and level in (EventLevel.major, EventLevel.normal)
+            and kind not in ("recovery",)
+        ):
+            try:
+                await self.continuity.add_micro_event(
+                    summary, kind="world", reason_code=reason or kind
+                )
+            except Exception:  # noqa: BLE001 - continuity must never break the world
+                self._log.debug("[Sandbox] continuity feed failed", exc_info=True)
 
     # ---------------------------------------------------------- transaction
 
