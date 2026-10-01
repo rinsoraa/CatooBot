@@ -45,7 +45,7 @@ from app.response.delivery import MessageDelivery
 from app.response.planner import CharacterResponsePlanner
 from app.response.timing import ReplyTiming
 from app.social.cognition import SocialCognitionEngine
-from app.social.feedback import ReplyFeedbackStore
+from app.social.feedback import ReplyFeedbackSettler, ReplyFeedbackStore
 from app.tools.runtime import ToolRuntime
 from app.utils import console
 from app.utils.logger import get_logger
@@ -442,6 +442,23 @@ class Bot:
                 )
             else:
                 asyncio.create_task(self.memory.replay_outbox())
+
+        # Task 20: settle reply outcomes once their observation window passed.
+        if shared_loop and self.reply_feedback is not None:
+            settler = ReplyFeedbackSettler(
+                self.reply_feedback,
+                getattr(self.social, "monitor", None),
+                metrics=self.metrics,
+            )
+            self.scheduler.register_job(
+                ScheduledJob(
+                    name="reply_feedback",
+                    handler=settler.settle,
+                    interval_seconds=30.0,
+                    run_immediately=True,
+                    misfire_policy="skip",
+                )
+            )
 
         # Task 15: model usage rows are pruned daily on the same loop.
         if self.ai_usage is not None and shared_loop:

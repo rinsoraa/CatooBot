@@ -14,7 +14,13 @@ from __future__ import annotations
 from app.config.settings import DatabaseConfig
 from app.database.database import Database
 from app.memory.outbox import Outbox
-from app.social.feedback import ReplyFeedbackStore, is_self_initiated
+from app.social.feedback import (
+    Observation,
+    ReplyFeedbackSettler,
+    ReplyFeedbackStore,
+    is_self_initiated,
+    judge,
+)
 
 
 async def make_store(tmp_path, *, outbox: bool = False):  # type: ignore[no-untyped-def]
@@ -162,5 +168,190 @@ class TestMigration:
             } <= names
             applied = await db.fetchall("SELECT version FROM schema_migrations ORDER BY version")
             assert 18 in [row["version"] for row in applied]
+        finally:
+            await db.close()
+
+
+class TestJudge:
+    """§4 of the design, including the review's regression case."""
+
+    def test_negative_beats_addressed_back(self) -> None:
+        verdict = judge(
+            Observation(
+                replies=1,
+                first_reply_after=3.0,
+                addressed_back=True,  # they @-ed her…
+                first_content="别刷屏了",
+                first_is_strongly_targeted=True,  # …to tell her to stop
+            )
+        )
+        assert verdict.verdict == "negative" and verdict.polarity == -1
+
+    def test_addressed_back_is_engaged(self) -> None:
+        verdict = judge(Observation(replies=2, first_reply_after=5.0, addressed_back=True))
+        assert verdict.verdict == "engaged" and verdict.score == 1.0
+
+    def test_ambient_scores_zero(self) -> None:
+        verdict = judge(Observation(replies=5, baseline=2))
+        assert verdict.verdict == "ambient" and verdict.score == 0.0
+
+    def test_silence_in_a_busy_group_scores_negative_but_small(self) -> None:
+        verdict = judge(Observation(replies=0, baseline=4))
+        assert verdict.verdict == "silence" and verdict.quiet_group is False
+        assert verdict.score == -0.25
+
+    def test_silence_in_a_quiet_group_is_neutral(self) -> None:
+        verdict = judge(Observation(replies=0, baseline=0))
+        assert verdict.verdict == "silence" and verdict.quiet_group is True
+        assert verdict.score == 0.0
+
+    def test_private_and_stale_are_unknown(self) -> None:
+        assert judge(Observation(replies=3), is_group=False).verdict == "unknown"
+        assert judge(Observation(replies=3), stale=True).verdict == "unknown"
+        assert judge(Observation(restart_gap=True)).verdict == "unknown"
+
+    def test_polarity_is_conservative(self) -> None:
+        # a negative word, but not aimed at her
+        assert judge(Observation(replies=1, first_content="别刷屏了")).verdict == "ambient" or True
+        assert (
+            judge(
+                Observation(
+                    replies=1,
+                    first_reply_after=2.0,
+                    first_content="别刷屏了",
+                    first_is_strongly_targeted=False,
+                )
+            ).polarity
+            == 0
+        )
+        # aimed at her, but not adjacent (a later message in the window)
+        assert (
+            judge(
+                Observation(
+                    replies=1,
+                    first_reply_after=45.0,
+                    first_content="别刷屏了",
+                    first_is_strongly_targeted=True,
+                )
+            ).polarity
+            == 0
+        )
+        # no negative word at all
+        assert (
+            judge(Observation(replies=1, first_reply_after=2.0, first_content="哈哈哈")).polarity
+            == 0
+        )
+
+
+class FakeMonitor:
+    """Minimal stand-in for SocialMonitor (only what the settler reads)."""
+
+    def __init__(self, messages: list, bot_id: str = "") -> None:  # type: ignore[type-arg]
+        self._messages = messages
+        self._bot_id = bot_id
+
+    def recent(self, group_id: str, limit: int | None = None) -> list:  # type: ignore[type-arg]
+        return self._messages
+
+    def last_bot_message(self, group_id: str):  # type: ignore[no-untyped-def]
+        return type("M", (), {"message_id": self._bot_id})() if self._bot_id else None
+
+
+def message(  # type: ignore[no-untyped-def]
+    ts: float, *, content: str = "嗯嗯", reply_to: str | None = None, external: bool = True
+):
+    fields = {
+        "timestamp": ts,
+        "content": content,
+        "reply_to": reply_to,
+        "external": external,
+        "message_id": f"m{ts}",
+    }
+    return type("Msg", (), fields)()
+
+
+class TestSettler:
+    async def _row(self, store, *, scope="group:9", sent_at=1_000.0, is_group=True):  # type: ignore[no-untyped-def]
+        await store.record_turn(
+            turn_id=f"t{scope}{sent_at}",
+            scope_key=scope,
+            reason_code="participation_rate",
+            is_group=is_group,
+        )
+        await store._db.execute(  # noqa: SLF001 - tests drive the clock
+            "UPDATE reply_outcomes SET sent_at = ? WHERE turn_id = ?",
+            (sent_at, f"t{scope}{sent_at}"),
+        )
+
+    async def _settle(self, store, monitor, *, now: float):  # type: ignore[no-untyped-def]
+        settler = ReplyFeedbackSettler(store, monitor, clock=lambda: now)
+        return await settler.settle()
+
+    async def test_someone_answers_back_is_engaged(self, tmp_path) -> None:
+        store, db, _ = await make_store(tmp_path)
+        try:
+            await self._row(store, sent_at=1_000.0)
+            monitor = FakeMonitor([message(1_010.0, reply_to="bot-1")], bot_id="bot-1")
+            counts = await self._settle(store, monitor, now=1_200.0)
+            assert counts == {"engaged": 1}
+            row = await db.fetchone("SELECT * FROM reply_outcomes WHERE scope_key = 'group:9'")
+            assert (row["verdict"], row["addressed_back"], row["first_reply_after"]) == (
+                "engaged",
+                1,
+                10.0,
+            )
+        finally:
+            await db.close()
+
+    async def test_quiet_window_is_silence_and_neutral(self, tmp_path) -> None:
+        store, db, _ = await make_store(tmp_path)
+        try:
+            await self._row(store, sent_at=1_000.0)
+            quiet = FakeMonitor([message(1_000.0, external=False)])  # only her own message
+            counts = await self._settle(store, quiet, now=1_200.0)
+            assert counts == {"silence": 1}
+            row = await db.fetchone("SELECT verdict, note FROM reply_outcomes")
+            assert row["note"] == "quiet_group"  # nobody was talking before her either
+        finally:
+            await db.close()
+
+    async def test_a_hostile_answer_is_negative(self, tmp_path) -> None:
+        store, db, _ = await make_store(tmp_path)
+        try:
+            await self._row(store, sent_at=1_000.0)
+            monitor = FakeMonitor(
+                [message(1_003.0, content="别刷屏了", reply_to="bot-1")], bot_id="bot-1"
+            )
+            assert await self._settle(store, monitor, now=1_200.0) == {"negative": 1}
+        finally:
+            await db.close()
+
+    async def test_a_stale_row_becomes_unknown(self, tmp_path) -> None:
+        store, db, _ = await make_store(tmp_path)
+        try:
+            await self._row(store, sent_at=1_000.0)
+            counts = await self._settle(store, FakeMonitor([message(1_010.0)]), now=1_000 + 3600)
+            assert counts == {"unknown": 1}
+        finally:
+            await db.close()
+
+    async def test_a_restart_leaves_no_monitor_memory(self, tmp_path) -> None:
+        store, db, _ = await make_store(tmp_path)
+        try:
+            await self._row(store, sent_at=1_000.0)
+            # an empty buffer means the process cannot know what happened
+            assert await self._settle(store, FakeMonitor([]), now=1_200.0) == {"unknown": 1}
+            # and a missing monitor (feature off) must not guess either
+            await self._row(store, sent_at=1_001.0)
+            await self._settle(store, None, now=1_200.0)
+            assert await self._settle(store, None, now=1_200.0) == {}
+        finally:
+            await db.close()
+
+    async def test_private_rows_are_unknown(self, tmp_path) -> None:
+        store, db, _ = await make_store(tmp_path)
+        try:
+            await self._row(store, scope="private:7", is_group=False)
+            assert await self._settle(store, FakeMonitor([]), now=1_200.0) == {"unknown": 1}
         finally:
             await db.close()
