@@ -4,7 +4,7 @@ Reuses the existing :class:`~app.ai.engine.AIEngine` — no new provider. A
 multimodal :class:`ChatMessage` carries the image; the provider serializes it.
 Results are cached by sha256 so the same image is never analysed twice, and a
 failed analysis degrades to an empty structured result instead of a guess
-(spec §68).
+(spec v1.1 §68).
 """
 
 from __future__ import annotations

@@ -1,8 +1,8 @@
 """MediaRuntime facade (v1.1 §3): normalizer + vision + sticker runtime.
 
 The single entry point the bot wires. It keeps the media-type boundary
-(v1.x 规格，原文缺失：媒体类型边界): plain images go to image understanding only; stickers go to the
-library. Acquisition runs in the background and never blocks a reply (§18).
+(v1.1 §2.1/§2.2): plain images go to image understanding only; stickers go to the
+library. Acquisition runs in the background and never blocks a reply (v1.1 §18).
 
 v1.2 refinement: a plain image that *vision* classifies as a sticker/meme is
 a legitimate acquisition source — it is reclassified into a sticker candidate

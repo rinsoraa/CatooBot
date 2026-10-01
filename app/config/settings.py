@@ -596,7 +596,7 @@ class MediaConfig(BaseModel):
     background_vision_max_per_hour: int = Field(default=20, ge=0)
     #: how long a turn waits for sticker recognition before deciding anyway
     recognition_timeout_seconds: float = Field(default=12.0, gt=0)
-    # Strict boundary: plain images are never stickers (v1.x 规格，原文缺失：媒体类型边界)
+    # Strict boundary: plain images are never stickers (v1.1 §2.2/§6)
     import_as_sticker: bool = True  # files dropped into sticker_dir ARE stickers
 
 

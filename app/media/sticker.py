@@ -1,9 +1,9 @@
 """Sticker runtime (v1.1 §7-§36): the character's expression assets.
 
-This is a *character asset* system, deliberately separate from Memory (§52).
+This is a *character asset* system, deliberately separate from Memory (v1.1 §52).
 It owns: the library (SQLite + files), acquisition (should I keep this?), the
 selector (which one fits now?), the expression decision (text / +sticker /
-sticker-only), and sending. Ordinary images never enter here (v1.x 规格，原文缺失：媒体类型边界).
+sticker-only), and sending. Ordinary images never enter here (v1.1 §2.2/§6).
 """
 
 from __future__ import annotations
@@ -27,7 +27,7 @@ from app.media.models import (
 from app.memory.retrieval import bigrams
 
 #: a small built-in QQ native-face map (face_id -> meaning). The operator may
-#: extend this in the WebUI; we only ship a useful subset (§30).
+#: extend this in the WebUI; we only ship a useful subset (v1.1 §30).
 DEFAULT_NATIVE_FACES: dict[int, NativeFace] = {
     14: NativeFace(
         face_id=14, display_name="微笑", emotion="开心", intent="友好", tags=["微笑", "友善"]
@@ -108,7 +108,7 @@ class NativeFaceRegistry:
 
 
 class StickerLibrary:
-    """SQLite-backed sticker asset store (§8/§22). Not Memory."""
+    """SQLite-backed sticker asset store (v1.1 §8/§22). Not Memory."""
 
     def __init__(
         self,
@@ -332,7 +332,7 @@ def _maybe_json(raw: Any) -> Any:
 
 
 class StickerAnalyzer:
-    """Derives tags + quality from a vision result / mface summary (§12)."""
+    """Derives tags + quality from a vision result / mface summary (v1.1 §12)."""
 
     def __init__(self, *, analysis_version: str = "v1") -> None:
         self.version = analysis_version
@@ -537,7 +537,7 @@ class ExpressionDecisionEngine:
 
 
 class StickerSelector:
-    """Chooses one sticker for a given expression intent (§28)."""
+    """Chooses one sticker for a given expression intent (v1.1 §28)."""
 
     def __init__(
         self,
@@ -576,7 +576,7 @@ class StickerSelector:
 
 
 class StickerSender:
-    """Converts a sticker / face / mface into a OneBot-ready Message (§32)."""
+    """Converts a sticker / face / mface into a OneBot-ready Message (v1.1 §32)."""
 
     def build_message(self, item: StickerAsset | NativeFace) -> Any:
         from app.message.message import Face, Message, Mface

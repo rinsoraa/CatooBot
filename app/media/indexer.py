@@ -52,7 +52,7 @@ class StickerLibraryIndexer:
         ]
 
     async def scan(self, *, full: bool = False) -> dict[str, int]:
-        """Incremental scan: analyse only new / changed / stale files (§15)."""
+        """Incremental scan: analyse only new / changed / stale files (v1.1 §15)."""
         self.state = {"pending": 0, "analyzing": 0, "done": 0, "failed": 0, "duplicate": 0}
         for _path in self.discover_files():
             self.state["pending"] += 1
@@ -70,7 +70,7 @@ class StickerLibraryIndexer:
         sha = sha256_bytes(data)
         existing = await self._library.by_sha256(sha)
         if existing is not None and not full and existing.analysis_version == self._version:
-            # unchanged, already analysed at this version — skip (§15)
+            # unchanged, already analysed at this version — skip (v1.1 §15)
             self.state["duplicate"] += 1
             self.state["pending"] -= 1
             return

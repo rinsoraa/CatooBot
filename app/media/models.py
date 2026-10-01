@@ -1,6 +1,6 @@
 """Media / sticker data models (v1.1).
 
-The central distinction (v1.x 规格，原文缺失：媒体类型边界): an ordinary ``image`` is *never* a
+The central distinction (v1.1 §2.1/§7/§52): an ordinary ``image`` is *never* a
 sticker. Media is classified into ``image / sticker / native_face / unknown``
 and only ``sticker`` sources may ever enter the Sticker Library.
 """
@@ -19,7 +19,7 @@ ResponseMode = Literal["text", "text_and_sticker", "sticker_only"]
 
 
 class MediaContent(BaseModel):
-    """Normalized media extracted from an incoming message (spec §4)."""
+    """Normalized media extracted from an incoming message (spec v1.1 §4)."""
 
     media_id: str = ""
     media_type: MediaType = "unknown"
@@ -33,7 +33,7 @@ class MediaContent(BaseModel):
     height: int = 0
     duration: float = 0.0
     is_animated: bool = False
-    # QQ market-emoji metadata (kept for mface reuse, spec §31)
+    # QQ market-emoji metadata (kept for mface reuse, spec v1.1 §31)
     emoji_id: str = ""
     emoji_package_id: str = ""
     emoji_key: str = ""
@@ -53,7 +53,7 @@ class MediaContent(BaseModel):
 
 
 class VisionResult(BaseModel):
-    """Structured image understanding (v1.x 规格，原文缺失) — no hidden chain-of-thought (§99)."""
+    """Structured image understanding (v1.1 §5.1) — no hidden chain-of-thought (§99)."""
 
     image_id: str = ""
     summary: str = ""
@@ -87,7 +87,7 @@ class VisionResult(BaseModel):
 
 
 class StickerAsset(BaseModel):
-    """One sticker in the character's library (spec §8/§52: an asset, not Memory)."""
+    """One sticker in the character's library (spec v1.1 §8/§52: an asset, not Memory)."""
 
     id: str = ""
     file_path: str = ""
@@ -160,7 +160,7 @@ class StickerAsset(BaseModel):
 
 
 class AcquisitionDecision(BaseModel):
-    """Should the character save this sticker? (spec §10/§70, independent of use)"""
+    """Should the character save this sticker? (spec v1.1 §10/§70, independent of use)"""
 
     decision: AcquisitionDecisionKind = "reject"
     confidence: float = 0.0
@@ -171,7 +171,7 @@ class AcquisitionDecision(BaseModel):
 
 
 class ExpressionDecision(BaseModel):
-    """Should the character use a sticker right now? (spec §24/§70, independent of save)"""
+    """Should the character use a sticker right now? (spec v1.1 §24/§70, independent of save)"""
 
     response_mode: ResponseMode = "text"
     sticker_intent: str = ""
@@ -181,7 +181,7 @@ class ExpressionDecision(BaseModel):
 
 
 class NativeFace(BaseModel):
-    """A QQ native emoji the character may use (spec §30)."""
+    """A QQ native emoji the character may use (spec v1.1 §30)."""
 
     face_id: int
     display_name: str = ""
@@ -191,7 +191,7 @@ class NativeFace(BaseModel):
 
 
 class ExpressionContext(BaseModel):
-    """Expression-relevant context exposed to Social/Character layers (spec §27/§54)."""
+    """Expression-relevant context exposed to Social/Character layers (spec v1.1 §27/§54)."""
 
     incoming_media_type: str = ""
     incoming_sticker_semantics: str = ""
