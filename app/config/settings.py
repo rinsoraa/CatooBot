@@ -775,29 +775,115 @@ def _resolve_models(data: dict[str, Any]) -> dict[str, Any]:
             data[section] = {}
         return data[section]
 
+    def set_if_blank(target: dict[str, Any], key: str, value: Any) -> None:
+        """Like ``setdefault``, but an empty override also yields.
+
+        The WebUI writes ``""`` for an unused slot; a blank is "not set", so the
+        ``models:`` table's derivation must still win — otherwise an empty
+        override silently masks it.
+        """
+        if not target.get(key):
+            target[key] = value
+
     ai = ensure("ai")
     ai.setdefault("providers", providers)
     ai.setdefault("models", chat + extra)
 
     sem = ensure("memory").setdefault("semantic", {})
     emb = sem.setdefault("embedding", {})
-    emb.setdefault("provider", embedding.get("provider", ""))
-    emb.setdefault("model", embedding.get("model", ""))
+    set_if_blank(emb, "provider", embedding.get("provider", ""))
+    set_if_blank(emb, "model", embedding.get("model", ""))
     if embedding.get("dimensions") is not None:
         emb.setdefault("dimensions", embedding["dimensions"])
     emb.setdefault("timeout", embedding.get("timeout", 10))
 
-    ensure("memory").setdefault("extraction", {}).setdefault("model", extraction)
+    set_if_blank(ensure("memory").setdefault("extraction", {}), "model", extraction)
 
     media = ensure("media")
-    media.setdefault("vision_model", vision)
-    media.setdefault("acquisition_model", acquisition)
+    set_if_blank(media, "vision_model", vision)
+    set_if_blank(media, "acquisition_model", acquisition)
 
-    ensure("social").setdefault("decision_model", decision)
-    ensure("agent").setdefault("planner", {}).setdefault("model", planner)
-    ensure("agent").setdefault("evaluator", {}).setdefault("model", evaluator)
+    set_if_blank(ensure("social"), "decision_model", decision)
+    set_if_blank(ensure("agent").setdefault("planner", {}), "model", planner)
+    set_if_blank(ensure("agent").setdefault("evaluator", {}), "model", evaluator)
 
     return data
+
+
+def _friendly_yaml_error(path: Path, exc: yaml.YAMLError) -> SystemExit:
+    """Turn a PyYAML parse failure into an operator-actionable message."""
+    mark = getattr(exc, "problem_mark", None)
+    where = "（位置未知）"
+    line_text = ""
+    if mark is not None:
+        where = f"{mark.line + 1} 行第 {mark.column + 1} 列"
+        try:
+            lines = path.read_text(encoding="utf-8").splitlines()
+            if 0 <= mark.line < len(lines):
+                line_text = lines[mark.line].rstrip()
+            elif lines:
+                # "unexpected end of stream" (e.g. an unclosed quote) points
+                # past the last line — show the tail, where the construct began.
+                line_text = lines[-1].rstrip()
+        except OSError:
+            pass
+    problem = getattr(exc, "problem", None) or str(exc)
+    return SystemExit(
+        f"\n[ERROR] [Config] 配置文件语法错误：{path} {where}\n"
+        f"    出错行原文：{line_text or '（无法读取）'}\n"
+        f"    PyYAML 报告：{problem}\n"
+        f"    常见原因：引号未闭合、缩进不一致（空格/制表符混用）、"
+        f"冒号后缺空格、列表项 '- ' 后的内容没对齐。\n"
+        f"    请修正后重启；也可删除该文件从 config.example.yaml 重建。"
+    )
+
+
+def _validate_model_refs(config: AppConfig) -> None:
+    """Startup check: every model-name / provider-name reference must resolve.
+
+    The router raises ``ModelNotFoundError`` only at call time, so a typo in
+    ``models.extraction`` surfaces as "every extraction fails" — far too late.
+    Log it here with the list of valid names instead.
+    """
+    model_names = [m.name for m in config.ai.models]
+    provider_names = sorted(config.ai.providers)
+    problems: list[str] = []
+
+    def check_model(label: str, value: str) -> None:
+        if value and value not in model_names:
+            problems.append(
+                f"{label}={value!r} 不是已注册的模型 name（可用：{', '.join(model_names) or '无'}）"
+            )
+
+    check_model("memory.extraction.model", config.memory.extraction.model)
+    check_model("media.vision_model", config.media.vision_model)
+    check_model("media.acquisition_model", config.media.acquisition_model)
+    check_model("social.decision_model", config.social.decision_model)
+    check_model("agent.planner.model", config.agent.planner.model)
+    check_model("agent.evaluator.model", config.agent.evaluator.model)
+
+    emb_provider = config.memory.semantic.embedding.provider
+    if emb_provider and emb_provider not in provider_names:
+        problems.append(
+            f"memory.semantic.embedding.provider={emb_provider!r} 不是已注册的 provider"
+            f"（可用：{', '.join(provider_names) or '无'}）"
+        )
+
+    for model in config.ai.models:
+        if model.provider not in provider_names:
+            problems.append(
+                f"ai.models[{model.name}].provider={model.provider!r} 不是已注册的 provider"
+                f"（可用：{', '.join(provider_names) or '无'}）"
+            )
+
+    if problems:
+        for problem in problems:
+            logger.error("[Config] 配置引用了未注册的模型/provider name：%s", problem)
+        logger.error(
+            "[Config] 已注册的模型 name：%s；已注册的 provider：%s —— 请在 models: 表里修正",
+            ", ".join(model_names) or "无",
+            ", ".join(provider_names) or "无",
+        )
 
 
 def load_config(
@@ -824,8 +910,11 @@ def load_config(
 
     data: dict[str, Any] = {}
     if path.exists():
-        with path.open("r", encoding="utf-8") as fp:
-            loaded = yaml.safe_load(fp)
+        try:
+            with path.open("r", encoding="utf-8") as fp:
+                loaded = yaml.safe_load(fp)
+        except yaml.YAMLError as exc:
+            raise _friendly_yaml_error(path, exc) from exc
         if isinstance(loaded, dict):
             data = loaded
         elif loaded is not None:
@@ -839,4 +928,6 @@ def load_config(
 
     data = _apply_env_overrides(data, dict(os.environ))
     data = _resolve_models(data)
-    return AppConfig.model_validate(data)
+    config = AppConfig.model_validate(data)
+    _validate_model_refs(config)
+    return config
