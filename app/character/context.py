@@ -1,10 +1,11 @@
 """CharacterContextBuilder: composes the full prompt for one chat turn.
 
-Priority order (spec §51) — later blocks never override earlier ones:
+Priority order (spec v0.3 §51) — later blocks never override earlier ones:
 
     system rules → character identity/persona → behavior rules
     → relationship → relevant memory → conversation context → user message
-"""
+
+本文件同时引用 v0.3 / v0.8 / v0.9 / v1.2 §n（按层混版）；裸 §N 才指 v2.0。"""
 
 from __future__ import annotations
 
@@ -28,7 +29,7 @@ _INTERNAL_BOUNDARY = (
     "不编造现实世界中可验证的真实身份信息。不要输出功能菜单或能力列表。"
 )
 
-# v0.8 reality boundary (spec §3/§45): the world is fiction, and it must stay
+# v0.8 reality boundary (spec v0.8 §3/§45): the world is fiction, and it must stay
 # inside the character's private life instead of claiming real-world events.
 _REALITY_BOUNDARY = (
     "现实边界（重要）：下面提到的事都发生在你自己的小世界里（房间、游戏、剧、歌、朋友之间）。"
@@ -152,7 +153,7 @@ class CharacterContextBuilder:
         system_parts.extend(persona_blocks)
         trace("persona", bool(persona_blocks), "always first")
 
-        # 2b. Sense of time — natural language, never a raw timestamp (spec §62)
+        # 2b. Sense of time — natural language, never a raw timestamp (spec v0.8 §62)
         if time_context is not None:
             time_line = time_context.describe()
             if time_context.is_sleeping:
@@ -177,14 +178,14 @@ class CharacterContextBuilder:
         # model can tell "晚安" said at 4 a.m. apart from the current evening.
         history = self._tag_stale_history(history, time_context)
 
-        # 3b. Her own persistent life (v0.8 §41) — fiction, clearly bounded (§3)
+        # 3b. Her own persistent life (v0.8 §41) — fiction, clearly bounded (v0.8 §3)
         world_block = self._world_block(world)
         if world_block:
             system_parts.append(world_block)
         trace("world", bool(world_block), "world runtime on/off")
 
         # 3c. Character continuity (v1.2): the short-timescale "same person"
-        # state — current interest, unfinished things, last exchange (§52-§54).
+        # state — current interest, unfinished things, last exchange (v1.2 §52-§54).
         continuity_block = self._continuity_block(continuity)
         if continuity_block:
             system_parts.append(continuity_block)
@@ -204,14 +205,14 @@ class CharacterContextBuilder:
         trace("relationship", True)
 
         # 4b. How this user usually chats (v1.2 §38-§43): observed habits with
-        # confidence — user-specific context, never persona mutation (§115).
+        # confidence — user-specific context, never persona mutation (v1.2 §115).
         profile_block = self._profile_block(interaction_profile)
         if profile_block:
             system_parts.append(profile_block)
         trace("interaction_profile", bool(profile_block), "insufficient confidence yet")
 
         if is_group:
-            # §85: participation is decided by Social Cognition upstream; the
+            # v0.9 §85: participation is decided by Social Cognition upstream; the
             # prompt no longer carries the old "only answer @" hard rule.
             system_parts.append("这是群聊场景，像群里一个自然聊天的成员一样说话。")
 
@@ -290,7 +291,7 @@ class CharacterContextBuilder:
         return name or None
 
     def _continuity_block(self, continuity: dict | None) -> str:
-        """The v1.2 continuity layer (§52-§54): compact, natural, optional."""
+        """The v1.2 continuity layer (v1.2 §52-§54): compact, natural, optional."""
         if not continuity:
             return ""
         bits: list[str] = []
@@ -323,7 +324,7 @@ class CharacterContextBuilder:
 
     @staticmethod
     def _profile_block(interaction_profile: Any) -> str:
-        """Observed user habits (§38-§43): only confident, decayed patterns."""
+        """Observed user habits (v1.2 §38-§43): only confident, decayed patterns."""
         if interaction_profile is None:
             return ""
         patterns = getattr(interaction_profile, "patterns", {}) or {}
@@ -347,7 +348,7 @@ class CharacterContextBuilder:
 
     @staticmethod
     def _shared_block(shared_experiences: list | None) -> str:
-        """Shared-history layer (§32-§37): natural reference, never a report."""
+        """Shared-history layer (v1.2 §32-§37): natural reference, never a report."""
         if not shared_experiences:
             return ""
         bits = [str(item).strip() for item in shared_experiences if str(item).strip()]

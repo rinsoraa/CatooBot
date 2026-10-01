@@ -2,7 +2,7 @@
 
 Unlike :mod:`app.message.splitter` (a hard length safety net for the OneBot
 transport), this is a *behavioural* splitter: it prefers paragraph and sentence
-boundaries, never cuts mid-word, and only splits sometimes (spec §9/§10) —
+boundaries, never cuts mid-word, and only splits sometimes (v0.4 规格，原文缺失（§9/§10）) —
 the number of bubbles varies with the content and configuration.
 """
 

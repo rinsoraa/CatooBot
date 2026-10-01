@@ -2,7 +2,7 @@
 
 Precedence: active row in the ``personas`` table (edited via WebUI)
 > ``character:`` section of config.yaml > empty default persona. A failed
-reload keeps the last valid persona (spec §53).
+reload keeps the last valid persona (spec v0.3 §53).
 """
 
 from __future__ import annotations

@@ -1,9 +1,10 @@
 """Response planner: turn one AI reply into a delivery plan.
 
-Responsibilities are deliberately narrow (spec §11/§46): *behaviour* (delay +
+Responsibilities are deliberately narrow (v0.4 规格，原文缺失（§11/§46）): *behaviour* (delay +
 bubble count) is decided here; the *language* was decided by the LLM. The
 planner never rewrites the character's words.
-"""
+
+本文件引用 v0.4 行为引擎 §n（该规格未入库）；媒体附件另引 v1.1。"""
 
 from __future__ import annotations
 

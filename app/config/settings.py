@@ -7,7 +7,9 @@ Precedence (highest wins):
 
 Secrets such as the OneBot access token should live in ``.env`` (which is
 git-ignored), never in YAML committed to the repository.
-"""
+
+本文件按配置段引用多个版本的 §n（v0.4 缺失 / v0.5 / v0.6 / v0.7 / v0.8 / v0.9 /
+v1.1 / v1.2 / v2.0）。"""
 
 from __future__ import annotations
 
@@ -204,7 +206,7 @@ class CharacterConfig(BaseModel):
 
 
 class MemoryWeightsConfig(BaseModel):
-    """Hybrid ranking weights (spec §21) — always configurable, never hardcoded."""
+    """Hybrid ranking weights (spec v0.5 §21) — always configurable, never hardcoded."""
 
     semantic: float = Field(default=0.40, ge=0.0)
     keyword: float = Field(default=0.20, ge=0.0)
@@ -217,11 +219,11 @@ class MemoryWeightsConfig(BaseModel):
 class MemoryRetrievalConfig(BaseModel):
     top_k: int = Field(default=8, ge=1, le=50)
     weights: MemoryWeightsConfig = Field(default_factory=MemoryWeightsConfig)
-    # Relevance guard (spec §98): nothing below this final score is injected...
+    # Relevance guard (spec v0.5 §98): nothing below this final score is injected...
     min_final_score: float = Field(default=0.18, ge=0.0, le=1.0)
     # ...and a memory must also show *some* relevance evidence (semantic or
     # keyword), so importance/recency alone never pulls an unrelated fact in
-    # (§22). Kept deliberately low: Chinese function words dilute lexical
+    # (v0.5 §22). Kept deliberately low: Chinese function words dilute lexical
     # overlap, and min_final_score already does the strict filtering.
     min_relevance: float = Field(default=0.05, ge=0.0, le=1.0)
     keyword_candidates: int = Field(default=20, ge=1, le=200)
@@ -297,7 +299,7 @@ class WebConfig(BaseModel):
 
 
 class BehaviorReplyTimingConfig(BaseModel):
-    """Reply delay model (spec §7): probabilistic band, never a fixed sleep."""
+    """Reply delay model (v0.4 规格，原文缺失（§7）): probabilistic band, never a fixed sleep."""
 
     enabled: bool = True
     min_delay: float = Field(default=0.8, ge=0.0)
@@ -314,7 +316,7 @@ class BehaviorReplyTimingConfig(BaseModel):
 
 
 class BehaviorChunkingConfig(BaseModel):
-    """Natural message splitting (spec §9/§10) — not every reply is split."""
+    """Natural message splitting (v0.4 规格，原文缺失（§9/§10）) — not every reply is split."""
 
     enabled: bool = True
     chunk_probability: float = Field(default=0.20, ge=0.0, le=1.0)
@@ -326,7 +328,7 @@ class BehaviorChunkingConfig(BaseModel):
 
 
 class BehaviorScheduleConfig(BaseModel):
-    """Sleep / DND / night windows in the character's timezone (spec §20/§43)."""
+    """Sleep / DND / night windows in the character's timezone (v0.4 规格，原文缺失（§20/§43）)."""
 
     sleep_enabled: bool = True
     sleep_start: str = "00:30"
@@ -353,7 +355,7 @@ class BehaviorGroupConfig(BaseModel):
 
 
 class BehaviorInitiativeConfig(BaseModel):
-    """Proactive chat (spec §21-§33). Disabled by default — opt in via WebUI."""
+    """Proactive chat (spec v0.8 §21-§33). Disabled by default — opt in via WebUI."""
 
     enabled: bool = False
     min_interval_minutes: int = Field(default=120, ge=1)
@@ -381,7 +383,7 @@ class BehaviorConfig(BaseModel):
 
 
 class SocialContinuationConfig(BaseModel):
-    """Active-conversation follow-up window (spec §13/§48)."""
+    """Active-conversation follow-up window (spec v0.9 §13/§48)."""
 
     enabled: bool = True
     window_minutes: int = Field(default=10, ge=1)
@@ -389,7 +391,7 @@ class SocialContinuationConfig(BaseModel):
 
 
 class SocialObserverConfig(BaseModel):
-    """5-message observation trigger (spec §24/§25)."""
+    """5-message observation trigger (spec v0.9 §24/§25)."""
 
     batch_size: int = Field(default=5, ge=1)
     min_context_messages: int = Field(default=20, ge=1)
@@ -397,20 +399,20 @@ class SocialObserverConfig(BaseModel):
 
 
 class SocialParticipationConfig(BaseModel):
-    """Hard frequency limits on autonomous group speech (spec §91)."""
+    """Hard frequency limits on autonomous group speech (spec v0.9 §91)."""
 
     daily_limit: int = Field(default=30, ge=0)
     cooldown_seconds: int = Field(default=90, ge=0)
 
 
 class SocialGroupContextConfig(BaseModel):
-    """Per-group short-term message buffer (spec §10)."""
+    """Per-group short-term message buffer (spec v0.9 §10)."""
 
     max_messages: int = Field(default=30, ge=1)
 
 
 class SocialThresholdsConfig(BaseModel):
-    """Structured-decision thresholds (spec §96). Scores are rules, not dice."""
+    """Structured-decision thresholds (spec v0.9 §96). Scores are rules, not dice."""
 
     follow_up: float = Field(default=0.75, ge=0.0, le=1.0)
     topic_relevance: float = Field(default=0.70, ge=0.0, le=1.0)
@@ -427,7 +429,7 @@ class SocialConfig(BaseModel):
 
     Replaces "participation = random probability" with structured social
     judgment. The legacy ``behavior.group.participation_probability`` stays as
-    a low-weight tie-breaker only (spec §92), never the decision itself.
+    a low-weight tie-breaker only (spec v0.9 §92), never the decision itself.
     """
 
     enabled: bool = True
@@ -446,7 +448,7 @@ class SocialConfig(BaseModel):
 
 
 class ToolRateLimitConfig(BaseModel):
-    """Per-scope call limits for a tool (spec §33/§78)."""
+    """Per-scope call limits for a tool (spec v0.6 §33/§78)."""
 
     per_user_per_minute: int = Field(default=10, ge=0)
     per_group_per_minute: int = Field(default=20, ge=0)
@@ -454,7 +456,7 @@ class ToolRateLimitConfig(BaseModel):
 
 
 class ToolPermissionsConfig(BaseModel):
-    """Which risk levels may run at all (v0.6: low-risk only, spec §22/§106)."""
+    """Which risk levels may run at all (v0.6: low-risk only, spec v0.6 §22/§106)."""
 
     allowed_risk_levels: list[str] = Field(default_factory=lambda: ["low"])
     default_enabled: bool = True
@@ -471,7 +473,7 @@ class ToolOverrideConfig(BaseModel):
 
 
 class ToolsConfig(BaseModel):
-    """Tool runtime settings (spec §19/§34/§35/§52/§71)."""
+    """Tool runtime settings (spec v0.6 §19/§34/§35/§52/§71)."""
 
     enabled: bool = False  # opt-in: no tool calls until configured
     # "json" = model answers with a structured decision (works everywhere);
@@ -490,7 +492,7 @@ class ToolsConfig(BaseModel):
 
 
 class AgentBudgetConfig(BaseModel):
-    """Hard caps for one agent task (spec §29 — never unbounded)."""
+    """Hard caps for one agent task (spec v0.7 §29 — never unbounded)."""
 
     max_steps: int = Field(default=8, ge=1, le=30)
     max_tool_calls: int = Field(default=6, ge=0, le=30)
@@ -500,12 +502,12 @@ class AgentBudgetConfig(BaseModel):
 
 
 class AgentModeConfig(BaseModel):
-    """Which task classes the agent may handle (spec §58)."""
+    """Which task classes the agent may handle (spec v0.7 §58)."""
 
     simple: bool = True
     tool_assisted: bool = True
     multi_step: bool = True
-    long_running: bool = False  # framework only in v0.7 (spec §15/§50)
+    long_running: bool = False  # framework only in v0.7 (spec v0.7 §15/§50)
 
 
 class AgentModelConfig(BaseModel):
@@ -524,15 +526,15 @@ class AgentConfig(BaseModel):
     """Agent Runtime settings (v0.7)."""
 
     enabled: bool = True
-    autonomy: str = "normal"  # manual | assisted | normal (spec §59)
+    autonomy: str = "normal"  # manual | assisted | normal (spec v0.7 §59)
     mode: AgentModeConfig = Field(default_factory=AgentModeConfig)
     budget: AgentBudgetConfig = Field(default_factory=AgentBudgetConfig)
     planner: AgentModelConfig = Field(default_factory=AgentModelConfig)
     evaluator: AgentEvaluatorConfig = Field(default_factory=AgentEvaluatorConfig)
     background: dict[str, Any] = Field(default_factory=lambda: {"enabled": False})
-    # how many observations are fed back into the model at once (spec §143)
+    # how many observations are fed back into the model at once (spec v0.7 §143)
     max_observations_in_context: int = Field(default=6, ge=1, le=20)
-    # cancel / pause / resume phrases recognized in normal chat (spec §36/§37)
+    # cancel / pause / resume phrases recognized in normal chat (spec v0.7 §36/§37)
     cancel_phrases: list[str] = Field(
         default_factory=lambda: [
             "算了",
@@ -617,7 +619,7 @@ class ConversationConfig(BaseModel):
 class ContinuityConfig(BaseModel):
     """Character Continuity (v1.2 §23-§31): short-timescale "same person" state.
 
-    Every field decays by its own TTL — nothing here is permanent (§105/§106).
+    Every field decays by its own TTL — nothing here is permanent (v1.2 §105/§106).
     """
 
     enabled: bool = True
@@ -641,7 +643,7 @@ class SandboxConfig(BaseModel):
     tick_seconds: int = Field(default=600, ge=30)
     simulation_seed: int = 0
     bible_path: str = "config/character_bible.md"
-    allow_ai_decisions: bool = True  # LLM only for ambiguous choices (§194)
+    allow_ai_decisions: bool = True  # LLM only for ambiguous choices (v2.0 §194)
     reset_on_bible_change: bool = True  # re-initialize when the bible changes
     max_events_keep: int = Field(default=500, ge=50)
     snapshot_keep: int = Field(default=48, ge=1, le=500)

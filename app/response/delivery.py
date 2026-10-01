@@ -114,7 +114,7 @@ class MessageDelivery:
         return sent
 
     async def _send_attachment(self, target: DeliveryTarget, attachment: Any) -> int:
-        """Send one sticker / native face via the MediaRuntime sender (§32)."""
+        """Send one sticker / native face via the MediaRuntime sender (v1.1 §32)."""
         media = getattr(self._bot, "media", None)
         if media is None:
             return -1

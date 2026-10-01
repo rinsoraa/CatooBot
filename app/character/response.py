@@ -4,7 +4,7 @@ Looks for internal-implementation leaks (project codename, protocol names,
 model names, API keys, prompt dumps). On detection, logs and asks the engine
 for one regeneration; persistent leaks are stripped conservatively rather
 than sent. Natural-language words like "AI" / "机器人" in ordinary sentences
-are NOT touched (spec §39).
+are NOT touched (spec v0.3 §39).
 """
 
 from __future__ import annotations

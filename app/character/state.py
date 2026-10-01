@@ -1,10 +1,11 @@
 """Character narrative state: mood / energy / activity / current_focus.
 
 This is the character's *storytelling* state, not psychology. Since v0.4 the
-mood follows a **ladder with inertia** (spec §14): it moves at most one step
+mood follows a **ladder with inertia** (spec v0.3 §14): it moves at most one step
 per change, changes need a source, and it drifts back toward neutral over
 time — so "happy → sad" inside one message is impossible.
-"""
+
+本文件同时引用 v0.3 / v0.8 / v1.0 §n（状态字段随版本扩展）。"""
 
 from __future__ import annotations
 
@@ -55,15 +56,15 @@ class CharacterState(BaseModel):
     activity_since: int = 0
     current_focus: str = ""
     updated_at: int = 0
-    # --- v0.8 world fields: EXTEND this one state, never a parallel copy (§8/§9)
+    # --- v0.8 world fields: EXTEND this one state, never a parallel copy (v0.8 §8/§9)
     location: str = ""  # fictional place: 房间 / 客厅 / 便利店
     social_state: str = "alone"  # alone / chatting / with_friends / quiet
     schedule_state: str = "awake"  # awake / resting / sleeping / busy
     current_goal: str = ""  # goal_id the character is pursuing
     current_project: str = ""  # project_id she is slowly building
     last_activity_change: int = 0
-    last_change_reason: str = ""  # why the world moved last (spec §20)
-    # --- v1.0 episode fields: activity is a derived snapshot of the episode (§7/§8)
+    last_change_reason: str = ""  # why the world moved last (spec v0.8 §20)
+    # --- v1.0 episode fields: activity is a derived snapshot of the episode (v1.0 §7/§8)
     current_activity_episode_id: str = ""
     activity_started_at: int = 0
     activity_planned_end_at: int = 0

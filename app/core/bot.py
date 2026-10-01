@@ -4,7 +4,8 @@ The Bot is protocol-agnostic: it holds an :class:`Adapter` and never imports
 OneBot/NapCat code directly. Since v0.3 the QQ surface is natural-language
 only — the command registry stays as internal infrastructure but nothing
 mounts QQ user commands.
-"""
+
+本文件同时引用 v0.8 / v1.1 / v2.0 §n（装配层混版）；裸 §N 才指 v2.0。"""
 
 from __future__ import annotations
 
@@ -194,7 +195,7 @@ class Bot:
             clock=self._clock,
         )
         # v2.0 Character Life Sandbox: when enabled it IS her world — the
-        # legacy WorldRuntime does not start at all (§17-§19).
+        # legacy WorldRuntime does not start at all (v2.0 §17-§19).
         self.sandbox = None
         self.lifecycle_manager = None
         if config.sandbox.enabled:
@@ -298,7 +299,7 @@ class Bot:
         stored_version = await sandbox.store.state_get("bible_version")
         first_v2_boot = not stored_version
         changed = bool(stored_version) and stored_version != sandbox.bible.version
-        # §3/§120: v2.0's first boot (or a changed bible) wipes the old
+        # v2.0 §3/§120: v2.0's first boot (or a changed bible) wipes the old
         # character's data once — archived to data/character_reset_backup first.
         if (changed or first_v2_boot) and self.config.sandbox.reset_on_bible_change:
             assert self.lifecycle_manager is not None
@@ -320,7 +321,7 @@ class Bot:
             if self.continuity is not None:
                 await self.continuity.reload()
         await sandbox.start()
-        # §2: the bible is the canonical source for who she is — the WebUI
+        # v2.0 §2: the bible is the canonical source for who she is — the WebUI
         # /character page and the chat prompt both read this persona.
         if self.config.sandbox.sync_persona_from_bible:
             try:
@@ -414,7 +415,7 @@ class Bot:
         shared_loop = self.behavior.enabled or self.sandbox is not None
         if self.consolidation_scheduler is not None and self.consolidation_scheduler.enabled:
             if shared_loop:
-                # Rides the shared scheduler instead of owning a second loop (§34).
+                # Rides the shared scheduler instead of owning a second loop (v0.8 §34).
                 self.consolidation_scheduler.external_driver = True
                 self.scheduler.register_job(
                     ScheduledJob(
@@ -559,7 +560,7 @@ class Bot:
 
         await self._start_sandbox_jobs()
 
-        # v1.1: background sticker indexer (never blocks QQ from coming up, §16).
+        # v1.1: background sticker indexer (never blocks QQ from coming up, v1.1 §16).
         if self.media.enabled and self.config.media.indexer_enabled:
             asyncio.create_task(self._run_sticker_indexer())
 
@@ -672,7 +673,7 @@ class Bot:
         )
 
     async def _run_sticker_indexer(self) -> None:
-        """Background scan of the sticker import directory (§15-§17)."""
+        """Background scan of the sticker import directory (v1.1 §15-§17)."""
         try:
             stats = await self.media.indexer.scan()
             self.log.info("[Media.Indexer] scan done: %s", stats)

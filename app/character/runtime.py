@@ -9,9 +9,10 @@ into a prompt (ContextBuilder), gets a reply from the AIEngine, screens it
 (ResponseProcessor), then hands back text. Memory extraction is scheduled by
 the caller after the reply is delivered.
 
-Degrade rules (spec §53): memory unavailable → chat without memories;
+Degrade rules (spec v0.3 §53): memory unavailable → chat without memories;
 state unavailable → defaults; persona reload failure → keep last persona.
-"""
+
+本文件同时引用 v0.3 / v0.6 / v0.7 / v0.8 §n（角色+工具+Agent 混版）。"""
 
 from __future__ import annotations
 
@@ -208,8 +209,8 @@ class CharacterRuntime:
         """One AI turn; when tools are on, the bounded tool loop runs here.
 
         Tool failures never propagate: the model is told the tool failed and
-        answers honestly (spec §65/§66). Tool results are never written to
-        memory (§29/§61) — only the reply text returns.
+        answers honestly (spec v0.6 §65/§66). Tool results are never written to
+        memory (v0.6 §29/§61) — only the reply text returns.
         """
         tool_context = self._tool_context(
             session_id=session_id, user_id=user_id, time_context=time_context, is_group=is_group
@@ -280,7 +281,7 @@ class CharacterRuntime:
         is_group: bool,
         group_id: int | None = None,
     ) -> Any:
-        """Tool context carries only what a tool legitimately needs (spec §30)."""
+        """Tool context carries only what a tool legitimately needs (spec v0.6 §30)."""
         from app.tools.models import ToolContext
 
         return ToolContext(
@@ -292,7 +293,7 @@ class CharacterRuntime:
             timezone=getattr(time_context, "timezone", "") or "Asia/Singapore",
             current_datetime=getattr(time_context, "local_time", ""),
             is_group=is_group,
-            # Read-only view of her life for tools/agent (§18): they may know
+            # Read-only view of her life for tools/agent (v0.6 §18): they may know
             # what she is doing, but only the sandbox ever writes it.
             metadata=self._life_metadata(),
         )
@@ -360,7 +361,7 @@ class CharacterRuntime:
                 "plan_invalid",
             ):
                 # The goal was unclear (e.g. no location): let the character ask
-                # the clarifying question instead of announcing a failure (§111).
+                # the clarifying question instead of announcing a failure (v0.7 §111).
                 self._log.info(
                     "[Agent] goal unclear (%s); answering as normal chat",
                     result.error_type,
@@ -370,7 +371,7 @@ class CharacterRuntime:
             if not result.is_usable:
                 narrate().task("这次没查出东西，按普通聊天回", detail=result.status)
                 return None  # nothing to say beyond the normal reply
-            prompt = (  # facts travel as untrusted reference data (spec §109)
+            prompt = (  # facts travel as untrusted reference data (spec v0.7 §109)
                 result.to_prompt_block() + "\n\n请基于以上结果，用你自己的语气自然地回答用户。"
                 "不要提及工具、计划、步骤或任务。"
             )
@@ -392,7 +393,7 @@ class CharacterRuntime:
     async def _control_reply(
         self, messages: list[ChatMessage], temperature: float, control: str
     ) -> str:
-        """Natural acknowledgement of cancel/pause/resume (spec §97/§98/§99)."""
+        """Natural acknowledgement of cancel/pause/resume (spec v0.7 §97/§98/§99)."""
         hints = {
             "cancel": (
                 "用户刚打断了你正在做的事（不用继续了）。用一句话自然回应，不要再执行任何任务。"
@@ -423,7 +424,7 @@ class CharacterRuntime:
         """Generate a proactive opener the character has a *reason* to send.
 
         Returns "" when nothing sensible could be produced — the caller then
-        skips sending (spec §60: no reason, no message).
+        skips sending (spec v0.8 §60: no reason, no message).
         """
         reason_hint = {
             "unfinished_topic": "你想接着上次没聊完的话题说一句话",

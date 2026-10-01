@@ -1,6 +1,6 @@
 """Reply timing: how long the character 'takes' before answering.
 
-The delay is a **band**, not a constant (spec §7): reading time + typing time,
+The delay is a **band**, not a constant (v0.4 规格，原文缺失（§7）): reading time + typing time,
 modulated by character state, time of day, relationship and conversation
 rhythm, then jittered. Deterministic under an injected RNG for tests.
 """
