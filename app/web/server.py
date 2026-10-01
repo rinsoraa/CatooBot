@@ -7,6 +7,7 @@ never blocks the QQ pipeline — if it fails to start, chat continues.
 
 from __future__ import annotations
 
+import asyncio
 import html
 import json
 import logging
@@ -25,6 +26,13 @@ from app.web.pages import (
     sandbox_page,
     social_page,
 )
+from app.web.realtime import (
+    STATUS_INTERVAL,
+    NarrationFeed,
+    RealtimeHub,
+    attach_narration_feed,
+    detach_narration_feed,
+)
 from app.web.services.admin import AdminService
 from app.web.services.agent import AgentAdminService
 from app.web.services.behavior import BehaviorService
@@ -40,6 +48,52 @@ if TYPE_CHECKING:
     from app.core.bot import Bot
 
 SESSION_COOKIE = "catoobot_session"
+
+#: Live feed for /logs (Task 17). Vanilla JS, no build step: connect to the
+#: authenticated WebSocket, append narration lines, show the status snapshot,
+#: reconnect with backoff when the socket drops (page navigation closes it).
+_LIVE_FEED_JS = """
+<div class="card"><h3>实时播报 <span class="muted" id="live-state">连接中…</span></h3>
+<div class="muted" id="live-status">—</div>
+<pre id="live-feed" style="max-height:320px;overflow:auto"></pre></div>
+<script>
+(function () {
+  var feed = document.getElementById('live-feed');
+  var state = document.getElementById('live-state');
+  var status = document.getElementById('live-status');
+  var attempts = 0;
+  function append(line) {
+    feed.textContent += line + "\\n";
+    var lines = feed.textContent.split("\\n");
+    if (lines.length > 120) { feed.textContent = lines.slice(-100).join("\\n") + "\\n"; }
+    feed.scrollTop = feed.scrollHeight;
+  }
+  function connect() {
+    var proto = location.protocol === 'https:' ? 'wss://' : 'ws://';
+    var ws = new WebSocket(proto + location.host + '/ws/events');
+    ws.onopen = function () { attempts = 0; state.textContent = '已连接'; };
+    ws.onmessage = function (event) {
+      var msg = JSON.parse(event.data);
+      if (msg.topic === 'narration') {
+        append((msg.data.channel ? '[' + msg.data.channel + '] ' : '') + msg.data.message);
+      } else if (msg.topic === 'status') {
+        var d = msg.data;
+        status.textContent = (d.online ? '在线' : '离线') + ' · ' + (d.sandbox || '沙盒未启用')
+          + ' · AI 请求 ' + (d.metrics && d.metrics.ai_requests || 0)
+          + ' · 失败 ' + (d.metrics && d.metrics.ai_errors || 0);
+      }
+    };
+    ws.onclose = function () {
+      attempts += 1;
+      var wait = Math.min(30000, 1000 * Math.pow(2, attempts));
+      state.textContent = '已断开，' + Math.round(wait / 1000) + 's 后重连…';
+      setTimeout(connect, wait);
+    };
+  }
+  connect();
+})();
+</script>
+"""
 
 log = logging.getLogger("CatooBot.Web")
 
@@ -68,11 +122,15 @@ class WebServer:
         self._sticker_admin = StickerAdminService(bot)
         self._auth = getattr(bot, "web_auth", None) or AuthService(config, bot.database)
         self._runner: web.AppRunner | None = None
+        self._hub = RealtimeHub(metrics=getattr(bot, "metrics", None))
+        self._narration_feed: NarrationFeed | None = None
 
     # ------------------------------------------------------------- lifecycle
 
     async def start(self) -> None:
         await self._auth.ensure_bootstrap_user()
+        # Task 17: stream narration lines to logged-in browsers.
+        self._narration_feed = attach_narration_feed(self._hub)
         app = web.Application(middlewares=[self._auth_middleware])
         app.router.add_get("/login", self._login_page)
         app.router.add_post("/login", self._login_submit)
@@ -105,6 +163,7 @@ class WebServer:
         app.router.add_get("/prompts", self._prompts_page)
         app.router.add_post("/prompts", self._prompts_save)
         app.router.add_get("/logs", self._logs_page)
+        app.router.add_get("/ws/events", self._ws_events)
         app.router.add_get("/agent", self._agent_page)
         app.router.add_get("/agent/tasks", self._agent_tasks_page)
         app.router.add_get("/agent/tasks/{task_id}", self._agent_task_detail_page)
@@ -179,6 +238,9 @@ class WebServer:
         log.info("WebUI listening on http://%s:%d", self._config.host, self._config.port)
 
     async def stop(self) -> None:
+        if self._narration_feed is not None:
+            detach_narration_feed(self._narration_feed)
+            self._narration_feed = None
         if self._runner is not None:
             await self._runner.cleanup()
             self._runner = None
@@ -193,6 +255,8 @@ class WebServer:
             return await handler(request)
         token = request.cookies.get(SESSION_COOKIE)
         if not self._auth.validate(token):
+            if request.path.startswith("/ws/"):
+                raise web.HTTPUnauthorized()  # an upgrade cannot follow a redirect
             raise web.HTTPFound("/login")
         return await handler(request)
 
@@ -836,7 +900,7 @@ class WebServer:
 <label>等级</label><select name="level">{options}</select>
 <label>关键词</label><input name="q" value="{esc(keyword)}">
 <p><button class="btn btn-primary">过滤</button></p></form></div>
-<div class="card"><pre>{esc(chr(10).join(lines)) or "（无日志）"}</pre></div>"""
+<div class="card"><pre>{esc(chr(10).join(lines)) or "（无日志）"}</pre></div>{_LIVE_FEED_JS}"""
         return web.Response(
             text=layout("日志", "/logs", body, subtitle="最近的运行日志，含她的内心播报"),
             content_type="text/html",
@@ -880,6 +944,69 @@ class WebServer:
             text=layout("运行", "/runtime", body, subtitle="运行时开关、插件重载与健康检查"),
             content_type="text/html",
         )
+
+    # ------------------------------------------------------- live websocket
+
+    async def _ws_events(self, request: web.Request) -> web.WebSocketResponse:
+        """Live narration + status for one logged-in browser (Task 17).
+
+        The session cookie is checked by the auth middleware (401, never a
+        redirect, because an upgrade cannot follow one). A subscriber that
+        cannot keep up loses the oldest messages — publishing never blocks.
+        """
+        ws = web.WebSocketResponse(heartbeat=30.0)
+        await ws.prepare(request)
+        queue = self._hub.subscribe()
+        # A second task reads (and ignores) client frames: it is how a clean
+        # close is noticed at all, since sending is the only other signal.
+        reader = asyncio.create_task(self._ws_drain(ws))
+        status_task = asyncio.create_task(self._ws_status_loop(ws))
+        try:
+            await ws.send_json(
+                {"topic": "hello", "ts": int(time.time()), "data": self._hub.stats()}
+            )
+            while not ws.closed:
+                getter = asyncio.create_task(queue.get())
+                done, _pending = await asyncio.wait(
+                    {getter, reader}, return_when=asyncio.FIRST_COMPLETED
+                )
+                if reader in done:  # the browser went away
+                    getter.cancel()
+                    break
+                await ws.send_json(getter.result())
+        except (ConnectionResetError, asyncio.CancelledError, RuntimeError):
+            pass  # the browser went away (or the server is shutting down)
+        finally:
+            for task in (reader, status_task):
+                task.cancel()
+            await asyncio.gather(reader, status_task, return_exceptions=True)
+            self._hub.unsubscribe(queue)
+        return ws
+
+    @staticmethod
+    async def _ws_drain(ws: web.WebSocketResponse) -> None:
+        """Consume client frames until the peer closes (returning means closed)."""
+        try:
+            async for _message in ws:
+                pass
+        except Exception:  # noqa: BLE001 - a close is not an error
+            return
+
+    async def _ws_status_loop(self, ws: web.WebSocketResponse) -> None:
+        while not ws.closed:
+            await asyncio.sleep(STATUS_INTERVAL)
+            if ws.closed:
+                return
+            try:
+                await ws.send_json(
+                    {
+                        "topic": "status",
+                        "ts": int(time.time()),
+                        "data": await self._admin.live_status(),
+                    }
+                )
+            except (ConnectionResetError, RuntimeError):
+                return
 
     async def _api_runtime_action(self, request: web.Request) -> web.Response:
         result = await self._admin.runtime_action(request.match_info["action"])

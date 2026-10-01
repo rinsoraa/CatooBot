@@ -29,6 +29,39 @@ class AdminService:
 
     # ------------------------------------------------------------- dashboard
 
+    async def live_status(self) -> dict[str, Any]:
+        """Small, whitelisted snapshot for the live WebSocket (Task 17).
+
+        Only what an authenticated admin can already read on a page: her state
+        line, the model router snapshot, counters and the loop watchdog. No
+        conversation text, no raw protocol payloads.
+        """
+        bot = self.bot
+        sandbox = ""
+        sandbox_engine = getattr(bot, "sandbox", None)
+        if sandbox_engine is not None:
+            try:
+                sandbox = sandbox_engine.status_line()
+            except Exception:  # noqa: BLE001 - a status snapshot must never raise
+                sandbox = ""
+        watchdog = getattr(bot, "watchdog", None)
+        return {
+            "online": bot.is_connected,
+            "sandbox": sandbox,
+            "models": [
+                {
+                    "name": model["name"],
+                    "enabled": model["enabled"],
+                    "cooldown": model["in_cooldown"],
+                    "fails": model["failure_count"],
+                }
+                for model in bot.ai.router.snapshot()
+            ],
+            "metrics": bot.metrics.snapshot(),
+            "watchdog": watchdog.stats() if watchdog is not None else {},
+            "plugins": bot.plugins.failure_counts,
+        }
+
     async def dashboard(self) -> dict[str, Any]:
         bot = self.bot
         router = bot.ai.router

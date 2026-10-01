@@ -53,7 +53,10 @@ _NAME_STYLE: tuple[tuple[str, str], ...] = (
 
 _configured = False
 
-_SECRET_PATTERN = re.compile(r"(access[_-]?token|authorization|bearer)[=: ]+\S+", re.IGNORECASE)
+_SECRET_PATTERN = re.compile(
+    r"\b(access[_-]?token|token|authorization|bearer|api[_-]?key|password|secret)[=: ]+\S+",
+    re.IGNORECASE,
+)
 
 _ANSI_PATTERN = re.compile(r"\033\[[0-9;]*m")
 
