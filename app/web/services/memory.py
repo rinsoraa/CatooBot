@@ -178,11 +178,21 @@ class MemoryAdminService:
             "results": [item.to_dict() for item in scored],
         }
 
+    def _extraction_health(self) -> dict[str, Any]:
+        """Task 25: what the extraction report says, in operator terms."""
+        extractor = getattr(self.bot, "extractor", None)
+        return {
+            "available": extractor is not None,
+            "model": self.bot.config.memory.extraction.model,
+            "note": extractor.health_note() if extractor is not None else None,
+        }
+
     async def health(self) -> dict[str, Any]:
         if self.bot.consolidator is None:
-            return {"enabled": False}
+            return {"enabled": False, "extraction": self._extraction_health()}
         data = await self.bot.consolidator.health()
         data["enabled"] = True
+        data["extraction"] = self._extraction_health()
         data["embedding"] = (
             self.bot.embeddings.snapshot() if self.bot.embeddings is not None else {}
         )

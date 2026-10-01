@@ -24,6 +24,19 @@ logger = logging.getLogger("CatooBot.Config")
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 
+
+def project_path(value: str | Path) -> Path:
+    """Resolve a config path against PROJECT_ROOT instead of the current dir.
+
+    ``data/stickers`` in the config means "inside the project", so a bot
+    started from another working directory (a service manager, an IDE task, a
+    shell opened elsewhere) must see the same sticker library, media cache,
+    log file and plugin folder as one started from the repo root.
+    """
+    path = Path(value).expanduser()
+    return path if path.is_absolute() else PROJECT_ROOT / path
+
+
 # Environment variable -> (section, field) overrides for sensitive/deploy values.
 _ENV_OVERRIDES: dict[str, tuple[str, str]] = {
     "CATOOBOT_ONEBOT_ACCESS_TOKEN": ("onebot", "access_token"),

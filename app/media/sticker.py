@@ -12,9 +12,9 @@ import json
 import logging
 import time
 import uuid
-from pathlib import Path
 from typing import Any
 
+from app.config.settings import project_path
 from app.media.models import (
     AcquisitionDecision,
     ExpressionContext,
@@ -121,7 +121,7 @@ class StickerLibrary:
         self._db = database
         self._log = logger or logging.getLogger("CatooBot.Media")
         self._clock = clock
-        self.dir = Path(sticker_dir)
+        self.dir = project_path(sticker_dir)
         self.dir.mkdir(parents=True, exist_ok=True)
 
     # ----------------------------------------------------------------- read

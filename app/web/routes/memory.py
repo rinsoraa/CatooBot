@@ -221,6 +221,7 @@ class MemoryRoutes(WebContext):
         embedding = health.get("embedding", {})
         scheduler = health.get("scheduler", {})
         last = health.get("last_consolidation") or {}
+        extraction = health.get("extraction") or {}
 
         def stat(label: str, value: object) -> str:
             return f'<div class="stat"><span class="muted">{esc(label)}</span><b>{esc(value)}</b></div>'
@@ -244,10 +245,13 @@ class MemoryRoutes(WebContext):
                     "on" if health.get("retrieval", {}).get("semantic_available") else "off",
                 ),
                 ("未落盘（outbox）", health.get("outbox", {}).get("pending", 0)),
+                ("抽取模型", extraction.get("model") or "（默认）"),
             )
         )
+        banner = ui.flash("error", str(extraction.get("note") or ""))
         body = (
             self._memory_tabs("/memory/health")
+            + banner
             + f"""
 <div class="grid">{cards}</div>
 <div class="card"><h3>Embedding</h3>

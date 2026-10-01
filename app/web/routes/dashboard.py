@@ -133,7 +133,15 @@ class DashboardRoutes(WebContext):
             tip_text="常用的入口都放在这里，省得在左侧找",
         )
 
-        body = cards + quick + character_card + model_card
+        ai_notice = ""
+        ai = getattr(self._bot, "ai", None)
+        if self._bot.config.ai.enabled and (ai is None or not ai.enabled):
+            ai_notice = ui.flash(
+                "error",
+                "AI 已启用，但没有任何可用模型——聊天、记忆抽取与视觉识别都会直接跳过。"
+                "请在「配置 → AI 模型」检查 Provider 的 API Key 是否已配置、模型是否绑定到正确的 Provider。",
+            )
+        body = ai_notice + cards + quick + character_card + model_card
         return web.Response(
             text=layout(
                 "仪表盘",

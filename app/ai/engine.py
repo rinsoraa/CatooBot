@@ -74,7 +74,13 @@ class AIEngine:
 
         usable = self.router.model_count
         if config.enabled and usable == 0:
-            self.log.warning("AI is enabled but no usable model/provider was configured")
+            self.log.error(
+                "AI is enabled but no usable model is left: configured providers=%s, "
+                "configured models=%s — enable a provider (API key) or fix the model "
+                "list; the bot starts without AI (see 助手 in the dashboard)",
+                sorted(config.providers) or "none",
+                [m.name for m in config.models] or "none",
+            )
         self.enabled = bool(config.enabled and usable > 0)
         self.log.info(
             "AI engine initialized: enabled=%s models=%d providers=%d",

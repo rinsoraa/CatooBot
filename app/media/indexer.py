@@ -12,6 +12,7 @@ import time
 from pathlib import Path
 from typing import Any
 
+from app.config.settings import project_path
 from app.media.models import MediaContent
 from app.media.normalizer import average_hash, sha256_bytes
 from app.media.sticker import StickerAnalyzer, StickerLibrary
@@ -34,7 +35,7 @@ class StickerLibraryIndexer:
         self._library = library
         self._analyzer = analyzer
         self._vision = vision
-        self._dir = Path(import_dir)
+        self._dir = project_path(import_dir)
         self._version = analysis_version
         self._model = analysis_model
         self._log = logger or logging.getLogger("CatooBot.Media")

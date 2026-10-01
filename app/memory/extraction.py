@@ -18,13 +18,14 @@ import logging
 import time
 from typing import TYPE_CHECKING, Any
 
-from app.ai.errors import AIError
+from app.ai.errors import AIError, AITimeoutError, EmptyResponseError
 from app.ai.models import AIRequest, ChatMessage
 
 if TYPE_CHECKING:
     from app.ai.engine import AIEngine
     from app.config.settings import MemoryConfig
     from app.memory.manager import MemoryManager
+from app.utils.logger import redact
 
 EXTRACTION_PROMPT = """你是一个信息提取器。从下面的对话中提取值得长期记住的信息。
 
@@ -70,6 +71,8 @@ class MemoryExtractor:
         self._clock = clock
         self._metrics = metrics  # optional: dashboard counter (memories_extracted)
         self._tasks: set[asyncio.Task[None]] = set()
+        #: consecutive extractions that saved nothing (Task 25 health signal)
+        self._zero_streak = 0
 
     async def schedule(
         self,
@@ -80,7 +83,11 @@ class MemoryExtractor:
         assistant_reply: str,
     ) -> None:
         """Fire-and-forget extraction task; never raises into the caller."""
-        if not self.config.extraction.enabled or not self.engine.enabled:
+        if not self.config.extraction.enabled:
+            self._report("disabled", 0, 0, count_streak=False)
+            return
+        if not self.engine.enabled:
+            self._report("no_models", 0, 0, count_streak=False)
             return
         task = asyncio.create_task(
             self._extract(session_id, user_id, group_id, user_message, assistant_reply)
@@ -112,18 +119,71 @@ class MemoryExtractor:
             metadata={"purpose": "extraction"},
             model=self.config.extraction.model or None,
         )
+        reason = ""
+        retry_note = ""
+        response = None
         try:
             response = await asyncio.wait_for(
                 self.engine.chat(request), timeout=self.config.extraction.timeout
             )
-        except (TimeoutError, AIError) as exc:
-            self._log.debug("[Memory.Semantic] extraction skipped (%s)", exc)
-            return
+        except TimeoutError as exc:  # the outer wait_for fired
+            reason = "timeout"
+            self._log.warning("[Memory.Extract] 抽取超时：%s", exc)
+        except AITimeoutError as exc:
+            reason = "timeout"
+            self._log.warning("[Memory.Extract] 抽取超时：%s", exc)
+        except AIError as exc:
+            reason = self._classify_failure(exc)
+            retry_model = self.config.extraction.model
+            if reason == "empty_content":
+                # The router already retried and failed over; a *pinned* model is
+                # the one lever left, and the operator sets it in the config.
+                hint = (
+                    f"用 memory.extraction.model（{retry_model}）重试一次"
+                    if retry_model
+                    else "未配置 memory.extraction.model，无法换模型重试——"
+                    "请配置它或换一个非推理模型"
+                )
+                self._log.warning(
+                    "[Memory.Extract] %s（reasoning 模型只思考不输出）：%s", reason, hint
+                )
+                if retry_model:
+                    try:
+                        response = await asyncio.wait_for(
+                            self.engine.chat(request.with_model(retry_model)),
+                            timeout=self.config.extraction.timeout,
+                        )
+                        reason = ""
+                        retry_note = ""
+                        self._log.info("[Memory.Extract] 重试 %s 成功", retry_model)
+                    except EmptyResponseError:
+                        retry_note = " retry=failed"
+                        self._log.warning(
+                            "[Memory.Extract] 重试 %s 仍然返回空 content", retry_model
+                        )
+                    except TimeoutError:
+                        retry_note = " retry=failed"
+                        self._log.warning("[Memory.Extract] 重试 %s 超时", retry_model)
+                    except AIError as exc2:
+                        retry_note = " retry=failed"
+                        self._log.warning("[Memory.Extract] 重试 %s 失败：%s", retry_model, exc2)
+            else:
+                self._log.warning("[Memory.Extract] 抽取失败（%s）：%s", reason, exc)
         except Exception:  # noqa: BLE001 - extraction must never break chat
-            self._log.exception("Unexpected memory extraction error")
+            self._log.exception("[Memory.Extract] 抽取出现未预期错误")
+            self._report("ai_error", 0, 0)
             return
 
-        parsed = self._parse(response.content)
+        content = (response.content or "") if response is not None else ""
+        parsed: list[dict[str, Any]] = []
+        if not reason and not content.strip():
+            reason = "empty_content"
+        if not reason:
+            parsed = self._parse(content)
+            if not parsed:
+                reason = "parse_failed"
+                excerpt = redact(" ".join(content.split())[:200])
+                self._log.warning("[Memory.Extract] 无法解析模型输出（前 200 字）：%s", excerpt)
         if parsed:
             try:
                 from app.utils.narrator import narrate
@@ -136,9 +196,10 @@ class MemoryExtractor:
             except Exception:  # noqa: BLE001 - narration is cosmetic
                 pass
         saved = 0
+        skipped = 0
         for item in parsed:
             try:
-                await self._manager.remember(
+                memory = await self._manager.remember(
                     scope,
                     ref,
                     str(item.get("content", "")),
@@ -153,11 +214,72 @@ class MemoryExtractor:
                     temporal_scope=str(item.get("temporal_scope", "long_term")),
                     event_at=int(self._clock()) if item.get("layer") == "episodic" else None,
                 )
-                saved += 1
+                if memory is None:
+                    skipped += 1
+                    self._log.debug(
+                        "Skipping extracted memory rejected by the manager: %s",
+                        str(item.get("content", ""))[:40],
+                    )
+                else:
+                    saved += 1
             except (ValueError, TypeError) as exc:
+                skipped += 1
                 self._log.debug("Skipping invalid extracted memory: %s", exc)
-        if saved and self._metrics is not None:
-            self._metrics.inc("memories_extracted", saved)
+        if not reason:
+            reason = "ok" if saved else ("invalid_item" if parsed else "parse_failed")
+        self._report(reason, saved, len(parsed), note=retry_note)
+
+    @staticmethod
+    def _classify_failure(exc: BaseException) -> str:
+        """The router hides the cause in its final error — read it back.
+
+        ``EmptyResponseError`` and ``AITimeoutError`` are retried/failed over
+        inside the router, so by the time the extractor sees the failure it is
+        an ``AllModelsFailedError`` whose message still names the cause.
+        """
+        text = str(exc).lower()
+        if "empty response" in text:
+            return "empty_content"
+        if "timed out" in text or "timeout" in text:
+            return "timeout"
+        return "ai_error"
+
+    def _report(
+        self,
+        reason: str,
+        saved: int,
+        total: int,
+        *,
+        count_streak: bool = True,
+        note: str = "",
+    ) -> None:
+        """One INFO line for every extraction — silence is the bug (Task 25)."""
+        self._log.info("[Memory.Extract] saved=%d/%d reason=%s%s", saved, total, reason, note)
+        if self._metrics is not None:
+            if saved:
+                self._metrics.inc("memories_extracted", saved)
+            else:
+                self._metrics.inc("memory_extract_failed")
+                self._metrics.inc(f"memory_extract_failed_{reason}")
+        if not count_streak:
+            return
+        if saved:
+            self._zero_streak = 0
+            return
+        self._zero_streak += 1
+        if self._zero_streak == 5:
+            self._log.warning(
+                "[Memory.Extract] 连续 %d 次抽取零入库（最近原因：%s）——"
+                "检查 memory.extraction.model 与模型输出格式",
+                self._zero_streak,
+                reason,
+            )
+
+    def health_note(self) -> str | None:
+        """Operator banner for /memory/health (None when extraction is healthy)."""
+        if self._zero_streak >= 5:
+            return f"最近连续 {self._zero_streak} 次记忆抽取零入库——见日志 [Memory.Extract]"
+        return None
 
     @staticmethod
     def _parse(content: str) -> list[dict[str, Any]]:

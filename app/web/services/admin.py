@@ -11,10 +11,10 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from app.character.persona import Persona
+from app.config.settings import project_path
 
 if TYPE_CHECKING:
     from app.core.bot import Bot
@@ -299,11 +299,7 @@ class AdminService:
     # ------------------------------------------------------------------ logs
 
     async def logs(self, level: str = "", keyword: str = "", lines: int = 200) -> list[str]:
-        path = Path(self.bot.config.logging.log_dir)
-        if not path.is_absolute():
-            from app.config.settings import PROJECT_ROOT
-
-            path = PROJECT_ROOT / path
+        path = project_path(self.bot.config.logging.log_dir)
         path = path / "catoobot.log"
         if not path.exists():
             return []

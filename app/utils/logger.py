@@ -19,7 +19,7 @@ import re
 import sys
 from pathlib import Path
 
-from app.config.settings import PROJECT_ROOT
+from app.config.settings import project_path
 from app.utils import console
 
 _PLAIN_FMT = "[%(asctime)s] [%(levelname)s] [%(name)s] %(message)s"
@@ -176,9 +176,7 @@ def setup_logging(
     configure_narrator(narrate, thinking=narrate_thinking)
 
     if not _configured:
-        directory = Path(log_dir)
-        if not directory.is_absolute():
-            directory = PROJECT_ROOT / directory
+        directory = project_path(log_dir)
         directory.mkdir(parents=True, exist_ok=True)
 
         redactor = _RedactingFilter()

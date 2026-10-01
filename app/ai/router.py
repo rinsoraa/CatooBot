@@ -132,10 +132,11 @@ class ModelRouter:
         self.states: dict[str, ModelState] = {}
         for spec in specs:
             if spec.provider not in providers:
-                self._log.warning(
-                    "Model '%s' references unknown provider '%s' — disabled",
+                self._log.error(
+                    "Model '%s' references unknown provider '%s' — disabled (known providers: %s)",
                     spec.name,
                     spec.provider,
+                    sorted(providers) or "none — no provider had an API key",
                 )
                 continue
             self.states[spec.name] = ModelState(spec=spec, enabled=spec.enabled)

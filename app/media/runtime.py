@@ -20,7 +20,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from app.config.settings import PROJECT_ROOT
+from app.config.settings import project_path
 from app.media.indexer import StickerLibraryIndexer
 from app.media.models import (
     AcquisitionDecision,
@@ -310,10 +310,7 @@ class MediaRuntime:
                 "image/gif": ".gif",
                 "image/webp": ".webp",
             }.get(mime, ".jpg")
-            directory = Path(self.config.sticker_dir)
-            if not directory.is_absolute():
-                directory = PROJECT_ROOT / directory
-            directory = directory / "library"
+            directory = project_path(self.config.sticker_dir) / "library"
             directory.mkdir(parents=True, exist_ok=True)
             target = directory / f"{digest}{ext}"
             target.write_bytes(data)

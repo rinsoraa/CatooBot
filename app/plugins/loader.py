@@ -24,6 +24,7 @@ import sys
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from app.config.settings import project_path
 from app.core.exceptions import PluginError
 from app.plugins.api import PluginApi
 from app.plugins.base import Plugin
@@ -47,7 +48,7 @@ class PluginLoader:
         self._audit = logging.getLogger("CatooBot.Plugins.Audit")
         self._loaded: dict[str, Plugin] = {}
         self._failures: dict[str, int] = {}
-        self._user_dir = Path(user_plugin_dir) if user_plugin_dir is not None else Path("plugins")
+        self._user_dir = project_path(user_plugin_dir or "plugins")
 
     @property
     def loaded(self) -> dict[str, Plugin]:

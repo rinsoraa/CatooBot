@@ -229,6 +229,106 @@ async def test_webui_http_gate(tmp_path, unused_tcp_port) -> None:
         await bot.shutdown()
 
 
+@pytest.mark.asyncio
+async def test_memory_health_page_banners_extraction_failure(tmp_path, unused_tcp_port) -> None:
+    """Task 25: a stuck extraction must be visible on /memory/health, not only
+    in the log — the red banner renders exactly when health_note() has a note."""
+    from app.adapters import Adapter
+    from app.config.settings import AppConfig
+    from app.core.bot import Bot
+
+    class DummyAdapter(Adapter):
+        @property
+        def connected(self) -> bool:
+            return False
+
+        @property
+        def self_id(self) -> int | None:
+            return None
+
+        async def start(self) -> None:
+            return None
+
+        async def stop(self) -> None:
+            return None
+
+        async def call_api(self, action, params=None, timeout=None) -> Any:  # type: ignore[no-untyped-def]
+            return {}
+
+    class StubExtractor:
+        def __init__(self, note: str | None) -> None:
+            self.note = note
+
+        def health_note(self) -> str | None:
+            return self.note
+
+        async def wait_idle(self) -> None:
+            return None
+
+    config = AppConfig(
+        bot={"name": "TestBot"},
+        database={"url": f"sqlite:///{tmp_path / 'health.db'}"},
+        logging={"log_dir": str(tmp_path / "logs")},
+        web={
+            "enabled": True,
+            "host": "127.0.0.1",
+            "port": unused_tcp_port,
+            "username": "admin",
+            "password": "pw123",
+        },
+    )
+    bot = Bot(config, DummyAdapter())
+    await bot.database.connect()
+    await bot.character.start()
+    from app.web.server import WebServer
+
+    web_server = WebServer(config.web, bot)
+    await web_server.start()
+    base = f"http://127.0.0.1:{unused_tcp_port}"
+    jar = aiohttp.CookieJar(unsafe=True)
+    try:
+        async with aiohttp.ClientSession(cookie_jar=jar) as session:
+            async with session.post(
+                base + "/login",
+                data={"username": "admin", "password": "pw123"},
+                allow_redirects=False,
+            ) as resp:
+                assert resp.status == 302
+
+            bot.extractor = StubExtractor("最近连续 5 次记忆抽取零入库——见日志 [Memory.Extract]")
+            async with session.get(base + "/memory/health") as resp:
+                body = await resp.text()
+                assert resp.status == 200
+                assert "连续 5 次记忆抽取零入库" in body
+                assert "<div class='flash flash-error'>" in body
+                assert "抽取模型" in body
+
+            bot.extractor = StubExtractor(None)
+            async with session.get(base + "/memory/health") as resp:
+                body = await resp.text()
+                assert resp.status == 200
+                assert "<div class='flash flash-error'>" not in body
+
+            # Task 25 ⑤: AI enabled with nothing usable is a startup-level
+            # problem, so the dashboard must say it too (this test config has
+            # AI off, hence no banner until it is switched on).
+            async with session.get(base + "/") as resp:
+                assert "<div class='flash flash-error'>" not in await resp.text()
+            bot.config.ai.enabled = True
+            bot.ai.enabled = False
+            async with session.get(base + "/") as resp:
+                body = await resp.text()
+                assert resp.status == 200
+                assert "AI 已启用，但没有任何可用模型" in body
+                assert "<div class='flash flash-error'>" in body
+            bot.ai.enabled = True
+            async with session.get(base + "/") as resp:
+                assert "<div class='flash flash-error'>" not in await resp.text()
+    finally:
+        await web_server.stop()
+        await bot.shutdown()
+
+
 class TestAdminService:
     async def test_persona_save_and_hot_apply(self, tmp_path) -> None:
         from app.adapters import Adapter

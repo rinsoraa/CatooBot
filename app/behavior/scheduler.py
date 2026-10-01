@@ -43,6 +43,9 @@ class BehaviorScheduler:
         self._jobs: dict[str, ScheduledJob] = {}
         self.ticks = 0
         self.errors = 0
+        #: scope -> the rejection reason already reported at INFO; a pass that
+        #: keeps being turned down for the same reason is DEBUG noise.
+        self._gate_reason_seen: dict[str, str] = {}
 
     # ------------------------------------------------------------- lifecycle
 
@@ -222,13 +225,20 @@ class BehaviorScheduler:
                         last_seen=relationship.last_seen,
                     )
                     if not gate.allowed:
-                        self._log.info(
-                            "[Initiative] Gate rejected: %s (scope=%s)", gate.reason, scope_key
+                        changed = self._gate_reason_seen.get(scope_key) != gate.reason
+                        self._gate_reason_seen[scope_key] = gate.reason
+                        self._log.log(
+                            logging.INFO if changed else logging.DEBUG,
+                            "[Initiative] Gate rejected: %s (scope=%s)%s",
+                            gate.reason,
+                            scope_key,
+                            "" if changed else " — unchanged, see the first line",
                         )
                         await self._behavior.initiative.mark_skipped(
                             scope_key, gate.reason, gate.detail
                         )
                         continue
+                    self._gate_reason_seen.pop(scope_key, None)
                     if await self._send_initiative(scope_key, relationship.user_id, candidate):
                         break  # one proactive message per user per pass
             except Exception:  # noqa: BLE001 - one user must not stop the pass
