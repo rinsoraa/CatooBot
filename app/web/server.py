@@ -856,6 +856,26 @@ class WebServer:
             body += f"""<form class="inline" method="post" action="/api/runtime/{action}">
 <button class="btn btn-primary">{label}</button></form>"""
         body += "</div></div>"
+        watchdog = getattr(self._bot, "watchdog", None)
+        if watchdog is not None:
+            stats = watchdog.stats()
+            rows = "".join(
+                f"<tr><th>{esc(label)}</th><td>{esc(value)}</td></tr>"
+                for label, value in (
+                    ("检测间隔", f"{stats['interval_seconds']:.1f} s"),
+                    ("告警阈值", f"{stats['threshold_ms']} ms"),
+                    ("测量次数", stats["ticks"]),
+                    ("卡顿次数", stats["lag_events"]),
+                    ("最近一次", f"{stats['last_lag_ms']:.0f} ms"),
+                    ("最严重", f"{stats['max_lag_ms']:.0f} ms"),
+                )
+            )
+            body += (
+                '<div class="card"><h3>事件循环看门狗</h3>'
+                '<p class="muted">单进程单循环：任何一次阻塞都会同时冻结 QQ 与 WebUI，'
+                "超过阈值会打 WARNING（日志里能看到卡了多久）。</p>"
+                f"<table>{rows}</table></div>"
+            )
         return web.Response(
             text=layout("运行", "/runtime", body, subtitle="运行时开关、插件重载与健康检查"),
             content_type="text/html",

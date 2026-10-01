@@ -25,6 +25,9 @@ logging:
   narrate: true            # 打印角色的内心播报：心理历程 / 思考 / 心流 / 碎碎念 / 沙盒状态
   narrate_world_ticks: false  # 每次沙盒心跳都打印状态（默认只在变化时打印）
   narrate_thinking: true      # 控制台显示模型思路摘要（仅控制台：不写入日志文件、不入库）
+  watchdog_enabled: true      # 事件循环卡顿看门狗（单进程单循环，卡顿会同时冻结 QQ 与 WebUI）
+  watchdog_interval_seconds: 1.0  # 检测间隔
+  watchdog_threshold_ms: 500  # 超过这个延迟就告警（日志里能看到卡了多久）
   log_dir: logs
 
 database:

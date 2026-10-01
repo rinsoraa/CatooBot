@@ -30,6 +30,7 @@ from app.core.event_bus import EventBus
 from app.core.lifecycle import Lifecycle
 from app.core.metrics import Metrics
 from app.core.router import CoreRouter
+from app.core.watchdog import EventLoopWatchdog
 from app.database.database import Database
 from app.media.runtime import MediaRuntime
 from app.memory.consolidation import ConsolidationScheduler, MemoryConsolidator
@@ -68,6 +69,16 @@ class Bot:
         self.database = Database(config.database)
         self.metrics = Metrics()
         # Task 15: per-call usage rows (tokens, latency, outcome) for the model page.
+        # Task 16: single process, single loop — stalls freeze QQ and WebUI alike.
+        self.watchdog = (
+            EventLoopWatchdog(
+                interval_seconds=config.logging.watchdog_interval_seconds,
+                threshold_ms=config.logging.watchdog_threshold_ms,
+                metrics=self.metrics,
+            )
+            if config.logging.watchdog_enabled
+            else None
+        )
         self.ai_usage = (
             UsageRecorder(self.database, metrics=self.metrics) if config.ai.usage.enabled else None
         )
@@ -531,6 +542,12 @@ class Bot:
 
         await self.adapter.start()
         story.boot_step("OneBot 适配器已监听", detail=self.config.onebot.url)
+        if self.watchdog is not None:
+            self.watchdog.start()
+            story.boot_step(
+                "事件循环看门狗已启动",
+                detail=f"超过 {self.config.logging.watchdog_threshold_ms} ms 的卡顿会告警",
+            )
         self.lifecycle.mark_ready()
 
         if self.config.web.enabled:
@@ -629,6 +646,8 @@ class Bot:
 
     async def shutdown(self) -> None:
         """Graceful stop: schedulers, plugins, web, adapter, database."""
+        if self.watchdog is not None:
+            await self.watchdog.stop()
         if self.consolidation_scheduler is not None:
             await self.consolidation_scheduler.stop()
         await self.scheduler.stop()

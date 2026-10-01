@@ -74,6 +74,11 @@ class LoggingConfig(BaseModel):
     #: Show the model's thinking excerpt in the terminal (console only — never
     #: written to the log file, and never saved to the database).
     narrate_thinking: bool = True
+    # Event-loop watchdog: single process, single loop — one blocking call in
+    # the WebUI or a tool freezes QQ chat too, so stalls are measured and logged.
+    watchdog_enabled: bool = True
+    watchdog_interval_seconds: float = Field(default=1.0, gt=0)
+    watchdog_threshold_ms: int = Field(default=500, ge=50)
 
     @field_validator("level")
     @classmethod
