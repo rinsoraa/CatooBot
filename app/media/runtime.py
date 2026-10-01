@@ -16,6 +16,7 @@ from __future__ import annotations
 import logging
 import time
 from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -44,10 +45,19 @@ from app.media.sticker import (
     StickerSelector,
     StickerSender,
 )
-from app.media.vision import ImageUnderstandingRuntime
+from app.media.vision import ImageUnderstandingRuntime, data_url_from_bytes
 from app.message.message import Message
 
 FileFetcher = Callable[[str], Awaitable[tuple[bytes, str]]]
+
+
+@dataclass
+class BackgroundMediaOutcome:
+    """What the background sticker/vision pass did (for narration + tests)."""
+
+    status: str                        # disabled / throttled / done
+    vision_text: str = ""
+    decision: AcquisitionDecision | None = None
 
 
 async def _default_fetcher(url: str) -> tuple[bytes, str]:
@@ -75,6 +85,10 @@ class MediaRuntime:
         self._log = logger or logging.getLogger("CatooBot.Media")
         self._clock = clock
         self._fetch_file = file_fetcher or _default_fetcher
+        #: per-scope hourly background-vision budget (scope -> (hour_key, used))
+        self._bg_vision: dict[str, tuple[str, int]] = {}
+        #: one download per URL, reused by vision + persistence
+        self._downloaded: dict[str, tuple[bytes, str]] = {}
         self.normalizer = MessageMediaNormalizer(logger=self._log)
 
         self.vision = ImageUnderstandingRuntime(
@@ -110,8 +124,8 @@ class MediaRuntime:
         return self.normalizer.normalize(message, **provenance)
 
     async def understand_image(self, media: MediaContent) -> VisionResult:
-        """Analyse a plain image (image understanding only — never the library)."""
-        if media.media_type != "image":
+        """Analyse an image (stickers too — their summary feeds the reply)."""
+        if media.media_type not in ("image", "sticker"):
             return VisionResult()
         image = media.url or ""
         if not image:
@@ -133,6 +147,83 @@ class MediaRuntime:
             await self._persist_file(asset, media)
             await self.library.insert(asset)
         return decision
+
+    # -------------------------------------------------- background vision (A)
+
+    def allow_background_vision(self, scope_key: str) -> bool:
+        """Peek-then-consume the hourly background-vision budget for a scope."""
+        if not self.config.background_vision_enabled:
+            return False
+        cap = int(self.config.background_vision_max_per_hour)
+        if cap <= 0:
+            return False
+        hour = time.strftime("%Y-%m-%d %H", time.localtime(float(self._clock())))
+        key = scope_key or "global"
+        stored, used = self._bg_vision.get(key, (hour, 0))
+        if stored != hour:
+            used = 0
+        if used >= cap:
+            self._bg_vision[key] = (hour, used)
+            return False
+        self._bg_vision[key] = (hour, used + 1)
+        return True
+
+    async def background_recognize_and_collect(
+        self,
+        media: MediaContent,
+        *,
+        scope_key: str = "",
+        vision: VisionResult | None = None,
+    ) -> BackgroundMediaOutcome:
+        """Recognize a sticker-like image and consider keeping it (never blocks).
+
+        Runs whether or not she replies; the vision result is cached by sha256
+        so a later reply reuses it for free.
+        """
+        if not self.enabled or not self.config.background_vision_enabled:
+            return BackgroundMediaOutcome(status="disabled")
+        if not self.allow_background_vision(scope_key):
+            return BackgroundMediaOutcome(status="throttled")
+        if vision is None and self.vision.enabled and media.url:
+            data = await self._download(media.url)
+            if data is not None:
+                if not media.sha256:
+                    media.sha256 = sha256_bytes(data[0])
+                if not media.file_size:
+                    media.file_size = len(data[0])
+                vision = await self.vision.analyze(
+                    data_url_from_bytes(data[0], data[1] or "image/jpeg"),
+                    sha256_hash=media.sha256,
+                )
+            else:
+                vision = await self.vision.analyze(
+                    media.url, sha256_hash=media.sha256
+                )
+        decision = await self.consider_collect(media, vision=vision)
+        return BackgroundMediaOutcome(
+            status="done",
+            vision_text=vision.as_text() if vision is not None else "",
+            decision=decision,
+        )
+
+    async def _download(self, url: str) -> tuple[bytes, str] | None:
+        """Fetch a URL once; later calls (vision + persist) reuse the bytes."""
+        if not url:
+            return None
+        cached = self._downloaded.get(url)
+        if cached is not None:
+            return cached
+        try:
+            data, content_type = await self._fetch_file(url)
+            if not data:
+                return None
+            self._downloaded[url] = (data, content_type)
+            if len(self._downloaded) > 20:
+                del self._downloaded[next(iter(self._downloaded))]
+            return data, content_type
+        except Exception:  # noqa: BLE001 - download trouble never breaks chat
+            self._log.warning("[Media] download failed: %s", url[:80])
+            return None
 
     # ------------------------------------------------- v1.2 vision collection
 
@@ -164,9 +255,10 @@ class MediaRuntime:
         if not raw_url or (asset.file_path and Path(asset.file_path).exists()):
             return
         try:
-            data, content_type = await self._fetch_file(raw_url)
-            if not data:
+            fetched = await self._download(raw_url)
+            if fetched is None:
                 raise ValueError("empty download")
+            data, content_type = fetched
             digest = sha256_bytes(data)
             mime = (content_type or "image/jpeg").split(";")[0].strip().lower()
             ext = {"image/jpeg": ".jpg", "image/png": ".png", "image/gif": ".gif",

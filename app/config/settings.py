@@ -534,6 +534,10 @@ class MediaConfig(BaseModel):
     # Startup indexer
     indexer_enabled: bool = True
     analysis_version: str = "v1"
+    # Background media understanding for *sticker-like* images even when the
+    # character does not reply (never affects whether she replies).
+    background_vision_enabled: bool = True
+    background_vision_max_per_hour: int = Field(default=20, ge=0)
     # Strict boundary: plain images are never stickers (spec §2.2/§6 场景6)
     import_as_sticker: bool = True     # files dropped into sticker_dir ARE stickers
 

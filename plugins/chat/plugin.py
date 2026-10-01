@@ -86,6 +86,7 @@ class CharacterPlugin(Plugin):
     description = "Natural-language character chat with conversation turns + continuity"
 
     async def on_load(self, bot: Bot) -> None:
+        self._background_tasks: set[asyncio.Task] = set()
         bot.event_bus.on("message.private", self._on_private)
         bot.event_bus.on("message.group", self._on_group)
         runtime = getattr(bot, "conversation", None)
@@ -259,7 +260,14 @@ class CharacterPlugin(Plugin):
             elif item.media_type == "sticker":
                 summary = item.emoji_summary or item.emoji_key or "表情包"
                 notes.append(f"表情包：{summary}")
-                narrate().say("vision", f"收到表情包：{summary}")
+                narrate().say(
+                    "vision",
+                    f"收到表情包：{summary}",
+                    detail="后台识别中（不影响是否回复）" if item.url else "",
+                )
+                # The reply path also wants the real summary — the background
+                # pass caches the vision result by sha256, so it costs nothing.
+                deferred.append(item)
         stickers = [item for item in items if item.is_sticker_source]
         if stickers:
             self._schedule_collection(event, stickers)
@@ -321,7 +329,8 @@ class CharacterPlugin(Plugin):
                     vision = await media.understand_image(item)
                     seen = vision.as_text()
                     if seen:
-                        media_context = f"{media_context}；图片：{seen}".lstrip("；")
+                        label = "表情包" if item.media_type == "sticker" else "图片"
+                        media_context = f"{media_context}；{label}：{seen}".lstrip("；")
                         narrate().say("vision", f"看懂了：{seen}")
                         caption = "；".join(vision.ocr_text).strip()
                         if caption:
@@ -529,19 +538,59 @@ class CharacterPlugin(Plugin):
     def _schedule_collection(
         self, event: MessageEvent | None, items: list[Any], *, vision: Any = None
     ) -> None:
-        """Background sticker acquisition — never blocks the reply (§18)."""
+        """Background sticker recognition + acquisition — never blocks (§18).
+
+        Runs whether or not the character replies to this message (option A):
+        QQ-marked stickers get recognized and possibly kept, with a per-scope
+        hourly budget so a spammy group can't burn vision calls.
+        """
         media = getattr(self.bot, "media", None)
         if media is None or not items:
             return
 
+        def scope_of(item: Any) -> str:
+            if item.source_group_id:
+                return f"group:{item.source_group_id}"
+            if item.source_user_id:
+                return f"private:{item.source_user_id}"
+            return "global"
+
         async def collect() -> None:
             for item in items:
                 try:
-                    await media.consider_collect(item, vision=vision)
+                    outcome = await media.background_recognize_and_collect(
+                        item, scope_key=scope_of(item), vision=vision
+                    )
                 except Exception:  # noqa: BLE001 - collection must never break chat
                     self.bot.log.exception("[Media] sticker collection failed")
+                    continue
+                if outcome.status == "throttled":
+                    narrate().quiet(
+                        "这张先不认了", detail="本会话每小时后台识别上限到了（可调配置）"
+                    )
+                    continue
+                if outcome.status != "done":
+                    continue
+                if outcome.vision_text:
+                    narrate().say("vision", f"看懂了：{outcome.vision_text}")
+                decision = outcome.decision
+                if decision is not None and decision.decision == "save":
+                    summary = item.emoji_summary or outcome.vision_text or "表情包"
+                    narrate().say("mind", f"这张收进表情库了：{summary}")
+                elif decision is not None:
+                    self.bot.log.debug(
+                        "[Media] sticker not kept: %s", decision.reason_codes
+                    )
 
-        asyncio.create_task(collect())
+        task = asyncio.create_task(collect())
+        self._background_tasks.add(task)
+        task.add_done_callback(self._background_tasks.discard)
+
+    async def drain_background(self, timeout: float = 5.0) -> None:
+        """Test helper: wait for the background media jobs to finish."""
+        while self._background_tasks:
+            pending = list(self._background_tasks)
+            await asyncio.wait(pending, timeout=timeout)
 
     async def _attach_expression(
         self, plan: Any, turn: Any, text: str, media_items: list[Any], is_group: bool

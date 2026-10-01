@@ -2,7 +2,11 @@
 
 The rule that anchors everything else (spec §2.2/§2.3): a plain ``image`` is
 never a sticker. Only ``face`` / ``mface`` / an image carrying explicit QQ
-emoji metadata / a manual import are sticker sources.
+sticker metadata / a manual import are sticker sources.
+
+QQ's own sticker markers count as that metadata (v2.0): an ``image`` with
+``sub_type=1`` (动画表情) or a ``summary`` saying so IS a sticker — QQ is
+stating it, we are not guessing.
 """
 
 from __future__ import annotations
@@ -69,12 +73,18 @@ class MessageMediaNormalizer:
                 emoji_key=segment.key or "",
                 emoji_summary=segment.summary or "",
             )
-        # 3. image: sticker only when it carries explicit QQ emoji metadata.
+        # 3. image: a sticker when QQ says so (emoji metadata / sub_type=1 /
+        #    summary=[动画表情]); otherwise a plain image.
         if isinstance(segment, ImageSegment):
             data = segment.data
-            if any(
+            has_emoji_meta = any(
                 key in data for key in ("emoji_id", "emoji_package_id", "key")
-            ) and ("emoji_id" in data or "emoji_package_id" in data or "key" in data):
+            )
+            summary = str(data.get("summary", "") or "")
+            sub_type = str(data.get("sub_type", "") or "")
+            qq_sticker = sub_type == "1" or "动画表情" in summary
+            if has_emoji_meta or qq_sticker:
+                clean_summary = summary.strip().strip("[]").strip()
                 return MediaContent(
                     media_type="sticker",
                     source_type="qq_image",
@@ -83,7 +93,7 @@ class MessageMediaNormalizer:
                     emoji_id=str(data.get("emoji_id", "")),
                     emoji_package_id=str(data.get("emoji_package_id", "")),
                     emoji_key=str(data.get("key", "")),
-                    emoji_summary=str(data.get("summary", "")),
+                    emoji_summary=clean_summary or ("动画表情" if qq_sticker else ""),
                 )
             return MediaContent(
                 media_type="image",
