@@ -1,4 +1,4 @@
-"""Builtin tool: arithmetic, percentages and unit conversion (spec §24.2).
+"""Builtin tool: arithmetic, percentages and unit conversion (v1.x 规格，原文缺失).
 
 Deliberately **not** an eval: expressions are parsed with :mod:`ast` and only
 arithmetic node types are allowed, so a model cannot smuggle code in through

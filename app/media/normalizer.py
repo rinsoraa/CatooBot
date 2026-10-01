@@ -1,6 +1,6 @@
 """Media normalizer (v1.1 §4/§2): classifies incoming message segments.
 
-The rule that anchors everything else (spec §2.2/§2.3): a plain ``image`` is
+The rule that anchors everything else (v1.x 规格，原文缺失：媒体类型边界): a plain ``image`` is
 never a sticker. Only ``face`` / ``mface`` / an image carrying explicit QQ
 sticker metadata / a manual import are sticker sources.
 

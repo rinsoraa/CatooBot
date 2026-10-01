@@ -284,12 +284,14 @@ class CharacterDataTransfer:
             hash_only("}")  # the payload's own closing brace, written last
             content_digest = hasher.hexdigest()
 
+            schema_version = await self._schema_version()
+            bible_hash = await self._bible_hash_value()
             header = {
                 "format": FORMAT,
                 "format_version": FORMAT_VERSION,
                 "exported_at": int(self._clock()),
-                "schema_version": await self._schema_version(),
-                "bible_hash": await self._bible_hash_value(),
+                "schema_version": schema_version,
+                "bible_hash": bible_hash,
                 "missing_tables": missing,
                 "content_sha256": content_digest,
             }
@@ -304,8 +306,8 @@ class CharacterDataTransfer:
             bytes=len(data),
             sha256=hashlib.sha256(data).hexdigest(),
             content_sha256=content_digest,
-            schema_version=header["schema_version"],
-            bible_hash=header["bible_hash"],
+            schema_version=schema_version,
+            bible_hash=bible_hash,
             tables=counts,
             missing_tables=missing,
             seconds=round(time.time() - started, 3),

@@ -1,6 +1,6 @@
 """Media / sticker data models (v1.1).
 
-The central distinction (spec §2.1/§7/§52): an ordinary ``image`` is *never* a
+The central distinction (v1.x 规格，原文缺失：媒体类型边界): an ordinary ``image`` is *never* a
 sticker. Media is classified into ``image / sticker / native_face / unknown``
 and only ``sticker`` sources may ever enter the Sticker Library.
 """
@@ -53,7 +53,7 @@ class MediaContent(BaseModel):
 
 
 class VisionResult(BaseModel):
-    """Structured image understanding (spec §5.1) — no hidden chain-of-thought."""
+    """Structured image understanding (v1.x 规格，原文缺失) — no hidden chain-of-thought (§99)."""
 
     image_id: str = ""
     summary: str = ""

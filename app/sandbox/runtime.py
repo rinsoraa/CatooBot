@@ -703,7 +703,7 @@ class SandboxRuntime:
                 self.current_action.planned_end_at += elapsed_minutes * 60.0
                 note.append("回来后接着做手上的事")
 
-        # Morning recovery: slept long enough → awake, day starts (§209).
+        # Morning recovery: slept long enough → awake, day starts (§73 Recovery / §72 恢复).
         hour = time.localtime(float(self._clock())).tm_hour
         if assume_asleep and not (2 <= hour < 5) and self.current_action is not None:
             definition = self.actions.definition(self.current_action)

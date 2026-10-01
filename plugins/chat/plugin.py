@@ -7,10 +7,9 @@ Since v0.4 the plugin is deliberately thin — it contains no behaviour rules:
     Character runtime decides *what* to say (persona + memory + state)
     Response planner/delivery decide *how* to say it (delay, sequence)
 
-v1.2 wiring: when ``conversation.enabled`` the plugin only *submits* messages
-to the ConversationTurnRuntime and binds the respond/deliver/post-reply
-callbacks; the legacy direct path stays intact for ``conversation.enabled =
-false`` (spec §187.27 — everything can be turned off).
+The plugin only *submits* messages to the ConversationTurnRuntime and binds
+the respond/deliver/post-reply callbacks; every message goes through the turn
+runtime — there is no direct path.
 """
 
 from __future__ import annotations

@@ -3,7 +3,7 @@
 This is a *character asset* system, deliberately separate from Memory (§52).
 It owns: the library (SQLite + files), acquisition (should I keep this?), the
 selector (which one fits now?), the expression decision (text / +sticker /
-sticker-only), and sending. Ordinary images never enter here (§2.2/§6).
+sticker-only), and sending. Ordinary images never enter here (v1.x 规格，原文缺失：媒体类型边界).
 """
 
 from __future__ import annotations

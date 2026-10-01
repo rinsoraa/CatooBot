@@ -81,7 +81,7 @@ class ModeRuntime:
         if definition is not None and "online_social" in definition.modes and social_active:
             modes.append("online_social")
         # A live exchange (someone is talking to her right now) puts the
-        # online-social face on regardless of what she was doing (§2.5 overlap).
+        # online-social face on regardless of what she was doing (§79 模式可以叠加).
         if social_active and "online_social" not in modes and is_home:
             modes.append("online_social")
         if 2 <= hour < 5 and "gaming" not in modes and "online_social" not in modes:
