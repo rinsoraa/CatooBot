@@ -1,6 +1,11 @@
 # v3.0 设计 · 角色数据导出 / 导入（Task 24）
 
-> 状态：**设计待确认**（P3 规矩：先设计页，确认后编码）
+> 状态：**里程碑 1 已实现**——`app/sandbox/transfer.py` 的 `export` / `write_export` / `inspect`
+> 与 CLI `python -m app.sandbox.transfer export|inspect`（14 条测试，含"不含密钥"与"万级流式写入"）。
+> 真库实测：272 行角色数据 → 280 KB 单文件，`sha256_ok=true`、`counts_match=true`。
+> **里程碑 2（`import_character`）与 3（WebUI 数据卡）待做**；`include_files=True` 目前显式报错（附件打包属里程碑 2）。
+> 与设计的一处偏差：写入端是"边读边写的小块流式写"（每行一次写，单块 < 64 KiB），
+> 文件**读**才走 `asyncio.to_thread`——避免了"先在内存里拼出整包再交给线程"的两次缓冲。
 > 相关代码：`app/sandbox/lifecycle.py`（`CHARACTER_TABLES` / `CHARACTER_SETTINGS` / `reset_character` +
 > 备份）、`app/database/database.py`（迁移链 / `schema_migrations`）、`app/web/routes/identity.py`（角色页）、
 > `app/web/routes/config.py`（配置页）
