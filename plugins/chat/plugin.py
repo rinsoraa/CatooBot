@@ -535,12 +535,14 @@ class CharacterPlugin(Plugin):
             for item in (meta.get("deferred_images", []) or [])
             if not (recognized and item is recognized_item)
         ]
+        image_vision: list[tuple[Any, Any]] = []
         if deferred:
             media = getattr(bot, "media", None)
             if media is not None:
                 for item in deferred:
                     vision = await media.understand_image(item)
                     seen = vision.as_text()
+                    image_vision.append((item, vision))
                     if seen:
                         label = "表情包" if item.media_type == "sticker" else "图片"
                         media_context = f"{media_context}；{label}：{seen}".lstrip("；")
@@ -571,6 +573,8 @@ class CharacterPlugin(Plugin):
 
         response_goal = str(meta.get("response_goal", "") or "")
         extra = f"（你此刻的回应目标：{response_goal}）" if response_goal else None
+        if image_vision:
+            turn.meta["image_vision"] = image_vision
         if decision.response_style == "brief":
             extra = f"{extra or ''}（这条简短回应就好）".strip()
 
@@ -658,6 +662,8 @@ class CharacterPlugin(Plugin):
         bot = self.bot
         session_id = turn.session_id
         is_group = turn.group_id is not None
+        # Task 21: what she saw this turn can become a memory worth recalling.
+        await self._remember_images(turn)
         # Task 20: one observation row per answered turn (settled later).
         feedback = getattr(bot, "reply_feedback", None)
         if feedback is not None:
@@ -707,6 +713,33 @@ class CharacterPlugin(Plugin):
         continuity = getattr(self.bot, "continuity", None)
         if continuity is not None:
             await continuity.store.save_turn(turn)
+
+    async def _remember_images(self, turn: Any) -> None:
+        """One episodic memory per turn for the photos worth remembering."""
+        bot = self.bot
+        manager = getattr(bot, "memory", None)
+        if manager is None:
+            return
+        entries: list[tuple[Any, Any]] = list(turn.meta.pop("image_vision", []) or [])
+        outcome = turn.meta.get("recognition_outcome")
+        item = turn.meta.get("recognized_item")
+        if outcome is not None and item is not None:
+            entries.append((item, outcome.vision))
+        if not entries:
+            return
+        text = str(turn.text or "").strip()
+        from app.media.memory_bridge import record_image_memories
+
+        await record_image_memories(
+            manager,
+            scope="group" if turn.group_id else "user",
+            ref=str(turn.group_id if turn.group_id else turn.user_id),
+            entries=entries,
+            user_id=str(turn.user_id),
+            group_id=str(turn.group_id) if turn.group_id else None,
+        )
+        if text:
+            bot.log.debug("[Media.Memory] image memory considered for %s", turn.session_id)
 
     def _replies_to_bot(self, event: MessageEvent, group_id: str) -> bool:
         """True when the message is a OneBot reply quoting a bot message."""

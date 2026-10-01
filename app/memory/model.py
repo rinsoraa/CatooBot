@@ -28,7 +28,7 @@ LAYERS = ("semantic", "episodic")
 
 STATUSES = ("active", "archived", "superseded", "expired", "deleted")
 
-SOURCES = ("explicit", "conversation", "inferred", "imported", "system")
+SOURCES = ("explicit", "conversation", "inferred", "imported", "system", "vision")
 
 TEMPORAL_SCOPES = ("long_term", "short_term", "event")
 
