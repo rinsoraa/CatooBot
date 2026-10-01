@@ -24,6 +24,23 @@ class OneBotCaller(Protocol):
     ) -> Any: ...
 
 
+def _normalize_node(node: dict[str, Any]) -> dict[str, Any]:
+    """One merged-forward node in OneBot 11 array form."""
+    content = node.get("content", "")
+    if isinstance(content, str):
+        content = [{"type": "text", "data": {"text": content}}]
+    elif not isinstance(content, list):
+        content = [{"type": "text", "data": {"text": str(content)}}]
+    return {
+        "type": "node",
+        "data": {
+            "name": str(node.get("name", "")),
+            "uin": str(node.get("uin", "")),
+            "content": content,
+        },
+    }
+
+
 def _serialize_message(message: Message | str | Segment) -> list[dict[str, Any]]:
     """Normalize user-provided message content into OneBot array format."""
     if isinstance(message, Message):
@@ -67,6 +84,33 @@ class BotApi:
 
     async def delete_msg(self, message_id: int) -> None:
         await self._caller.call_api("delete_msg", {"message_id": message_id})
+
+    async def get_msg(self, message_id: int) -> dict[str, Any]:
+        """Fetch one message (recall context, quote handling, moderation)."""
+        result = await self._caller.call_api("get_msg", {"message_id": message_id})
+        return dict(result) if isinstance(result, dict) else {}
+
+    async def send_forward_msg(
+        self,
+        nodes: list[dict[str, Any]],
+        *,
+        group_id: int | None = None,
+        user_id: int | None = None,
+    ) -> int:
+        """Send a merged-forward message (OneBot ``send_forward_msg``).
+
+        Each node is ``{"name": str, "uin": str, "content": str | Message}``;
+        the target follows the same rule as :meth:`send_msg`.
+        """
+        payload: dict[str, Any] = {"messages": [_normalize_node(node) for node in nodes]}
+        if group_id is not None:
+            payload["group_id"] = group_id
+        elif user_id is not None:
+            payload["user_id"] = user_id
+        else:
+            raise ValueError("send_forward_msg requires group_id or user_id")
+        result = await self._caller.call_api("send_forward_msg", payload)
+        return int(result.get("message_id", -1)) if isinstance(result, dict) else -1
 
     async def send_msg(
         self,

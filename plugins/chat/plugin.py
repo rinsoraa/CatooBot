@@ -24,12 +24,12 @@ from typing import TYPE_CHECKING, Any
 from app.ai.errors import AIError
 from app.message.message import Message
 from app.message.segment import FaceSegment, ImageSegment, MfaceSegment
+from app.plugins.api import PluginApi
 from app.plugins.base import Plugin
 from app.response.delivery import DeliveryTarget
 from app.utils.narrator import narrate
 
 if TYPE_CHECKING:
-    from app.core.bot import Bot
     from app.message.event import MessageEvent
 
 #: why the behaviour engine decided what it decided (console narration)
@@ -94,10 +94,11 @@ class CharacterPlugin(Plugin):
     version = "1.2.0"
     description = "Natural-language character chat with conversation turns + continuity"
 
-    async def on_load(self, bot: Bot) -> None:
+    async def on_load(self, bot: PluginApi) -> None:
         self._background_tasks: set[asyncio.Task] = set()
         bot.event_bus.on("message.private", self._on_private)
         bot.event_bus.on("message.group", self._on_group)
+        bot.event_bus.on("notice.poke", self._on_poke)
         runtime = getattr(bot, "conversation", None)
         if runtime is not None:
             runtime.bind(
@@ -199,6 +200,49 @@ class CharacterPlugin(Plugin):
             )
         except Exception:  # noqa: BLE001 - sandbox trouble must not break chat
             self.bot.log.exception("[Sandbox] external event failed")
+
+    async def _on_poke(self, event: Any) -> None:
+        """A poke *at her* enters the normal turn pipeline (Task 19).
+
+        Deliberately restrained: no new behaviour rule, no forced reply — the
+        poke becomes an addressed input like any other, so the existing
+        behaviour/social decision still decides whether she says anything.
+        """
+        if not self._ready() or event.target_id != self.bot.self_id:
+            return
+        if event.user_id is None:
+            return
+        is_group = event.group_id is not None
+        session_id = f"group:{event.group_id}" if is_group else f"private:{event.user_id}"
+        narrate().sense(
+            f"👉 {event.user_id} 戳了戳她",
+            detail=f"{'群 ' + str(event.group_id) if is_group else '私聊'} · user {event.user_id}",
+        )
+        continuity = getattr(self.bot, "continuity", None)
+        if continuity is not None:
+            await continuity.observe_message(
+                str(event.user_id), "（戳了戳你）", session_id=session_id
+            )
+        await self.bot.conversation.submit(
+            {
+                "session_id": session_id,
+                "is_group": is_group,
+                "group_id": str(event.group_id) if is_group else None,
+                "user_id": str(event.user_id),
+                "nickname": str(event.user_id),
+                "message_id": "",
+                "text": "（戳了戳你）",
+                "mentioned": True,
+                "reply_to_bot": False,
+                "media_count": 0,
+                "meta": {
+                    "media_items": [],
+                    "deferred_images": [],
+                    "media_note": "",
+                    "recognition": None,
+                },
+            }
+        )
 
     # ---------------------------------------------------------- v1.2 submit
 

@@ -105,6 +105,33 @@ class NoticeEvent(Event):
     flag: str | None = None
 
 
+class PokeNotice(NoticeEvent):
+    """Someone poked someone (OneBot 11 ``notice_type=poke``)."""
+
+    notice_type: str = "poke"
+
+
+class RecallNotice(NoticeEvent):
+    """A message was recalled (``group_recall`` / ``friend_recall``)."""
+
+    notice_type: str = "group_recall"
+    message_id: int | str | None = None
+
+
+class BanNotice(NoticeEvent):
+    """Mute / unmute (``group_ban``; ``sub_type`` is ban or lift_ban, duration in seconds)."""
+
+    notice_type: str = "group_ban"
+
+
+class CardChangeNotice(NoticeEvent):
+    """A group member changed their card (``group_card``)."""
+
+    notice_type: str = "group_card"
+    card_new: str = ""
+    card_old: str = ""
+
+
 class RequestEvent(Event):
     """Friend / group join requests."""
 

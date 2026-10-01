@@ -17,12 +17,16 @@ from pydantic import ValidationError
 from app.adapters.onebot_v11.models import ApiResult
 from app.core.exceptions import ParseError
 from app.message.event import (
+    BanNotice,
+    CardChangeNotice,
     Event,
     GroupMessageEvent,
     MessageEvent,
     MetaEvent,
     NoticeEvent,
+    PokeNotice,
     PrivateMessageEvent,
+    RecallNotice,
     RequestEvent,
 )
 
@@ -38,6 +42,15 @@ def parse_payload(raw: dict[str, Any]) -> ParsedPayload | None:
     return parse_event(raw)
 
 
+_NOTICE_CLASSES: dict[str, type[NoticeEvent]] = {
+    "poke": PokeNotice,
+    "group_recall": RecallNotice,
+    "friend_recall": RecallNotice,
+    "group_ban": BanNotice,
+    "group_card": CardChangeNotice,
+}
+
+
 def parse_event(raw: dict[str, Any]) -> Event:
     """Convert a raw OneBot event dict into the matching typed Event."""
     post_type = str(raw.get("post_type", ""))
@@ -46,7 +59,7 @@ def parse_event(raw: dict[str, Any]) -> Event:
     if post_type == "message":
         cls = _message_event_class(raw)
     elif post_type == "notice":
-        cls = NoticeEvent
+        cls = _NOTICE_CLASSES.get(str(raw.get("notice_type", "")), NoticeEvent)
     elif post_type == "request":
         cls = RequestEvent
     elif post_type == "meta_event":
