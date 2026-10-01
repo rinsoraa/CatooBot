@@ -2,12 +2,14 @@
 
 Lifecycle::
 
-    loader instantiates ─► bot attached ─► on_load(bot) ─► running
-                                                  on_unload() ◄─ shutdown
+    loader reads plugin.json ─► instance created ─► api attached ─► on_load(api)
+                                                                    on_unload() ◄─ shutdown
 
-Inside ``on_load`` a plugin may register commands (``@command`` decorator at
-module level is picked up automatically), subscribe to events
-(``bot.event_bus.on(...)``) and call ``bot.call_api(...)``.
+Every plugin ships a ``plugin.json`` (:mod:`app.plugins.manifest`) declaring its
+capabilities; ``on_load`` receives a capability-gated view of the bot
+(:class:`app.plugins.api.PluginApi`, also available as ``self.api``). A surface
+the manifest does not declare is refused with an audit line instead of being
+reached silently.
 """
 
 from __future__ import annotations
@@ -15,7 +17,8 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
-    from app.core.bot import Bot
+    from app.plugins.api import PluginApi
+    from app.plugins.manifest import PluginManifest
 
 
 class Plugin:
@@ -26,9 +29,11 @@ class Plugin:
     description: str = ""
 
     def __init__(self) -> None:
-        self.bot: Any = None  # set by the loader before on_load
+        self.bot: Any = None  # set by the loader before on_load (a PluginApi)
+        self.api: PluginApi | None = None
+        self.manifest: PluginManifest | None = None
 
-    async def on_load(self, bot: Bot) -> None:
+    async def on_load(self, bot: PluginApi) -> None:
         """Called when the plugin is loaded. Override to initialize."""
 
     async def on_unload(self) -> None:
