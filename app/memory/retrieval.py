@@ -5,12 +5,12 @@
       + confidence·w_c + recency·w_r + relationship·w_rel
       (+ topic bonus)
 
-Weights come from config (spec §21). Semantic similarity alone must never
-dominate (spec §22), so it is just one weighted term — and a relevance guard
-(spec §98) drops everything below ``min_final_score`` so vaguely-similar but
+Weights come from config (spec v0.5 §21). Semantic similarity alone must never
+dominate (spec v0.5 §22), so it is just one weighted term — and a relevance guard
+(spec v0.5 §98) drops everything below ``min_final_score`` so vaguely-similar but
 irrelevant memories never reach the prompt.
 
-Pipeline (spec §27): scope filter → keyword candidates + semantic candidates
+Pipeline (spec v0.5 §27): scope filter → keyword candidates + semantic candidates
 → merge → hybrid ranking → dedup → top K.
 """
 
@@ -98,7 +98,7 @@ class ScoredMemory:
 
 @dataclass
 class RetrievalTrace:
-    """Diagnostics for the WebUI debugger (never sent to QQ, spec §56)."""
+    """Diagnostics for the WebUI debugger (never sent to QQ, spec v0.5 §56)."""
 
     query: str
     scope_keys: list[str] = field(default_factory=list)
@@ -290,7 +290,7 @@ class HybridRetriever:
         results.sort(key=lambda item: item.final, reverse=True)
 
         # 4) relevance guard: semantic-similar but irrelevant never injects.
-        #    Metadata alone is not evidence of relevance (§22/§98).
+        #    Metadata alone is not evidence of relevance (v0.5 §22/§98).
         floor = self._config.min_relevance
         kept = [
             item
@@ -328,13 +328,13 @@ class HybridRetriever:
     # ------------------------------------------------------------- helpers
 
     def _relationship_score(self, stage: str) -> float:
-        """Closer relationship slightly favours recalling long-term facts (spec §26)."""
+        """Closer relationship slightly favours recalling long-term facts (spec v0.5 §26)."""
         if stage in STAGES:
             return STAGES.index(stage) / max(1, len(STAGES) - 1)
         return 0.0
 
     def _temporal_score(self, memory: Memory, now: int) -> float:
-        """Temporal relevance: fresh and currently-valid memories win (spec §23/§24)."""
+        """Temporal relevance: fresh and currently-valid memories win (spec v0.5 §23/§24)."""
         score = 1.0
         if memory.valid_until is not None and memory.valid_until < now:
             score *= 0.4  # expired but not deleted
@@ -349,7 +349,7 @@ class HybridRetriever:
     def _topic_bonus(
         self, memory: Memory, topic_tokens: list[set[str]], query_tokens: set[str]
     ) -> float:
-        """Active topics boost related memories (spec §25)."""
+        """Active topics boost related memories (spec v0.5 §25)."""
         if not topic_tokens:
             return 0.0
         text = f"{memory.content} {memory.summary}"
@@ -378,7 +378,7 @@ class HybridRetriever:
         return hashlib.sha256(blob.encode("utf-8")).hexdigest()[:32]
 
     def invalidate_cache(self) -> None:
-        """Called when memories change so stale results are never reused (spec §64)."""
+        """Called when memories change so stale results are never reused (spec v0.5 §64)."""
         self._cache.clear()
 
     def snapshot(self) -> dict[str, Any]:

@@ -1,11 +1,11 @@
 """Vector store abstraction + SQLite-backed implementation.
 
-Swappable by design (spec §16): the interface is what the memory system uses,
+Swappable by design (spec v0.5 §16): the interface is what the memory system uses,
 so a future pgvector/Qdrant backend only has to implement ``VectorStore``.
 The SQLite implementation stores each vector twice during the transition —
 as JSON (the original form) and as a float64 blob plus a precomputed norm —
 and computes cosine similarity in Python, but **only over an already-filtered
-candidate set** (spec §18/§19), never over the whole table.
+candidate set** (spec v0.5 §18/§19), never over the whole table.
 
 Scoring is one ``math.sumprod`` over the blob (the norm is stored, the query
 norm is computed once per search); the JSON path is only for rows written
@@ -258,7 +258,7 @@ class SqliteVectorStore(VectorStore):
         }
 
     async def missing_memory_ids(self, limit: int = 200) -> list[int]:
-        """Active memories without a vector — drives coverage + rebuild (spec §57)."""
+        """Active memories without a vector — drives coverage + rebuild (spec v0.5 §57)."""
         rows = await self._db.fetchall(
             """SELECT m.id FROM memories m
                LEFT JOIN memory_embeddings e ON e.memory_id = m.id

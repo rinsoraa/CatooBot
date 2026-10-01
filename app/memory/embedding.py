@@ -1,9 +1,9 @@
 """Embedding abstraction + OpenAI-compatible implementation + cached service.
 
-Deliberately independent from the chat provider (spec §14): a deployment may
+Deliberately independent from the chat provider (spec v0.5 §14): a deployment may
 chat with model A and embed with cheap model B, or even a different vendor.
 Failures never propagate — the service degrades to "semantic unavailable"
-and retrieval falls back to keyword + metadata ranking (spec §60/§61).
+and retrieval falls back to keyword + metadata ranking (spec v0.5 §60/§61).
 """
 
 from __future__ import annotations
@@ -109,7 +109,7 @@ class EmbeddingService:
     """Cached embedding access with timeout + circuit-style degradation.
 
     The cache is keyed by (content_hash, model, dimensions) so switching the
-    embedding model never reuses stale vectors (spec §15/§58/§59).
+    embedding model never reuses stale vectors (spec v0.5 §15/§58/§59).
     """
 
     def __init__(
@@ -278,7 +278,7 @@ class EmbeddingService:
             self.misses += 1
             return None
         if self.dimension is not None and int(row["dimensions"]) != self.dimension:
-            # Same model name, different vector size: do not mix them (spec §59).
+            # Same model name, different vector size: do not mix them (spec v0.5 §59).
             self.misses += 1
             return None
         vector = json.loads(row["vector"])

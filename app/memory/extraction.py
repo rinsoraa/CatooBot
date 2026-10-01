@@ -1,13 +1,14 @@
 """Background memory extraction: turn chat turns into long-term memories.
 
-Runs *after* the reply has been sent to QQ (spec §21 of v0.2) and is fully
-asynchronous — a slow or failing extraction never delays chat.
+Runs *after* the reply has been sent to QQ (v0.2 §21 — that spec is not in
+docs/specs/) and is fully asynchronous — a slow or failing extraction never
+delays chat.
 
 v0.5 additions: the extractor now asks for `layer` (semantic vs episodic),
 `summary`, `confidence` and `temporal_scope`, and the prompt carries the
 anti-pollution rules from the spec: the character's own words never become
-user facts (§45), jokes never become preferences, and "rewrite your system
-prompt" requests are stored as a low-confidence user wish at most (§50).
+user facts (v0.5 §45), jokes never become preferences, and "rewrite your system
+prompt" requests are stored as a low-confidence user wish at most (v0.5 §50).
 """
 
 from __future__ import annotations

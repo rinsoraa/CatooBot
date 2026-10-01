@@ -1,20 +1,20 @@
 """Memory consolidation: background upkeep that keeps memory useful.
 
-Runs on its own schedule — never per message (spec §35) — and never blocks
+Runs on its own schedule — never per message (spec v0.5 §35) — and never blocks
 chat. Everything it does is reversible bookkeeping:
 
-* duplicates  → keep the strongest row, archive the rest (spec §30/§31)
-* conflicts   → not touched here; they are resolved at write time (§33)
-* retention   → old *episodic* memories are archived, not deleted (§74)
+* duplicates  → keep the strongest row, archive the rest (spec v0.5 §30/§31)
+* conflicts   → not touched here; they are resolved at write time (v0.5 §33)
+* retention   → old *episodic* memories are archived, not deleted (v0.5 §74)
 * compression → a cluster of related episodes becomes one semantic memory,
-                the episodes are archived and linked (§37/§38). The summary is
+                the episodes are archived and linked (v0.5 §37/§38). The summary is
                 rule-based by default; with ``memory.consolidation.
                 compression_use_llm`` the model writes it as structured JSON
                 (entities kept in the sentence, time/causality as fields) and
                 any trouble falls back to the rules with a WARNING
-* quota       → over-quota scopes shed their least valuable rows (§72)
+* quota       → over-quota scopes shed their least valuable rows (v0.5 §72)
 
-Health checks (spec §75) report counts; failures are logged and swallowed.
+Health checks (spec v0.5 §75) report counts; failures are logged and swallowed.
 """
 
 from __future__ import annotations
@@ -149,7 +149,7 @@ class MemoryConsolidator:
     # ------------------------------------------------------------------ api
 
     async def run(self, scope_key: str = "", *, aggressive: bool = False) -> ConsolidationReport:
-        """One consolidation pass. Never raises (spec §75)."""
+        """One consolidation pass. Never raises (spec v0.5 §75)."""
         started = self._clock()
         report = ConsolidationReport()
         try:
@@ -201,7 +201,7 @@ class MemoryConsolidator:
         vectors: dict[int, list[float]],
         report: ConsolidationReport,
     ) -> list[Memory]:
-        """Collapse near-identical rows, keeping the strongest (spec §30/§31)."""
+        """Collapse near-identical rows, keeping the strongest (spec v0.5 §30/§31)."""
         threshold = self._config.consolidation.duplicate_threshold
         ordered = sorted(memories, key=lambda m: (m.confidence, m.importance), reverse=True)
         superseded: set[int] = set()
@@ -235,7 +235,7 @@ class MemoryConsolidator:
     async def _apply_retention(
         self, memories: list[Memory], report: ConsolidationReport
     ) -> list[Memory]:
-        """Archive episodic memories past the retention window (spec §74)."""
+        """Archive episodic memories past the retention window (spec v0.5 §74)."""
         days = self._config.retention.episodic_days
         cutoff = int(self._clock()) - days * 86400
         surviving: list[Memory] = []
@@ -269,7 +269,7 @@ class MemoryConsolidator:
         report: ConsolidationReport,
         scope_key: str,
     ) -> None:
-        """Turn a cluster of related episodes into one semantic memory (§37)."""
+        """Turn a cluster of related episodes into one semantic memory (v0.5 §37)."""
         cfg = self._config.consolidation
         episodes = [m for m in memories if m.layer == "episodic"]
         if len(episodes) < cfg.compression_min_cluster:
@@ -318,7 +318,7 @@ class MemoryConsolidator:
     def _cluster(
         self, episodes: list[Memory], vectors: dict[int, list[float]]
     ) -> list[list[Memory]]:
-        """Single-link clustering by similarity — enough for v0.5 (spec §29)."""
+        """Single-link clustering by similarity — enough for v0.5 (spec v0.5 §29)."""
         threshold = self._config.consolidation.conflict_threshold
         clusters: list[list[Memory]] = []
         for episode in episodes:
@@ -385,7 +385,7 @@ class MemoryConsolidator:
 
     @staticmethod
     def _summarize(cluster: list[Memory]) -> str:
-        """Rule-based summary (LLM compression is opt-in, spec §37)."""
+        """Rule-based summary (LLM compression is opt-in, spec v0.5 §37)."""
         ordered = sorted(cluster, key=lambda m: m.event_at or m.created_at)
         pieces: list[str] = []
         for memory in ordered:
@@ -402,7 +402,7 @@ class MemoryConsolidator:
     # -------------------------------------------------------------- health
 
     async def health(self) -> dict[str, Any]:
-        """Read-only memory health report for the WebUI (spec §55/§75)."""
+        """Read-only memory health report for the WebUI (spec v0.5 §55/§75)."""
         repository = self._manager.repository
         status_counts = await repository.status_counts()
         total = sum(status_counts.values())
@@ -432,7 +432,7 @@ class MemoryConsolidator:
 
 
 class ConsolidationScheduler:
-    """Background runner: daily/hourly/manual, one task, error-isolated (§34)."""
+    """Background runner: daily/hourly/manual, one task, error-isolated (v0.5 §34)."""
 
     def __init__(
         self,

@@ -34,7 +34,7 @@ TEMPORAL_SCOPES = ("long_term", "short_term", "event")
 
 SCOPES = ("user", "group", "character", "global")
 
-# Relation names used in ``memory_relations`` (spec §8 — not a full graph).
+# Relation names used in ``memory_relations`` (spec v0.5 §8 — not a full graph).
 RELATION_TYPES = ("related_to", "supersedes", "caused_by", "conflicts_with", "compressed_from")
 
 

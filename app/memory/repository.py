@@ -116,7 +116,7 @@ class MemoryRepository:
         )
 
     async def set_status(self, memory_id: int, status: str) -> bool:
-        """Status changes keep the row (spec §10/§11)."""
+        """Status changes keep the row (spec v0.5 §10/§11)."""
         from app.memory.model import STATUSES
 
         if status not in STATUSES:
@@ -131,7 +131,7 @@ class MemoryRepository:
         return True
 
     async def delete(self, memory_id: int) -> bool:
-        """Hard delete — WebUI only (spec §11 keeps it out of the pipeline)."""
+        """Hard delete — WebUI only (spec v0.5 §11 keeps it out of the pipeline)."""
         row = await self._db.fetchone("SELECT id FROM memories WHERE id = ?", (memory_id,))
         if row is None:
             return False
@@ -196,7 +196,7 @@ class MemoryRepository:
         statuses: tuple[str, ...] = ("active",),
         layers: tuple[str, ...] | None = None,
     ) -> list[Memory]:
-        """Scope + status filtered candidate set (spec §19/§20)."""
+        """Scope + status filtered candidate set (spec v0.5 §19/§20)."""
         if not scope_keys:
             return []
         scope_placeholders = ",".join("?" for _ in scope_keys)
@@ -216,7 +216,7 @@ class MemoryRepository:
         return [Memory.model_validate(dict(row)) for row in rows]
 
     async def mark_used(self, memory_ids: list[int]) -> None:
-        """Retrieval reinforcement: usage only — never confidence (spec §40/§42)."""
+        """Retrieval reinforcement: usage only — never confidence (spec v0.5 §40/§42)."""
         if not memory_ids:
             return
         now = int(self._clock())
@@ -239,7 +239,7 @@ class MemoryRepository:
         limit: int = 100,
         offset: int = 0,
     ) -> list[Memory]:
-        """WebUI search: keyword LIKE plus metadata filters (spec §54)."""
+        """WebUI search: keyword LIKE plus metadata filters (spec v0.5 §54)."""
         sql = "SELECT * FROM memories WHERE 1=1"
         params: list[Any] = []
         if keyword:
@@ -266,7 +266,7 @@ class MemoryRepository:
         return [Memory.model_validate(dict(row)) for row in rows]
 
     async def timeline(self, scope_key: str = "", limit: int = 200) -> list[Memory]:
-        """Chronological view (spec §53) — oldest first for a readable story."""
+        """Chronological view (spec v0.5 §53) — oldest first for a readable story."""
         sql = "SELECT * FROM memories WHERE 1=1"
         params: list[Any] = []
         if scope_key:

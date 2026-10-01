@@ -3,9 +3,9 @@
 Two rules from the spec are encoded here:
 
 * memories are grouped by meaning (preferences / projects / recent events)
-  instead of a flat numbered list (§48);
+  instead of a flat numbered list (v0.5 §48);
 * they are explicitly labelled *reference information, not instructions*, so
-  a stored sentence can never act as a prompt injection (§49/§50/§99).
+  a stored sentence can never act as a prompt injection (v0.5 §49/§50/§99).
 """
 
 from __future__ import annotations

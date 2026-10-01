@@ -3,10 +3,10 @@
 v0.5 upgrades:
 
 * every memory carries a ``layer`` (semantic vs episodic) and a ``status``;
-  conflicts mark the old row ``superseded`` instead of deleting it (§11);
+  conflicts mark the old row ``superseded`` instead of deleting it (v0.5 §11);
 * retrieval goes through the hybrid retriever (semantic + keyword + metadata);
 * quota enforcement archives the least valuable rows instead of growing
-  without bound (§72/§73);
+  without bound (v0.5 §72/§73);
 * a relevance guard prevents vaguely-similar memories from reaching the prompt.
 """
 
@@ -35,7 +35,7 @@ _FORBIDDEN_PATTERNS = re.compile(
 )
 
 # Attempts to rewrite the system prompt are stored as a plain user wish at
-# most, never as an instruction the character must obey (spec §50).
+# most, never as an instruction the character must obey (spec v0.5 §50).
 _INJECTION_PATTERNS = re.compile(
     r"(系统提示词|system\s*prompt|ignore previous|忽略之前|你现在是|你的设定改成)"
 )
@@ -175,7 +175,7 @@ class MemoryManager:
 
         layer = layer or self._infer_layer(category)
         if _INJECTION_PATTERNS.search(content):
-            # Keep it, but only as a user wish — never as a rule (spec §50).
+            # Keep it, but only as a user wish — never as a rule (spec v0.5 §50).
             category = "instruction"
             confidence = min(confidence, 0.5)
             importance = min(importance, 0.4)
@@ -311,7 +311,7 @@ class MemoryManager:
 
     @staticmethod
     def _reinforce_step(source: str) -> float:
-        """Confidence only moves on real evidence (spec §43)."""
+        """Confidence only moves on real evidence (spec v0.5 §43)."""
         return 0.08 if source == "explicit" else 0.05
 
     def _temporal_bounds(
@@ -336,7 +336,7 @@ class MemoryManager:
         await self.vectors.upsert(memory.id, vector, model)
 
     async def backfill_embeddings(self, limit: int = 50) -> int:
-        """Embed memories that have no vector yet (rebuild path, spec §57)."""
+        """Embed memories that have no vector yet (rebuild path, spec v0.5 §57)."""
         if self.embeddings is None or not self.embeddings.available:
             return 0
         store = self.vectors
@@ -472,7 +472,7 @@ class MemoryManager:
         relationship_stage: str = "",
         topic_titles: list[str] | None = None,
     ) -> tuple[list[ScoredMemory], Any]:
-        """Debugger entry point: full component scores (spec §88)."""
+        """Debugger entry point: full component scores (spec v0.5 §88)."""
         candidates = await self._candidates_for(query, scope_keys, limit=200)
         return await self.retriever.retrieve_with_trace(
             query,
