@@ -61,12 +61,14 @@ class MemoryExtractor:
         manager: MemoryManager,
         logger: logging.Logger | None = None,
         clock: Any = time.time,
+        metrics: Any = None,
     ) -> None:
         self.config = config  # public: toggled at runtime/WebUI
         self.engine = engine  # public: re-pointable when tests/ops swap engines
         self._manager = manager
         self._log = logger or logging.getLogger("CatooBot.Memory")
         self._clock = clock
+        self._metrics = metrics  # optional: dashboard counter (memories_extracted)
         self._tasks: set[asyncio.Task[None]] = set()
 
     async def schedule(
@@ -132,6 +134,7 @@ class MemoryExtractor:
                 )
             except Exception:  # noqa: BLE001 - narration is cosmetic
                 pass
+        saved = 0
         for item in parsed:
             try:
                 await self._manager.remember(
@@ -149,8 +152,11 @@ class MemoryExtractor:
                     temporal_scope=str(item.get("temporal_scope", "long_term")),
                     event_at=int(self._clock()) if item.get("layer") == "episodic" else None,
                 )
+                saved += 1
             except (ValueError, TypeError) as exc:
                 self._log.debug("Skipping invalid extracted memory: %s", exc)
+        if saved and self._metrics is not None:
+            self._metrics.inc("memories_extracted", saved)
 
     @staticmethod
     def _parse(content: str) -> list[dict[str, Any]]:

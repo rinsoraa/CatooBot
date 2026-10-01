@@ -251,9 +251,10 @@ class WebServer:
             ("群数", data["groups"], ""),
             ("记忆条数", data["memories"], "含已被取代、仍可审计的旧事实"),
             ("收到消息", metrics["messages_received"], ""),
-            ("AI 请求", metrics["ai_requests"], ""),
+            ("AI 请求", metrics["ai_requests"], "每一次模型调用（含故障转移时的重试）"),
             ("限流 429", metrics["rate_limited"], "被服务商限流时自动故障转移到备用模型"),
-            ("AI 失败", metrics["ai_errors"], ""),
+            ("AI 失败", metrics["ai_errors"], "所有模型都没能答出来的请求数"),
+            ("新增记忆", metrics["memories_extracted"], "从对话里抽取并落库的记忆条数"),
             ("运行时长", f"{metrics['uptime_seconds'] // 60} 分钟", ""),
         ]
         cards = ui.stats_grid(stats)

@@ -458,7 +458,8 @@ class CharacterPlugin(Plugin):
             return None
         session_id = turn.session_id
         is_group = turn.group_id is not None
-        bot.metrics.inc("ai_requests")
+        # ai_requests / ai_errors are counted by the model router itself
+        # (Bot._on_router_event) — a turn here is not a model call.
 
         meta = turn.meta
         recognized = await self._recognize_turn(turn)
@@ -573,7 +574,6 @@ class CharacterPlugin(Plugin):
                 context_trace=trace,
             )
         except AIError as exc:
-            bot.metrics.inc("ai_errors")
             bot.log.warning("Character request failed for session=%s: %s", session_id, exc)
             narrate().warn("没想出来，先随便应一句", detail=str(exc)[:80])
             return bot.response_planner.plan_reply(

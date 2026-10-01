@@ -41,7 +41,14 @@ def attach_ai(bot, provider: MockAIProvider, models: list[str]) -> AIEngine:  # 
         context={"enabled": True, "max_messages": 20},
         models=[{"name": n, "provider": "mock", "model": n} for n in models],
     )
-    engine = AIEngine(config, bot.database, providers={"mock": provider})
+    # Same wiring as production Bot.__init__: router events feed the dashboard
+    # counters (ai_requests / ai_errors / rate_limited).
+    engine = AIEngine(
+        config,
+        bot.database,
+        providers={"mock": provider},
+        router_event_listener=bot._on_router_event,  # noqa: SLF001 - production wiring
+    )
     bot.ai = engine
     bot.character.engine = engine
     if bot.character.extractor is not None:

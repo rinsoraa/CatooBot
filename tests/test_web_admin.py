@@ -166,11 +166,17 @@ async def test_webui_http_gate(tmp_path, unused_tcp_port) -> None:
                 assert "catoobot_session" in resp.cookies
             assert len(list(jar)) == 1
 
+            # counters reach the dashboard tiles (Task 4): a fresh bot sits at
+            # 0, so inject distinctive values and look for them in the HTML
+            bot.metrics.inc("ai_requests", 812)
+            bot.metrics.inc("memories_extracted", 719)
+
             # authenticated dashboard: page-specific stats, not the login form
             async with session.get(base + "/") as resp:
                 assert resp.status == 200
                 body = await resp.text()
                 assert "限流 429" in body and "NapCat" in body
+                assert "新增记忆" in body and "812" in body and "719" in body
                 assert 'action="/login"' not in body
 
             # every management page renders its own content

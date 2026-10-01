@@ -99,7 +99,7 @@ class Bot:
             database=self.database,
         )
         self.extractor = (
-            MemoryExtractor(config.memory, self.ai, self.memory)
+            MemoryExtractor(config.memory, self.ai, self.memory, metrics=self.metrics)
             if self.memory is not None
             else None
         )
@@ -236,8 +236,18 @@ class Bot:
         await self.event_bus.emit(event)
 
     def _on_router_event(self, event: str, model_name: str | None) -> None:
-        if event == "rate_limited":
+        """Model-router events feed the dashboard counters.
+
+        ``request`` fires per provider attempt (including the one transient
+        retry) and ``failed`` once per request that could not be answered by
+        any model, so 请求/失败 ratio stays meaningful.
+        """
+        if event == "request":
+            self.metrics.inc("ai_requests")
+        elif event == "rate_limited":
             self.metrics.inc("rate_limited")
+        elif event == "failed":
+            self.metrics.inc("ai_errors")
 
     # ------------------------------------------------------------ lifecycle
 
