@@ -20,6 +20,7 @@ from app.ai.errors import (
     AIConnectionError,
     AITimeoutError,
     AuthenticationError,
+    EmptyResponseError,
     InvalidRequestError,
     ModelNotFoundError,
     RateLimitError,
@@ -114,14 +115,34 @@ class OpenAICompatibleProvider(AIProvider):
         content = str(message.get("content") or "")
         usage = data.get("usage") or {}
         tool_calls = self._parse_tool_calls(message.get("tool_calls"))
+        finish_reason = choices[0].get("finish_reason")
+        reasoning = message.get("reasoning_content")
         self._log.info(
             "Response received provider=%s model=%s finish=%s tokens=%s/%s",
             self.name,
             data.get("model", model),
-            choices[0].get("finish_reason"),
+            finish_reason,
             usage.get("prompt_tokens", "-"),
             usage.get("completion_tokens", "-"),
         )
+        if not content.strip() and not tool_calls:
+            # Reasoning-only stop (observed: finish=stop, all completion
+            # tokens in reasoning_content) — retry/failover instead of
+            # feeding an empty reply to the character layer.
+            reasoning_chars = len(str(reasoning)) if reasoning else 0
+            self._log.warning(
+                "Empty content from model=%s (finish=%s, reasoning_chars=%d) —"
+                " treating as a transient failure",
+                model,
+                finish_reason,
+                reasoning_chars,
+            )
+            raise EmptyResponseError(
+                self.name,
+                model=model,
+                finish_reason=str(finish_reason or ""),
+                reasoning_chars=reasoning_chars,
+            )
         return AIResponse(
             content=content,
             model=str(data.get("model", model)),

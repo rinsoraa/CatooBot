@@ -16,6 +16,7 @@ from app.ai.errors import (
     AITimeoutError,
     AllModelsFailedError,
     AuthenticationError,
+    EmptyResponseError,
     InvalidRequestError,
     ModelNotFoundError,
     RateLimitError,
@@ -272,3 +273,38 @@ class TestConcurrency:
         assert first.content == "ok"
         await asyncio.gather(*(router.chat(request(f"q{i}")) for i in range(10)))
         assert provider.call_count("A") == 1  # never hammered while cooling down
+
+
+class TestEmptyResponsePolicy:
+    """A reasoning-only empty stop: retry the same model once, then fail over."""
+
+    async def test_retries_same_model_once_then_succeeds(self) -> None:
+        router, provider, _ = make_router(
+            {"A": [EmptyResponseError("mock", "A"), "这下有了"]}
+        )
+        response = await router.chat(request())
+        assert response.content == "这下有了"
+        assert provider.call_count("A") == 2
+
+    async def test_fails_over_when_still_empty(self) -> None:
+        router, provider, _ = make_router(
+            {
+                "A": [EmptyResponseError("mock", "A")],
+                "B": ["备用模型的回答"],
+            },
+            ["A", "B"],
+        )
+        response = await router.chat(request())
+        assert response.content == "备用模型的回答"
+        assert provider.call_count("A") == 2  # one retry, then move on
+
+    async def test_all_models_empty_raises(self) -> None:
+        router, _provider, _ = make_router(
+            {
+                "A": [EmptyResponseError("mock", "A")],
+                "B": [EmptyResponseError("mock", "B")],
+            },
+            ["A", "B"],
+        )
+        with pytest.raises(AllModelsFailedError):
+            await router.chat(request())

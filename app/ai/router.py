@@ -30,6 +30,7 @@ from app.ai.errors import (
     AITimeoutError,
     AllModelsFailedError,
     AuthenticationError,
+    EmptyResponseError,
     InvalidRequestError,
     ModelNotFoundError,
     RateLimitError,
@@ -46,6 +47,7 @@ SwitchableError = (
     AIConnectionError,
     ModelNotFoundError,
     UnknownAIError,
+    EmptyResponseError,
 )
 
 
@@ -247,8 +249,10 @@ class ModelRouter:
                 state.last_error = str(exc)
                 state.failure_count += 1
 
-                if isinstance(exc, (AITimeoutError, AIConnectionError)) and not retried_transient:
-                    # One short retry for transient network trouble, then move on.
+                transient = (AITimeoutError, AIConnectionError, EmptyResponseError)
+                if isinstance(exc, transient) and not retried_transient:
+                    # One retry for transient trouble (network blips, a
+                    # reasoning-only empty stop), then move to the next model.
                     retried_transient = True
                     self._log.warning(
                         "Transient error on model=%s: %s — retrying once", spec.name, exc

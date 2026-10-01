@@ -11,6 +11,7 @@ from app.ai.errors import (
     AIConnectionError,
     AITimeoutError,
     AuthenticationError,
+    EmptyResponseError,
     InvalidRequestError,
     ModelNotFoundError,
     RateLimitError,
@@ -178,3 +179,54 @@ class TestBadResponses:
         with pytest.raises(Exception) as excinfo:  # noqa: PT011
             await provider.chat(request())
         assert "sk-secret-key" not in str(excinfo.value)
+
+
+class TestEmptyContent:
+    """Reasoning-only stops must become transient errors, not silent empties."""
+
+    def _body(self, message: dict) -> dict:
+        return {
+            "id": "chatcmpl-2",
+            "model": "model-a",
+            "choices": [{"index": 0, "message": message, "finish_reason": "stop"}],
+            "usage": {"prompt_tokens": 2280, "completion_tokens": 86},
+        }
+
+    async def test_reasoning_only_empty_content_raises(self) -> None:
+        provider, _ = make_provider(
+            lambda req: httpx.Response(
+                200,
+                json=self._body(
+                    {
+                        "role": "assistant",
+                        "content": "",
+                        "reasoning_content": "（想了很久但是没说话）" * 5,
+                    }
+                ),
+            )
+        )
+        with pytest.raises(EmptyResponseError) as info:
+            await provider.chat(request())
+        assert "reasoning_chars" in str(info.value)
+
+    async def test_empty_content_with_tool_calls_is_kept(self) -> None:
+        provider, _ = make_provider(
+            lambda req: httpx.Response(
+                200,
+                json=self._body(
+                    {
+                        "role": "assistant",
+                        "content": "",
+                        "tool_calls": [
+                            {
+                                "id": "call_1",
+                                "type": "function",
+                                "function": {"name": "time", "arguments": "{}"},
+                            }
+                        ],
+                    }
+                ),
+            )
+        )
+        response = await provider.chat(request())
+        assert response.tool_calls and response.tool_calls[0]["name"] == "time"

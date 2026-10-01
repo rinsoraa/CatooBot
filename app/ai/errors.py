@@ -116,6 +116,37 @@ class UnknownAIError(AIError):
         super().__init__(f"Provider '{provider}' unknown error: {detail}")
 
 
+class EmptyResponseError(AIError):
+    """200 OK but the model produced no text (reasoning-only stop).
+
+    Reasoning models occasionally spend the whole completion budget on
+    ``reasoning_content`` and stop with an empty ``content``. Switchable and
+    retried once on the same model before failing over. The reasoning text
+    itself is never kept (no hidden chain-of-thought), only its length.
+    """
+
+    def __init__(
+        self,
+        provider: str,
+        model: str = "",
+        *,
+        finish_reason: str = "",
+        reasoning_chars: int = 0,
+    ) -> None:
+        self.provider = provider
+        self.model = model
+        self.finish_reason = finish_reason
+        self.reasoning_chars = reasoning_chars
+        super().__init__(
+            _join(
+                f"Provider '{provider}' returned an empty response",
+                f"(model={model})" if model else "",
+                f"finish={finish_reason}" if finish_reason else "",
+                f"reasoning_chars={reasoning_chars}" if reasoning_chars else "",
+            )
+        )
+
+
 class AllModelsFailedError(AIError):
     """Every candidate model failed; the request could not be served."""
 
