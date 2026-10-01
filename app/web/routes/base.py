@@ -53,6 +53,7 @@ class WebContext:
     _tool_admin: Any
     _agent_admin: Any
     _social_admin: Any
+    _expression_admin: Any
     _sticker_admin: Any
     _auth: Any
     _throttle: Any

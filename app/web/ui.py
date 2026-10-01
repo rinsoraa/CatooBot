@@ -369,6 +369,7 @@ NAV: tuple[tuple[str, str, str, str], ...] = (
     ),
     ("/topics", "话题", "❝", "未聊完的话题与重要度管理"),
     ("/memory", "记忆", "✦", "长期记忆：搜索、时间线、健康度、修正"),
+    ("/expressions", "口癖", "🗨", "从群消息学的口头禅：查看来源、停用或删除"),
     ("/users", "用户", "☷", "用户档案、关系阶段、主动聊天开关"),
     ("/groups", "群组", "☰", "群资料与参与开关"),
     ("/sessions", "会话", "◫", "按会话隔离的上下文，可清空"),
@@ -388,7 +389,7 @@ NAV: tuple[tuple[str, str, str, str], ...] = (
 NAV_GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("概览", ("/", "/runtime", "/logs")),
     ("角色", ("/character", "/sandbox", "/conversation", "/topics")),
-    ("数据", ("/memory", "/users", "/groups", "/sessions")),
+    ("数据", ("/memory", "/expressions", "/users", "/groups", "/sessions")),
     (
         "能力",
         (

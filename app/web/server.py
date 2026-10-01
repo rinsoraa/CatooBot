@@ -31,6 +31,7 @@ from app.web.routes.base import (  # noqa: F401 - re-exported for compatibility
 )
 from app.web.routes.config import ConfigRoutes
 from app.web.routes.dashboard import DashboardRoutes
+from app.web.routes.expressions import ExpressionsRoutes
 from app.web.routes.identity import IdentityRoutes
 from app.web.routes.media import MediaRoutes
 from app.web.routes.memory import MemoryRoutes
@@ -53,6 +54,7 @@ from app.web.services.admin import AdminService
 from app.web.services.agent import AgentAdminService
 from app.web.services.behavior import BehaviorService
 from app.web.services.config_admin import ConfigAdminService
+from app.web.services.expressions import ExpressionAdminService
 from app.web.services.media import StickerAdminService
 from app.web.services.memory import MemoryAdminService
 from app.web.services.memory_correction import MemoryCorrectionService
@@ -72,6 +74,7 @@ class WebServer(
     ModelRoutes,
     MediaRoutes,
     IdentityRoutes,
+    ExpressionsRoutes,
     SocialRoutes,
     ToolRoutes,
     AgentRoutes,
@@ -92,6 +95,7 @@ class WebServer(
         self._tool_admin = ToolAdminService(bot)
         self._agent_admin = AgentAdminService(bot)
         self._social_admin = SocialAdminService(bot)
+        self._expression_admin = ExpressionAdminService(bot)
         self._sticker_admin = StickerAdminService(bot)
         self._auth = getattr(bot, "web_auth", None) or AuthService(config, bot.database)
         self._throttle = LoginThrottle(metrics=getattr(bot, "metrics", None))
@@ -115,6 +119,7 @@ class WebServer(
         self.register_media(app)
         self.register_identity(app)
         self.register_social(app)
+        self.register_expressions(app)
         self.register_sandbox(app)
         self.register_memory(app)
         self.register_config(app)

@@ -210,6 +210,7 @@ async def test_webui_http_gate(tmp_path, unused_tcp_port) -> None:
                 "/prompts",
                 "/logs",
                 "/runtime",
+                "/expressions",
             )
             for path in other_pages:
                 async with session.get(base + path) as resp:
