@@ -927,6 +927,59 @@ CREATE INDEX IF NOT EXISTS idx_reply_outcomes_scope ON reply_outcomes(scope_key,
 CREATE INDEX IF NOT EXISTS idx_reply_outcomes_verdict ON reply_outcomes(verdict, sent_at DESC);
 """,
     ),
+    (
+        19,
+        "expression / 口癖 learning (task 22)",
+        """
+-- Patterns she learned from how a group talks: one row per (group, pattern).
+-- status: active (injected) | disabled (user paused) | archived (evicted).
+CREATE TABLE IF NOT EXISTS expression_patterns (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    scope_key     TEXT NOT NULL,                -- group:<gid>
+    pattern       TEXT NOT NULL,
+    kind          TEXT NOT NULL DEFAULT 'word', -- word | pattern
+    sample_count  INTEGER NOT NULL DEFAULT 0,
+    speaker_count INTEGER NOT NULL DEFAULT 0,
+    first_seen_at INTEGER,
+    last_seen_at  INTEGER,
+    last_used_at  INTEGER,
+    use_count     INTEGER NOT NULL DEFAULT 0,
+    status        TEXT NOT NULL DEFAULT 'active',
+    created_at    INTEGER NOT NULL,
+    updated_at    INTEGER NOT NULL
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_expr_pattern_scope
+    ON expression_patterns(scope_key, pattern);
+CREATE INDEX IF NOT EXISTS idx_expr_pattern_scope_status
+    ON expression_patterns(scope_key, status);
+
+-- Provenance: the raw (redacted) messages a pattern came from, for the WebUI.
+CREATE TABLE IF NOT EXISTS expression_samples (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    pattern_id INTEGER NOT NULL,
+    message_id TEXT NOT NULL,
+    user_id    TEXT NOT NULL,
+    text       TEXT NOT NULL,
+    seen_at    INTEGER NOT NULL
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_expr_sample_unique
+    ON expression_samples(pattern_id, message_id);
+CREATE INDEX IF NOT EXISTS idx_expr_sample_pattern
+    ON expression_samples(pattern_id);
+
+-- Vector search, same shape as memory_embeddings (blob + norm, no JSON column).
+CREATE TABLE IF NOT EXISTS expression_vectors (
+    pattern_id  INTEGER PRIMARY KEY,
+    model       TEXT NOT NULL,
+    dimensions  INTEGER NOT NULL,
+    version     INTEGER NOT NULL DEFAULT 1,
+    vector_blob BLOB,
+    norm        REAL,
+    created_at  INTEGER NOT NULL,
+    updated_at  INTEGER NOT NULL
+);
+""",
+    ),
 ]
 
 

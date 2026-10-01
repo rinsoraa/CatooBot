@@ -151,6 +151,19 @@ class CharacterPlugin(Plugin):
         )
         if not text and not self._has_media(event):
             return
+        # Task 22: learn short phrases from how this group talks (opt-in).
+        learner = getattr(self.bot, "expression_learner", None)
+        if learner is not None and text:
+            try:
+                await learner.learn_message(
+                    group_id=str(event.group_id),
+                    user_id=str(event.user_id),
+                    message_id=str(getattr(event, "message_id", "") or ""),
+                    text=text,
+                    sender_is_bot=str(event.user_id) == str(event.self_id),
+                )
+            except Exception:  # noqa: BLE001 - learning must never break chat
+                self.bot.log.exception("[Expression] learn failed (ignored)")
         await self._sandbox_external(event, text, mentioned=mentioned, reply_to_bot=reply_to_bot)
 
         # every raw message is observed; the burst is decided later (v1.2).

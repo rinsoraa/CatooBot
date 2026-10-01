@@ -478,3 +478,15 @@ media:
   background_vision_enabled: true    # 群里没 @ 她时，图片/表情包也做后台识别（先识别再判断，不影响是否回复）
   background_vision_max_per_hour: 20 # 每个会话每小时后台识别上限（省视觉调用）
   recognition_timeout_seconds: 12    # 等识别结果最多几秒；超时先判断，结果出来后再收藏
+
+# Task 22：表达 / 口癖学习 —— 从群消息学短句式，回复时按群注入（可停用/可删除/可溯源）。
+# 默认关闭；开启后只在 config.expression.groups 白名单（或所有群）内学。
+expression:
+  enabled: false
+  learn_max_per_hour: 60      # 每群每小时最多入库候选
+  min_speakers: 2             # 跨 ≥N 个不同用户才激活
+  min_occurrences: 3          # 或出现 ≥M 次
+  max_patterns_per_group: 80  # 每群容量上限，超出淘汰到 archived
+  inject_max_items: 3         # 每次回复最多注入 K 条
+  inject_max_chars: 24        # 注入总长度上限
+  groups: []                  # 白名单（空 = 所有群）

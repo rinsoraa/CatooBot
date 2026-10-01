@@ -72,5 +72,20 @@ class TestConfigExample:
 
     @pytest.mark.skipif(not LIVE.exists(), reason="no local config.yaml in this checkout")
     def test_example_and_live_sections_are_aligned(self) -> None:
-        """Both files describe the same shape, in the same order (easy to diff)."""
-        assert top_level_keys(LIVE) == top_level_keys(EXAMPLE)
+        """Every live section is documented by the example, in the same order.
+
+        The live file is operator-owned and may lag behind the example on new
+        optional sections (the example documents them; the live file just
+        hasn't adopted them yet). What must never happen is the two drifting in
+        *order*, or the live file carrying a section the example no longer has.
+        """
+        live = top_level_keys(LIVE)
+        example = top_level_keys(EXAMPLE)
+        assert set(live) <= set(example), (
+            f"live sections missing from example: {set(live) - set(example)}"
+        )
+        positions = {key: index for index, key in enumerate(example)}
+        live_positions = [positions[key] for key in live]
+        assert live_positions == sorted(live_positions), (
+            "live sections must keep the example's order"
+        )

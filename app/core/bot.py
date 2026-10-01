@@ -34,6 +34,7 @@ from app.core.metrics import Metrics
 from app.core.router import CoreRouter
 from app.core.watchdog import EventLoopWatchdog
 from app.database.database import Database
+from app.expression import ExpressionLearner, ExpressionStore
 from app.media.runtime import MediaRuntime
 from app.memory.consolidation import ConsolidationScheduler, MemoryConsolidator
 from app.memory.embedding import EmbeddingService
@@ -144,12 +145,19 @@ class Bot:
             memory_manager=self.memory,
             database=self.database,
         )
+        # Task 22: expression / 口癖 learning (opt-in; the plugin feeds it).
+        self.expression_store = ExpressionStore(self.database, config.expression, clock=self._clock)
+        self.expression_learner = ExpressionLearner(
+            self.expression_store, config.expression, clock=self._clock
+        )
         self.extractor = (
             MemoryExtractor(config.memory, self.ai, self.memory, metrics=self.metrics)
             if self.memory is not None
             else None
         )
         self.character.extractor = self.extractor
+        self.character.expression_store = self.expression_store
+        self.character.expression_config = config.expression
         self.relationships = self.character.relationships
 
         # v0.4 behaviour layer: presence → activity/initiative → response plan.

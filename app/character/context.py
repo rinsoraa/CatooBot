@@ -125,6 +125,7 @@ class CharacterContextBuilder:
         world: dict | None = None,
         media_context: str = "",
         facts: str = "",
+        expressions: str = "",
         continuity: dict | None = None,
         interaction_profile: Any = None,
         shared_experiences: list | None = None,
@@ -242,6 +243,12 @@ class CharacterContextBuilder:
         if facts:
             system_parts.append(facts)
         trace("sandbox_facts", bool(facts), "no related entity in the query")
+
+        # Task 22: this group's learned phrases — advisory only, and the
+        # outbound style limits still apply unchanged (硬约束 ①).
+        if expressions:
+            system_parts.append(expressions)
+        trace("expressions", bool(expressions), "no group or no learned phrases")
 
         # Tell the model what the [时间] tags on stale history turns mean.
         if any(msg.content.startswith("[") for msg in history):

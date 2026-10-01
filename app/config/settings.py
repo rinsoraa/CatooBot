@@ -662,6 +662,24 @@ class SandboxConfig(BaseModel):
     social_space_map: dict[str, str] = Field(default_factory=dict)
 
 
+class ExpressionConfig(BaseModel):
+    """Task 22: expression / 口癖 learning — patterns from group speech.
+
+    Disabled by default (opt-in); when on, group messages are mined for short
+    reusable phrases that get injected back into her prompt *for that group
+    only*, inside the existing style limits. See docs/V3_EXPRESSION_LEARNING.md.
+    """
+
+    enabled: bool = False
+    learn_max_per_hour: int = Field(default=60, ge=1)
+    min_speakers: int = Field(default=2, ge=1)  # ≥N distinct speakers
+    min_occurrences: int = Field(default=3, ge=1)  # or ≥M times
+    max_patterns_per_group: int = Field(default=80, ge=1)
+    inject_max_items: int = Field(default=3, ge=1)
+    inject_max_chars: int = Field(default=24, ge=1)
+    groups: list[str] = Field(default_factory=list)  # empty = all groups
+
+
 class AppConfig(BaseModel):
     bot: BotConfig = Field(default_factory=BotConfig)
     onebot: OneBotConfig = Field(default_factory=OneBotConfig)
@@ -680,6 +698,7 @@ class AppConfig(BaseModel):
     sandbox: SandboxConfig = Field(default_factory=SandboxConfig)
     tools: ToolsConfig = Field(default_factory=ToolsConfig)
     agent: AgentConfig = Field(default_factory=AgentConfig)
+    expression: ExpressionConfig = Field(default_factory=ExpressionConfig)
 
 
 def _coerce(value: str) -> Any:

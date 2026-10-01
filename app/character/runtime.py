@@ -73,6 +73,8 @@ class CharacterRuntime:
         self.sandbox: Any = None  # optional SandboxRuntime (v2.0): her life
         self.builder = CharacterContextBuilder()
         self.processor = CharacterResponseProcessor(logger=self._log)
+        self.expression_store: Any = None  # optional ExpressionStore (Task 22)
+        self.expression_config: Any = None  # optional ExpressionConfig (Task 22)
         self._clock = clock
 
     # ------------------------------------------------------------- bootstrap
@@ -127,6 +129,8 @@ class CharacterRuntime:
             except Exception:  # noqa: BLE001 - facts are an aid, never a blocker
                 self._log.debug("Sandbox facts unavailable", exc_info=True)
 
+        expressions = await self._expression_context(session_id, is_group)
+
         messages = self.builder.build(
             persona,
             state,
@@ -141,6 +145,7 @@ class CharacterRuntime:
             world=await self._world_context(),
             media_context=media_context,
             facts=facts,
+            expressions=expressions,
             continuity=continuity,
             interaction_profile=interaction_profile,
             shared_experiences=shared_experiences,
@@ -486,6 +491,23 @@ class CharacterRuntime:
         except Exception:  # noqa: BLE001 - sandbox trouble must not affect chat
             self._log.debug("Sandbox context unavailable", exc_info=True)
             return None
+
+    async def _expression_context(self, session_id: str, is_group: bool) -> str:
+        """Task 22: this group's learned phrases, injected as an advisory note."""
+        if not is_group or self.expression_store is None or self.expression_config is None:
+            return ""
+        if not session_id.startswith("group:"):
+            return ""
+        try:
+            from app.expression import expression_context
+
+            block, _ = await expression_context(
+                self.expression_store, self.expression_config, session_id.split(":", 1)[-1]
+            )
+            return block
+        except Exception:  # noqa: BLE001 - learning is advisory, never a blocker
+            self._log.debug("Expression context unavailable", exc_info=True)
+            return ""
 
     async def _note_world_interaction(self, session_id: str, user_id: int | str) -> None:
         sandbox = getattr(self, "sandbox", None)

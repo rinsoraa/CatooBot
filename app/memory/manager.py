@@ -13,7 +13,6 @@ v0.5 upgrades:
 from __future__ import annotations
 
 import logging
-import re
 import time
 from typing import TYPE_CHECKING, Any
 
@@ -22,6 +21,7 @@ from app.memory.keyword_index import KeywordIndex
 from app.memory.model import SOURCES, Memory
 from app.memory.model import scope_key as make_scope_key
 from app.memory.outbox import Outbox
+from app.memory.patterns import _FORBIDDEN_PATTERNS, _INJECTION_PATTERNS
 from app.memory.repository import MemoryRepository
 from app.memory.retrieval import HybridRetriever, ScoredMemory, bigrams
 from app.memory.vector_store import SqliteVectorStore, VectorStore
@@ -29,16 +29,6 @@ from app.memory.vector_store import SqliteVectorStore, VectorStore
 if TYPE_CHECKING:
     from app.config.settings import MemoryConfig
     from app.database.database import Database
-
-_FORBIDDEN_PATTERNS = re.compile(
-    r"(很蠢|很笨|智力低|智商低|性格缺陷|心理有问题|心理疾病|人格缺陷|人格评分|好感度\s*\d+|恋爱值\s*\d+)"
-)
-
-# Attempts to rewrite the system prompt are stored as a plain user wish at
-# most, never as an instruction the character must obey (spec v0.5 §50).
-_INJECTION_PATTERNS = re.compile(
-    r"(系统提示词|system\s*prompt|ignore previous|忽略之前|你现在是|你的设定改成)"
-)
 
 
 class MemoryManager:
