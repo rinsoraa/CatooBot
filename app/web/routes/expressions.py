@@ -43,9 +43,18 @@ class ExpressionsRoutes(WebContext):
         )
 
         enabled = self._expression_admin.config.enabled
+        stats = self._expression_admin.stats()
+        stats_line = " · ".join(
+            f"{label} {value}"
+            for label, value in (
+                ("已学", stats.get("learned", 0)),
+                ("已注入", stats.get("injected", 0)),
+                ("已淘汰", stats.get("evicted", 0)),
+            )
+        )
         body = f"""<div class="card"><h3>口癖 / 表达学习（{len(patterns)}）</h3>
 <p class="hint">这些表达是从群友的话里学来的，随时可停用或删除；总开关在 <code>config.expression.enabled</code>
-（当前 {"开启" if enabled else "关闭"}）。学到的表达只按群注入，且不改变她的说话风格。</p>
+（当前 {"开启" if enabled else "关闭"}）。学到的表达只按群注入，且不改变她的说话风格。累计：{stats_line}。</p>
 <table><tr><th>表达</th><th>类型</th><th>来源群</th><th>样本</th><th>最近用到</th><th>状态</th><th colspan="3"></th></tr>
 {rows or '<tr><td colspan="9" class="muted">还没有学到任何表达（开启后，群里不同人重复用的短句式会被记下来）</td></tr>'}</table></div>{detail_html}"""
         return web.Response(

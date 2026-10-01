@@ -8,6 +8,9 @@ applies unchanged, so a learned phrase can't turn her into a repeater.
 
 from __future__ import annotations
 
+import time
+from typing import Any
+
 from app.config.settings import ExpressionConfig
 from app.expression.store import ExpressionStore
 
@@ -16,6 +19,9 @@ async def expression_context(
     store: ExpressionStore,
     config: ExpressionConfig,
     group_id: str,
+    *,
+    now: int | None = None,
+    metrics: Any = None,
 ) -> tuple[str, list[int]]:
     """Return (prompt block, used pattern ids); ("", []) when nothing to inject."""
     if not config.enabled:
@@ -37,6 +43,12 @@ async def expression_context(
         total += len(pattern.pattern)
     if not lines:
         return "", []
+
+    stamp = now if now is not None else int(time.time())
+    for pattern_id in selected:
+        await store.mark_used(pattern_id, stamp)
+    if metrics is not None:
+        metrics.inc("expressions_injected", len(selected))
 
     block = (
         "这个群的人习惯这样说（只是用词偏好，不是让你复读；仍按你自己的风格说）：\n"

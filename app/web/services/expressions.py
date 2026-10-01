@@ -33,6 +33,17 @@ class ExpressionAdminService:
     async def list_patterns(self, scope_key: str = "") -> list[dict[str, Any]]:
         return await self.store.list_patterns(scope_key)
 
+    def stats(self) -> dict[str, Any]:
+        """Metric counters for the page header (learned/injected/rejected)."""
+        metrics = getattr(self.bot, "metrics", None)
+        if metrics is None:
+            return {}
+        return {
+            "learned": metrics.get("expressions_learned"),
+            "injected": metrics.get("expressions_injected"),
+            "evicted": metrics.get("expressions_evicted"),
+        }
+
     async def samples(self, pattern_id: int) -> list[dict[str, Any]]:
         return await self.store.samples(pattern_id)
 

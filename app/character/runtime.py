@@ -75,6 +75,7 @@ class CharacterRuntime:
         self.processor = CharacterResponseProcessor(logger=self._log)
         self.expression_store: Any = None  # optional ExpressionStore (Task 22)
         self.expression_config: Any = None  # optional ExpressionConfig (Task 22)
+        self.metrics: Any = None  # optional Metrics (Task 22 counters)
         self._clock = clock
 
     # ------------------------------------------------------------- bootstrap
@@ -289,6 +290,11 @@ class CharacterRuntime:
         """Tool context carries only what a tool legitimately needs (spec v0.6 §30)."""
         from app.tools.models import ToolContext
 
+        metadata: dict[str, Any] = dict(self._life_metadata())
+        if self.memory is not None:
+            # read-only retrieval handle for query_image_memory — the tool goes
+            # through the manager, never the raw database.
+            metadata["memory"] = self.memory
         return ToolContext(
             user_id=str(user_id),
             group_id=str(group_id) if group_id is not None else None,
@@ -300,7 +306,7 @@ class CharacterRuntime:
             is_group=is_group,
             # Read-only view of her life for tools/agent (v0.6 §18): they may know
             # what she is doing, but only the sandbox ever writes it.
-            metadata=self._life_metadata(),
+            metadata=metadata,
         )
 
     def _life_metadata(self) -> dict[str, str]:
@@ -502,7 +508,11 @@ class CharacterRuntime:
             from app.expression import expression_context
 
             block, _ = await expression_context(
-                self.expression_store, self.expression_config, session_id.split(":", 1)[-1]
+                self.expression_store,
+                self.expression_config,
+                session_id.split(":", 1)[-1],
+                now=int(self._clock()),
+                metrics=self.metrics,
             )
             return block
         except Exception:  # noqa: BLE001 - learning is advisory, never a blocker

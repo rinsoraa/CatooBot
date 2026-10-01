@@ -63,10 +63,18 @@ class ExpressionPattern:
 
 
 class ExpressionStore:
-    def __init__(self, database: Any, config: ExpressionConfig, *, clock: Any = time.time) -> None:
+    def __init__(
+        self,
+        database: Any,
+        config: ExpressionConfig,
+        *,
+        clock: Any = time.time,
+        metrics: Any = None,
+    ) -> None:
         self._db = database
         self._config = config
         self._clock = clock
+        self._metrics = metrics
 
     # ------------------------------------------------------------- learning
 
@@ -211,4 +219,6 @@ class ExpressionStore:
         overflow = [r for r in rows[cap:]] if len(rows) > cap else []
         for row in overflow:
             await self.set_status(int(row["id"]), "archived")
+        if overflow and self._metrics is not None:
+            self._metrics.inc("expressions_evicted", len(overflow))
         return len(overflow)

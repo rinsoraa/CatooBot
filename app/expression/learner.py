@@ -38,10 +38,12 @@ class ExpressionLearner:
         config: ExpressionConfig,
         *,
         clock: Any = time.time,
+        metrics: Any = None,
     ) -> None:
         self._store = store
         self._config = config
         self._clock = clock
+        self._metrics = metrics
         self._seen: set[str] = set()
 
     def _candidates(self, text: str) -> list[str]:
@@ -102,6 +104,8 @@ class ExpressionLearner:
             reason = self._reject_candidate(candidate)
             if reason is not None:
                 results.append((candidate, REJECT[reason]))
+                if self._metrics is not None:
+                    self._metrics.inc(f"expressions_rejected_{reason}")
                 continue
             # same message must not re-learn a phrase twice
             if candidate in self._seen:
@@ -117,6 +121,8 @@ class ExpressionLearner:
                 text=text[:80],
                 now=now,
             )
+            if self._metrics is not None:
+                self._metrics.inc("expressions_learned")
             results.append((candidate, "learned"))
         await self._store.evict(scope_key)
         return results

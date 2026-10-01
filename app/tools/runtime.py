@@ -82,12 +82,19 @@ class ToolRuntime:
             self._log.exception("[Tool] loading tool permissions failed")
 
     def _register_builtins(self) -> None:
-        from app.tools.builtins import CalculatorTool, TimeTool, WeatherTool, WebSearchTool
+        from app.tools.builtins import (
+            CalculatorTool,
+            QueryImageMemoryTool,
+            TimeTool,
+            WeatherTool,
+            WebSearchTool,
+        )
 
         settings = {name: cfg.settings for name, cfg in self.config.configs.items()}
         builders = (
             ("time", lambda: TimeTool()),
             ("calculator", lambda: CalculatorTool()),
+            ("query_image_memory", lambda: QueryImageMemoryTool()),
             (
                 "weather",
                 lambda: WeatherTool(settings.get("weather", {}), self.credentials),

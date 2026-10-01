@@ -146,9 +146,11 @@ class Bot:
             database=self.database,
         )
         # Task 22: expression / 口癖 learning (opt-in; the plugin feeds it).
-        self.expression_store = ExpressionStore(self.database, config.expression, clock=self._clock)
+        self.expression_store = ExpressionStore(
+            self.database, config.expression, clock=self._clock, metrics=self.metrics
+        )
         self.expression_learner = ExpressionLearner(
-            self.expression_store, config.expression, clock=self._clock
+            self.expression_store, config.expression, clock=self._clock, metrics=self.metrics
         )
         self.extractor = (
             MemoryExtractor(config.memory, self.ai, self.memory, metrics=self.metrics)
@@ -158,6 +160,7 @@ class Bot:
         self.character.extractor = self.extractor
         self.character.expression_store = self.expression_store
         self.character.expression_config = config.expression
+        self.character.metrics = self.metrics
         self.relationships = self.character.relationships
 
         # v0.4 behaviour layer: presence → activity/initiative → response plan.
