@@ -154,7 +154,7 @@ class WebServer(
         if request.method in MUTATING_METHODS and request.path not in CSRF_EXEMPT_PATHS:
             supplied = request.headers.get(CSRF_HEADER, "")
             if not supplied and request.content_type.startswith(
-                "application/x-www-form-urlencoded"
+                ("application/x-www-form-urlencoded", "multipart/form-data")
             ):
                 supplied = str((await request.post()).get(CSRF_FIELD, ""))
             if supplied != csrf_token(token):

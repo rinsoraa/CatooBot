@@ -185,6 +185,17 @@ async def test_webui_http_gate(tmp_path, unused_tcp_port) -> None:
                 body = await resp.text()
                 assert resp.status == 200
                 assert "Identity" in body and "行为规则" in body
+                # the data-transfer card (Task 24) is on the page
+                assert "导出数据" in body and "上传并预览" in body
+
+            # export is a JSON download, not a page
+            async with session.get(base + "/character/export") as resp:
+                assert resp.status == 200
+                assert resp.headers["Content-Type"].startswith("application/json")
+                assert "attachment" in resp.headers["Content-Disposition"]
+                exported = await resp.json()
+                assert exported["format"] == "catoobot-character-export"
+
             async with session.get(base + "/memory") as resp:
                 body = await resp.text()
                 assert resp.status == 200

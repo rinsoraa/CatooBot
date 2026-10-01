@@ -346,3 +346,27 @@ class AdminService:
             await self.restore_model_overrides()
             return {"ok": True, "detail": "overrides restored"}
         return {"ok": False, "detail": f"unknown action: {action}"}
+
+    # ---------------------------------------------------------- data transfer
+
+    async def export_character(self) -> dict[str, Any]:
+        """The whole character domain as one export document (Task 24 M1)."""
+        from app.sandbox.transfer import CharacterDataTransfer
+
+        return await CharacterDataTransfer(self.bot.database).export()
+
+    async def import_character_preview(self, path: str) -> dict[str, Any]:
+        """Dry-run an import: report what it would overwrite, never writes."""
+        from app.sandbox.transfer import CharacterDataTransfer
+
+        return await CharacterDataTransfer(self.bot.database).import_character(
+            path, confirm=False, dry_run=True
+        )
+
+    async def import_character_confirm(self, path: str) -> dict[str, Any]:
+        """Import with backup + a single transaction (overwrites character data)."""
+        from app.sandbox.transfer import CharacterDataTransfer
+
+        return await CharacterDataTransfer(self.bot.database).import_character(
+            path, confirm=True, dry_run=False
+        )

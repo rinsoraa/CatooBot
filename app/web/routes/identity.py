@@ -6,10 +6,13 @@ surface identical.
 
 from __future__ import annotations
 
+import json
 import time
+from pathlib import Path
 
 from aiohttp import web
 
+from app.config.settings import PROJECT_ROOT
 from app.web import ui
 from app.web.routes.base import WebContext, esc, format_ts, layout
 
@@ -67,7 +70,16 @@ class IdentityRoutes(WebContext):
 {field("正在做 activity", "activity", state["activity"])}{field("关注 current_focus", "current_focus", state["current_focus"])}
 <p><button class="btn btn-primary">更新状态</button></p>
 <p class="hint">「正在做 / 位置 / 精力」由生活沙盒自动同步（她切换动作时会覆盖手工值）；
-想看细节去 <a href="/sandbox">沙盒</a> 页。</p></form></div>"""
+想看细节去 <a href="/sandbox">沙盒</a> 页。</p></form></div>
+
+<div class="card"><h3>数据（导出 / 导入）</h3>
+<p>把她的全部记忆、关系、会话、沙盒状态导成一个 JSON 文件，或从一个文件恢复。
+<strong>导入会覆盖当前角色数据</strong>；平台数据、QQ 用户/群、模型与工具配置不受影响，写前会自动备份。</p>
+<p><a class="btn btn-secondary btn-sm" href="/character/export">导出数据（下载 JSON）</a></p>
+<form method="post" action="/character/import" enctype="multipart/form-data">
+<label>从文件导入</label><input type="file" name="file" accept=".json,application/json">
+<p><button class="btn btn-secondary btn-sm">上传并预览（不写入）</button></p>
+</form></div>"""
         return web.Response(
             text=layout(
                 "角色",
@@ -150,6 +162,64 @@ class IdentityRoutes(WebContext):
             current_focus=str(form.get("current_focus", "")).strip(),
         )
         raise web.HTTPFound("/character")
+
+    # ------------------------------------------------------- data transfer
+
+    def _pending_import_path(self) -> Path:
+        return PROJECT_ROOT / "data" / "exports" / "_pending_import.json"
+
+    async def _character_export(self, request: web.Request) -> web.Response:
+        document = await self._admin.export_character()
+        payload = json.dumps(document, ensure_ascii=False, indent=2)
+        return web.Response(
+            text=payload,
+            content_type="application/json",
+            headers={
+                "Content-Disposition": f'attachment; filename="character-{int(time.time())}.json"'
+            },
+        )
+
+    async def _character_import(self, request: web.Request) -> web.Response:
+        form = await request.post()
+        field = form.get("file")
+        if field is None or not hasattr(field, "file"):
+            raise web.HTTPBadRequest(text="缺少上传文件")
+        pending = self._pending_import_path()
+        pending.parent.mkdir(parents=True, exist_ok=True)
+        pending.write_bytes(field.file.read())
+        report = await self._admin.import_character_preview(str(pending))
+        if not report.get("ok"):
+            reason = report.get("reason", "unknown")
+            body = f'<div class="card">导入预览失败：{esc(reason)}</div><p><a href="/character">返回</a></p>'
+            return web.Response(text=layout("角色", "/character", body), content_type="text/html")
+        counts = report.get("counts", {})
+        rows = "".join(
+            f"<tr><td>{esc(k)}</td><td>{v}</td></tr>" for k, v in sorted(counts.items()) if v
+        )
+        body = f"""<div class="card"><h3>导入预览（尚未写入）</h3>
+<p>将写入 <strong>{report.get("rows", 0)}</strong> 行、覆盖当前角色数据；平台数据不受影响，写前自动备份。</p>
+<table><tr><th>表</th><th>行数</th></tr>{rows or '<tr><td colspan="2" class="muted">（空包：角色域将被清空）</td></tr>'}</table>
+<form method="post" action="/character/import/confirm">
+<button class="btn btn-danger">确认导入（覆盖当前角色数据）</button></form>
+<p><a href="/character">取消</a></p></div>"""
+        return web.Response(text=layout("角色", "/character", body), content_type="text/html")
+
+    async def _character_import_confirm(self, request: web.Request) -> web.Response:
+        pending = self._pending_import_path()
+        if not pending.exists():
+            raise web.HTTPBadRequest(text="没有待导入的文件")
+        report = await self._admin.import_character_confirm(str(pending))
+        pending.unlink(missing_ok=True)
+        note = "已导入（备份已写）" if report.get("ok") else f"导入失败：{report.get('reason')}"
+        return web.Response(
+            text=layout(
+                "角色",
+                "/character",
+                f'<div class="card">{esc(note)}</div>'
+                '<meta http-equiv="refresh" content="1;url=/character">',
+            ),
+            content_type="text/html",
+        )
 
     async def _users_page(self, request: web.Request) -> web.Response:
         users = await self._admin.list_users()
@@ -259,6 +329,9 @@ class IdentityRoutes(WebContext):
         app.router.add_get("/character", self._character_page)
         app.router.add_post("/character", self._character_save)
         app.router.add_post("/character/state", self._character_state_save)
+        app.router.add_get("/character/export", self._character_export)
+        app.router.add_post("/character/import", self._character_import)
+        app.router.add_post("/character/import/confirm", self._character_import_confirm)
         app.router.add_get("/users", self._users_page)
         app.router.add_post("/users", self._users_save)
         app.router.add_get("/groups", self._groups_page)
