@@ -195,9 +195,7 @@ class Bot:
                     self.database, clock=self._clock
                 )
                 self.character.sandbox = self.sandbox
-                # The sandbox owns her life: the v0.4 roller steps aside and
-                # v1.2 continuity receives the sandbox's meaningful events.
-                self.behavior.activity_external = True
+                # The sandbox owns her life; v1.2 continuity receives its events.
                 self.sandbox.narrate_ticks = config.logging.narrate_world_ticks
                 self.sandbox.continuity = self.continuity
                 self.sandbox.state_sync = self._sync_sandbox_state

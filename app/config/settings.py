@@ -302,18 +302,6 @@ class BehaviorScheduleConfig(BaseModel):
     night_end: str = "06:00"
 
 
-class BehaviorActivityConfig(BaseModel):
-    """Fictional character activity (spec §16/§17). Never real-world claims."""
-
-    enabled: bool = True
-    roll_interval_minutes: int = Field(default=45, ge=1)
-    idle_activity: str = "idle"
-    # Character-specific pool; empty means "use the period defaults below".
-    pool: list[str] = Field(default_factory=list)
-    # Optional per-period override, e.g. {night: [resting, gaming]}
-    period_preferences: dict[str, list[str]] = Field(default_factory=dict)
-
-
 class BehaviorGroupConfig(BaseModel):
     """Group participation (spec §34-§37). Off by default: @ only."""
 
@@ -351,7 +339,6 @@ class BehaviorConfig(BaseModel):
     reply: BehaviorReplyTimingConfig = Field(default_factory=BehaviorReplyTimingConfig)
     chunking: BehaviorChunkingConfig = Field(default_factory=BehaviorChunkingConfig)
     schedule: BehaviorScheduleConfig = Field(default_factory=BehaviorScheduleConfig)
-    activity: BehaviorActivityConfig = Field(default_factory=BehaviorActivityConfig)
     group: BehaviorGroupConfig = Field(default_factory=BehaviorGroupConfig)
     initiative: BehaviorInitiativeConfig = Field(default_factory=BehaviorInitiativeConfig)
 

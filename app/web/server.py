@@ -131,7 +131,8 @@ class WebServer:
         app.router.add_post("/api/credentials/delete", self._api_credential_delete)
         app.router.add_get("/runtime", self._runtime_page)
         app.router.add_post("/api/runtime/{action}", self._api_runtime_action)
-        app.router.add_get("/behavior", self._behavior_page)
+        app.router.add_get("/behavior", self._behavior_legacy_redirect)
+        app.router.add_get("/sandbox/chat", self._sandbox_chat_page)
         app.router.add_post("/behavior/settings", self._behavior_settings_save)
         app.router.add_post("/behavior/preview", self._behavior_preview)
         app.router.add_post("/behavior/test-response", self._behavior_test_response)
@@ -332,7 +333,8 @@ class WebServer:
                              tip_text="用一句人话让她记住新的说法")
             + ui.link_button("/sandbox", "看看她现在在干嘛",
                              tip_text="生活沙盒：她在哪个房间、正在做什么、小喵在干嘛")
-            + ui.link_button("/behavior", "调回复节奏与主动性", tip_text="延迟、分段、作息、群聊参与")
+            + ui.link_button("/sandbox/chat", "调回复节奏与主动性",
+                             tip_text="私聊回复、群聊参与、主动回复（已并入沙盒页）")
             + ui.link_button("/tools", "管理工具", tip_text="启用/限流/权限与执行记录")
             + ui.link_button("/runtime", "运行时与插件", tip_text="重载插件、健康检查")
             + "</div>",
@@ -768,63 +770,37 @@ class WebServer:
         )
 
 
-    async def _behavior_page(self, request: web.Request) -> web.Response:
+    async def _sandbox_chat_page(self, request: web.Request) -> web.Response:
+        """Chat-surface behaviour, merged into the sandbox area (three parts).
+
+        Her *life* belongs to the sandbox; these settings govern the three
+        conversation surfaces: private replies, group participation and
+        proactive messaging.
+        """
         data = await self._behavior.dashboard()
         cfg = self._bot.config.behavior
-        state = data["state"]
-        time_info = data["time"]
         initiative = data["initiative"]
         scheduler = data["scheduler"]
 
-        stats = ui.stats_grid(
-            [
-                ("活动", state.get("activity") or "-", "她当前正在做的事（生活沙盒同步到这里）"),
-                ("心情", state.get("mood") or "-", ""),
-                ("精力", f"{state.get('energy', 0):.0%}", "随活动与睡眠变化"),
-                ("关注", state.get("current_focus") or "-", ""),
-                ("时间", f'{time_info["local_time"]} {time_info["weekday"]}', ""),
-                ("时段", time_info["period"], ""),
-                ("睡觉中", "是" if time_info["is_sleeping"] else "否", ""),
-                ("勿扰", "是" if time_info["in_dnd"] else "否", ""),
-                ("调度 tick", scheduler["ticks"], ""),
-                ("今日主动", initiative.get("sent_today_total", 0), ""),
-                ("活跃话题", data.get("topics_active", 0), ""),
-            ]
-        )
-
-        events = data["recent_events"]
-        event_rows = "".join(
-            f"<tr><td class='muted'>{esc(format_ts(e['created_at']))}</td><td>{esc(e['type'])}</td>"
-            f"<td>{esc(e['scope_key'] or '')}</td><td>{esc(e['reason'])}</td>"
-            f"<td>{esc((e['detail'] or '')[:80])}</td></tr>"
-            for e in events
-        )
-        topics = data["topics"]
-        topic_rows = "".join(
-            f"<tr><td>{t['id']}</td><td>{esc(t['scope_key'])}</td><td>{esc(t['title'])}</td>"
-            f"<td>{esc(t['status'])}</td><td>{t['importance']:.2f}</td>"
-            f"<td class='muted'>{esc(format_ts(t['last_discussed_at']))}</td></tr>"
-            for t in topics
-        )
-
-        settings_body = (
-            "<form method='post' action='/behavior/settings'>"
-            + '<div class="section-title">回复节奏</div><div class="grid">'
+        private_card = ui.card(
+            "私聊回复",
+            "<p class='hint'>有人私聊她时的节奏：延迟、分段与作息门控。"
+            "她“正在做什么”由生活沙盒决定，这里只管回话方式。</p>"
+            "<div class='grid'>"
             + ui.switch("reply_enabled", cfg.reply.enabled, "启用延迟回复",
                         tip_text="关掉后总是秒回；开着则按下方区间随机延迟")
             + ui.field("最小延迟（秒）", "min_delay", cfg.reply.min_delay, tip_text="最短等多久再回")
             + ui.field("最大延迟（秒）", "max_delay", cfg.reply.max_delay, tip_text="最长等多久再回")
-            + '</div><div class="section-title">消息分段</div><div class="grid">'
             + ui.switch("chunking_enabled", cfg.chunking.enabled, "启用自然分段",
                         tip_text="偶尔把一段回复拆成几条，更像真人")
-            + ui.field("分段概率", "chunk_probability", cfg.chunking.chunk_probability, tip_text="0~1，越大越常拆")
-            + ui.field("最多段数", "max_chunks", cfg.chunking.max_chunks, tip_text="一条回复最多拆成几段")
-            + '</div><div class="section-title">角色活动</div>'
-            + ui.switch("activity_enabled", cfg.activity.enabled, "启用基础活动状态（兜底）",
-                        tip_text="生活沙盒接管活动时此项无效；只有关闭沙盒才会用回这层简单活动池")
-            + '<div class="section-title">作息 · 睡眠 / 免打扰</div><div class="grid">'
+            + ui.field("分段概率", "chunk_probability", cfg.chunking.chunk_probability,
+                       tip_text="0~1，越大越常拆")
+            + ui.field("最多段数", "max_chunks", cfg.chunking.max_chunks,
+                       tip_text="一条回复最多拆成几段")
+            + "</div>"
+            "<div class='grid'>"
             + ui.switch("sleep_enabled", cfg.schedule.sleep_enabled, "启用睡眠时段",
-                        tip_text="这个时段角色在睡觉，回复更短更困，不主动说话")
+                        tip_text="这个时段回复更慢更困，也不主动说话")
             + ui.field("入睡", "sleep_start", cfg.schedule.sleep_start, tip_text="HH:MM")
             + ui.field("起床", "sleep_end", cfg.schedule.sleep_end, tip_text="HH:MM")
             + ui.switch("dnd_enabled", cfg.schedule.dnd_enabled, "启用免打扰",
@@ -833,19 +809,40 @@ class WebServer:
             + ui.field("免打扰结束", "dnd_end", cfg.schedule.dnd_end, tip_text="HH:MM")
             + ui.switch("dnd_blocks_replies", cfg.schedule.dnd_blocks_replies, "免打扰也阻止被动回复",
                         tip_text="关闭时只是不主动，别人叫她还是回")
-            + '</div><div class="section-title">群聊参与</div><div class="grid">'
+            + "</div>",
+            tip_text="私聊永远会回（除非免打扰配置成不回）；这里调的是“怎么回”",
+        )
+
+        group_card = ui.card(
+            "群聊参与",
+            "<p class='hint'>群里没 @ 她时是否可能接话。开启社交认知后由结构化判断主导，"
+            "下方概率/冷却只作低权重兜底；@ 与回复她的消息永远必回。</p>"
+            "<div class='grid'>"
             + ui.switch("participation_enabled", cfg.group.participation_enabled, "允许非 @ 插话",
-                        tip_text="群里没点名她，也可能按概率接一句")
+                        tip_text="关掉后群里只有 @ / 回复她才会说话")
             + ui.field("参与概率", "participation_probability", cfg.group.participation_probability,
-                       tip_text="仅当社交认知关闭时生效；开启时由结构化判断主导，此项只作低权重兜底")
-            + ui.field("冷却（秒）", "group_cooldown", cfg.group.cooldown_seconds, tip_text="群里两次插话至少隔多久")
-            + '</div><div class="section-title">主动聊天</div><div class="grid">'
+                       tip_text="仅当社交认知关闭时生效；开启时此项只作低权重兜底")
+            + ui.field("冷却（秒）", "group_cooldown", cfg.group.cooldown_seconds,
+                       tip_text="群里两次插话至少隔多久")
+            + "</div>"
+            "<p class='hint'>更细的观察批次、阈值、疲劳与注意在 "
+            "<a href='/social/policy'>社交策略</a> 页。</p>",
+            tip_text="群聊参与 = 结构化社交判断（v0.9）+ 这里的兜底开关",
+        )
+
+        initiative_card = ui.card(
+            "主动回复",
+            "<p class='hint'>没人找她时，她会不会主动发消息（会被多重硬限制拦住）。"
+            "她在生活里发生的事（做完的事、零工、快递）会作为话题来源。</p>"
+            "<div class='grid'>"
             + ui.switch("initiative_enabled", cfg.initiative.enabled, "启用主动聊天",
                         tip_text="总开关；下面所有硬性上限仍然会拦")
-            + ui.field("最小间隔（分）", "min_interval_minutes", cfg.initiative.min_interval_minutes, tip_text="")
+            + ui.field("最小间隔（分）", "min_interval_minutes", cfg.initiative.min_interval_minutes,
+                       tip_text="两次主动之间至少隔多久")
             + ui.field("每日上限", "daily_limit", cfg.initiative.daily_limit, tip_text="")
             + ui.field("每小时上限", "hourly_limit", cfg.initiative.hourly_limit, tip_text="")
-            + ui.field("闲置（小时）", "idle_hours", cfg.initiative.idle_hours, tip_text="对方多久没说话才主动")
+            + ui.field("闲置（小时）", "idle_hours", cfg.initiative.idle_hours,
+                       tip_text="对方多久没说话才主动")
             + ui.select("最低关系", "min_relationship_stage",
                         [("new", "new"), ("familiar", "familiar"), ("close", "close"),
                          ("very_close", "very_close")],
@@ -853,7 +850,18 @@ class WebServer:
             + ui.field("未回复上限", "max_unanswered", cfg.initiative.max_unanswered,
                        tip_text="主动发了没回，达到上限就不再追问")
             + "</div>"
-            + "<p><button class='btn btn-primary' type='submit' data-tip='保存并热加载，无需重启'>保存设置</button></p></form>"
+            "<p class='hint'>后台消息额度在沙盒配置 <code>sandbox."
+            "max_background_messages_per_day</code>。</p>",
+            tip_text="主动消息 ≠ 后台生活：她在生活，但主动找人要过这道门",
+        )
+
+        settings_body = (
+            "<form method='post' action='/behavior/settings'>"
+            + private_card
+            + group_card
+            + initiative_card
+            + "<p><button class='btn btn-primary' type='submit' "
+              "data-tip='保存并热加载，无需重启'>保存设置</button></p></form>"
         )
 
         manual_html = (
@@ -877,21 +885,23 @@ class WebServer:
             + "<div class='grid'>"
             + ui.field("时间", "sim_time", "23:50")
             + ui.field("心情", "mood", "relaxed")
-            + ui.field("活动", "activity", "reading")
+            + ui.field("参考活动", "activity", "reading")
             + ui.select("关系", "relationship",
                         [("new", "new"), ("familiar", "familiar"), ("close", "close"),
                          ("very_close", "very_close")], "familiar")
             + ui.field("话题", "topic", "未完成的项目")
             + "</div>"
-            + ui.textarea("示例回复文本", "sample_reply", "好呀。\\n\\n等我看一下再说。", rows=3)
-            + "<p><button class='btn btn-primary' type='submit' data-tip='只预览，不会发送到 QQ'>预览</button></p></form>"
+            + ui.textarea("示例回复文本", "sample_reply", "好呀。\n\n等我看一下再说。", rows=3)
+            + "<p><button class='btn btn-primary' type='submit' "
+              "data-tip='只预览，不会发送到 QQ'>预览</button></p></form>"
         )
 
-        topics_card = ui.table(
-            ["ID", "Scope", "话题", "状态", "重要度", "最近讨论"],
-            topic_rows or '<tr><td colspan="6" class="muted">暂无话题</td></tr>',
-            tips=["话题 ID", "所属会话", "话题标题", "状态", "重要度", "最近一次聊起"],
-            empty="暂无话题", table_id="behavior-topics", filterable=False,
+        events = data["recent_events"]
+        event_rows = "".join(
+            f"<tr><td class='muted'>{esc(format_ts(e['created_at']))}</td><td>{esc(e['type'])}</td>"
+            f"<td>{esc(e['scope_key'] or '')}</td><td>{esc(e['reason'])}</td>"
+            f"<td>{esc((e['detail'] or '')[:80])}</td></tr>"
+            for e in events
         )
         events_card = ui.table(
             ["时间", "类型", "Scope", "原因", "详情"],
@@ -900,25 +910,43 @@ class WebServer:
             empty="暂无行为记录", table_id="behavior-events", filterable=False,
         )
 
+        stats = ui.stats_grid(
+            [
+                ("心情", data["state"].get("mood") or "-", "当前心情阶梯"),
+                ("时段", data["time"]["period"], "角色时区的当前时段"),
+                ("睡觉中", "是" if data["time"]["is_sleeping"] else "否", "由作息门控"),
+                ("勿扰", "是" if data["time"]["in_dnd"] else "否", ""),
+                ("调度 tick", scheduler["ticks"], "共享调度器执行次数"),
+                ("今日主动", initiative.get("sent_today_total", 0), "主动消息今日已发"),
+            ]
+        )
+
         body = (
-            stats
-            + ui.card("行为设置", settings_body, tip_text="保存后立即生效，无需重启")
+            sandbox_page._tabs("/sandbox/chat")
+            + stats
+            + settings_body
             + ui.card("手动触发", manual_html, tip_text="只在这里后台执行，不会发到 QQ")
-            + ui.card("行为模拟器", simulator_html, tip_text="预览延迟与分段，不会发送")
-            + ui.card("活跃话题", topics_card, tip_text="她记得的、还没聊完的事")
+            + ui.card("回复预演", simulator_html, tip_text="预览延迟与分段，不会发送")
             + ui.card("最近行为记录", events_card, tip_text="行为引擎做了什么、为什么")
         )
         return web.Response(
-            text=layout("行为", "/behavior", body, subtitle="回复节奏、分段、作息、主动性与群聊参与"),
+            text=layout(
+                "沙盒 · 对话行为", "/sandbox", body,
+                subtitle="私聊回复 / 群聊参与 / 主动回复（她怎么做人，由沙盒决定）",
+            ),
             content_type="text/html",
         )
+
+    async def _behavior_legacy_redirect(self, request: web.Request) -> web.Response:
+        raise web.HTTPFound("/sandbox/chat")
 
     async def _behavior_settings_save(self, request: web.Request) -> web.Response:
         form = await request.post()
         await self._behavior.save_settings(dict(form))
         return web.Response(
-            text=layout("行为", "/behavior", '<div class="card">设置已保存并热加载</div>'
-                        '<meta http-equiv="refresh" content="1;url=/behavior">'),
+            text=layout("沙盒 · 对话行为", "/sandbox",
+                        '<div class="card">设置已保存并热加载</div>'
+                        '<meta http-equiv="refresh" content="1;url=/sandbox/chat">'),
             content_type="text/html",
         )
 
@@ -927,9 +955,9 @@ class WebServer:
         result = await self._behavior.preview(dict(form))
         rendered = json.dumps(result, ensure_ascii=False, indent=2)
         return web.Response(
-            text=layout("行为", "/behavior",
+            text=layout("沙盒 · 对话行为", "/sandbox",
                         f'<div class="card"><h3>Preview 结果（未发送任何消息）</h3><pre>{esc(rendered)}</pre>'
-                        '<p><a href="/behavior">返回</a></p></div>'),
+                        '<p><a href="/sandbox/chat">返回</a></p></div>'),
             content_type="text/html",
         )
 
@@ -939,10 +967,10 @@ class WebServer:
         rendered = json.dumps(result, ensure_ascii=False, indent=2)
         return web.Response(
             text=layout(
-                "Behavior",
-                "/behavior",
+                "沙盒 · 对话行为",
+                "/sandbox",
                 f'<div class="card"><h3>测试回复（未发送）</h3>'
-                f"<pre>{esc(rendered)}</pre><p><a href='/behavior'>返回</a></p></div>",
+                f"<pre>{esc(rendered)}</pre><p><a href='/sandbox/chat'>返回</a></p></div>",
             ),
             content_type="text/html",
         )
@@ -966,10 +994,10 @@ class WebServer:
         rendered = json.dumps(result, ensure_ascii=False, indent=2)
         return web.Response(
             text=layout(
-                "Behavior",
-                "/behavior",
+                "沙盒 · 对话行为",
+                "/sandbox",
                 f'<div class="card"><h3>{esc(action)}</h3>'
-                f"<pre>{esc(rendered)}</pre><p><a href='/behavior'>返回</a></p></div>",
+                f"<pre>{esc(rendered)}</pre><p><a href='/sandbox/chat'>返回</a></p></div>",
             ),
             content_type="text/html",
         )

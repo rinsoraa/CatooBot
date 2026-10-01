@@ -176,19 +176,21 @@ memory:
     max_active_per_user: 500
     max_active_per_group: 300
 
-# ==================== 角色行为引擎（v0.4） ====================
-# 行为与语言分离：LLM 只负责说什么，何时说/说几条/是否主动由这里决定。
+# ==================== 对话行为（v0.4 / v2.0 精简） ====================
+# 她的“生活”由生活沙盒（sandbox:）全权决定；这里只保留三个对话界面开关：
+#   私聊回复 / 群聊参与 / 主动回复。WebUI 在「沙盒 → 对话行为」页。
 behavior:
   enabled: true
 
+  # ---------- 私聊回复（节奏 / 分段 / 作息门控） ----------
   # 回复节奏：延迟是区间 + 抖动，不是固定值
   reply:
     enabled: true
-    min_delay: 0.8          # 最短延迟（秒）
-    max_delay: 8.0          # 最长延迟（秒）
-    per_char_delay: 0.045   # 每个字额外耗时（拟"打字"）
-    busy_factor: 1.6        # 角色在忙（打游戏/工作）时变慢
-    sleeping_factor: 2.2    # 睡眠时段变慢
+    min_delay: 0.8
+    max_delay: 8.0
+    per_char_delay: 0.045
+    busy_factor: 1.6        # 她在忙（沙盒里在打游戏等）时变慢
+    sleeping_factor: 2.2
     jitter: 0.2
 
   # 消息分段：像群聊一样偶尔分成两条，不是每次都拆
@@ -199,7 +201,7 @@ behavior:
     min_chunk_length: 6
     paragraph_always_split: true
 
-  # 作息（角色世界的作息，不影响 Bot 在线；睡眠时回复更慢、不主动说话）
+  # 作息门控（只管回话节奏与主动聊天；她的生活作息由沙盒决定）
   schedule:
     sleep_enabled: true
     sleep_start: "00:30"
@@ -207,19 +209,13 @@ behavior:
     dnd_enabled: false
     dnd_start: "23:00"
     dnd_end: "08:00"
-    dnd_blocks_replies: false   # DND 是否也阻止被动回复（默认不阻止）
+    dnd_blocks_replies: false
     night_start: "23:00"
     night_end: "06:00"
 
-  # 角色活动（虚构状态，不是现实监控）
-  activity:
-    enabled: true
-    roll_interval_minutes: 45
-    idle_activity: idle
-    pool: []                 # 留空用内置时段默认；可填 gaming/reading/...
-    period_preferences: {}   # 例如 {night: [gaming, reading]}
-
-  # 群聊参与（默认关闭：只响应 @）
+  # ---------- 群聊参与 ----------
+  # @ 她 / 回复她 → 必回；以下只在“没 @ 她”时生效。
+  # 社交认知（social:）开启时由结构化判断主导，概率/加成只作低权重兜底。
   group:
     participation_enabled: false
     participation_probability: 0.04
@@ -230,17 +226,21 @@ behavior:
     ignore_when_other_mentioned: true
     mention_always_replies: true
 
-  # 主动聊天（默认关闭；开启后仍受多重硬限制）
+  # ---------- 主动回复 ----------
+  # 没人找她时的主动消息；开启后仍受多重硬限制，额度见 sandbox.max_background_messages_per_day
   initiative:
     enabled: false
     min_interval_minutes: 120
     daily_limit: 3
     hourly_limit: 1
-    min_relationship_stage: familiar   # new/familiar/close/very_close
+    min_relationship_stage: familiar
     idle_hours: 6.0
     base_probability: 0.35
     relationship_bonus: 0.2
     topic_bonus: 0.35
+    max_unanswered: 1
+    duplicate_similarity: 0.6
+
     max_unanswered: 1                  # 未回复时不再追问
     duplicate_similarity: 0.6
 

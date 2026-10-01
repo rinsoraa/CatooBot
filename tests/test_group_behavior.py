@@ -16,7 +16,6 @@ from app.behavior.topics import TopicManager
 from app.character.relationship import RelationshipManager
 from app.character.state import StateManager
 from app.config.settings import (
-    BehaviorActivityConfig,
     BehaviorConfig,
     BehaviorGroupConfig,
     BehaviorInitiativeConfig,
@@ -79,7 +78,6 @@ async def make_engine(tmp_path, group_overrides: dict | None = None):
     relationships = RelationshipManager(database)
     config = BehaviorConfig(
         group=BehaviorGroupConfig(**{"participation_enabled": True, **(group_overrides or {})}),
-        activity=BehaviorActivityConfig(enabled=False),
         initiative=BehaviorInitiativeConfig(enabled=False),
     )
     engine = CharacterBehaviorEngine(
@@ -200,7 +198,7 @@ class TestPrivateGate:
         schedule = BehaviorScheduleConfig(
             dnd_enabled=True, dnd_start="14:00", dnd_end="16:00", dnd_blocks_replies=True
         )
-        config = BehaviorConfig(activity=BehaviorActivityConfig(enabled=False))
+        config = BehaviorConfig()
         engine = CharacterBehaviorEngine(
             config,
             FrozenPresence(DAY, schedule),
@@ -317,7 +315,6 @@ class TestInitiativeEndToEnd:
             logging={"log_dir": str(tmp_path / "logs")},
             behavior={
                 "reply": {"enabled": False},
-                "activity": {"enabled": False},
                 # tests must not depend on the wall clock: no sleep window
                 "schedule": {"sleep_enabled": False, "dnd_enabled": False},
                 "initiative": {
@@ -348,7 +345,6 @@ class TestInitiativeEndToEnd:
         from app.behavior.presence import PresenceResolver
 
         bot.behavior.config = config.behavior
-        bot.behavior.activity._config = config.behavior.activity  # noqa: SLF001
         bot.behavior.initiative.config = config.behavior.initiative
         bot.presence = PresenceResolver(config.character.timezone, config.behavior.schedule)
         bot.behavior.presence = bot.presence

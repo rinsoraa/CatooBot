@@ -73,7 +73,6 @@ class BehaviorService:
         self.bot.config.behavior = config
         engine = self.bot.behavior
         engine.config = config
-        engine.activity._config = config.activity  # noqa: SLF001 - hot swap
         engine.initiative.config = config.initiative
         engine.initiative.presence = engine.presence
         self.bot.reply_timing._config = config.reply  # noqa: SLF001
@@ -115,7 +114,6 @@ class BehaviorService:
                 "chunk_probability": as_float("chunk_probability", 0.35),
                 "max_chunks": as_int("max_chunks", 3),
             },
-            "activity": {"enabled": as_bool(form.get("activity_enabled"))},
             "schedule": {
                 "sleep_enabled": as_bool(form.get("sleep_enabled")),
                 "sleep_start": str(form.get("sleep_start", "00:30")),

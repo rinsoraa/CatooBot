@@ -16,7 +16,6 @@ import random
 import time
 from typing import TYPE_CHECKING, Any
 
-from app.behavior.activity import ActivityManager
 from app.behavior.initiative import InitiativeEngine
 from app.behavior.models import BehaviorDecision, BehaviorEvent
 from app.behavior.presence import PresenceResolver
@@ -55,13 +54,6 @@ class CharacterBehaviorEngine:
         self._rng = rng or random.Random()
         self._clock = clock
         self._group_recent: dict[str, float] = {}
-        # v2.0: when the sandbox (or any external owner) runs her life, the
-        # v0.4 activity roller steps aside so the two never fight.
-        self.activity_external = False
-
-        self.activity = ActivityManager(
-            config.activity, presence, states, logger=self._log, rng=self._rng, clock=clock
-        )
         self.topics = TopicManager(database, logger=self._log, clock=clock)
         self.initiative = InitiativeEngine(
             config.initiative,
@@ -196,16 +188,14 @@ class CharacterBehaviorEngine:
         # Replies themselves never move the mood — only what the user said.
 
     async def tick(self) -> None:
-        """Periodic upkeep: activity roll + state decay (spec §48).
+        """Periodic upkeep: mood/state decay (spec §48).
 
-        When the sandbox drives her life (v2.0), this roller is disabled via
-        ``activity_external`` — the sandbox owns location/activity exclusively.
+        Her *life* belongs to the v2.0 sandbox; this engine keeps the
+        conversational layer (mood decay, presence, participation gates).
         """
         if not self.enabled:
             return
         await self.states.load()
-        if not self.activity_external:
-            await self.activity.roll()
         await self.states.update()  # persists decayed mood
 
     # --------------------------------------------------------------- reports
@@ -224,7 +214,6 @@ class CharacterBehaviorEngine:
                 "in_dnd": ctx.in_dnd,
                 "description": ctx.describe(),
             },
-            "activity": self.activity.snapshot(),
             "group": self.config.group.model_dump(),
             "topics_active": await self.topics.count(),
             "initiative": await self.initiative.snapshot(),

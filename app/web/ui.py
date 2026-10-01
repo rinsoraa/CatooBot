@@ -362,9 +362,8 @@ def json_block(payload: Any, *, tip_text: str = "", collapsed: bool = False) -> 
 NAV: tuple[tuple[str, str, str, str], ...] = (
     ("/", "仪表盘", "◎", "总览：连接状态、当前模型、消息与 AI 指标"),
     ("/character", "角色", "☺", "人设、身份与当前状态（心情/精力/活动）"),
-    ("/behavior", "行为", "◔", "回复节奏、分段、作息、主动性、群聊参与"),
     ("/conversation", "对话", "⇄", "v1.2 对话轮次与延续状态：Turn、过期响应、Open Loop、共同经历"),
-    ("/sandbox", "沙盒", "🏠", "v2.0 生活沙盒：她此刻在哪个房间、做什么、小喵在干嘛、冰箱还剩什么"),
+    ("/sandbox", "沙盒", "🏠", "v2.0 生活沙盒：她此刻在哪个房间、做什么、小喵在干嘛；对话行为（私聊/群聊/主动）也在这里"),
     ("/topics", "话题", "❝", "未聊完的话题与重要度管理"),
     ("/memory", "记忆", "✦", "长期记忆：搜索、时间线、健康度、修正"),
     ("/users", "用户", "☷", "用户档案、关系阶段、主动聊天开关"),
@@ -385,7 +384,7 @@ NAV: tuple[tuple[str, str, str, str], ...] = (
 #: sections so the sidebar stays readable as pages accumulate
 NAV_GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("概览", ("/", "/runtime", "/logs")),
-    ("角色", ("/character", "/behavior", "/sandbox", "/conversation", "/topics")),
+    ("角色", ("/character", "/sandbox", "/conversation", "/topics")),
     ("数据", ("/memory", "/users", "/groups", "/sessions")),
     ("能力", ("/models", "/config", "/prompts", "/credentials", "/tools", "/agent", "/social", "/stickers")),
 )

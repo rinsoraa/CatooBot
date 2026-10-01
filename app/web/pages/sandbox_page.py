@@ -19,6 +19,7 @@ def _tabs(active: str) -> str:
             ("/sandbox", "概览"),
             ("/sandbox/inspectors", "实体与空间"),
             ("/sandbox/needs", "需求与动作"),
+            ("/sandbox/chat", "对话行为"),
             ("/sandbox/bible", "人物档案"),
             ("/sandbox/trace", "回放"),
         ],
