@@ -5,9 +5,11 @@ no usable models, an unparsable reply, and every parsed item being rejected.
 Each one now ends in a single INFO line:
 
     [Memory.Extract] saved=x/y reason=<disabled|no_models|empty_content|
-                                        parse_failed|timeout|ai_error|invalid_item|ok>
+                          parse_failed|nothing_to_store|timeout|ai_error|invalid_item|ok>
 
 plus a WARN with a redacted excerpt when the model reply could not be parsed.
+An empty ``memories`` list is the prompt's "nothing worth remembering" answer:
+it reports ``nothing_to_store`` at INFO and never trips the zero-save streak.
 """
 
 from __future__ import annotations
@@ -168,6 +170,33 @@ class TestExtractReport:
         finally:
             await database.close()
 
+    async def test_empty_memories_reports_nothing_to_store(self, make_extractor, caplog) -> None:
+        """{"memories": []} 是 prompt 要求的"没有值得记的就返回空数组"，不是错误。"""
+        extractor, _manager, database = await make_extractor(['{"memories": []}'])
+        try:
+            with caplog.at_level(logging.INFO, logger="CatooBot.Memory"):
+                await extractor.schedule("private:5", "5", None, "msg", "reply")
+                await extractor.wait_idle()
+            assert any("saved=0/0 reason=nothing_to_store" in line for line in lines(caplog))
+            warnings = [r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING]
+            assert warnings == [], f"nothing_to_store 不该有 WARNING: {warnings}"
+        finally:
+            await database.close()
+
+    async def test_nothing_to_store_is_not_counted_as_a_failure(self, make_extractor) -> None:
+        from app.core.metrics import Metrics
+
+        extractor, _manager, database = await make_extractor(['{"memories": []}'])
+        metrics = Metrics()
+        extractor._metrics = metrics
+        try:
+            await extractor.schedule("private:5", "5", None, "msg", "reply")
+            await extractor.wait_idle()
+            assert metrics.get("memory_extract_failed") == 0
+            assert metrics.get("memory_extract_failed_nothing_to_store") == 0
+        finally:
+            await database.close()
+
     async def test_metric_counts_failures_by_reason(self, make_extractor) -> None:
         from app.core.metrics import Metrics
 
@@ -296,6 +325,22 @@ class TestZeroStreak:
             await extractor.wait_idle()
             await extractor.schedule("private:5", "5", None, "msg", "reply")  # succeeds
             await extractor.wait_idle()
+            assert extractor.health_note() is None
+        finally:
+            await database.close()
+
+    async def test_five_nothing_to_store_do_not_trip_the_banner(
+        self, make_extractor, caplog
+    ) -> None:
+        """连续 5 次 nothing_to_store 不触发红条——正常闲聊不该报警。"""
+        extractor, _manager, database = await make_extractor(['{"memories": []}'])
+        try:
+            with caplog.at_level(logging.INFO, logger="CatooBot.Memory"):
+                for _ in range(5):
+                    await extractor.schedule("private:5", "5", None, "msg", "reply")
+                    await extractor.wait_idle()
+            warnings = [r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING]
+            assert warnings == [], f"正常闲聊不该触发红条: {warnings}"
             assert extractor.health_note() is None
         finally:
             await database.close()

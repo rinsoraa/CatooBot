@@ -201,6 +201,13 @@ models:
   acquisition: ""       # 表情收藏判断
 ```
 
+> **记忆抽取模型推荐**：`extraction` 留空会落到 `chat` 第一个（当前是推理模型
+> `cn:deepseek-v4.1-flash`，曾实测一次抽取 4.99s / 561 completion tokens，慢且贵，
+> 还可能只思考不输出）。建议指向一个**非推理的小模型**——例如 `extra` 里现成的
+> `vision`（`cn:glm-5.3-flash`）或任意的 flash/lite 小 chat 模型：
+> 在 `extra` 加一行 `{ name: small, provider: Workbuddy2API, model: "cn:glm-5.3-flash" }`，
+> 然后 `extraction: "small"`。
+
 其余配置段一览（每段都有中文注释，见 `config.example.yaml`）：
 
 | 配置段 | 作用 |

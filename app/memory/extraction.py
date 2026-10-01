@@ -180,11 +180,13 @@ class MemoryExtractor:
         if not reason and not content.strip():
             reason = "empty_content"
         if not reason:
-            parsed = self._parse(content)
-            if not parsed:
+            parse_status, parsed = self._parse(content)
+            if parse_status == "parse_failed":
                 reason = "parse_failed"
                 excerpt = redact(" ".join(content.split())[:200])
                 self._log.warning("[Memory.Extract] 无法解析模型输出（前 200 字）：%s", excerpt)
+            elif parse_status == "nothing_to_store":
+                reason = "nothing_to_store"
         if parsed:
             try:
                 from app.utils.narrator import narrate
@@ -256,15 +258,19 @@ class MemoryExtractor:
     ) -> None:
         """One INFO line for every extraction — silence is the bug (Task 25)."""
         self._log.info("[Memory.Extract] saved=%d/%d reason=%s%s", saved, total, reason, note)
+        # ``nothing_to_store`` is a healthy outcome (the model said "nothing
+        # worth remembering"), not a failure — it never feeds the failure
+        # counters or the zero-save streak.
+        healthy = saved > 0 or reason == "nothing_to_store"
         if self._metrics is not None:
             if saved:
                 self._metrics.inc("memories_extracted", saved)
-            else:
+            elif reason != "nothing_to_store":
                 self._metrics.inc("memory_extract_failed")
                 self._metrics.inc(f"memory_extract_failed_{reason}")
         if not count_streak:
             return
-        if saved:
+        if healthy:
             self._zero_streak = 0
             return
         self._zero_streak += 1
@@ -283,18 +289,32 @@ class MemoryExtractor:
         return None
 
     @staticmethod
-    def _parse(content: str) -> list[dict[str, Any]]:
-        """Tolerant JSON extraction from the model reply."""
+    def _parse(content: str) -> tuple[str, list[dict[str, Any]]]:
+        """Tolerant JSON extraction from the model reply.
+
+        Returns ``(status, items)``:
+
+        * ``parse_failed`` — no JSON, invalid JSON, ``memories`` is not a list,
+          or every item is malformed (the 200-char WARNING applies);
+        * ``nothing_to_store`` — valid JSON with an *empty* ``memories`` list:
+          the prompt's "nothing worth remembering" answer, NOT an error;
+        * ``ok`` — at least one usable item.
+        """
         text = content.strip()
         start = text.find("{")
         end = text.rfind("}")
         if start == -1 or end <= start:
-            return []
+            return "parse_failed", []
         try:
             data = json.loads(text[start : end + 1])
         except ValueError:
-            return []
+            return "parse_failed", []
         memories = data.get("memories") if isinstance(data, dict) else None
         if not isinstance(memories, list):
-            return []
-        return [item for item in memories if isinstance(item, dict) and item.get("content")]
+            return "parse_failed", []
+        if not memories:
+            return "nothing_to_store", []
+        items = [item for item in memories if isinstance(item, dict) and item.get("content")]
+        if not items:
+            return "parse_failed", []
+        return "ok", items

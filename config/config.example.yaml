@@ -126,6 +126,8 @@ models:
     timeout: 10
 
   # —— 记忆抽取模型（把聊天沉淀成长记忆）：填 chat/extra 里的 name；留空 = 用 chat 第一个 ——
+  # 推荐指向非推理小模型（如 extra 里的 cn:glm-5.3-flash / vision），
+  # 别让抽取落在 deepseek-v4.* 这类推理模型上：思考占 token，慢且贵，还可能只思考不输出。
   extraction: ""
 
   # —— 内部"快模型"（都填 chat/extra 里的 name；留空 = 用 chat 默认）——
