@@ -1,4 +1,4 @@
-"""Initiative engine + gate + topic thread tests (spec §72/§73)."""
+"""Initiative engine + gate + topic thread tests (spec v0.8 §72/§73)."""
 
 from __future__ import annotations
 
@@ -168,7 +168,7 @@ class TestGateHardRules:
         await engine._db.close()  # noqa: SLF001
 
     async def test_awaiting_reply_blocks_followup(self, tmp_path) -> None:
-        """One proactive invitation → wait for the user (spec §58/§59)."""
+        """One proactive invitation → wait for the user (spec v0.8 §58/§59)."""
         clock = Clock()
         engine, _ = make_engine(tmp_path, clock=clock, max_unanswered=1, min_interval_minutes=1)
         await open_db(engine)
@@ -226,7 +226,7 @@ class TestGateProbability:
 
 class TestDuplicateDetection:
     async def test_similar_message_is_rejected(self, tmp_path) -> None:
-        """Recent repeat wording must not be sent again (spec §57/§73)."""
+        """Recent repeat wording must not be sent again (spec v0.8 §57/§73)."""
         clock = Clock()
         engine, _ = make_engine(
             tmp_path,
@@ -292,13 +292,13 @@ class TestCandidates:
             last_seen=int(clock.now) - 60,
             relationship_stage="familiar",
         )
-        assert candidates == []  # nothing to say → stay quiet (spec §60)
+        assert candidates == []  # nothing to say → stay quiet (spec v0.8 §60)
         await engine._db.close()  # noqa: SLF001
 
 
 class TestPersistence:
     async def test_limits_survive_restart(self, tmp_path) -> None:
-        """Counters live in SQLite, so a restart cannot reset the budget (§49)."""
+        """Counters live in SQLite, so a restart cannot reset the budget (v0.8 §49)."""
 
         database = make_db(tmp_path)
         await database.connect()

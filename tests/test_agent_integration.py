@@ -226,7 +226,7 @@ class TestNaturalControls:
 
 class TestFailureHandling:
     async def test_agent_failure_still_replies_in_character(self, tmp_path) -> None:
-        """Tool down + no replans → honest answer, no crash, no fabrication (§73)."""
+        """Tool down + no replans → honest answer, no crash, no fabrication (v0.7 §73)."""
         plan = plan_payload([tool_step("s1", "weather", location="Nowhere")])
         replies = [plan, "唉，我这边没查到，等下再看看？"]
 
@@ -247,7 +247,7 @@ class TestFailureHandling:
             await bot.shutdown()
 
     async def test_planner_garbage_falls_back_to_chat(self, tmp_path) -> None:
-        """A planner that returns nonsense must not break the turn (§20)."""
+        """A planner that returns nonsense must not break the turn (v0.7 §20)."""
         bot, _ = await make_agent_bot(tmp_path, ["这个我暂时答不上来呢"])
         try:
             await bot.event_bus.emit(private_event(MULTI_STEP_QUESTION, user_id=7))
@@ -258,7 +258,7 @@ class TestFailureHandling:
             await bot.shutdown()
 
     async def test_unclear_goal_asks_instead_of_reporting_failure(self, tmp_path) -> None:
-        """No location given → the character asks naturally (spec §111)."""
+        """No location given → the character asks naturally (spec v0.7 §111)."""
         unclear = json.dumps({"unclear": True, "reason": "没有说哪个城市"})
         replies = [unclear, "哪个城市的天气呀？我这就去看～"]
 
@@ -292,7 +292,7 @@ class TestPersonaAndMemoryIsolation:
             await bot.character.extractor.wait_idle() if bot.character.extractor else None
             if bot.memory is not None:
                 memories = await bot.memory.list_memories()
-                # weather data must never become a long-term fact (§44/§45)
+                # weather data must never become a long-term fact (v0.7 §44/§45)
                 assert all("降雨" not in memory.content for memory in memories)
                 assert all("概率" not in memory.content for memory in memories)
         finally:

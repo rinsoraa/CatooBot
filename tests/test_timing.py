@@ -1,4 +1,4 @@
-"""Reply timing + message chunking + response planner tests (spec §71)."""
+"""Reply timing + message chunking + response planner tests (spec v0.4 规格，原文缺失（71）)."""
 
 from __future__ import annotations
 

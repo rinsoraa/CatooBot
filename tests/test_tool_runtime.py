@@ -1,6 +1,6 @@
 """Tool runtime tests: models, registry, schema, policy, budget, loops, executor.
 
-Spec coverage: §83-§91 (registry/schema/policy/budget/loop/timeout/failure).
+Spec coverage: v0.6 §83-§91 (registry/schema/policy/budget/loop/timeout/failure).
 """
 
 from __future__ import annotations
@@ -412,7 +412,7 @@ class TestExecutor:
         result = await executor.execute(call("echo"), make_context(), TurnBudget())
         assert not result.success
         assert result.error_type == "invalid_arguments"
-        assert tool.calls == 0  # never executed (§15)
+        assert tool.calls == 0  # never executed (v0.6 §15)
         await database.close()
 
     async def test_unknown_tool(self, tmp_path) -> None:
@@ -469,7 +469,7 @@ class TestExecutor:
         second = await executor.execute(call("echo", text="same"), context, TurnBudget())
         assert first.success and second.success
         assert second.cache_hit is True
-        assert tool.calls == 1  # executed once, then served from cache (§68)
+        assert tool.calls == 1  # executed once, then served from cache (v0.6 §68)
         await database.close()
 
     async def test_cache_key_separates_arguments(self, tmp_path) -> None:
@@ -542,7 +542,7 @@ class TestToolRuntime:
         await runtime.set_tool_enabled("calculator", False)
         assert runtime.is_enabled("calculator") is False
 
-        # a fresh runtime reads the stored choice back (hot reload, §73)
+        # a fresh runtime reads the stored choice back (hot reload, v0.6 §73)
         runtime2 = ToolRuntime(ToolsConfig(enabled=True), database)
         await runtime2.start()
         assert runtime2.is_enabled("calculator") is False

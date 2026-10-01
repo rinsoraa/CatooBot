@@ -128,7 +128,7 @@ class TestSeed:
 
 class TestTick:
     async def test_watching_continues_no_random_switch(self) -> None:
-        """§172/场景3: after 10 minutes she is still watching — no re-roll."""
+        """v2.0 §172/场景3: after 10 minutes she is still watching — no re-roll."""
         runtime, clock = await make_runtime()
         await runtime._start_action("watch_animation")
         before = runtime.current_action.definition_id
@@ -181,7 +181,7 @@ class TestTick:
 
 class TestCausality:
     async def test_cola_depletion_leads_to_shopping(self) -> None:
-        """§175 因果链: last cola → empty fridge → shopping trip → stock back."""
+        """v2.0 §175 因果链: last cola → empty fridge → shopping trip → stock back."""
         runtime, clock = await make_runtime()
         runtime.inventories.get("fridge").items["可乐"] = 1
         await runtime._start_action("drink_cola")
@@ -245,7 +245,7 @@ class TestCausality:
 
 class TestInterrupts:
     async def test_core_friend_invitation_interrupts_entertainment(self) -> None:
-        """§场景7/§150: 空凛约联机 → 放下动画去开服务器."""
+        """§场景7/v2.0 §150: 空凛约联机 → 放下动画去开服务器."""
         runtime, clock = await make_runtime()
         await runtime._start_action("watch_animation")
         result = await runtime.handle_external(
@@ -264,7 +264,7 @@ class TestInterrupts:
         assert runtime.current_action.definition_id == "play_minecraft"
 
     async def test_ordinary_message_does_not_change_activity(self) -> None:
-        """§52/§场景8: 普通网友消息 → 只回复，不动她的生活."""
+        """v2.0 §52/§场景8: 普通网友消息 → 只回复，不动她的生活."""
         runtime, clock = await make_runtime()
         await runtime._start_action("play_minecraft")
         before = runtime.current_action.definition_id
@@ -282,7 +282,7 @@ class TestInterrupts:
         assert runtime.current_action.definition_id == before
 
     async def test_deep_night_core_friend_pulls_her_online(self) -> None:
-        """§149: 深夜 + 空凛消息 → ONLINE_SOCIAL 叠加上来."""
+        """v2.0 §149: 深夜 + 空凛消息 → ONLINE_SOCIAL 叠加上来."""
         runtime, clock = await make_runtime()
         clock.set_hour(3)
         runtime.character.location = "livingroom"
@@ -388,7 +388,7 @@ class TestSimulations:
 
 class TestQQIntegration:
     async def test_qq_message_enters_sandbox_via_plugin(self, tmp_path) -> None:
-        """§145: QQ → external event → sandbox (kept as widget-level evidence)."""
+        """v2.0 §145: QQ → external event → sandbox (kept as widget-level evidence)."""
         from tests.conftest import group_event, make_bot
 
         bot = make_bot(tmp_path)

@@ -1,4 +1,4 @@
-"""Builtin tools + tool decision loop + end-to-end chat integration (spec §92-§98).
+"""Builtin tools + tool decision loop + end-to-end chat integration (spec v0.6 §92-§98).
 
 The AI layer is mocked, so "did the model call the right tool" is deterministic:
 the mock returns either a JSON decision or a plain reply.
@@ -124,7 +124,7 @@ class TestCalculatorTool:
         assert not result.success and result.error_type == "invalid_arguments"
 
     async def test_code_injection_is_rejected(self, tmp_path) -> None:
-        """A calculator must never become a code runner (§23/§106)."""
+        """A calculator must never become a code runner (v0.6 §23/§106)."""
         for expression in ("__import__('os').system('echo hi')", "open('x')", "1 if True else 2"):
             result = await run_tool(
                 tmp_path,
@@ -175,7 +175,7 @@ class TestWeatherTool:
         healthy = FakeWeatherProvider()
         tool = WeatherTool(providers=[broken, healthy])
         result = await tool.execute({"location": "Singapore"}, make_context())
-        assert result.success  # fell over to the second provider (§108)
+        assert result.success  # fell over to the second provider (v0.6 §108)
         assert broken.calls == 1 and healthy.calls == 1
 
     async def test_all_providers_down_reports_failure(self) -> None:
@@ -316,7 +316,7 @@ class TestToolRouter:
         candidates = router.candidates("现在几点")
         instruction = router.build_instruction(candidates)
         assert "time" in instruction
-        assert "echo" not in instruction  # never the whole registry (§12)
+        assert "echo" not in instruction  # never the whole registry (v0.6 §12)
 
 
 class ScriptedProvider(MockAIProvider):
@@ -353,7 +353,7 @@ async def make_orchestrator(tmp_path, tools, replies, max_calls: int = 3):
 
 class TestOrchestrator:
     async def test_plain_chat_uses_no_tools(self, tmp_path) -> None:
-        """Ordinary small talk must not trigger a tool (spec §93/§114)."""
+        """Ordinary small talk must not trigger a tool (spec v0.6 §93/§114)."""
         orchestrator, engine, database, _ = await make_orchestrator(
             tmp_path, [TimeTool()], ["嗯嗯，今天挺好的"]
         )
@@ -604,7 +604,7 @@ class TestChatWithTools:
             await bot.shutdown()
 
     async def test_tool_results_are_not_written_to_memory(self, tmp_path) -> None:
-        """Weather output must never become a long-term fact (spec §29/§61)."""
+        """Weather output must never become a long-term fact (spec v0.6 §29/§61)."""
         replies = [
             json.dumps({"tool_call": {"name": "weather", "arguments": {"location": "Singapore"}}}),
             "明天有阵雨的样子。",

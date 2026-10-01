@@ -1,6 +1,6 @@
 """Social Cognition Engine tests (v0.9).
 
-Core acceptance (spec §126-§142): no-@ follow-ups are recognised structurally
+Core acceptance (spec v0.9 §126-§142): no-@ follow-ups are recognised structurally
 (not by ``random()``), the 5-message observer triggers once per batch, hard
 rules outrank soft judgment, the observer and the reply model stay separate,
 and the decision path never rolls a die.

@@ -1,6 +1,6 @@
 """Agent runtime tests: classifier, planner, validation, execution, evaluation.
 
-Spec coverage: §122-§135 (classification, multi-step, parallel, failure,
+Spec coverage: v0.7 §122-§135 (classification, multi-step, parallel, failure,
 replan, budget, loop, cancellation, persistence, persona, memory).
 The AI is mocked, so plans and observations are fully deterministic.
 """
@@ -258,7 +258,7 @@ class TestPlanner:
             await database.close()
 
     async def test_unknown_tool_repaired(self, tmp_path) -> None:
-        """First plan is invalid, the repair produces a valid one (spec §66)."""
+        """First plan is invalid, the repair produces a valid one (spec v0.7 §66)."""
         bad = plan_payload([tool_step("step_1", "shell", cmd="ls")])
         good = plan_payload([tool_step("step_1", "time")])
         runtime, engine, tools, database = await make_runtime(tmp_path, [bad, good])
@@ -398,7 +398,7 @@ class TestExecution:
             await database.close()
 
     async def test_step_budget_stops_execution(self, tmp_path) -> None:
-        """5 tools needed, budget allows 2 → the task ends partially (spec §128)."""
+        """5 tools needed, budget allows 2 → the task ends partially (spec v0.7 §128)."""
         payload = plan_payload([tool_step(f"s{i}", "time") for i in range(1, 4)])
         runtime, engine, tools, database = await make_runtime(
             tmp_path, [payload], budget={"max_steps": 2, "max_tool_calls": 3}
@@ -442,7 +442,7 @@ class TestEvaluator:
         assert Evaluator(AgentConfig()).evaluate(plan, observations, records) == "complete"
 
     def test_some_failed_asks_for_replan(self) -> None:
-        """A failure is recoverable; the runtime decides when to give up (§127)."""
+        """A failure is recoverable; the runtime decides when to give up (v0.7 §127)."""
         plan = Plan(
             plan_id="p",
             steps=[StepSpec(id="a", description="a"), StepSpec(id="b", description="b")],
@@ -455,7 +455,7 @@ class TestEvaluator:
         assert Evaluator(AgentConfig()).evaluate(plan, observations, records) == "needs_replan"
 
     def test_needs_replan_when_a_step_failed(self) -> None:
-        """A failure is retried via a new plan; the runtime caps replans (§127)."""
+        """A failure is retried via a new plan; the runtime caps replans (v0.7 §127)."""
         plan = Plan(plan_id="p", steps=[StepSpec(id="a", description="a")])
         records = [StepRecord(step_id="a", status="failed", error_type="step_failed")]
         observations = [Observation(step_id="a", success=False, summary="no")]
@@ -595,7 +595,7 @@ class TestEvaluator:
 
 class TestReplan:
     async def test_replan_produces_version_two(self, tmp_path) -> None:
-        """Tool fails → agent replans → Plan v2 recorded (spec §127)."""
+        """Tool fails → agent replans → Plan v2 recorded (spec v0.7 §127)."""
         v1 = plan_payload([tool_step("s1", "weather", location="Nowhere")])
         v2 = plan_payload([tool_step("s1", "weather", location="Singapore")])
         runtime, engine, tools, database = await make_runtime(
@@ -614,7 +614,7 @@ class TestReplan:
             await database.close()
 
     async def test_replan_limit_enforced(self, tmp_path) -> None:
-        """Always failing tool + max_replans=1 → stop, no infinite loop (§26)."""
+        """Always failing tool + max_replans=1 → stop, no infinite loop (v0.7 §26)."""
         plan = plan_payload([tool_step("s1", "weather", location="Nowhere")])
         runtime, engine, tools, database = await make_runtime(
             tmp_path, [plan, plan, plan, plan], budget={"max_replans": 1}
@@ -697,7 +697,7 @@ class TestLifecycle:
             await database.close()
 
     async def test_running_tasks_become_paused_after_restart(self, tmp_path) -> None:
-        """Spec §131: never auto-resume an interrupted task."""
+        """Spec v0.7 §131: never auto-resume an interrupted task."""
         database = make_db(tmp_path, "restart.db")
         await database.connect()
         tools = ToolRuntime(ToolsConfig(enabled=True), database)

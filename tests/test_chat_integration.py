@@ -83,7 +83,7 @@ class TestPrivateChat:
             await bot.shutdown()
 
     async def test_slash_text_is_ordinary_chat(self, tmp_path) -> None:
-        """/ping etc. no longer execute anything — spec §2/§3."""
+        """/ping etc. no longer execute anything — spec v0.3 §2/§3."""
         provider = MockAIProvider(behaviors={"A": ["Pong 是什么呀？"]})
         bot = await make_character_bot(tmp_path, provider, models=["A"])
         try:

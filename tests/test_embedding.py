@@ -1,4 +1,4 @@
-"""Embedding provider + cache + vector store tests (spec §76)."""
+"""Embedding provider + cache + vector store tests (spec v0.5 §76)."""
 
 from __future__ import annotations
 
@@ -157,7 +157,7 @@ class TestEmbeddingService:
         await database2.close()
 
     async def test_provider_failure_returns_none(self, tmp_path) -> None:
-        """A broken embedding API must degrade, not raise (spec §60/§83)."""
+        """A broken embedding API must degrade, not raise (spec v0.5 §60/§83)."""
         database = make_db(tmp_path)
         await database.connect()
 
@@ -173,7 +173,7 @@ class TestEmbeddingService:
         await database.close()
 
     async def test_timeout_degrades(self, tmp_path) -> None:
-        """A slow embedding endpoint must not stall chat (spec §61)."""
+        """A slow embedding endpoint must not stall chat (spec v0.5 §61)."""
         database = make_db(tmp_path)
         await database.connect()
 
@@ -234,7 +234,7 @@ class TestVectorStore:
         await database.close()
 
     async def test_search_only_over_candidates(self, tmp_path) -> None:
-        """Never scan the whole table (spec §18/§19)."""
+        """Never scan the whole table (spec v0.5 §18/§19)."""
         database = make_db(tmp_path)
         await database.connect()
         store = SqliteVectorStore(database)

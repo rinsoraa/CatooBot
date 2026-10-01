@@ -75,7 +75,7 @@ class Harness:
 
 @pytest.mark.asyncio
 async def test_burst_becomes_one_turn_and_one_reply():
-    """§142: 你干嘛呢 / 在吗 / 我突然想到一件事 → one turn, one reply."""
+    """v1.2 §142: 你干嘛呢 / 在吗 / 我突然想到一件事 → one turn, one reply."""
     harness = Harness()
     for text in ("你干嘛呢", "在吗", "我突然想到一件事"):
         await harness.submit("private:1", text, user_id="1")
@@ -87,7 +87,7 @@ async def test_burst_becomes_one_turn_and_one_reply():
 
 @pytest.mark.asyncio
 async def test_follow_up_after_reply_is_separate_turn():
-    """§143: 你在看什么 → reply → 哪一部: the追问 is its own follow-up turn."""
+    """v1.2 §143: 你在看什么 → reply → 哪一部: the追问 is its own follow-up turn."""
     harness = Harness()
     await harness.submit("private:2", "你在看什么", user_id="2")
     await harness.wait()
@@ -100,7 +100,7 @@ async def test_follow_up_after_reply_is_separate_turn():
 
 @pytest.mark.asyncio
 async def test_correction_makes_in_flight_reply_stale():
-    """§144/§145: correction while generating → old reply never sent."""
+    """v1.2 §144/§145: correction while generating → old reply never sent."""
     harness = Harness()
 
     slow_started = asyncio.Event()
@@ -125,7 +125,7 @@ async def test_correction_makes_in_flight_reply_stale():
 
 @pytest.mark.asyncio
 async def test_low_information_message_gets_short_shape():
-    """§146: 哈哈 → the decision allows a mirror-register reply."""
+    """v1.2 §146: 哈哈 → the decision allows a mirror-register reply."""
     engine = ConversationDecisionEngine(make_config())
     turn = ConversationTurn(
         turn_id="t",
@@ -142,7 +142,7 @@ async def test_low_information_message_gets_short_shape():
 
 @pytest.mark.asyncio
 async def test_consecutive_question_guard():
-    """§147: after two bot questions the third turn gets should_ask=False."""
+    """v1.2 §147: after two bot questions the third turn gets should_ask=False."""
     engine = ConversationDecisionEngine(make_config())
     turn = ConversationTurn(
         turn_id="t",
@@ -158,7 +158,7 @@ async def test_consecutive_question_guard():
 
 @pytest.mark.asyncio
 async def test_silence_has_structured_reason():
-    """§80/§81: hard blocks produce a named silence reason, never a dice."""
+    """v1.2 §80/§81: hard blocks produce a named silence reason, never a dice."""
     engine = ConversationDecisionEngine(make_config())
     turn = ConversationTurn(
         turn_id="t",
@@ -206,7 +206,7 @@ def test_classifier_cues():
 
 @pytest.mark.asyncio
 async def test_open_loop_created_and_recalled():
-    """§150: mentioning unfinished things creates an open loop she can recall."""
+    """v1.2 §150: mentioning unfinished things creates an open loop she can recall."""
     import tempfile
 
     with tempfile.TemporaryDirectory() as tmp:
@@ -222,7 +222,7 @@ async def test_open_loop_created_and_recalled():
 
 @pytest.mark.asyncio
 async def test_shared_experience_recall_is_relevance_gated():
-    """§149: shared history returns only for related topics."""
+    """v1.2 §149: shared history returns only for related topics."""
     import tempfile
 
     with tempfile.TemporaryDirectory() as tmp:
@@ -246,7 +246,7 @@ async def test_shared_experience_recall_is_relevance_gated():
 
 @pytest.mark.asyncio
 async def test_state_decays_by_ttl():
-    """§161: affect drains, profiles fade — nothing is permanent."""
+    """v1.2 §161: affect drains, profiles fade — nothing is permanent."""
     import time as time_mod
 
     from app.continuity.models import AffectiveContext, InteractionProfile
@@ -264,7 +264,7 @@ async def test_state_decays_by_ttl():
 
 @pytest.mark.asyncio
 async def test_continuity_survives_restart():
-    """§163: open loops persist across a restart (new manager, same DB)."""
+    """v1.2 §163: open loops persist across a restart (new manager, same DB)."""
     import tempfile
 
     with tempfile.TemporaryDirectory() as tmp:

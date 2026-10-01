@@ -58,7 +58,7 @@ class TestRemember:
 
     async def test_conflict_supersedes_old_memory(self, tmp_path) -> None:
         """v0.5: a contradicting statement creates a new row and marks the old
-        one superseded — history is preserved instead of overwritten (spec §11)."""
+        one superseded — history is preserved instead of overwritten (spec v0.5 §11)."""
         manager, database = await make_manager(tmp_path)
         old = await manager.remember("user", "1", "用户喜欢猫", category="preference")
         updated = await manager.remember("user", "1", "用户现在更喜欢狗", category="preference")
@@ -74,7 +74,7 @@ class TestRemember:
         await database.close()
 
     async def test_compatible_statements_coexist(self, tmp_path) -> None:
-        """'喜欢 A' and '也喜欢 B' are not a conflict (spec §33)."""
+        """'喜欢 A' and '也喜欢 B' are not a conflict (spec v0.5 §33)."""
         manager, database = await make_manager(tmp_path)
         await manager.remember("user", "1", "用户喜欢猫", category="preference")
         await manager.remember("user", "1", "用户也喜欢狗", category="interest")

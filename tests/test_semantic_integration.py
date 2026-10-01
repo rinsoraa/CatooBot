@@ -1,4 +1,4 @@
-"""v0.5 integration: semantic memory inside the real chat pipeline (spec §85).
+"""v0.5 integration: semantic memory inside the real chat pipeline (spec v0.5 §85).
 
 QQ message → behaviour gate → character runtime → hybrid memory retrieval →
 prompt → AI → response planner → delivery, plus the failure paths the spec
@@ -56,7 +56,7 @@ async def make_semantic_bot(tmp_path, provider: MockAIProvider):
 
 class TestSemanticChatPipeline:
     async def test_stored_memory_reaches_the_prompt(self, tmp_path) -> None:
-        """A fact learned days ago is used without sharing wording (§100 场景 1)."""
+        """A fact learned days ago is used without sharing wording (v0.5 §100 场景 1)."""
         provider = MockAIProvider(behaviors={"A": ["记得啊，你那个网站弄得怎么样了"]})
         bot = await make_semantic_bot(tmp_path, provider)
         try:
@@ -137,7 +137,7 @@ class TestSemanticChatPipeline:
 
 class TestDegradation:
     async def test_embedding_down_still_chats(self, tmp_path) -> None:
-        """Semantic provider 500 → keyword retrieval, normal reply (spec §83)."""
+        """Semantic provider 500 → keyword retrieval, normal reply (spec v0.5 §83)."""
         from app.memory.embedding import EmbeddingError, EmbeddingProvider
 
         class Broken(EmbeddingProvider):
@@ -165,7 +165,7 @@ class TestDegradation:
             await bot.shutdown()
 
     async def test_database_down_still_chats(self, tmp_path) -> None:
-        """Memory/DB trouble must not take chat down (spec §84)."""
+        """Memory/DB trouble must not take chat down (spec v0.5 §84)."""
         provider = MockAIProvider(behaviors={"A": ["还在呢"]})
         bot = await make_semantic_bot(tmp_path, provider)
         try:

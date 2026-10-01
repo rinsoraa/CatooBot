@@ -149,7 +149,7 @@ async def seed(manager) -> None:
 
 class TestSemanticRetrieval:
     async def test_cross_session_semantic_recall(self, tmp_path) -> None:
-        """Query with different words than the memory (spec §100 场景 2)."""
+        """Query with different words than the memory (spec v0.5 §100 场景 2)."""
         manager, database = await make_manager(tmp_path)
         await seed(manager)
         scored = await manager.retrieve_scored(
@@ -170,7 +170,7 @@ class TestSemanticRetrieval:
         await database.close()
 
     async def test_keyword_only_still_works(self, tmp_path) -> None:
-        """Semantic unavailable → pure keyword + metadata ranking (spec §96)."""
+        """Semantic unavailable → pure keyword + metadata ranking (spec v0.5 §96)."""
         manager, database = await make_manager(tmp_path, semantic=False)
         await seed(manager)
         scored = await manager.retrieve_scored("Minecraft", scope_keys=["user:1"])
@@ -197,7 +197,7 @@ class TestSemanticRetrieval:
 
 class TestHybridWeighting:
     async def test_high_semantic_low_keyword_recall(self, tmp_path) -> None:
-        """A memory with no shared words is still recalled (spec §78)."""
+        """A memory with no shared words is still recalled (spec v0.5 §78)."""
         manager, database = await make_manager(tmp_path)
         await manager.remember(
             "user", "1", "用户最近在折腾个人网站的前端页面", category="project", importance=0.8
@@ -222,7 +222,7 @@ class TestHybridWeighting:
         await database.close()
 
     async def test_relevance_guard_drops_irrelevant(self, tmp_path) -> None:
-        """Vaguely-similar-but-irrelevant memories never reach the prompt (§98)."""
+        """Vaguely-similar-but-irrelevant memories never reach the prompt (v0.5 §98)."""
         config = MemoryConfig(
             semantic={"enabled": True},
             retrieval={"min_final_score": 0.9},
@@ -298,7 +298,7 @@ class TestScopeIsolation:
 
 class TestTemporal:
     async def test_recent_memory_beats_old_one(self, tmp_path) -> None:
-        """'最近在干嘛' should prefer the fresh project (spec §80)."""
+        """'最近在干嘛' should prefer the fresh project (spec v0.5 §80)."""
         manager, database = await make_manager(tmp_path)
         old = await manager.remember(
             "user", "1", "用户在玩 Minecraft", category="interest", importance=0.6
@@ -337,7 +337,7 @@ class TestTemporal:
 
 class TestConsolidation:
     async def test_duplicates_merged_and_archived(self, tmp_path) -> None:
-        """Similar memories collapse, history is kept (spec §31/§82)."""
+        """Similar memories collapse, history is kept (spec v0.5 §31/§82)."""
         config = MemoryConfig(consolidation={"duplicate_threshold": 0.9})
         manager, database = await make_manager(tmp_path, config=config)
         first = await manager.remember("user", "1", "用户喜欢猫", category="preference")
@@ -513,7 +513,7 @@ class TestManagerUpgrades:
         await manager.retrieve_for_session("private:1", "猫")
         after = await manager.repository.get(memory.id)
         assert after.use_count >= 1
-        assert after.confidence == before  # being recalled is not evidence (§42)
+        assert after.confidence == before  # being recalled is not evidence (v0.5 §42)
         await database.close()
 
     async def test_timeline_is_chronological(self, tmp_path) -> None:

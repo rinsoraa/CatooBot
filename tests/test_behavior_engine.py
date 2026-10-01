@@ -1,4 +1,4 @@
-"""v0.4 integration: the full behaviour pipeline from QQ to QQ (spec §75).
+"""v0.4 integration: the full behaviour pipeline from QQ to QQ (spec v0.8 §75).
 
 Verifies that the reply path really applies planned delays and message
 bubbles through the delivery layer (with an injected sleep so nothing waits),

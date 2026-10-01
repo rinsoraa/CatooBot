@@ -1,4 +1,4 @@
-"""Group participation gate + scheduler tests (spec §36/§74)."""
+"""Group participation gate + scheduler tests (spec v0.8 §36/§74)."""
 
 from __future__ import annotations
 
@@ -161,7 +161,7 @@ class TestScheduler:
         await bot.shutdown()
 
     async def test_failing_step_does_not_stop_loop(self, tmp_path) -> None:
-        """One broken behaviour must not kill the scheduler (spec §74)."""
+        """One broken behaviour must not kill the scheduler (spec v0.8 §74)."""
         bot = make_bot(tmp_path)
         await bot.database.connect()
         scheduler = BehaviorScheduler(bot, bot.behavior, tick_seconds=1)
