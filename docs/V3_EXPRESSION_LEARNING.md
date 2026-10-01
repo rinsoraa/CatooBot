@@ -1,10 +1,8 @@
 # v3.0 设计 · Task 22 表达 / 口癖学习（Expression Learning）
 
-> 状态：**里程碑 ①–③ 已实现**（迁移 19 三张表 + `ExpressionStore` / `ExpressionLearner` +
-> `expression_context` 注入，11 条测试；见 `app/expression/`）。**里程碑 ④（WebUI `/expressions`）与
-> ⑤（计数/健康行/文档回填）待做**。硬约束 ①（只喂用词层、不绕风格限制）与 ②（可停用/删除/溯源）
-> 已在核心落地；取舍 ③④（准入/门槛/隔离/淘汰）已实现，⑤（注入预算）已实现，⑥（与 Task 20 解耦）
-> 天然满足（本模块不读 engagement_ema）。
+> 状态：**里程碑 ①–⑤ 已实现**（迁移 19 三张表 + `ExpressionStore` / `ExpressionLearner` +
+> `expression_context` 注入 + WebUI `/expressions` + 计数 `expressions_learned/injected/rejected_{reason}/evicted`；
+> 见 `app/expression/` 与 `app/tools/builtins/query_image_memory.py` 无关）。硬约束 ①② 与取舍 ③–⑥ 全部落地。
 > 相关代码：`app/expression/`（store/learner/context）、`app/memory/patterns.py`（共享禁忌判定）、
 > `app/database/database.py`（迁移 19）、`app/character/context.py`（注入层）、`plugins/chat/plugin.py`（学习入口）
 > 一句话：**从群里的真人消息学"用词 / 句式"，回复时按会话、限额注入；学到的可停用、可删除、可追溯。**

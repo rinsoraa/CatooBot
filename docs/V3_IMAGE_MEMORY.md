@@ -1,9 +1,10 @@
 # v3.0 设计 · 图像进记忆（Task 21）
 
-> 状态：**设计待确认**（P3 规矩：先设计页，确认后编码）
-> 相关代码：`app/media/vision.py`（`VisionResult` / `image_analysis` 缓存）、`app/media/runtime.py`、
-> `app/memory/manager.py`（`remember` 的去重/冲突/配额）、`app/memory/retrieval.py`（混合检索）、
-> `app/memory/model.py`（`SOURCES` / `layer`）、`app/memory/outbox.py`（Task 14）
+> 状态：**里程碑 ① ② ③ 已实现**。③ `query_image_memory` 已按"解冻"做成**只读**内置工具
+> （复用 `MemoryManager.list_memories(source='vision')`，不新增 SQL/DB 路径、不重复看图/入库）。
+> 触发条件未满足（真库 `source=vision` 行数为 0），工具作为可选能力存在，不强制走它。
+> 相关代码：`app/media/vision.py`、`app/media/memory_bridge.py`、`app/memory/manager.py`、
+> `app/tools/builtins/query_image_memory.py`、`app/memory/model.py`（`SOURCES`）
 
 ## 1. 问题
 
