@@ -5,12 +5,12 @@
 Design rules enforced here:
 
 * every loop is bounded by :class:`AgentBudget` (steps / tool calls / replans / time);
-* only one active task per session by default (spec §95);
-* task state changes go through the state machine and are persisted (spec §71),
-  so a crashed run is found as ``paused`` on the next start (spec §51/§131);
-* cancellation / pause / resume come from natural language (spec §36/§37);
+* only one active task per session by default (spec v0.7 §95);
+* task state changes go through the state machine and are persisted (spec v0.7 §71),
+  so a crashed run is found as ``paused`` on the next start (spec v0.7 §51/§131);
+* cancellation / pause / resume come from natural language (spec v0.7 §36/§37);
 * the agent never writes the user-visible reply — it returns an
-  :class:`AgentResult` that the Character Runtime renders (spec §42/§108).
+  :class:`AgentResult` that the Character Runtime renders (spec v0.7 §42/§108).
 """
 
 from __future__ import annotations
@@ -389,7 +389,7 @@ class AgentRuntime:
 
     @staticmethod
     def _degraded_verdict(observations: list[Observation]) -> str:
-        """Whatever succeeded is still worth telling the user about (spec §74)."""
+        """Whatever succeeded is still worth telling the user about (spec v0.7 §74)."""
         return "partial" if any(observation.success for observation in observations) else "failed"
 
     @staticmethod
@@ -682,7 +682,7 @@ class AgentRuntime:
     # ---------------------------------------------------------- housekeeping
 
     async def housekeeping(self) -> dict[str, int]:
-        """Timeout + stale cleanup; called by the shared BehaviorScheduler (spec §104)."""
+        """Timeout + stale cleanup; called by the shared BehaviorScheduler (spec v0.7 §104)."""
         self._last_housekeeping = self._clock()
         summary = {"timed_out": 0, "paused": 0, "stale": 0}
         if self._db is None:
@@ -720,7 +720,7 @@ class AgentRuntime:
         return summary
 
     async def mark_running_tasks_paused(self) -> int:
-        """On startup, an interrupted task becomes ``paused`` (spec §51/§131)."""
+        """On startup, an interrupted task becomes ``paused`` (spec v0.7 §51/§131)."""
         if self._db is None:
             return 0
         try:
@@ -787,7 +787,7 @@ class AgentRuntime:
         return [dict(row) for row in rows]
 
     async def task_detail(self, task_id: str) -> dict[str, Any]:
-        """Everything the WebUI shows for one task (spec §54), no hidden reasoning."""
+        """Everything the WebUI shows for one task (spec v0.7 §54), no hidden reasoning."""
         empty: dict[str, Any] = {
             "task": None,
             "goal": None,
@@ -827,7 +827,7 @@ class AgentRuntime:
         }
 
     async def metrics(self) -> dict[str, Any]:
-        """Dashboard numbers (spec §91/§139)."""
+        """Dashboard numbers (spec v0.7 §91/§139)."""
         if self._db is None:
             return {}
         rows = await self._db.fetchall(
@@ -901,7 +901,7 @@ class AgentRuntime:
         user_id: str = "webui-admin",
         dry_run: bool = True,
     ) -> dict[str, Any]:
-        """Plan without executing — the WebUI simulator (spec §88/§140/§141)."""
+        """Plan without executing — the WebUI simulator (spec v0.7 §88/§140/§141)."""
         allowed = self.tools.registry.names() if self.tools else []
         candidates = self.tools.registry.candidates(text) if self.tools else []
         classification = self.classifier.classify(text, tool_candidates=len(candidates))

@@ -1,13 +1,13 @@
-"""Planner: turn a goal into a validated, minimal step plan (spec §13/§63-§66).
+"""Planner: turn a goal into a validated, minimal step plan (spec v0.7 §13/§63-§66).
 
 The planner asks the model for **structured steps only** — never a chain of
-thought (spec §12/§64). Whatever comes back is validated before a single tool
+thought (spec v0.7 §12/§64). Whatever comes back is validated before a single tool
 runs:
 
     schema → tool existence → dependencies → budget → policy
 
 One repair attempt is allowed when validation fails; after that the task fails
-rather than improvising (spec §66).
+rather than improvising (spec v0.7 §66).
 """
 
 from __future__ import annotations
@@ -107,7 +107,7 @@ class Planner:
         version: int,
         allowed_tools: list[str] | None = None,
     ) -> Plan:
-        """Versioned replan — the old plan is kept for the WebUI (spec §28)."""
+        """Versioned replan — the old plan is kept for the WebUI (spec v0.7 §28)."""
         prompt = REPLAN_PROMPT.format(
             goal=goal.description,
             plan=previous.to_json(),
@@ -128,7 +128,7 @@ class Planner:
     # ------------------------------------------------------------ validation
 
     def validate(self, plan: Plan, *, allowed_tools: list[str] | None = None) -> list[str]:
-        """Schema → tools → dependencies → budget (spec §65)."""
+        """Schema → tools → dependencies → budget (spec v0.7 §65)."""
         problems: list[str] = []
         if not plan.steps:
             problems.append("plan has no steps")
@@ -206,7 +206,7 @@ class Planner:
         *,
         version: int,
     ) -> Plan:
-        """One repair attempt; still invalid → the task fails (spec §66)."""
+        """One repair attempt; still invalid → the task fails (spec v0.7 §66)."""
         self._log.info("[Agent] attempting plan repair (%d problem(s))", len(problems))
         prompt = (
             PLANNER_PROMPT.format(

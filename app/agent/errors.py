@@ -1,4 +1,4 @@
-"""Agent error hierarchy (spec §106/§107).
+"""Agent error hierarchy (spec v0.7 §106/§107).
 
 Errors are classified so the runtime never falls back to a blanket "retry
 everything": only transient tool failures are retried, everything else either
@@ -39,7 +39,7 @@ class EvaluationError(AgentError):
 
 
 class ReplanLimitError(AgentError):
-    """`max_replans` reached (spec §26)."""
+    """`max_replans` reached (spec v0.7 §26)."""
 
     error_type = "replan_limit"
 
@@ -51,12 +51,12 @@ class BudgetExceededError(AgentError):
 
 
 class TaskTimeoutError(AgentError):
-    """The task ran longer than `max_execution_seconds` (spec §72)."""
+    """The task ran longer than `max_execution_seconds` (spec v0.7 §72)."""
 
     error_type = "task_timeout"
 
 
 class TaskCancelledError(AgentError):
-    """The user asked to stop (spec §36/§98)."""
+    """The user asked to stop (spec v0.7 §36/§98)."""
 
     error_type = "task_cancelled"

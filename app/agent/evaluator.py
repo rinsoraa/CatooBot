@@ -1,4 +1,4 @@
-"""Evaluation and result assembly (spec §23/§24/§43/§73/§74/§75).
+"""Evaluation and result assembly (spec v0.7 §23/§24/§43/§73/§74/§75).
 
 The evaluator decides whether the goal is met — rule-based by default so the
 answer is deterministic and testable:
@@ -9,7 +9,7 @@ answer is deterministic and testable:
 * a required tool was unavailable         → ``needs_replan``
 
 Returning "partial" instead of pretending success matters: the character then
-tells the user which part is missing (spec §74).
+tells the user which part is missing (spec v0.7 §74).
 
 With ``agent.evaluator.use_llm`` the model *verifies completion claims*: rules
 see statuses, not meaning — every step can return 200 while the answer still
@@ -107,7 +107,7 @@ class Evaluator:
         observations: list[Observation],
         step_records: list[StepRecord],
     ) -> str:
-        """Rule-based verdict; also reports *why* (spec §81 DEBUG trace)."""
+        """Rule-based verdict; also reports *why* (spec v0.7 §81 DEBUG trace)."""
         if not step_records:
             return STATUS_FAILED
 
@@ -119,7 +119,7 @@ class Evaluator:
 
         # A failed step is worth another approach (another provider, another
         # ordering). The runtime enforces max_replans, so asking for a replan
-        # here can never loop forever (spec §26/§127).
+        # here can never loop forever (spec v0.7 §26/§127).
         return STATUS_REPLAN
 
     async def evaluate_async(
@@ -215,7 +215,7 @@ class Evaluator:
         expired: bool = False,
         error_type: str = "",
     ) -> AgentResult:
-        """Assemble the facts a character reply can be grounded in (spec §43)."""
+        """Assemble the facts a character reply can be grounded in (spec v0.7 §43)."""
         facts: list[str] = []
         sources: list[str] = []
         for observation in observations:

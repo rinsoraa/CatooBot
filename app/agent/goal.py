@@ -1,14 +1,14 @@
-"""Goal parsing and task classification (spec §7/§14/§15/§36/§37).
+"""Goal parsing and task classification (spec v0.7 §7/§14/§15/§36/§37).
 
 The classifier decides *how much machinery* a message deserves:
 
 * ``simple``        → plain character chat (no tools, no plan)
-* ``tool_assisted`` → the v0.6 single-tool path (spec §17/§123)
-* ``multi_step``    → the agent runtime (spec §18/§124)
-* ``long_running``  → recognized but refused in v0.7 (spec §15/§50)
+* ``tool_assisted`` → the v0.6 single-tool path (spec v0.7 §17/§123)
+* ``multi_step``    → the agent runtime (spec v0.7 §18/§124)
+* ``long_running``  → recognized but refused in v0.7 (spec v0.7 §15/§50)
 
 It also detects natural-language control intents (cancel / pause / resume) so
-"别查了" stops the running task without inventing any QQ command (spec §36).
+"别查了" stops the running task without inventing any QQ command (spec v0.7 §36).
 """
 
 from __future__ import annotations
@@ -56,7 +56,7 @@ class TaskClassifier:
     # ------------------------------------------------------------- controls
 
     def detect_control(self, text: str) -> str:
-        """Natural-language cancel/pause/resume (spec §36/§37/§57/§98)."""
+        """Natural-language cancel/pause/resume (spec v0.7 §36/§37/§57/§98)."""
         normalized = text.strip()
         if not normalized or len(normalized) > 20:
             return ""
@@ -135,7 +135,7 @@ class TaskClassifier:
 
 
 class GoalParser:
-    """Turns a user message into a Goal (spec §7/§8)."""
+    """Turns a user message into a Goal (spec v0.7 §7/§8)."""
 
     def __init__(self, logger: logging.Logger | None = None) -> None:
         self._log = logger or logging.getLogger("CatooBot.Agent")

@@ -1,4 +1,4 @@
-"""Execution engine: dependency-aware step execution (spec §19/§33/§34/§67).
+"""Execution engine: dependency-aware step execution (spec v0.7 §19/§33/§34/§67).
 
     while not finished:
         pick ready steps (dependencies satisfied)
@@ -7,7 +7,7 @@
         stop on budget / timeout / cancellation
 
 Tools are executed **only** through the v0.6 tool runtime, so tool policy,
-permissions, rate limits and the tool budget all still apply (spec §30/§31/§61).
+permissions, rate limits and the tool budget all still apply (spec v0.7 §30/§31/§61).
 """
 
 from __future__ import annotations
@@ -230,7 +230,7 @@ class ExecutionEngine:
         goal_description: str,
         observations: list[Observation],
     ) -> Observation:
-        """A no-tool step: the model reasons over the observations (spec §22)."""
+        """A no-tool step: the model reasons over the observations (spec v0.7 §22)."""
         context_block = observations_to_context(
             observations, limit=self.config.max_observations_in_context
         )
