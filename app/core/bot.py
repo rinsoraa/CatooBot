@@ -27,6 +27,7 @@ from app.character.runtime import CharacterRuntime
 from app.commands.registry import CommandRegistry
 from app.commands.router import CommandRouter
 from app.config.settings import PROJECT_ROOT, AppConfig
+from app.config.watcher import ConfigFileWatcher
 from app.core.event_bus import EventBus
 from app.core.lifecycle import Lifecycle
 from app.core.metrics import Metrics
@@ -79,6 +80,16 @@ class Bot:
                 metrics=self.metrics,
             )
             if config.logging.watchdog_enabled
+            else None
+        )
+        # Task 23: hand-edits to config.yaml are hot-reloaded (no restart).
+        self.config_watcher = (
+            ConfigFileWatcher(
+                paths=[PROJECT_ROOT / "config" / "config.yaml"],
+                interval_seconds=config.logging.watch_config_interval_seconds,
+                on_change=self._reload_config_from_disk,
+            )
+            if config.logging.watch_config_enabled
             else None
         )
         self.ai_usage = (
@@ -301,6 +312,30 @@ class Bot:
         if sandbox is None or not getattr(sandbox, "enabled", False):
             return None
         return bool(sandbox.is_asleep())
+
+    async def _reload_config_from_disk(self) -> None:
+        """Hot-reload a hand-edited config.yaml (Task 23 config watching).
+
+        Runs the full load → models expansion → model-reference validation, then
+        pushes the result through the config admin service. A broken edit is
+        reported and the previous config stays live.
+        """
+        from app.config.settings import load_config
+        from app.web.services.config_admin import ConfigAdminService
+
+        try:
+            new_config = load_config()
+        except SystemExit as exc:
+            self.log.error("[Config.Watch] 配置改动未生效（语法错误）：%s", exc)
+            return
+        except Exception:  # noqa: BLE001
+            self.log.exception("[Config.Watch] 配置重载失败")
+            return
+        notes = await ConfigAdminService(self).apply(new_config)
+        if notes:
+            self.log.info("[Config.Watch] 配置已热重载；%s", "；".join(notes))
+        else:
+            self.log.info("[Config.Watch] 配置已热重载")
 
     async def _boot_sandbox(self) -> None:
         """Start (or reset-and-seed) the character life sandbox (v2.0 §120)."""
@@ -616,6 +651,12 @@ class Bot:
                 "事件循环看门狗已启动",
                 detail=f"超过 {self.config.logging.watchdog_threshold_ms} ms 的卡顿会告警",
             )
+        if self.config_watcher is not None:
+            self.config_watcher.start()
+            story.boot_step(
+                "配置监听已启动",
+                detail="手改 config.yaml 后自动热重载（语法错误会提示并保留旧配置）",
+            )
         self.lifecycle.mark_ready()
 
         if self.config.web.enabled:
@@ -716,6 +757,8 @@ class Bot:
         """Graceful stop: schedulers, plugins, web, adapter, database."""
         if self.watchdog is not None:
             await self.watchdog.stop()
+        if self.config_watcher is not None:
+            await self.config_watcher.stop()
         if self.consolidation_scheduler is not None:
             await self.consolidation_scheduler.stop()
         await self.scheduler.stop()

@@ -94,6 +94,11 @@ class LoggingConfig(BaseModel):
     watchdog_enabled: bool = True
     watchdog_interval_seconds: float = Field(default=1.0, gt=0)
     watchdog_threshold_ms: int = Field(default=500, ge=50)
+    # Config file watching (Task 23): hand-edits to config.yaml are re-loaded
+    # and hot-applied instead of waiting for a restart. Polling, no dependency;
+    # a broken edit is reported and the previous config stays live.
+    watch_config_enabled: bool = True
+    watch_config_interval_seconds: float = Field(default=2.0, gt=0)
 
     @field_validator("level")
     @classmethod
