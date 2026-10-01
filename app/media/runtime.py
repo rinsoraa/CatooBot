@@ -52,6 +52,15 @@ FileFetcher = Callable[[str], Awaitable[tuple[bytes, str]]]
 
 
 @dataclass
+class RecognitionOutcome:
+    """What the (awaited) recognition step produced — feeds the decision."""
+
+    status: str                        # disabled / throttled / done
+    vision: Any = None                 # VisionResult | None
+    vision_text: str = ""
+
+
+@dataclass
 class BackgroundMediaOutcome:
     """What the background sticker/vision pass did (for narration + tests)."""
 
@@ -168,6 +177,38 @@ class MediaRuntime:
         self._bg_vision[key] = (hour, used + 1)
         return True
 
+    async def recognize(
+        self, media: MediaContent, *, scope_key: str = ""
+    ) -> RecognitionOutcome:
+        """Download + vision for a sticker-like image (no acquisition).
+
+        Split out so the *decision* (reply or not) can wait for the result and
+        use it, and the acquisition step happens afterwards.
+        """
+        if not self.enabled or not self.config.background_vision_enabled:
+            return RecognitionOutcome(status="disabled")
+        if not self.allow_background_vision(scope_key):
+            return RecognitionOutcome(status="throttled")
+        if not (self.vision.enabled and media.url):
+            return RecognitionOutcome(status="done")
+        data = await self._download(media.url)
+        if data is not None:
+            if not media.sha256:
+                media.sha256 = sha256_bytes(data[0])
+            if not media.file_size:
+                media.file_size = len(data[0])
+            vision = await self.vision.analyze(
+                data_url_from_bytes(data[0], data[1] or "image/jpeg"),
+                sha256_hash=media.sha256,
+            )
+        else:
+            vision = await self.vision.analyze(media.url, sha256_hash=media.sha256)
+        return RecognitionOutcome(
+            status="done",
+            vision=vision,
+            vision_text=vision.as_text() if vision is not None else "",
+        )
+
     async def background_recognize_and_collect(
         self,
         media: MediaContent,
@@ -175,35 +216,18 @@ class MediaRuntime:
         scope_key: str = "",
         vision: VisionResult | None = None,
     ) -> BackgroundMediaOutcome:
-        """Recognize a sticker-like image and consider keeping it (never blocks).
-
-        Runs whether or not she replies; the vision result is cached by sha256
-        so a later reply reuses it for free.
-        """
-        if not self.enabled or not self.config.background_vision_enabled:
-            return BackgroundMediaOutcome(status="disabled")
-        if not self.allow_background_vision(scope_key):
-            return BackgroundMediaOutcome(status="throttled")
-        if vision is None and self.vision.enabled and media.url:
-            data = await self._download(media.url)
-            if data is not None:
-                if not media.sha256:
-                    media.sha256 = sha256_bytes(data[0])
-                if not media.file_size:
-                    media.file_size = len(data[0])
-                vision = await self.vision.analyze(
-                    data_url_from_bytes(data[0], data[1] or "image/jpeg"),
-                    sha256_hash=media.sha256,
-                )
-            else:
-                vision = await self.vision.analyze(
-                    media.url, sha256_hash=media.sha256
-                )
-        decision = await self.consider_collect(media, vision=vision)
+        """Recognize a sticker-like image and consider keeping it (never blocks)."""
+        if vision is not None:
+            decision = await self.consider_collect(media, vision=vision)
+            return BackgroundMediaOutcome(
+                status="done", vision_text=vision.as_text(), decision=decision
+            )
+        outcome = await self.recognize(media, scope_key=scope_key)
+        if outcome.status != "done":
+            return BackgroundMediaOutcome(status=outcome.status)
+        decision = await self.consider_collect(media, vision=outcome.vision)
         return BackgroundMediaOutcome(
-            status="done",
-            vision_text=vision.as_text() if vision is not None else "",
-            decision=decision,
+            status="done", vision_text=outcome.vision_text, decision=decision
         )
 
     async def _download(self, url: str) -> tuple[bytes, str] | None:

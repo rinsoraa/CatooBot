@@ -9,6 +9,7 @@ replies. The reply path reuses the cached summary for free.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 
 from app.config.settings import DatabaseConfig, MediaConfig
@@ -242,5 +243,102 @@ class TestGroupStickerEndToEnd:
             # ... but the sticker is in her library now
             assets = await bot.media.library.all()
             assert len(assets) == 1 and assets[0].visual_summary == "一只猫在笑"
+        finally:
+            await bot.shutdown()
+
+
+def _beat_index(beats: list[str], *needles: str) -> int:
+    for index, beat in enumerate(beats):
+        if any(needle in beat for needle in needles):
+            return index
+    raise AssertionError(f"no narration matched {needles!r}: {beats!r}")
+
+
+class TestRecognitionOrdering:
+    """The 17:24 log showed 静默 before the vision result. Recognition now runs
+    first, so the participation decision is made on what the sticker says."""
+
+    @staticmethod
+    def _event():  # type: ignore[no-untyped-def]
+        from app.message.event import GroupMessageEvent
+
+        return GroupMessageEvent.model_validate(
+            {
+                "post_type": "message", "self_id": 10001, "time": 1700000000,
+                "message_type": "group", "sub_type": "normal", "message_id": 91,
+                "user_id": 888, "group_id": 999,
+                "message": [
+                    {"type": "image", "data": {
+                        "file": "STICKER.jpg", "sub_type": "1",
+                        "summary": "[动画表情]", "url": "https://x/sticker.gif",
+                    }}
+                ],
+                "raw_message": "[动画表情]",
+                "sender": {"user_id": 888, "nickname": "某人", "role": "member"},
+            }
+        )
+
+    async def _make(self, tmp_path, *, timeout: float = 12.0, fetcher=None):  # type: ignore[no-untyped-def]
+        from tests.ai_mocks import MockAIProvider
+        from tests.test_chat_integration import make_character_bot
+
+        bot = await make_character_bot(tmp_path, MockAIProvider(), models=["A"])
+        bot.media.vision = make_vision(FakeVisionEngine("一只猫在笑"), bot.database)
+        bot.config.media.recognition_timeout_seconds = timeout
+
+        async def default_fetcher(url: str) -> tuple[bytes, str]:
+            return PNG, "image/png"
+
+        bot.media._fetch_file = fetcher or default_fetcher  # noqa: SLF001 - test injection
+        return bot
+
+    @staticmethod
+    def _beats(caplog) -> list[str]:  # type: ignore[no-untyped-def]
+        return [r.getMessage() for r in caplog.records if r.name == "CatooBot.Narration"]
+
+    async def test_recognition_precedes_the_group_decision(self, tmp_path, caplog) -> None:
+        bot = await self._make(tmp_path)
+        seen: list[str] = []
+        original = bot.social.decide_for_turn
+
+        async def spy(**kwargs):  # type: ignore[no-untyped-def]
+            seen.append(str(kwargs.get("text", "")))
+            return await original(**kwargs)
+
+        bot.social.decide_for_turn = spy  # type: ignore[method-assign]
+        try:
+            with caplog.at_level(logging.INFO, logger="CatooBot.Narration"):
+                await bot.event_bus.emit(self._event())
+                await bot.conversation.wait_idle()
+                await bot.plugins.loaded["character"].drain_background()
+            beats = self._beats(caplog)
+            seen_at = _beat_index(beats, "看懂了：一只猫在笑")
+            assert seen_at < _beat_index(beats, "不接", "要回")   # 识别 → 判断
+            assert seen_at < _beat_index(beats, "表情库")          # 识别 → 收藏
+            assert seen and "一只猫在笑" in seen[0]               # 判断用的就是识别结果
+            assets = await bot.media.library.all()
+            assert len(assets) == 1
+        finally:
+            await bot.shutdown()
+
+    async def test_late_recognition_is_still_narrated_and_collected(
+        self, tmp_path, caplog
+    ) -> None:
+        async def slow_fetcher(url: str) -> tuple[bytes, str]:
+            await asyncio.sleep(0.3)
+            return PNG, "image/png"
+
+        bot = await self._make(tmp_path, timeout=0.05, fetcher=slow_fetcher)
+        try:
+            with caplog.at_level(logging.INFO, logger="CatooBot.Narration"):
+                await bot.event_bus.emit(self._event())
+                await bot.conversation.wait_idle()
+                assert "表情包还在识别" in "\n".join(self._beats(caplog))
+                await asyncio.sleep(0.5)  # the shielded task finishes afterwards
+                await bot.plugins.loaded["character"].drain_background()
+            joined = "\n".join(self._beats(caplog))
+            assert "看懂了：一只猫在笑" in joined and "迟到的识别结果" in joined
+            assets = await bot.media.library.all()
+            assert len(assets) == 1
         finally:
             await bot.shutdown()

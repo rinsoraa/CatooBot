@@ -538,6 +538,8 @@ class MediaConfig(BaseModel):
     # character does not reply (never affects whether she replies).
     background_vision_enabled: bool = True
     background_vision_max_per_hour: int = Field(default=20, ge=0)
+    #: how long a turn waits for sticker recognition before deciding anyway
+    recognition_timeout_seconds: float = Field(default=12.0, gt=0)
     # Strict boundary: plain images are never stickers (spec §2.2/§6 场景6)
     import_as_sticker: bool = True     # files dropped into sticker_dir ARE stickers
 

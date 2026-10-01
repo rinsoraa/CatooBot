@@ -465,3 +465,4 @@ media:
   analysis_version: "v1"
   background_vision_enabled: true    # 群里没 @ 她时，动画表情/表情包也做后台识别（不影响是否回复）
   background_vision_max_per_hour: 20 # 每个会话每小时后台识别上限（省视觉调用）
+  recognition_timeout_seconds: 12    # 等识别结果最多几秒；超时先判断，结果出来后再收藏
