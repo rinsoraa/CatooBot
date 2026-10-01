@@ -40,6 +40,10 @@ filterwarnings = ["ignore::DeprecationWarning"]
 [tool.ruff]
 line-length = 100
 target-version = "py312"
+# Design specs are verbatim reference material (the user's original prompt
+# documents, published unchanged). Their Python code blocks are illustrative
+# examples, not the project's code — don't reformat or lint them.
+extend-exclude = ["docs/specs/"]
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "UP", "B", "SIM"]
