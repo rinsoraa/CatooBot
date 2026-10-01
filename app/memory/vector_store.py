@@ -11,6 +11,18 @@ Scoring is one ``math.sumprod`` over the blob (the norm is stored, the query
 norm is computed once per search); the JSON path is only for rows written
 before migration 16 and is backfilled at startup.
 
+Dropping the JSON column (a later migration 19) stays **frozen** until all
+three hold on the real database:
+
+* every ``memory_embeddings`` row carries a blob and **no read falls back** to
+  the JSON column any more (the fallback is the only way to notice),
+* the blob path has been live for **at least a week** without a retrieval
+  regression,
+* retrieval p95 is stable on real data.
+
+Until then the duplicated column is cheap insurance: it is the only way back if
+a blob were ever written wrong.
+
 Re-evaluate numpy / sqlite-vec when *any* of these becomes true — until then
 the pool is ≤ ~200 rows of dim 1024 and this path costs ~18 ms per search
 (JSON parsing + repeated norms were 159 ms):
