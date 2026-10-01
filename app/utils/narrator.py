@@ -28,6 +28,9 @@ CHANNELS: dict[str, tuple[str, str, str]] = {
     "boot": ("🚀", "启动", "bright_cyan"),
     "sense": ("📨", "感知", "bright_black"),
     "vision": ("👁", "看见", "bright_cyan"),
+    "facts": ("📎", "事实", "bright_blue"),
+    "reason": ("💭", "思路", "bright_magenta"),
+    "audit": ("🛡", "校验", "yellow"),
     "judge": ("🚪", "判断", "bright_black"),
     "think": ("🧠", "思考", "cyan"),
     "flow": ("🎐", "心流", "blue"),
@@ -50,6 +53,8 @@ class Narrator:
     def __init__(self, logger: logging.Logger | None = None, enabled: bool = True) -> None:
         self._log = logger or logging.getLogger(LOGGER_NAME)
         self.enabled = enabled
+        #: console-only model thinking switch (never persisted)
+        self.thinking_enabled = True
 
     # ------------------------------------------------------------- primitives
 
@@ -86,13 +91,30 @@ class Narrator:
         if self.enabled:
             self._emit("blank", "")
 
-    def _emit(self, channel: str, line: str) -> None:
+    def _emit(self, channel: str, line: str, *, console_only: bool = False) -> None:
         try:
             self._log.info(
-                "%s", line, extra={"narrate": True, "channel": channel}
+                "%s",
+                line,
+                extra={"narrate": True, "channel": channel, "console_only": console_only},
             )
         except Exception:  # noqa: BLE001 - narration is cosmetic
             pass
+
+    def thinking(self, text: str, *, detail: str = "") -> None:
+        """The model's own thinking excerpt — console only.
+
+        Shown so the operator can watch what the model considered, but never
+        written to the log file: hidden chain-of-thought is not persisted
+        (project policy §113/§99). Dropped by the file handler's filter.
+        """
+        if not self.enabled or not getattr(self, "thinking_enabled", True):
+            return
+        icon, label, accent = CHANNELS["reason"]
+        head = f"{icon} {console.paint(label, accent, 'bold')}"
+        body = f" {console.paint('│', 'bright_black')} {text}"
+        trailer = f" {console.paint('· ' + detail, 'gray')}" if detail else ""
+        self._emit("reason", f"{head}{body}{trailer}", console_only=True)
 
     # ------------------------------------------------------------- story beats
 
@@ -194,9 +216,15 @@ def narrate() -> Narrator:
     return narrator
 
 
-def configure(enabled: bool, logger: logging.Logger | None = None) -> Narrator:
-    """Apply the ``logging.narrate`` switch (called from ``setup_logging``)."""
+def configure(
+    enabled: bool,
+    logger: logging.Logger | None = None,
+    *,
+    thinking: bool = True,
+) -> Narrator:
+    """Apply the ``logging.narrate`` / ``narrate_thinking`` switches."""
     narrator.enabled = enabled
+    narrator.thinking_enabled = bool(thinking)
     if logger is not None:
         narrator._log = logger  # noqa: SLF001 - single owner of this handle
     return narrator

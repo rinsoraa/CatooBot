@@ -71,6 +71,9 @@ class LoggingConfig(BaseModel):
     narrate: bool = True
     # Also narrate every world tick (noisy; off by default — changes are always shown)
     narrate_world_ticks: bool = False
+    #: Show the model's thinking excerpt in the terminal (console only — never
+    #: written to the log file, and never saved to the database).
+    narrate_thinking: bool = True
 
     @field_validator("level")
     @classmethod

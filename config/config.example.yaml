@@ -23,7 +23,8 @@ logging:
   level: INFO              # DEBUG / INFO / WARNING / ERROR
   color: true              # 终端彩色日志（管道/重定向时自动变纯文本，NO_COLOR 优先）
   narrate: true            # 打印角色的内心播报：心理历程 / 思考 / 心流 / 碎碎念 / 世界状态
-  narrate_world_ticks: false  # 每次世界 tick 都打印状态（默认只在变化时打印）
+  narrate_world_ticks: false  # 每次沙盒心跳都打印状态（默认只在变化时打印）
+  narrate_thinking: true      # 控制台显示模型思路摘要（仅控制台：不写入日志文件、不入库）
   log_dir: logs
 
 database:

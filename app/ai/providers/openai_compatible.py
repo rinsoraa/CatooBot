@@ -116,7 +116,7 @@ class OpenAICompatibleProvider(AIProvider):
         usage = data.get("usage") or {}
         tool_calls = self._parse_tool_calls(message.get("tool_calls"))
         finish_reason = choices[0].get("finish_reason")
-        reasoning = message.get("reasoning_content")
+        reasoning = str(message.get("reasoning_content") or "")
         self._log.info(
             "Response received provider=%s model=%s finish=%s tokens=%s/%s",
             self.name,
@@ -145,6 +145,7 @@ class OpenAICompatibleProvider(AIProvider):
             )
         return AIResponse(
             content=content,
+            reasoning=reasoning[:2000],
             model=str(data.get("model", model)),
             provider=self.name,
             usage=dict(usage) if isinstance(usage, dict) else {},

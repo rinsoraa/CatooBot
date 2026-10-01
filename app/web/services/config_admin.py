@@ -264,6 +264,7 @@ class ConfigAdminService:
             after.logging.log_dir,
             color=after.logging.color,
             narrate=after.logging.narrate,
+            narrate_thinking=after.logging.narrate_thinking,
         )
         sandbox = getattr(self.bot, "sandbox", None)
         if sandbox is not None:

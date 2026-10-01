@@ -230,3 +230,34 @@ class TestEmptyContent:
         )
         response = await provider.chat(request())
         assert response.tool_calls and response.tool_calls[0]["name"] == "time"
+
+
+class TestReasoningCapture:
+    """Reasoning models return their thinking separately — captured, not stored."""
+
+    async def test_reasoning_content_is_captured(self) -> None:
+        body = {
+            "id": "chatcmpl-3",
+            "model": "model-a",
+            "choices": [
+                {
+                    "index": 0,
+                    "message": {
+                        "role": "assistant",
+                        "content": "那就点吧",
+                        "reasoning_content": "（他在催我点外卖……）",
+                    },
+                    "finish_reason": "stop",
+                }
+            ],
+            "usage": {"prompt_tokens": 10, "completion_tokens": 20},
+        }
+        provider, _ = make_provider(lambda req: httpx.Response(200, json=body))
+        response = await provider.chat(request())
+        assert response.content == "那就点吧"
+        assert "点外卖" in response.reasoning
+
+    async def test_reasoning_defaults_empty(self) -> None:
+        provider, _ = make_provider(lambda req: httpx.Response(200, json=OK_BODY))
+        response = await provider.chat(request())
+        assert response.reasoning == ""

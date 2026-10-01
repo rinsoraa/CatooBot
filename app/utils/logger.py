@@ -83,6 +83,10 @@ class _PlainFilter(logging.Filter):
     """Keeps the log file free of styling and marks narration lines."""
 
     def filter(self, record: logging.LogRecord) -> bool:
+        if getattr(record, "console_only", False):
+            # Model thinking is shown in the terminal only; hidden
+            # chain-of-thought is never persisted (project policy).
+            return False
         text = _ANSI_PATTERN.sub("", str(record.msg))
         channel = getattr(record, "channel", "")
         if getattr(record, "narrate", False) and channel not in ("", "panel", "blank"):
@@ -151,6 +155,7 @@ def setup_logging(
     *,
     color: bool = True,
     narrate: bool = True,
+    narrate_thinking: bool = True,
 ) -> None:
     """Initialize root logging once. Subsequent calls adjust level/switches."""
     global _configured
@@ -167,7 +172,7 @@ def setup_logging(
     console.set_color_enabled(None if color else False)
     from app.utils.narrator import configure as configure_narrator
 
-    configure_narrator(narrate)
+    configure_narrator(narrate, thinking=narrate_thinking)
 
     if not _configured:
         directory = Path(log_dir)

@@ -100,6 +100,9 @@ class AIResponse(BaseModel):
     provider: str = ""
     usage: dict[str, Any] = Field(default_factory=dict)
     finish_reason: str | None = None
+    #: the model's own thinking text (reasoning models). Display-only for the
+    #: operator's terminal; never persisted to logs or the database.
+    reasoning: str = Field(default="", repr=False)
     raw_response: dict[str, Any] = Field(default_factory=dict, repr=False)
     # Normalized native tool calls: [{"id", "name", "arguments"}]
     tool_calls: list[dict[str, Any]] = Field(default_factory=list)

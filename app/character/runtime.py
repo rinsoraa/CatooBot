@@ -107,6 +107,7 @@ class CharacterRuntime:
         interaction_profile: Any = None,
         shared_experiences: list | None = None,
         context_trace: dict | None = None,
+        facts_query: str | None = None,
     ) -> str:
         """Generate one character reply (already screened). Raises AIError."""
         persona = self.personas.persona
@@ -117,6 +118,15 @@ class CharacterRuntime:
         else:
             relationship = await self.relationships.get(user_id)
         memories = await self._safe_memories(session_id, user_text, relationship.stage)
+
+        facts = ""
+        sandbox = getattr(self, "sandbox", None)
+        if sandbox is not None and getattr(sandbox, "enabled", False):
+            query = facts_query if facts_query is not None else user_text
+            try:
+                facts = sandbox.facts_block(query)
+            except Exception:  # noqa: BLE001 - facts are an aid, never a blocker
+                self._log.debug("Sandbox facts unavailable", exc_info=True)
 
         messages = self.builder.build(
             persona,
@@ -131,6 +141,7 @@ class CharacterRuntime:
             extra_instruction=extra_instruction,
             world=await self._world_context(),
             media_context=media_context,
+            facts=facts,
             continuity=continuity,
             interaction_profile=interaction_profile,
             shared_experiences=shared_experiences,
@@ -161,6 +172,11 @@ class CharacterRuntime:
             time_context=time_context,
         )
         content = self.processor.sanitize(content_text.strip())
+        if content and sandbox is not None and getattr(sandbox, "enabled", False):
+            try:
+                content = sandbox.audit_claims(content)
+            except Exception:  # noqa: BLE001 - audit must never break a reply
+                self._log.debug("Sandbox claim audit failed", exc_info=True)
         if not content:
             self._log.warning("[AI] Empty response for session=%s", session_id)
             narrate().warn("模型返回了空内容", detail=f"session={session_id}")
@@ -218,6 +234,7 @@ class CharacterRuntime:
 
         if self.tools is None or not getattr(self.tools, "enabled", False):
             response = await self.engine.chat(AIRequest(messages=messages, temperature=temperature))
+            self._narrate_thinking(response)
             return response.content
 
         try:
@@ -233,6 +250,7 @@ class CharacterRuntime:
         except Exception:  # noqa: BLE001 - a tool path bug must not break chat
             self._log.exception("Tool orchestration failed; falling back to plain chat")
             response = await self.engine.chat(AIRequest(messages=messages, temperature=temperature))
+            self._narrate_thinking(response)
             return response.content
         if results:
             self._log.info(
@@ -241,6 +259,21 @@ class CharacterRuntime:
                 ", ".join(f"{r.tool_name}={'ok' if r.success else 'err'}" for r in results),
             )
         return text
+
+    @staticmethod
+    def _narrate_thinking(response: Any) -> None:
+        """Show the model's thinking excerpt in the terminal (console only).
+
+        Never written to the log file and never persisted — hidden
+        chain-of-thought stays out of storage (project policy).
+        """
+        excerpt = str(getattr(response, "reasoning", "") or "").strip()
+        if not excerpt:
+            return
+        one_line = " ".join(excerpt.split())
+        if len(one_line) > 220:
+            one_line = one_line[:220] + "…"
+        narrate().thinking(one_line, detail="模型自述（仅控制台，不落盘）")
 
     # --------------------------------------------------------------- agent
 
@@ -358,6 +391,7 @@ class CharacterRuntime:
                     temperature=temperature,
                 )
             )
+            self._narrate_thinking(response)
             return response.content
         except AIError:
             raise
@@ -383,6 +417,7 @@ class CharacterRuntime:
             AIRequest(messages=[*messages, ChatMessage.user(f"（系统提示：{hint}）")],
                       temperature=temperature)
         )
+        self._narrate_thinking(response)
         return response.content
 
     # ---------------------------------------------------- proactive speech
@@ -412,6 +447,9 @@ class CharacterRuntime:
         if topic:
             instruction_parts.append(f"话题：{topic}。自然地提起来，别像客服回访。")
         instruction_parts.append(
+            "只说这件事本身；不要补充库存、数量或其他世界状态（除非上面的世界事实里有）。"
+        )
+        instruction_parts.append(
             "只发一句话，非常短（20 字以内），像随手发的一条消息，不要提问式结尾堆叠。"
         )
         history = await self.engine.conversations.get_context(session_id)
@@ -423,6 +461,7 @@ class CharacterRuntime:
                 history=history,
                 extra_instruction="".join(instruction_parts),
                 record_interaction=False,
+                facts_query=f"{topic} {reason_hint}",
             )
         except AIError as exc:
             self._log.warning("[Initiative] Generation failed (%s): %s", reason, exc)

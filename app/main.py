@@ -34,6 +34,7 @@ async def run() -> int:
         config.logging.log_dir,
         color=config.logging.color,
         narrate=config.logging.narrate,
+        narrate_thinking=config.logging.narrate_thinking,
     )
     log = get_logger("CatooBot")
     story = narrate()

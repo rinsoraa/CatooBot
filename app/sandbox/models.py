@@ -102,6 +102,8 @@ class SpaceNode(BaseModel):
     allowed_actions: list[str] = Field(default_factory=list)
     objects: list[str] = Field(default_factory=list)
     private: bool = True          # indoors / needs outdoor mode to leave
+    #: semantic tags for fact injection (吃喝/睡觉/游戏…) — see facts.py
+    tags: list[str] = Field(default_factory=list)
 
 
 class WorldObjectItem(BaseModel):
@@ -115,6 +117,8 @@ class WorldObjectItem(BaseModel):
     state: dict[str, Any] = Field(default_factory=dict)
     inventory_key: str = ""       # when it holds items (fridge…)
     owner: str = ""
+    #: semantic tags for fact injection (吃喝/猫/游戏/快递…) — see facts.py
+    tags: list[str] = Field(default_factory=list)
 
 
 class Inventory(BaseModel):
@@ -222,6 +226,8 @@ class PetState(BaseModel):
     id: str = "cat_001"
     name: str = "小喵"
     species: str = "猫"
+    #: semantic tags for fact injection
+    tags: list[str] = Field(default_factory=lambda: ["猫", "小喵", "猫咪", "宠物"])
     location: str = "livingroom"
     activity: PetActivity = PetActivity.idle
     activity_until: float = 0.0

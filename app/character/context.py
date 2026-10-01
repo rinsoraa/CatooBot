@@ -121,6 +121,7 @@ class CharacterContextBuilder:
         extra_instruction: str | None = None,
         world: dict | None = None,
         media_context: str = "",
+        facts: str = "",
         continuity: dict | None = None,
         interaction_profile: Any = None,
         shared_experiences: list | None = None,
@@ -232,6 +233,12 @@ class CharacterContextBuilder:
             system_parts.append(
                 f"对方这条消息还附带了媒体内容，你可以自然地回应它：{media_context}"
             )
+
+        # Sandbox facts (tag-selected): the *real* numbers/states. Injected
+        # last so they are the freshest reference; never invent around them.
+        if facts:
+            system_parts.append(facts)
+        trace("sandbox_facts", bool(facts), "no related entity in the query")
 
         # Tell the model what the [时间] tags on stale history turns mean.
         if any(msg.content.startswith("[") for msg in history):

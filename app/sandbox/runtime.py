@@ -131,6 +131,8 @@ class SandboxRuntime:
         self.narrate_ticks = False
         #: optional ContinuityManager — meaningful events feed recent_events
         self.continuity: Any = None
+        #: in-memory ring of recent events (works without a database too)
+        self._recent_memory: list[SandboxEventRecord] = []
         #: optional async (activity, location, energy) -> None projection into
         #: CharacterState so WebUI/prompts/timing all read the same life.
         self.state_sync: Any = None
@@ -539,7 +541,17 @@ class SandboxRuntime:
         try:
             events = await self.store.recent_events(limit=12)
         except Exception:  # noqa: BLE001 - her life is an optional input
-            return "", ""
+            events = []
+        if not events:
+            events = [
+                {
+                    "id": record.id,
+                    "kind": record.kind,
+                    "summary": record.summary,
+                    "created_at": record.created_at,
+                }
+                for record in reversed(self._recent_memory[-12:])
+            ]
         surfaced = await self._surfaced_moments()
         shareable = {"action_completed", "commission", "delivery", "sandbox_initialized"}
         for row in events:
@@ -573,6 +585,45 @@ class SandboxRuntime:
         surfaced.add(str(event_id))
         keep = list(surfaced)[-50:]
         await self.store.state_set("surfaced_moments", _json.dumps(keep))
+
+    # ------------------------------------------------------------- facts
+
+    def facts_for(self, text: str) -> Any:
+        """Tag-driven world facts for this text (see app/sandbox/facts.py)."""
+        from app.sandbox.facts import FactSelector
+
+        selector = getattr(self, "_fact_selector", None)
+        if selector is None:
+            selector = FactSelector(self)
+            self._fact_selector = selector
+        return selector.select(text)
+
+    def facts_block(self, text: str) -> str:
+        """Facts + the must-not-invent constraint, narrated for the operator."""
+        selection = self.facts_for(text)
+        if selection.empty:
+            self._log.debug("[Facts] no entity matched for %r", (text or "")[:40])
+            return ""
+        labels = "、".join(
+            entry_id.split(":")[-1] for entry_id in selection.hits
+        )
+        narrate().say(
+            "facts",
+            f"命中标签 → 注入 {len(selection.lines)} 条世界事实",
+            detail=f"{labels} · " + "；".join(selection.lines),
+        )
+        return selection.block()
+
+    def audit_claims(self, text: str) -> str:
+        """Strip sentences claiming something is gone while the sandbox says not."""
+        from app.sandbox.facts import FactSelector
+
+        selector = getattr(self, "_fact_selector", None)
+        if selector is None:
+            selector = FactSelector(self)
+            self._fact_selector = selector
+        cleaned, _violations = selector.audit_claims(text)
+        return cleaned
 
     async def note_agent_result(
         self, *, task_type: str, status: str, summary: str,
@@ -861,6 +912,8 @@ class SandboxRuntime:
             reason_code=reason, created_at=float(self._clock()),
         )
         await self.store.append_event(record)
+        self._recent_memory.append(record)
+        del self._recent_memory[:-30]
         # v1.2 §139: meaningful world events become her recent continuity.
         if (
             self.continuity is not None
