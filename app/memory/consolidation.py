@@ -425,6 +425,7 @@ class MemoryConsolidator:
             "average_importance": avg_importance,
             "average_confidence": avg_confidence,
             "retrieval": self._manager.retriever.snapshot(),
+            "outbox": await self._manager.outbox_stats(),
             "last_consolidation": (self.last_report.to_dict() if self.last_report else None),
         }
 

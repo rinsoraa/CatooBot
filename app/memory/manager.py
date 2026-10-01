@@ -21,6 +21,7 @@ from app.memory.embedding import EmbeddingService
 from app.memory.keyword_index import KeywordIndex
 from app.memory.model import SOURCES, Memory
 from app.memory.model import scope_key as make_scope_key
+from app.memory.outbox import Outbox
 from app.memory.repository import MemoryRepository
 from app.memory.retrieval import HybridRetriever, ScoredMemory, bigrams
 from app.memory.vector_store import SqliteVectorStore, VectorStore
@@ -49,10 +50,12 @@ class MemoryManager:
         clock: Any = time.time,
         embeddings: EmbeddingService | None = None,
         vector_store: VectorStore | None = None,
+        outbox: Outbox | None = None,
     ) -> None:
         self._config = config
         self._log = logger or logging.getLogger("CatooBot.Memory")
         self._clock = clock
+        self.outbox = outbox  # optional: queue writes the database refused (Task 14)
         self.repository = MemoryRepository(database, logger=self._log, clock=clock)
         self.keyword_index = KeywordIndex(database, self._log)
         self.embeddings = embeddings
@@ -68,6 +71,84 @@ class MemoryManager:
     # ---------------------------------------------------------------- write
 
     async def remember(
+        self,
+        scope: str,
+        ref: str,
+        content: str,
+        *,
+        category: str = "fact",
+        importance: float = 0.5,
+        confidence: float = 0.7,
+        user_id: str | None = None,
+        group_id: str | None = None,
+        layer: str | None = None,
+        summary: str = "",
+        source: str = "conversation",
+        temporal_scope: str = "long_term",
+        event_at: int | None = None,
+    ) -> Memory | None:
+        """Store one memory; a database failure queues it in the outbox.
+
+        The intent (not the row) is queued, so replay re-runs the full write
+        path — dedup, conflicts, quota, embedding included. A rejected memory
+        (too short, forbidden pattern) is *not* queued: that is a decision, not
+        a failure.
+        """
+        inputs: dict[str, Any] = {
+            "scope": scope,
+            "ref": ref,
+            "content": content,
+            "category": category,
+            "importance": importance,
+            "confidence": confidence,
+            "user_id": user_id,
+            "group_id": group_id,
+            "layer": layer,
+            "summary": summary,
+            "source": source,
+            "temporal_scope": temporal_scope,
+            "event_at": event_at,
+        }
+        try:
+            return await self._remember_now(**inputs)
+        except Exception as exc:  # noqa: BLE001 - never lose a memory to a DB outage
+            await self._defer_write("remember", inputs, exc)
+            raise
+
+    async def _defer_write(self, kind: str, payload: dict[str, Any], exc: Exception) -> None:
+        if self.outbox is None:
+            self._log.error(
+                "[Memory.Outbox] write failed (%s: %s) and no outbox is configured — data lost",
+                type(exc).__name__,
+                exc,
+            )
+            return
+        queued = await self.outbox.enqueue(kind, payload)
+        self._log.warning(
+            "[Memory.Outbox] write failed (%s: %s) — %s",
+            type(exc).__name__,
+            exc,
+            "queued for replay" if queued else "could not be queued, data lost",
+        )
+
+    async def replay_outbox(self, *, limit: int = 200) -> dict[str, Any]:
+        """Re-run queued writes (scheduled; safe to call any time)."""
+        if self.outbox is None:
+            return {"replayed": 0, "failed": 0, "remaining": 0, "dropped": 0}
+        report = await self.outbox.replay(self._replay_entry, limit=limit)
+        return report.to_dict()
+
+    async def _replay_entry(self, entry: Any) -> None:
+        if entry.kind != "remember":
+            raise ValueError(f"unknown outbox entry kind: {entry.kind!r}")
+        await self.remember(**entry.payload)
+
+    async def outbox_stats(self) -> dict[str, Any]:
+        if self.outbox is None:
+            return {"enabled": False, "pending": 0}
+        return {"enabled": True, **(await self.outbox.stats())}
+
+    async def _remember_now(
         self,
         scope: str,
         ref: str,

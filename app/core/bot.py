@@ -35,6 +35,7 @@ from app.memory.consolidation import ConsolidationScheduler, MemoryConsolidator
 from app.memory.embedding import EmbeddingService
 from app.memory.extraction import MemoryExtractor
 from app.memory.manager import MemoryManager
+from app.memory.outbox import Outbox, outbox_path_for
 from app.message.event import Event
 from app.permissions.manager import PermissionManager
 from app.plugins.loader import PluginLoader
@@ -80,8 +81,15 @@ class Bot:
             if config.memory.enabled and config.memory.semantic.enabled
             else None
         )
+        # Task 14: writes the database refuses land here instead of vanishing.
+        # The file lives beside the database it protects, so a test database
+        # never writes into the operator's live data.
+        outbox_file = outbox_path_for(config.database.url)
+        self.outbox = Outbox(outbox_file, metrics=self.metrics) if outbox_file is not None else None
         self.memory = (
-            MemoryManager(config.memory, self.database, embeddings=self.embeddings)
+            MemoryManager(
+                config.memory, self.database, embeddings=self.embeddings, outbox=self.outbox
+            )
             if config.memory.enabled
             else None
         )
@@ -395,6 +403,23 @@ class Bot:
                 )
             else:
                 await self.consolidation_scheduler.start()
+
+        # Task 14: replay writes the database refused (queued in the outbox).
+        # Rides the shared scheduler when it runs, otherwise gets one attempt
+        # right after startup — a leftover queue means a past outage.
+        if self.memory is not None and self.memory.outbox is not None:
+            if shared_loop:
+                self.scheduler.register_job(
+                    ScheduledJob(
+                        name="memory_outbox",
+                        handler=self.memory.replay_outbox,
+                        interval_seconds=120.0,
+                        run_immediately=True,
+                        misfire_policy="skip",
+                    )
+                )
+            else:
+                asyncio.create_task(self.memory.replay_outbox())
 
         if self.config.tools.enabled:
             await self.tools.start()

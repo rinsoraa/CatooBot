@@ -1388,6 +1388,7 @@ class WebServer:
                     "Semantic Search",
                     "on" if health.get("retrieval", {}).get("semantic_available") else "off",
                 ),
+                ("未落盘（outbox）", health.get("outbox", {}).get("pending", 0)),
             )
         )
         body = (
