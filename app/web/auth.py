@@ -73,8 +73,7 @@ class AuthService:
             if row is not None:
                 return
         password = (
-            os.environ.get(self._config.password_env, "").strip()
-            or self._config.password.strip()
+            os.environ.get(self._config.password_env, "").strip() or self._config.password.strip()
         )
         if not password:
             self._log.warning(
@@ -122,9 +121,7 @@ class AuthService:
         )
         if exists is not None:
             raise ValueError(f"用户名 '{new}' 已存在")
-        await self._db.execute(
-            "UPDATE web_users SET username = ? WHERE username = ?", (new, old)
-        )
+        await self._db.execute("UPDATE web_users SET username = ? WHERE username = ?", (new, old))
         self._log.info("WebUI account renamed: %s -> %s", old, new)
         return True
 

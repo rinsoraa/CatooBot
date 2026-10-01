@@ -120,6 +120,5 @@ class Tool(ABC):
 
     def __repr__(self) -> str:  # pragma: no cover - debug helper
         return (
-            f"<Tool {self.metadata.name} v{self.metadata.version}"
-            f" risk={self.metadata.risk_level}>"
+            f"<Tool {self.metadata.name} v{self.metadata.version} risk={self.metadata.risk_level}>"
         )

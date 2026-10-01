@@ -26,7 +26,7 @@ class BibleRule(BaseModel):
     id: str
     text: str
     source: str = ""
-    runtime: str = ""             # which subsystem enforces it
+    runtime: str = ""  # which subsystem enforces it
     canonical: bool = True
 
 
@@ -105,44 +105,105 @@ class CharacterBible(BaseModel):
 
 #: rule id → (keywords that prove it in the bible, runtime owner, human text)
 RULE_LIBRARY: list[tuple[str, tuple[str, ...], str, str]] = [
-    ("homewear_on_arrival", ("回家第一件事是换", "猫猫睡衣", "回家立刻换"),
-     "actions:change_to_homewear", "回家立刻换猫猫睡衣"),
-    ("romance_avoidance", ("恋爱处对象类", "不感兴趣", "不聊这个"),
-     "conversation boundaries", "恋爱话题回避"),
-    ("lecture_resistance", ("说教类", "嗯嗯好的"),
-     "conversation boundaries", "不接受说教，敷衍后我行我素"),
-    ("privacy_strict", ("追问现实身份", "不暴露真实姓名"),
-     "conversation boundaries", "拒绝现实身份追问"),
-    ("smalltalk_aversion", ("无聊的客套", "懒得回"),
-     "conversation boundaries", "无信息量客套懒得回"),
-    ("night_owl", ("凌晨三四点睡", "凌晨三点是常态", "作息颠倒"),
-     "needs:sleepiness + modes:deep_night", "常年熬夜，作息颠倒"),
-    ("name_origin_private", ("朋友取的", "空凛给她取的", "空凛给她取"),
-     "conversation boundaries", "名字来源只说“朋友取的”"),
-    ("no_family_refs", ("没有哥哥", "父母在外地", "不要主动提及家人"),
-     "context rules", "不提家人/同学/兄弟姐妹"),
-    ("game_preference", ("擅长建筑和红石", "格斗游戏"),
-     "actions:play_minecraft/play_singleplayer", "Minecraft+单机游戏偏好"),
-    ("sweets_coke_anchor", ("冰箱里永远有可乐", "快乐水", "布丁"),
-     "inventory + needs:hunger/thirst", "甜食可乐行为锚点"),
-    ("avoid_over_cutesy", ("避免过度卖萌", "不是刻意讨好"),
-     "speech policy", "避免过度卖萌"),
-    ("efficient_outings", ("快点搞定，快点回家", "三分钟搞定"),
-     "actions:outdoor shopping", "出门高效，尽快回家"),
-    ("trash_accumulation", ("攒到不得不扔", "垃圾袋"),
-     "objects:trash_bag + needs:household_maintenance", "垃圾攒满才出门扔"),
-    ("cat_care_priority", ("添粮", "猫粮"),
-     "pet care + needs:pet_care", "猫粮按时添"),
-    ("cat_photo_sharing", ("拍照发到群里", "看看我家主子"),
-     "social space behavior", "猫入镜拍照发群"),
-    ("outdoor_cat_glance", ("路过猫", "多看两眼"),
-     "outdoor behavior", "路过猫多看两眼不久留"),
-    ("core_friend_special", ("关系最好的朋友", "回得比任何人都快", "放下手头的事"),
-     "relationships + interrupt evaluator", "空凛特殊关系规则"),
-    ("casual_income", ("线上零工", "建筑委托"),
-     "livelihood + commissions", "线上零工（非正式职业）"),
-    ("deep_night_escape_core_friend", ("从深夜模式里主动走出来", "从深夜模式主动走出来"),
-     "interrupt + modes", "空凛能把她拉出深夜模式"),
+    (
+        "homewear_on_arrival",
+        ("回家第一件事是换", "猫猫睡衣", "回家立刻换"),
+        "actions:change_to_homewear",
+        "回家立刻换猫猫睡衣",
+    ),
+    (
+        "romance_avoidance",
+        ("恋爱处对象类", "不感兴趣", "不聊这个"),
+        "conversation boundaries",
+        "恋爱话题回避",
+    ),
+    (
+        "lecture_resistance",
+        ("说教类", "嗯嗯好的"),
+        "conversation boundaries",
+        "不接受说教，敷衍后我行我素",
+    ),
+    (
+        "privacy_strict",
+        ("追问现实身份", "不暴露真实姓名"),
+        "conversation boundaries",
+        "拒绝现实身份追问",
+    ),
+    (
+        "smalltalk_aversion",
+        ("无聊的客套", "懒得回"),
+        "conversation boundaries",
+        "无信息量客套懒得回",
+    ),
+    (
+        "night_owl",
+        ("凌晨三四点睡", "凌晨三点是常态", "作息颠倒"),
+        "needs:sleepiness + modes:deep_night",
+        "常年熬夜，作息颠倒",
+    ),
+    (
+        "name_origin_private",
+        ("朋友取的", "空凛给她取的", "空凛给她取"),
+        "conversation boundaries",
+        "名字来源只说“朋友取的”",
+    ),
+    (
+        "no_family_refs",
+        ("没有哥哥", "父母在外地", "不要主动提及家人"),
+        "context rules",
+        "不提家人/同学/兄弟姐妹",
+    ),
+    (
+        "game_preference",
+        ("擅长建筑和红石", "格斗游戏"),
+        "actions:play_minecraft/play_singleplayer",
+        "Minecraft+单机游戏偏好",
+    ),
+    (
+        "sweets_coke_anchor",
+        ("冰箱里永远有可乐", "快乐水", "布丁"),
+        "inventory + needs:hunger/thirst",
+        "甜食可乐行为锚点",
+    ),
+    ("avoid_over_cutesy", ("避免过度卖萌", "不是刻意讨好"), "speech policy", "避免过度卖萌"),
+    (
+        "efficient_outings",
+        ("快点搞定，快点回家", "三分钟搞定"),
+        "actions:outdoor shopping",
+        "出门高效，尽快回家",
+    ),
+    (
+        "trash_accumulation",
+        ("攒到不得不扔", "垃圾袋"),
+        "objects:trash_bag + needs:household_maintenance",
+        "垃圾攒满才出门扔",
+    ),
+    ("cat_care_priority", ("添粮", "猫粮"), "pet care + needs:pet_care", "猫粮按时添"),
+    (
+        "cat_photo_sharing",
+        ("拍照发到群里", "看看我家主子"),
+        "social space behavior",
+        "猫入镜拍照发群",
+    ),
+    ("outdoor_cat_glance", ("路过猫", "多看两眼"), "outdoor behavior", "路过猫多看两眼不久留"),
+    (
+        "core_friend_special",
+        ("关系最好的朋友", "回得比任何人都快", "放下手头的事"),
+        "relationships + interrupt evaluator",
+        "空凛特殊关系规则",
+    ),
+    (
+        "casual_income",
+        ("线上零工", "建筑委托"),
+        "livelihood + commissions",
+        "线上零工（非正式职业）",
+    ),
+    (
+        "deep_night_escape_core_friend",
+        ("从深夜模式里主动走出来", "从深夜模式主动走出来"),
+        "interrupt + modes",
+        "空凛能把她拉出深夜模式",
+    ),
 ]
 
 
@@ -199,16 +260,21 @@ class BibleCompiler:
                 continue
             rules.append(
                 BibleRule(
-                    id=rule_id, text=label, source=f"“{hit}”",
-                    runtime=runtime, canonical=True,
+                    id=rule_id,
+                    text=label,
+                    source=f"“{hit}”",
+                    runtime=runtime,
+                    canonical=True,
                 )
             )
         # Social Boundaries are canonical rules too (one per bullet).
         for index, bullet in enumerate(bible.boundaries, start=1):
             rules.append(
                 BibleRule(
-                    id=f"social_boundary_{index}", text=bullet[:80],
-                    source="Social Boundaries", runtime="conversation boundaries",
+                    id=f"social_boundary_{index}",
+                    text=bullet[:80],
+                    source="Social Boundaries",
+                    runtime="conversation boundaries",
                 )
             )
         return rules
@@ -238,10 +304,16 @@ class BibleCompiler:
         conflicts: list[str] = []
         livelihood = bible.livelihood
         no_job = str(livelihood.get("formal_employment", "")).strip().lower() in (
-            "false", "no", "否", "无",
+            "false",
+            "no",
+            "否",
+            "无",
         )
         casual = str(livelihood.get("casual_income", "")).strip().lower() in (
-            "true", "yes", "是", "有",
+            "true",
+            "yes",
+            "是",
+            "有",
         )
         if no_job and casual:
             conflicts.append(
@@ -256,12 +328,17 @@ class BibleCompiler:
     def _coverage(self, bible: CharacterBible) -> dict[str, Any]:
         """§112/§167-§168: implemented / partial / prompt-only / unresolved."""
         implemented = [
-            *(f"rule:{r.id}" for r in bible.rules if r.runtime not in ("", "speech policy")
-              or r.runtime == "speech policy"),
+            *(
+                f"rule:{r.id}"
+                for r in bible.rules
+                if r.runtime not in ("", "speech policy") or r.runtime == "speech policy"
+            ),
         ]
         runtime_rules = [r for r in bible.rules if r.runtime]
         prompt_only = [
-            "persona_prose", "speech_examples", "values",
+            "persona_prose",
+            "speech_examples",
+            "values",
         ]
         total = len(bible.rules) + len(bible.facts) + len(bible.modes) + len(prompt_only)
         return {
@@ -431,9 +508,7 @@ def _parse_world_seed(lines: list[str]) -> tuple[list[BibleSpace], list[BibleObj
                 continue
             sid = parts[0]
             name = parts[1] if len(parts) > 1 else sid
-            spaces.append(
-                BibleSpace(id=sid, name=name, kind="room", parent=current_group)
-            )
+            spaces.append(BibleSpace(id=sid, name=name, kind="room", parent=current_group))
 
     objects: list[BibleObject] = []
     for bullet in _sub_bullets(lines, "Objects"):

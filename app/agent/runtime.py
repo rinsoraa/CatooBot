@@ -126,8 +126,8 @@ class AgentRuntime:
         self.executor = ExecutionEngine(config, engine, tools, self._log)
         self.evaluator = Evaluator(config, engine, self._log)
 
-        self._tasks: dict[str, dict[str, Any]] = {}       # task_id -> task row
-        self._active_by_session: dict[str, str] = {}      # session -> task_id
+        self._tasks: dict[str, dict[str, Any]] = {}  # task_id -> task row
+        self._active_by_session: dict[str, str] = {}  # session -> task_id
         self._cancels: dict[str, asyncio.Event] = {}
         self._last_housekeeping: float = 0.0
 
@@ -239,8 +239,11 @@ class AgentRuntime:
                 await self._trace(task_id, "INFO", "task_cancelled", "user request")
             elif stop_reason in ("timeout", "budget", "replan_limit"):
                 error_type = (
-                    "task_timeout" if stop_reason == "timeout" else
-                    "replan_limit" if stop_reason == "replan_limit" else "budget_exceeded"
+                    "task_timeout"
+                    if stop_reason == "timeout"
+                    else "replan_limit"
+                    if stop_reason == "replan_limit"
+                    else "budget_exceeded"
                 )
                 await self._trace(
                     task_id,
@@ -319,9 +322,7 @@ class AgentRuntime:
         await self._store_plan(task_id, plan)
         await self._set_status(task_id, "ready")
         _narrate_plan(plan)
-        await self._trace(
-            task_id, "DEBUG", "plan_created", f"v{plan.version}: {plan.summary}"
-        )
+        await self._trace(task_id, "DEBUG", "plan_created", f"v{plan.version}: {plan.summary}")
 
         observations: list[Observation] = []
         records: list[StepRecord] = []
@@ -787,8 +788,14 @@ class AgentRuntime:
 
     async def task_detail(self, task_id: str) -> dict[str, Any]:
         """Everything the WebUI shows for one task (spec §54), no hidden reasoning."""
-        empty: dict[str, Any] = {"task": None, "goal": None, "plans": [], "steps": [],
-                                 "observations": [], "traces": []}
+        empty: dict[str, Any] = {
+            "task": None,
+            "goal": None,
+            "plans": [],
+            "steps": [],
+            "observations": [],
+            "traces": [],
+        }
         if self._db is None:
             return empty
         task = await self.get(task_id)
@@ -829,10 +836,20 @@ class AgentRuntime:
         total = len(rows)
         if not total:
             return {
-                "total": 0, "active": 0, "completed": 0, "failed": 0, "cancelled": 0,
-                "paused": 0, "success_rate": 0.0, "partial_rate": 0.0, "failure_rate": 0.0,
-                "avg_steps": 0.0, "avg_tool_calls": 0.0, "avg_duration_ms": 0.0,
-                "replan_rate": 0.0, "timeout_rate": 0.0,
+                "total": 0,
+                "active": 0,
+                "completed": 0,
+                "failed": 0,
+                "cancelled": 0,
+                "paused": 0,
+                "success_rate": 0.0,
+                "partial_rate": 0.0,
+                "failure_rate": 0.0,
+                "avg_steps": 0.0,
+                "avg_tool_calls": 0.0,
+                "avg_duration_ms": 0.0,
+                "replan_rate": 0.0,
+                "timeout_rate": 0.0,
             }
         completed = sum(1 for row in rows if row["status"] == "completed")
         partial = sum(1 for row in rows if row["result_status"] == "partial")
@@ -887,9 +904,7 @@ class AgentRuntime:
         """Plan without executing — the WebUI simulator (spec §88/§140/§141)."""
         allowed = self.tools.registry.names() if self.tools else []
         candidates = self.tools.registry.candidates(text) if self.tools else []
-        classification = self.classifier.classify(
-            text, tool_candidates=len(candidates)
-        )
+        classification = self.classifier.classify(text, tool_candidates=len(candidates))
         payload: dict[str, Any] = {
             "classification": classification.kind,
             "reason": classification.reason,
@@ -926,4 +941,3 @@ class AgentRuntime:
     @property
     def last_housekeeping(self) -> float:
         return self._last_housekeeping
-

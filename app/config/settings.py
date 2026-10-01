@@ -81,9 +81,7 @@ class LoggingConfig(BaseModel):
         """Reject typos at the source (WebUI form included)."""
         normalized = (value or "INFO").strip().upper()
         if normalized not in ("DEBUG", "INFO", "WARNING", "WARN", "ERROR", "CRITICAL"):
-            raise ValueError(
-                f"log level must be DEBUG/INFO/WARNING/ERROR/CRITICAL, got {value!r}"
-            )
+            raise ValueError(f"log level must be DEBUG/INFO/WARNING/ERROR/CRITICAL, got {value!r}")
         return normalized
 
 
@@ -199,16 +197,16 @@ class MemoryRetrievalConfig(BaseModel):
 class MemoryEmbeddingConfig(BaseModel):
     """Embedding endpoint. Empty model/provider means semantic search is off."""
 
-    provider: str = ""      # ai.providers key to reuse base_url + credential
+    provider: str = ""  # ai.providers key to reuse base_url + credential
     model: str = ""
     dimensions: int | None = None
     timeout: float = Field(default=10.0, gt=0)
-    base_url: str = ""      # optional standalone endpoint
-    api_key_env: str = ""   # optional standalone credential
+    base_url: str = ""  # optional standalone endpoint
+    api_key_env: str = ""  # optional standalone credential
 
 
 class MemorySemanticConfig(BaseModel):
-    enabled: bool = False   # opt-in: requires a configured embedding model
+    enabled: bool = False  # opt-in: requires a configured embedding model
     embedding: MemoryEmbeddingConfig = Field(default_factory=MemoryEmbeddingConfig)
     batch_size: int = Field(default=32, ge=1, le=256)
 
@@ -217,7 +215,7 @@ class MemoryConsolidationConfig(BaseModel):
     enabled: bool = True
     duplicate_threshold: float = Field(default=0.92, ge=0.0, le=1.0)
     conflict_threshold: float = Field(default=0.75, ge=0.0, le=1.0)
-    schedule: str = "daily"          # daily | hourly | manual
+    schedule: str = "daily"  # daily | hourly | manual
     compression_min_cluster: int = Field(default=5, ge=2)
     compression_use_llm: bool = False
     max_scan: int = Field(default=500, ge=10)
@@ -397,7 +395,7 @@ class SocialConfig(BaseModel):
     """
 
     enabled: bool = True
-    decision_model: str = ""       # empty -> router's default (fast) model
+    decision_model: str = ""  # empty -> router's default (fast) model
     group_context: SocialGroupContextConfig = Field(default_factory=SocialGroupContextConfig)
     continuation: SocialContinuationConfig = Field(default_factory=SocialContinuationConfig)
     observer: SocialObserverConfig = Field(default_factory=SocialObserverConfig)
@@ -437,7 +435,7 @@ class ToolOverrideConfig(BaseModel):
 class ToolsConfig(BaseModel):
     """Tool runtime settings (spec §19/§34/§35/§52/§71)."""
 
-    enabled: bool = False           # opt-in: no tool calls until configured
+    enabled: bool = False  # opt-in: no tool calls until configured
     # "json" = model answers with a structured decision (works everywhere);
     # "native" = provider function calling (used when the model supports it).
     decision_mode: str = "json"
@@ -469,7 +467,7 @@ class AgentModeConfig(BaseModel):
     simple: bool = True
     tool_assisted: bool = True
     multi_step: bool = True
-    long_running: bool = False   # framework only in v0.7 (spec §15/§50)
+    long_running: bool = False  # framework only in v0.7 (spec §15/§50)
 
 
 class AgentModelConfig(BaseModel):
@@ -481,14 +479,14 @@ class AgentModelConfig(BaseModel):
 
 class AgentEvaluatorConfig(AgentModelConfig):
     timeout: float = Field(default=20.0, gt=0)
-    use_llm: bool = False        # rule-based completion check by default
+    use_llm: bool = False  # rule-based completion check by default
 
 
 class AgentConfig(BaseModel):
     """Agent Runtime settings (v0.7)."""
 
     enabled: bool = True
-    autonomy: str = "normal"     # manual | assisted | normal (spec §59)
+    autonomy: str = "normal"  # manual | assisted | normal (spec §59)
     mode: AgentModeConfig = Field(default_factory=AgentModeConfig)
     budget: AgentBudgetConfig = Field(default_factory=AgentBudgetConfig)
     planner: AgentModelConfig = Field(default_factory=AgentModelConfig)
@@ -499,7 +497,13 @@ class AgentConfig(BaseModel):
     # cancel / pause / resume phrases recognized in normal chat (spec §36/§37)
     cancel_phrases: list[str] = Field(
         default_factory=lambda: [
-            "算了", "不用查了", "别查了", "不用继续了", "不用找了", "不查了", "取消",
+            "算了",
+            "不用查了",
+            "别查了",
+            "不用继续了",
+            "不用找了",
+            "不查了",
+            "取消",
         ]
     )
     pause_phrases: list[str] = Field(
@@ -510,8 +514,22 @@ class AgentConfig(BaseModel):
     )
     multi_step_markers: list[str] = Field(
         default_factory=lambda: [
-            "然后", "再帮", "并且", "顺便", "比较", "对比", "哪个更", "哪个适合",
-            "分别", "同时", "一次性", "都查", "和周日", "和明天", "之后再", "接着",
+            "然后",
+            "再帮",
+            "并且",
+            "顺便",
+            "比较",
+            "对比",
+            "哪个更",
+            "哪个适合",
+            "分别",
+            "同时",
+            "一次性",
+            "都查",
+            "和周日",
+            "和明天",
+            "之后再",
+            "接着",
         ]
     )
 
@@ -520,8 +538,8 @@ class MediaConfig(BaseModel):
     """Multimodal + sticker runtime (v1.1 §5-§58)."""
 
     enabled: bool = True
-    vision_model: str = ""             # ai.models 里的视觉模型别名；留空走路由默认
-    sticker_dir: str = "data/stickers" # 手动导入目录（library/imported/archived 下）
+    vision_model: str = ""  # ai.models 里的视觉模型别名；留空走路由默认
+    sticker_dir: str = "data/stickers"  # 手动导入目录（library/imported/archived 下）
     media_dir: str = "data/media"
     # Expression decision / cooldown
     expression_enabled: bool = True
@@ -530,7 +548,7 @@ class MediaConfig(BaseModel):
     # Acquisition (background, never blocks chat)
     auto_collect: bool = True
     max_library_size: int = Field(default=5000, ge=0)
-    acquisition_model: str = ""        # 收藏判断用的模型；留空走视觉模型/默认
+    acquisition_model: str = ""  # 收藏判断用的模型；留空走视觉模型/默认
     # Startup indexer
     indexer_enabled: bool = True
     analysis_version: str = "v1"
@@ -541,7 +559,7 @@ class MediaConfig(BaseModel):
     #: how long a turn waits for sticker recognition before deciding anyway
     recognition_timeout_seconds: float = Field(default=12.0, gt=0)
     # Strict boundary: plain images are never stickers (spec §2.2/§6 场景6)
-    import_as_sticker: bool = True     # files dropped into sticker_dir ARE stickers
+    import_as_sticker: bool = True  # files dropped into sticker_dir ARE stickers
 
 
 class ConversationDebounceConfig(BaseModel):
@@ -555,9 +573,7 @@ class ConversationDebounceConfig(BaseModel):
 class ConversationConfig(BaseModel):
     """Conversation Turn Runtime (v1.2): bursts become one turn, one reply."""
 
-    debounce: ConversationDebounceConfig = Field(
-        default_factory=ConversationDebounceConfig
-    )
+    debounce: ConversationDebounceConfig = Field(default_factory=ConversationDebounceConfig)
 
 
 class ContinuityConfig(BaseModel):
@@ -587,8 +603,8 @@ class SandboxConfig(BaseModel):
     tick_seconds: int = Field(default=600, ge=30)
     simulation_seed: int = 0
     bible_path: str = "config/character_bible.md"
-    allow_ai_decisions: bool = True      # LLM only for ambiguous choices (§194)
-    reset_on_bible_change: bool = True   # re-initialize when the bible changes
+    allow_ai_decisions: bool = True  # LLM only for ambiguous choices (§194)
+    reset_on_bible_change: bool = True  # re-initialize when the bible changes
     max_events_keep: int = Field(default=500, ge=50)
     snapshot_keep: int = Field(default=48, ge=1, le=500)
     #: QQ 用户号 → 核心朋友（空凛），影响打断优先级与回复速度

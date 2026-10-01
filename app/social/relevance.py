@@ -17,8 +17,20 @@ from app.social.models import GroupMessage, RelevanceScores
 
 #: Generic "I'm just agreeing" filler that should never count as contribution.
 GENERIC_FILLER = (
-    "哈哈", "哈哈哈", "确实", "是啊", "我也是", "我也觉得", "笑死", "666", "嗯嗯",
-    "还行", "都行", "随便", "不知道", "同意",
+    "哈哈",
+    "哈哈哈",
+    "确实",
+    "是啊",
+    "我也是",
+    "我也觉得",
+    "笑死",
+    "666",
+    "嗯嗯",
+    "还行",
+    "都行",
+    "随便",
+    "不知道",
+    "同意",
 )
 
 

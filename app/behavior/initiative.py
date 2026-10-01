@@ -387,9 +387,7 @@ class InitiativeEngine:
             "SELECT * FROM initiative_state ORDER BY updated_at DESC LIMIT 20"
         )
         today = time.strftime(DATE_FORMAT, time.localtime(self._clock()))
-        total_today = sum(
-            row["daily_count"] for row in rows if row["daily_date"] == today
-        )
+        total_today = sum(row["daily_count"] for row in rows if row["daily_date"] == today)
         sent = await self._db.fetchall(
             "SELECT created_at FROM behavior_events"
             " WHERE type = 'initiative_sent' ORDER BY id DESC LIMIT 1"

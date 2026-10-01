@@ -89,7 +89,6 @@ class CharacterBehaviorEngine:
             return BehaviorDecision(False, "dnd", detail={"text": text[:40]})
         return BehaviorDecision(True, "private_direct")
 
-
     async def _relates_to_character(self, scope_key: str, text: str) -> bool:
         """Loose relevance check: does the message touch a known topic/memory?"""
         from app.memory.retrieval import bigrams

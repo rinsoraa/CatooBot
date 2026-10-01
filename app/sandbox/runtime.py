@@ -124,9 +124,9 @@ class SandboxRuntime:
         self.knowledge: dict[str, dict[str, Any]] = {}
         self.pending_events: list[ExternalEvent] = []
         self._last_tick = float(clock())
-        self._notes: list[str] = []            # micro-continuity feed
+        self._notes: list[str] = []  # micro-continuity feed
         self._restored = False
-        self._private_chat_until = 0.0          # online-social window after a chat
+        self._private_chat_until = 0.0  # online-social window after a chat
         #: narrative-on-every-tick switch (logging.narrate_world_ticks)
         self.narrate_ticks = False
         #: optional ContinuityManager — meaningful events feed recent_events
@@ -142,9 +142,7 @@ class SandboxRuntime:
         self.objects = ObjectSystem(build_objects())
         self.inventories = InventorySystem(build_inventories(bible))
         self.needs = NeedSystem(build_needs(), clock=clock)
-        self.actions = ActionSystem(
-            build_action_definitions(), rng=self._rng, clock=clock
-        )
+        self.actions = ActionSystem(build_action_definitions(), rng=self._rng, clock=clock)
         self.rules = WorldRuleEngine(bible)
         self.modes = ModeRuntime(clock=clock)
         self.pet_system = PetSystem(self.pet, rng=self._rng, clock=clock)
@@ -204,8 +202,10 @@ class SandboxRuntime:
         await self.store.state_set("bible_version", self.bible.version)
         await self._persist_all()
         await self._append_event(
-            "sandbox_initialized", "世界初始化完成（根据人物档案）",
-            source=EventSource.system, level=EventLevel.major,
+            "sandbox_initialized",
+            "世界初始化完成（根据人物档案）",
+            source=EventSource.system,
+            level=EventLevel.major,
             reason="bible_seed",
         )
 
@@ -231,8 +231,13 @@ class SandboxRuntime:
             food_available=self.inventories.get("cat_food_bowl").count("猫粮") > 0,
         )
         for line in pet_events:
-            await self._append_event("pet", line, source=EventSource.pet_action,
-                                     level=EventLevel.micro, reason="pet_rule")
+            await self._append_event(
+                "pet",
+                line,
+                source=EventSource.pet_action,
+                level=EventLevel.micro,
+                reason="pet_rule",
+            )
         # pet complaints feed her need to care for the cat (§177)
         if pet_events and "蹭过来" in pet_events[0]:
             self.needs.add("pet_care", 0.25)
@@ -262,9 +267,7 @@ class SandboxRuntime:
         if self.narrate_ticks:
             pressing = self.needs.summary_line() if self.needs.pressing() else ""
             detail = "沙盒心跳" + (f"（{pressing}）" if pressing else "")
-            narrate().world(
-                f"{self.status_line()}  ·  {'+'.join(self.modes.ids())}", detail=detail
-            )
+            narrate().world(f"{self.status_line()}  ·  {'+'.join(self.modes.ids())}", detail=detail)
         return report
 
     def _tick_minutes(self) -> float:
@@ -301,9 +304,7 @@ class SandboxRuntime:
                     name = effect_key.split(":", 1)[1]
                     project = self.projects.get(name)
                     if project is not None:
-                        project["progress"] = min(
-                            1.0, float(project["progress"]) + value
-                        )
+                        project["progress"] = min(1.0, float(project["progress"]) + value)
                 elif effect_key.startswith("commission:"):
                     self._advance_commission(float(value))
             if definition.id == "feed_cat":
@@ -313,14 +314,18 @@ class SandboxRuntime:
                 self.character.location = "livingroom"
             if definition.id in ("eat_pudding", "eat_cake", "eat_fruit"):
                 self.knowledge["fridge_stock"] = {
-                    "known": True, "source": "observation",
-                    "learned_at": float(self._clock()), "data": {},
+                    "known": True,
+                    "source": "observation",
+                    "learned_at": float(self._clock()),
+                    "data": {},
                 }
             # groceries consumed empty the fridge → replenishment awareness
             if self.inventories.get("fridge").count("可乐") == 0:
                 self.knowledge["fridge_no_cola"] = {
-                    "known": True, "source": "observation",
-                    "learned_at": float(self._clock()), "data": {},
+                    "known": True,
+                    "source": "observation",
+                    "learned_at": float(self._clock()),
+                    "data": {},
                 }
 
         await self._transaction(apply, label=f"complete:{action.definition_id}")
@@ -341,9 +346,7 @@ class SandboxRuntime:
             space_id=space_id, current=self.current_action, asleep=self._is_asleep()
         )
         if decision.decision in ("switch", "interrupt") and decision.action_id:
-            current_definition = (
-                self.current_action.definition_id if self.current_action else ""
-            )
+            current_definition = self.current_action.definition_id if self.current_action else ""
             # Already doing the right thing (a critical need can re-fire every
             # tick): let it run to completion instead of restarting it.
             if (
@@ -375,8 +378,9 @@ class SandboxRuntime:
         await self.store.append_trace(trace)
         return decision
 
-    async def _start_action(self, action_id: str, *, reason: list[str] | None = None,
-                            space_id: str | None = None) -> ActionInstance | None:
+    async def _start_action(
+        self, action_id: str, *, reason: list[str] | None = None, space_id: str | None = None
+    ) -> ActionInstance | None:
         definition = self.actions.definitions.get(action_id)
         if definition is None:
             return None
@@ -402,9 +406,10 @@ class SandboxRuntime:
         await self._sync_state()
         if definition.typical_minutes >= 20:
             await self._append_event(
-                "action_started", f"开始{definition.name}"
-                + (f"（{instance.detail}）" if instance.detail else ""),
-                source=EventSource.character_action, level=EventLevel.micro,
+                "action_started",
+                f"开始{definition.name}" + (f"（{instance.detail}）" if instance.detail else ""),
+                source=EventSource.character_action,
+                level=EventLevel.micro,
                 reason=instance.reason_code,
             )
             narrate().world(
@@ -432,7 +437,10 @@ class SandboxRuntime:
             event, current=self.current_action, definition=definition
         )
         result: dict[str, Any] = {
-            "meaning": meaning, "reason": reason, "interrupt": interrupt, "why": why,
+            "meaning": meaning,
+            "reason": reason,
+            "interrupt": interrupt,
+            "why": why,
         }
         if event.kind in ("user_message", "group_mention"):
             # social stimulus: it never *silently* rewrites her activity (§52)
@@ -446,8 +454,10 @@ class SandboxRuntime:
                     await self._start_action("play_minecraft", reason=["core_friend_invitation"])
                     result["action"] = "play_minecraft"
                     await self._append_event(
-                        "interrupt", "空凛喊她联机 → 放下手上的事去开服务器",
-                        source=EventSource.external_event, level=EventLevel.normal,
+                        "interrupt",
+                        "空凛喊她联机 → 放下手上的事去开服务器",
+                        source=EventSource.external_event,
+                        level=EventLevel.normal,
                         reason="core_friend_invitation",
                     )
         elif event.kind == "delivery_arrived":
@@ -455,22 +465,28 @@ class SandboxRuntime:
             if obj is not None:
                 obj.state["present"] = True
             await self._append_event(
-                "delivery", "快递到了（放在门口）",
-                source=EventSource.external_event, level=EventLevel.micro,
+                "delivery",
+                "快递到了（放在门口）",
+                source=EventSource.external_event,
+                level=EventLevel.micro,
                 reason="delivery_arrived",
             )
             self.needs.add("household_maintenance", 0.05)
         elif event.kind == "admin":
             await self._append_event(
-                "admin", event.summary or "管理员事件",
-                source=EventSource.admin, level=EventLevel.normal,
+                "admin",
+                event.summary or "管理员事件",
+                source=EventSource.admin,
+                level=EventLevel.normal,
                 reason=event.reason_code or "manual",
             )
         event.handled = True
         await self.store.append_trace(
             DecisionTrace(
-                ts=float(self._clock()), kind="external_event",
-                summary=event.summary or event.kind, reason_code=why,
+                ts=float(self._clock()),
+                kind="external_event",
+                summary=event.summary or event.kind,
+                reason_code=why,
                 factors=[meaning, f"priority:{event.priority.value}"],
             )
         )
@@ -490,7 +506,9 @@ class SandboxRuntime:
         await self._append_event(
             "action_interrupted",
             f"{definition.name if definition else action.definition_id}被打断",
-            source=EventSource.external_event, level=EventLevel.normal, reason=why,
+            source=EventSource.external_event,
+            level=EventLevel.normal,
+            reason=why,
         )
         self.current_action = None
 
@@ -604,9 +622,7 @@ class SandboxRuntime:
         if selection.empty:
             self._log.debug("[Facts] no entity matched for %r", (text or "")[:40])
             return ""
-        labels = "、".join(
-            entry_id.split(":")[-1] for entry_id in selection.hits
-        )
+        labels = "、".join(entry_id.split(":")[-1] for entry_id in selection.hits)
         narrate().say(
             "facts",
             f"命中标签 → 注入 {len(selection.lines)} 条世界事实",
@@ -626,15 +642,21 @@ class SandboxRuntime:
         return cleaned
 
     async def note_agent_result(
-        self, *, task_type: str, status: str, summary: str,
-        session_id: str = "", user_id: str = "",
+        self,
+        *,
+        task_type: str,
+        status: str,
+        summary: str,
+        session_id: str = "",
+        user_id: str = "",
     ) -> None:
         """An agent task finished — a life event, not a state command (§93-§94)."""
         done = status in ("completed", "partial")
         self.needs.add("social_need", -0.05 if done else 0.0)
         self._notes.append(summary)
         await self._append_event(
-            "agent_result", summary,
+            "agent_result",
+            summary,
             source=EventSource.user_interaction,
             level=EventLevel.micro,
             reason=f"agent:{task_type}:{status}",
@@ -664,17 +686,13 @@ class SandboxRuntime:
         """Bounded settle after downtime (§72): no per-tick replay."""
         hours = elapsed_minutes / 60.0
         assume_asleep = self._was_sleeping_through(elapsed_minutes)
-        self.needs.advance(
-            min(elapsed_minutes, 24 * 60), rest=1.0 if assume_asleep else 0.0
-        )
+        self.needs.advance(min(elapsed_minutes, 24 * 60), rest=1.0 if assume_asleep else 0.0)
         self.pet_system.advance(min(elapsed_minutes, 12 * 60))
         note: list[str] = [f"离线 {hours:.1f} 小时"]
 
         if self.current_action is not None:
             definition = self.actions.definition(self.current_action)
-            leftover = (
-                self.current_action.planned_end_at - self._last_tick
-            ) / 60.0
+            leftover = (self.current_action.planned_end_at - self._last_tick) / 60.0
             if leftover <= elapsed_minutes:
                 # It finished while offline: settle once, not N times.
                 await self._complete_action()
@@ -696,8 +714,11 @@ class SandboxRuntime:
 
         self._last_tick = float(self._clock())
         await self._append_event(
-            "recovery", "；".join(note),
-            source=EventSource.system, level=EventLevel.normal, reason="bounded_recovery",
+            "recovery",
+            "；".join(note),
+            source=EventSource.system,
+            level=EventLevel.normal,
+            reason="bounded_recovery",
         )
         await self._snapshot()
 
@@ -712,10 +733,26 @@ class SandboxRuntime:
         events = await self.store.recent_events(limit=limit)
         traces = await self.store.recent_traces(limit=limit)
         merged = [
-            *({"ts": row["created_at"], "kind": row["kind"], "summary": row["summary"],
-               "reason": row["reason_code"], "level": row["priority"]} for row in events),
-            *({"ts": row["ts"], "kind": f"trace:{row['kind']}", "summary": row["summary"],
-               "reason": row["reason_code"], "level": "trace"} for row in traces),
+            *(
+                {
+                    "ts": row["created_at"],
+                    "kind": row["kind"],
+                    "summary": row["summary"],
+                    "reason": row["reason_code"],
+                    "level": row["priority"],
+                }
+                for row in events
+            ),
+            *(
+                {
+                    "ts": row["ts"],
+                    "kind": f"trace:{row['kind']}",
+                    "summary": row["summary"],
+                    "reason": row["reason_code"],
+                    "level": "trace",
+                }
+                for row in traces
+            ),
         ]
         merged.sort(key=lambda item: item["ts"])
         return merged
@@ -742,7 +779,9 @@ class SandboxRuntime:
             if len(events) > 200:
                 break
         return {
-            "hours": hours, "ticks": ticks, "completed_actions": completed,
+            "hours": hours,
+            "ticks": ticks,
+            "completed_actions": completed,
             "transitions": events[-40:],
         }
 
@@ -759,13 +798,10 @@ class SandboxRuntime:
             needs={key: need.model_dump(mode="json") for key, need in self.needs.all().items()},
             action=(self.current_action.model_dump(mode="json") if self.current_action else None),
             modes=self.modes.snapshot(),
-            spaces=[
-                space.model_dump(mode="json") for space in self.spaces.all()
-            ],
+            spaces=[space.model_dump(mode="json") for space in self.spaces.all()],
             objects=[obj.model_dump(mode="json") for obj in self.objects.all()],
             inventories={
-                key: inv.model_dump(mode="json")
-                for key, inv in self.inventories.all().items()
+                key: inv.model_dump(mode="json") for key, inv in self.inventories.all().items()
             },
             social_spaces=[space.model_dump(mode="json") for space in self.social_spaces.values()],
             commissions=[c.model_dump(mode="json") for c in self.commissions.values()],
@@ -815,20 +851,15 @@ class SandboxRuntime:
             from app.sandbox.models import Inventory
 
             self.inventories = InventorySystem(
-                {
-                    key: Inventory.model_validate(data)
-                    for key, data in snapshot.inventories.items()
-                }
+                {key: Inventory.model_validate(data) for key, data in snapshot.inventories.items()}
             )
         if snapshot.social_spaces:
             self.social_spaces = {
-                item["id"]: SocialSpace.model_validate(item)
-                for item in snapshot.social_spaces
+                item["id"]: SocialSpace.model_validate(item) for item in snapshot.social_spaces
             }
         if snapshot.commissions:
             self.commissions = {
-                item["id"]: Commission.model_validate(item)
-                for item in snapshot.commissions
+                item["id"]: Commission.model_validate(item) for item in snapshot.commissions
             }
         self.knowledge = dict(snapshot.knowledge)
         self.projects = dict(snapshot.projects or self.projects)
@@ -839,21 +870,33 @@ class SandboxRuntime:
 
     async def _persist_all(self) -> None:
         await self.store.save_entity(
-            "character", type="character", name=self.character.name,
-            space_id=self.character.location, data=self.character.model_dump(mode="json"),
+            "character",
+            type="character",
+            name=self.character.name,
+            space_id=self.character.location,
+            data=self.character.model_dump(mode="json"),
         )
         await self.store.save_entity(
-            "pet", type="pet", name=self.pet_system.pet.name,
-            space_id=self.pet_system.pet.location, data=self.pet_system.snapshot(),
+            "pet",
+            type="pet",
+            name=self.pet_system.pet.name,
+            space_id=self.pet_system.pet.location,
+            data=self.pet_system.snapshot(),
         )
         for space in self.spaces.all():
             await self.store.save_space(
-                space.id, name=space.name, parent_id=space.parent_id,
-                kind=space.kind.value, data=space.model_dump(mode="json"),
+                space.id,
+                name=space.name,
+                parent_id=space.parent_id,
+                kind=space.kind.value,
+                data=space.model_dump(mode="json"),
             )
         for obj in self.objects.all():
             await self.store.save_object(
-                obj.id, name=obj.name, space_id=obj.space_id, kind=obj.kind,
+                obj.id,
+                name=obj.name,
+                space_id=obj.space_id,
+                kind=obj.kind,
                 data=obj.model_dump(mode="json"),
             )
         for key, inventory in self.inventories.all().items():
@@ -864,18 +907,26 @@ class SandboxRuntime:
             )
         for social in self.social_spaces.values():
             await self.store.save_social_space(
-                social.id, name=social.name, kind=social.kind,
+                social.id,
+                name=social.name,
+                kind=social.kind,
                 data=social.model_dump(mode="json"),
             )
         for commission in self.commissions.values():
             await self.store.save_commission(
-                commission.id, kind=commission.kind, status=commission.status,
-                progress=commission.progress, deadline=commission.deadline,
-                reward=commission.reward, data=commission.model_dump(mode="json"),
+                commission.id,
+                kind=commission.kind,
+                status=commission.status,
+                progress=commission.progress,
+                deadline=commission.deadline,
+                reward=commission.reward,
+                data=commission.model_dump(mode="json"),
             )
         for key, entry in self.knowledge.items():
             await self.store.save_knowledge(
-                key, known=bool(entry.get("known")), source=str(entry.get("source", "")),
+                key,
+                known=bool(entry.get("known")),
+                source=str(entry.get("source", "")),
                 learned_at=float(entry.get("learned_at", 0) or 0),
                 data=dict(entry.get("data", {}) or {}),
             )
@@ -884,12 +935,18 @@ class SandboxRuntime:
 
     async def _persist_deltas(self) -> None:
         await self.store.save_entity(
-            "character", type="character", name=self.character.name,
-            space_id=self.character.location, data=self.character.model_dump(mode="json"),
+            "character",
+            type="character",
+            name=self.character.name,
+            space_id=self.character.location,
+            data=self.character.model_dump(mode="json"),
         )
         await self.store.save_entity(
-            "pet", type="pet", name=self.pet_system.pet.name,
-            space_id=self.pet_system.pet.location, data=self.pet_system.snapshot(),
+            "pet",
+            type="pet",
+            name=self.pet_system.pet.name,
+            space_id=self.pet_system.pet.location,
+            data=self.pet_system.snapshot(),
         )
         for key in ("fridge", "cat_food_bowl", "character"):
             inventory = self.inventories.get(key)
@@ -897,19 +954,30 @@ class SandboxRuntime:
         for key in self.knowledge:
             entry = self.knowledge[key]
             await self.store.save_knowledge(
-                key, known=bool(entry.get("known")), source=str(entry.get("source", "")),
+                key,
+                known=bool(entry.get("known")),
+                source=str(entry.get("source", "")),
                 learned_at=float(entry.get("learned_at", 0) or 0),
                 data=dict(entry.get("data", {}) or {}),
             )
 
     async def _append_event(
-        self, kind: str, summary: str, *, source: EventSource,
-        level: EventLevel, reason: str,
+        self,
+        kind: str,
+        summary: str,
+        *,
+        source: EventSource,
+        level: EventLevel,
+        reason: str,
     ) -> None:
         record = SandboxEventRecord(
             id=f"evt_{uuid.uuid4().hex[:10]}",
-            kind=kind, level=level, source=source, summary=summary,
-            reason_code=reason, created_at=float(self._clock()),
+            kind=kind,
+            level=level,
+            source=source,
+            summary=summary,
+            reason_code=reason,
+            created_at=float(self._clock()),
         )
         await self.store.append_event(record)
         self._recent_memory.append(record)
@@ -944,9 +1012,7 @@ class SandboxRuntime:
         return {
             "action": self.current_action.model_copy(deep=True) if self.current_action else None,
             "needs": {k: n.model_copy(deep=True) for k, n in self.needs.all().items()},
-            "inventories": {
-                k: v.model_copy(deep=True) for k, v in self.inventories.all().items()
-            },
+            "inventories": {k: v.model_copy(deep=True) for k, v in self.inventories.all().items()},
             "objects": [o.model_copy(deep=True) for o in self.objects.all()],
             "projects": {k: dict(v) for k, v in self.projects.items()},
             "pet": self.pet_system.pet.model_copy(deep=True),
@@ -987,9 +1053,7 @@ class SandboxRuntime:
         if self.state_sync is None:
             return
         definition = self.actions.definition(self.current_action)
-        activity = (
-            ACTIVITY_IDS.get(definition.id, definition.id) if definition else "idle"
-        )
+        activity = ACTIVITY_IDS.get(definition.id, definition.id) if definition else "idle"
         location = self.spaces.name(self.character.location)
         energy = max(0.0, min(1.0, 1.0 - self.needs.level("energy")))
         try:
@@ -1017,7 +1081,8 @@ class SandboxRuntime:
 
     def _advance_commission(self, amount: float) -> None:
         active = next(
-            (c for c in self.commissions.values() if c.status in ("open", "active")), None,
+            (c for c in self.commissions.values() if c.status in ("open", "active")),
+            None,
         )
         if active is None:
             return
@@ -1054,7 +1119,8 @@ class SandboxRuntime:
         if project is not None:
             goal = f"{project['name']}：{project.get('next_action', '')}"
         commission = next(
-            (c for c in self.commissions.values() if c.status in ("open", "active")), None,
+            (c for c in self.commissions.values() if c.status in ("open", "active")),
+            None,
         )
         if commission is not None:
             goal = f"{commission.title or commission.kind}（进度 {commission.progress:.0%}）"

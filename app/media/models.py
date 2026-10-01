@@ -142,8 +142,11 @@ class StickerAsset(BaseModel):
     def all_tags(self) -> list[str]:
         tags: list[str] = []
         for group in (
-            self.emotion_tags, self.intent_tags, self.scene_tags,
-            self.style_tags, self.general_tags,
+            self.emotion_tags,
+            self.intent_tags,
+            self.scene_tags,
+            self.style_tags,
+            self.general_tags,
         ):
             tags.extend(group)
         # de-dupe, preserve order

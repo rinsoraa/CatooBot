@@ -161,9 +161,7 @@ class TestApiResults:
         assert result.ok
 
     def test_failed_api_response(self) -> None:
-        result = parse_payload(
-            {"status": "failed", "retcode": 1200, "data": None, "echo": "2"}
-        )
+        result = parse_payload({"status": "failed", "retcode": 1200, "data": None, "echo": "2"})
         assert isinstance(result, ApiResult)
         assert not result.ok
 

@@ -34,7 +34,13 @@ class SandboxStore:
     # -------------------------------------------------------------- entities
 
     async def save_entity(
-        self, entity_id: str, *, type: str, name: str, space_id: str, data: dict[str, Any],
+        self,
+        entity_id: str,
+        *,
+        type: str,
+        name: str,
+        space_id: str,
+        data: dict[str, Any],
     ) -> None:
         if not self.available:
             return
@@ -58,14 +64,14 @@ class SandboxStore:
         except Exception:  # noqa: BLE001
             return {}
         return {
-            row["id"]: {**json.loads(row["data"] or "{}"), "_type": row["type"]}
-            for row in rows
+            row["id"]: {**json.loads(row["data"] or "{}"), "_type": row["type"]} for row in rows
         }
 
     # --------------------------------------------------------------- spaces
 
-    async def save_space(self, space_id: str, *, name: str, parent_id: str, kind: str,
-                         data: dict[str, Any]) -> None:
+    async def save_space(
+        self, space_id: str, *, name: str, parent_id: str, kind: str, data: dict[str, Any]
+    ) -> None:
         if not self.available:
             return
         try:
@@ -91,8 +97,9 @@ class SandboxStore:
 
     # ------------------------------------------------------------- objects
 
-    async def save_object(self, object_id: str, *, name: str, space_id: str, kind: str,
-                          data: dict[str, Any]) -> None:
+    async def save_object(
+        self, object_id: str, *, name: str, space_id: str, kind: str, data: dict[str, Any]
+    ) -> None:
         if not self.available:
             return
         try:
@@ -153,8 +160,11 @@ class SandboxStore:
                    ON CONFLICT(id) DO UPDATE SET status=excluded.status,
                        ended_at=excluded.ended_at, data=excluded.data""",
                 (
-                    action.id, action.definition_id, action.status.value,
-                    action.started_at, action.ended_at,
+                    action.id,
+                    action.definition_id,
+                    action.status.value,
+                    action.started_at,
+                    action.ended_at,
                     _json(action.model_dump(mode="json")),
                 ),
             )
@@ -189,8 +199,14 @@ class SandboxStore:
                    (id, kind, priority, source, summary, reason_code, data, created_at)
                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
-                    event.id, event.kind, event.level.value, event.source.value,
-                    event.summary, event.reason_code, _json(event.data), event.created_at,
+                    event.id,
+                    event.kind,
+                    event.level.value,
+                    event.source.value,
+                    event.summary,
+                    event.reason_code,
+                    _json(event.data),
+                    event.created_at,
                 ),
             )
         except Exception:  # noqa: BLE001
@@ -220,8 +236,12 @@ class SandboxStore:
                 """INSERT INTO sandbox_traces (ts, kind, summary, factors, reason_code, data)
                    VALUES (?, ?, ?, ?, ?, ?)""",
                 (
-                    trace.ts, trace.kind, trace.summary,
-                    _json(trace.factors), trace.reason_code, _json(trace.data),
+                    trace.ts,
+                    trace.kind,
+                    trace.summary,
+                    _json(trace.factors),
+                    trace.reason_code,
+                    _json(trace.data),
                 ),
             )
         except Exception:  # noqa: BLE001
@@ -283,8 +303,9 @@ class SandboxStore:
 
     # -------------------------------------------------- social / commissions
 
-    async def save_social_space(self, space_id: str, *, name: str, kind: str,
-                                data: dict[str, Any]) -> None:
+    async def save_social_space(
+        self, space_id: str, *, name: str, kind: str, data: dict[str, Any]
+    ) -> None:
         if not self.available:
             return
         try:
@@ -307,9 +328,17 @@ class SandboxStore:
             return []
         return [json.loads(row["data"] or "{}") for row in rows]
 
-    async def save_commission(self, commission_id: str, *, kind: str, status: str,
-                              progress: float, deadline: float, reward: float,
-                              data: dict[str, Any]) -> None:
+    async def save_commission(
+        self,
+        commission_id: str,
+        *,
+        kind: str,
+        status: str,
+        progress: float,
+        deadline: float,
+        reward: float,
+        data: dict[str, Any],
+    ) -> None:
         if not self.available:
             return
         try:
@@ -321,8 +350,16 @@ class SandboxStore:
                        progress=excluded.progress, deadline=excluded.deadline,
                        reward=excluded.reward, data=excluded.data,
                        updated_at=excluded.updated_at""",
-                (commission_id, kind, status, progress, deadline, reward,
-                 _json(data), float(self._clock())),
+                (
+                    commission_id,
+                    kind,
+                    status,
+                    progress,
+                    deadline,
+                    reward,
+                    _json(data),
+                    float(self._clock()),
+                ),
             )
         except Exception:  # noqa: BLE001
             logger.exception("[Sandbox] commission save failed")
@@ -338,8 +375,9 @@ class SandboxStore:
 
     # ------------------------------------------------------------- knowledge
 
-    async def save_knowledge(self, key: str, *, known: bool, source: str,
-                             learned_at: float, data: dict[str, Any]) -> None:
+    async def save_knowledge(
+        self, key: str, *, known: bool, source: str, learned_at: float, data: dict[str, Any]
+    ) -> None:
         if not self.available:
             return
         try:
@@ -369,9 +407,7 @@ class SandboxStore:
         if not self.available:
             return ""
         try:
-            row = await self._db.fetchone(
-                "SELECT value FROM sandbox_state WHERE key = ?", (key,)
-            )
+            row = await self._db.fetchone("SELECT value FROM sandbox_state WHERE key = ?", (key,))
         except Exception:  # noqa: BLE001
             return ""
         return str(row["value"]) if row is not None else ""
@@ -400,7 +436,8 @@ class SandboxStore:
                   (version, source_hash, compiled, coverage, report, created_at)
                   VALUES (?, ?, ?, ?, ?, ?)""",
                 (
-                    bible.version, bible.source_hash,
+                    bible.version,
+                    bible.source_hash,
                     _json(bible.model_dump(mode="json")),
                     _json(bible.coverage),
                     _json({"unresolved": bible.unresolved, "conflicts": bible.conflicts}),

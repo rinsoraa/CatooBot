@@ -170,8 +170,7 @@ class EmbeddingService:
         api_key = os.environ.get(api_key_env, "") if api_key_env else ""
         if not api_key:
             log.warning(
-                "[Memory.Embedding] Environment variable '%s' is empty — "
-                "semantic search disabled",
+                "[Memory.Embedding] Environment variable '%s' is empty — semantic search disabled",
                 api_key_env or "<none>",
             )
             return cls(config, database, None, logger=log)
@@ -272,8 +271,7 @@ class EmbeddingService:
             return None
         model = self._provider.model if self._provider else ""
         row = await self._db.fetchone(
-            "SELECT vector, dimensions FROM embedding_cache"
-            " WHERE content_hash = ? AND model = ?",
+            "SELECT vector, dimensions FROM embedding_cache WHERE content_hash = ? AND model = ?",
             (content_hash(text), model),
         )
         if row is None:

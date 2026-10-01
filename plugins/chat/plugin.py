@@ -180,7 +180,8 @@ class CharacterPlugin(Plugin):
                 ExternalEvent(
                     id=f"evt_{event.message_id or ''}",
                     kind="group_mention" if (mentioned and event.is_group) else "user_message",
-                    priority=EventPriority.high if (is_core or mentioned or reply_to_bot)
+                    priority=EventPriority.high
+                    if (is_core or mentioned or reply_to_bot)
                     else EventPriority.normal,
                     summary=f"{event.sender.display_name or user_id}: {text[:40]}",
                     reason_code="qq_message",
@@ -291,11 +292,7 @@ class CharacterPlugin(Plugin):
                 deferred.append(item)
         recognition: _Recognition | None = None
         first = next(
-            (
-                item
-                for item in items
-                if item.media_type in ("sticker", "image") and item.url
-            ),
+            (item for item in items if item.media_type in ("sticker", "image") and item.url),
             None,
         )
         if first is not None:
@@ -319,13 +316,9 @@ class CharacterPlugin(Plugin):
         media = getattr(self.bot, "media", None)
         if media is None:
             return ""
-        timeout = float(
-            getattr(self.bot.config.media, "recognition_timeout_seconds", 12.0)
-        )
+        timeout = float(getattr(self.bot.config.media, "recognition_timeout_seconds", 12.0))
         try:
-            outcome = await asyncio.wait_for(
-                asyncio.shield(pending.task), timeout=timeout
-            )
+            outcome = await asyncio.wait_for(asyncio.shield(pending.task), timeout=timeout)
         except TimeoutError:
             narrate().quiet(
                 "还在识别",
@@ -346,9 +339,7 @@ class CharacterPlugin(Plugin):
 
     def _apply_recognition(self, turn: Any, outcome: Any, item: Any) -> str:
         if outcome.status == "throttled":
-            narrate().quiet(
-                "这张先不认了", detail="本会话每小时后台识别上限到了（可调配置）"
-            )
+            narrate().quiet("这张先不认了", detail="本会话每小时后台识别上限到了（可调配置）")
             return ""
         text = str(outcome.vision_text or "")
         if text:
@@ -375,9 +366,7 @@ class CharacterPlugin(Plugin):
         meta["recognition_collected"] = True
         self._schedule_collect_recognized(turn, outcome)
 
-    async def _finish_late_recognition(
-        self, task: asyncio.Task, turn: Any, item: Any
-    ) -> None:
+    async def _finish_late_recognition(self, task: asyncio.Task, turn: Any, item: Any) -> None:
         """A recognition that finished after the timeout: narrate + collect."""
         try:
             outcome = task.result()
@@ -437,9 +426,7 @@ class CharacterPlugin(Plugin):
             if not (turn.mentioned or turn.reply_to_bot):
                 from app.social.models import ParticipationDecision
 
-                return ParticipationDecision(
-                    decision="ignore", reason_code="social_disabled"
-                )
+                return ParticipationDecision(decision="ignore", reason_code="social_disabled")
             return None
         group_enabled = await self._group_enabled(int(turn.group_id))
         decision_text = turn.text
@@ -455,9 +442,7 @@ class CharacterPlugin(Plugin):
             group_enabled=group_enabled,
         )
         if not decision.should_reply:
-            turn.meta["silence_text"] = REASON_TEXT.get(
-                decision.reason_code, decision.reason_code
-            )
+            turn.meta["silence_text"] = REASON_TEXT.get(decision.reason_code, decision.reason_code)
         elif decision.reason_code == "participation_rate":
             narrate().judge(
                 "群聊 → 按参与频率接一句",
@@ -500,7 +485,8 @@ class CharacterPlugin(Plugin):
         # The recognized item's summary is already in the context — don't run
         # (and narrate) the reply-path vision for the very same image again.
         deferred = [
-            item for item in (meta.get("deferred_images", []) or [])
+            item
+            for item in (meta.get("deferred_images", []) or [])
             if not (recognized and item is recognized_item)
         ]
         if deferred:
@@ -712,8 +698,7 @@ class CharacterPlugin(Plugin):
     def _has_media(event: MessageEvent) -> bool:
         """True when the message carries image / face / mface segments."""
         return any(
-            isinstance(seg, (ImageSegment, FaceSegment, MfaceSegment))
-            for seg in event.message
+            isinstance(seg, (ImageSegment, FaceSegment, MfaceSegment)) for seg in event.message
         )
 
     def _schedule_collection(
@@ -759,9 +744,7 @@ class CharacterPlugin(Plugin):
                     summary = item.emoji_summary or outcome.vision_text or "表情包"
                     narrate().say("mind", f"这张收进表情库了：{summary}")
                 elif decision is not None:
-                    self.bot.log.debug(
-                        "[Media] sticker not kept: %s", decision.reason_codes
-                    )
+                    self.bot.log.debug("[Media] sticker not kept: %s", decision.reason_codes)
 
         task = asyncio.create_task(collect())
         self._background_tasks.add(task)

@@ -83,9 +83,7 @@ class MessageChunker:
         # two bubbles with a real pause between them, not one.
         sequenced = self._action_sequence_split(text)
         if sequenced is not None:
-            return [
-                c for c in _merge_short(sequenced, cfg.min_chunk_length, cfg.max_chunks)
-            ]
+            return [c for c in _merge_short(sequenced, cfg.min_chunk_length, cfg.max_chunks)]
 
         sentences = _split_sentences(text)
         if len(sentences) < 2:

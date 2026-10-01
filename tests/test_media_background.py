@@ -54,19 +54,16 @@ class FakeVisionEngine:
 
         self.calls += 1
         return AIResponse(
-            content=json.dumps(
-                {"summary": self.summary, "ocr_text": self.ocr, "confidence": 0.9}
-            ),
-            model="fake", provider="fake",
+            content=json.dumps({"summary": self.summary, "ocr_text": self.ocr, "confidence": 0.9}),
+            model="fake",
+            provider="fake",
         )
 
 
 def make_vision(engine: FakeVisionEngine, db: Database):  # type: ignore[no-untyped-def]
     from app.media.vision import ImageUnderstandingRuntime
 
-    return ImageUnderstandingRuntime(
-        engine=engine, database=db, vision_model="fake-vision"
-    )
+    return ImageUnderstandingRuntime(engine=engine, database=db, vision_model="fake-vision")
 
 
 def make_runtime(tmp_path, *, fetcher=None, clock=None, cap: int = 20):
@@ -76,8 +73,11 @@ def make_runtime(tmp_path, *, fetcher=None, clock=None, cap: int = 20):
         background_vision_max_per_hour=cap,
     )
     runtime = MediaRuntime(
-        config=config, engine=None, database=db,
-        clock=clock or FakeClock(), file_fetcher=fetcher,
+        config=config,
+        engine=None,
+        database=db,
+        clock=clock or FakeClock(),
+        file_fetcher=fetcher,
     )
     return runtime, db
 
@@ -88,8 +88,14 @@ PNG = b"\x89PNG\r\n\x1a\nfake-sticker-bytes"
 class TestQqStickerDetection:
     def test_sub_type_one_is_a_sticker(self) -> None:
         media = MessageMediaNormalizer().normalize(
-            image({"file": "a.jpg", "sub_type": "1", "summary": "[动画表情]",
-                   "url": "https://x/a.jpg"})
+            image(
+                {
+                    "file": "a.jpg",
+                    "sub_type": "1",
+                    "summary": "[动画表情]",
+                    "url": "https://x/a.jpg",
+                }
+            )
         )
         assert media[0].media_type == "sticker"
         assert media[0].is_sticker_source is True
@@ -145,9 +151,12 @@ class TestBackgroundRecognition:
 
     def _sticker(self) -> MediaContent:
         return MediaContent(
-            media_type="sticker", source_type="qq_image",
-            url="https://x/sticker.gif", emoji_summary="动画表情",
-            source_group_id="999", source_user_id="7",
+            media_type="sticker",
+            source_type="qq_image",
+            url="https://x/sticker.gif",
+            emoji_summary="动画表情",
+            source_group_id="999",
+            source_user_id="7",
         )
 
     async def test_recognizes_and_keeps_even_without_a_reply(self, tmp_path) -> None:
@@ -183,16 +192,14 @@ class TestBackgroundRecognition:
 
         again = await runtime.understand_image(item)  # the reply path
         assert "一只戴帽子的猫" in again.as_text()
-        assert engine.calls == 1          # cache hit (sha256)
-        assert calls["fetch"] == 1        # no re-download
+        assert engine.calls == 1  # cache hit (sha256)
+        assert calls["fetch"] == 1  # no re-download
         await db.close()
 
     async def test_throttled_scope_is_skipped(self, tmp_path) -> None:
         runtime, db = await self._runtime(tmp_path)
         for _ in range(20):
-            await runtime.background_recognize_and_collect(
-                self._sticker(), scope_key="group:999"
-            )
+            await runtime.background_recognize_and_collect(self._sticker(), scope_key="group:999")
         outcome = await runtime.background_recognize_and_collect(
             self._sticker(), scope_key="group:999"
         )
@@ -217,14 +224,24 @@ class TestGroupStickerEndToEnd:
         bot.media._fetch_file = fetcher  # noqa: SLF001 - test injection
 
         raw = {
-            "post_type": "message", "self_id": 10001, "time": 1700000000,
-            "message_type": "group", "sub_type": "normal", "message_id": 77,
-            "user_id": 888, "group_id": 999,
+            "post_type": "message",
+            "self_id": 10001,
+            "time": 1700000000,
+            "message_type": "group",
+            "sub_type": "normal",
+            "message_id": 77,
+            "user_id": 888,
+            "group_id": 999,
             "message": [
-                {"type": "image", "data": {
-                    "file": "STICKER.jpg", "sub_type": "1",
-                    "summary": "[动画表情]", "url": "https://x/sticker.gif",
-                }}
+                {
+                    "type": "image",
+                    "data": {
+                        "file": "STICKER.jpg",
+                        "sub_type": "1",
+                        "summary": "[动画表情]",
+                        "url": "https://x/sticker.gif",
+                    },
+                }
             ],
             "raw_message": "[动画表情]",
             "sender": {"user_id": 888, "nickname": "某人", "role": "member"},
@@ -240,9 +257,9 @@ class TestGroupStickerEndToEnd:
             assert bot.adapter.sent_texts() == []  # type: ignore[attr-defined]
             beats = [r.getMessage() for r in caplog.records if r.name == "CatooBot.Narration"]
             joined = "\n".join(beats)
-            assert "收到表情包" in joined                # submit-time narration
-            assert "看懂了：一只猫在笑" in joined          # background recognition
-            assert "表情库" in joined                    # kept in the library
+            assert "收到表情包" in joined  # submit-time narration
+            assert "看懂了：一只猫在笑" in joined  # background recognition
+            assert "表情库" in joined  # kept in the library
             # ... but the sticker is in her library now
             assets = await bot.media.library.all()
             assert len(assets) == 1 and assets[0].visual_summary == "一只猫在笑"
@@ -267,14 +284,24 @@ class TestRecognitionOrdering:
 
         return GroupMessageEvent.model_validate(
             {
-                "post_type": "message", "self_id": 10001, "time": 1700000000,
-                "message_type": "group", "sub_type": "normal", "message_id": 91,
-                "user_id": 888, "group_id": 999,
+                "post_type": "message",
+                "self_id": 10001,
+                "time": 1700000000,
+                "message_type": "group",
+                "sub_type": "normal",
+                "message_id": 91,
+                "user_id": 888,
+                "group_id": 999,
                 "message": [
-                    {"type": "image", "data": {
-                        "file": "STICKER.jpg", "sub_type": "1",
-                        "summary": "[动画表情]", "url": "https://x/sticker.gif",
-                    }}
+                    {
+                        "type": "image",
+                        "data": {
+                            "file": "STICKER.jpg",
+                            "sub_type": "1",
+                            "summary": "[动画表情]",
+                            "url": "https://x/sticker.gif",
+                        },
+                    }
                 ],
                 "raw_message": "[动画表情]",
                 "sender": {"user_id": 888, "nickname": "某人", "role": "member"},
@@ -316,17 +343,15 @@ class TestRecognitionOrdering:
                 await bot.plugins.loaded["character"].drain_background()
             beats = self._beats(caplog)
             seen_at = _beat_index(beats, "看懂了：一只猫在笑")
-            assert seen_at < _beat_index(beats, "不接", "要回")   # 识别 → 判断
-            assert seen_at < _beat_index(beats, "表情库")          # 识别 → 收藏
-            assert seen and "一只猫在笑" in seen[0]               # 判断用的就是识别结果
+            assert seen_at < _beat_index(beats, "不接", "要回")  # 识别 → 判断
+            assert seen_at < _beat_index(beats, "表情库")  # 识别 → 收藏
+            assert seen and "一只猫在笑" in seen[0]  # 判断用的就是识别结果
             assets = await bot.media.library.all()
             assert len(assets) == 1
         finally:
             await bot.shutdown()
 
-    async def test_late_recognition_is_still_narrated_and_collected(
-        self, tmp_path, caplog
-    ) -> None:
+    async def test_late_recognition_is_still_narrated_and_collected(self, tmp_path, caplog) -> None:
         async def slow_fetcher(url: str) -> tuple[bytes, str]:
             await asyncio.sleep(0.3)
             return PNG, "image/png"
@@ -357,14 +382,24 @@ class TestPlainImageRecognition:
 
         return GroupMessageEvent.model_validate(
             {
-                "post_type": "message", "self_id": 10001, "time": 1700000000,
-                "message_type": "group", "sub_type": "normal", "message_id": 92,
-                "user_id": 888, "group_id": 999,
+                "post_type": "message",
+                "self_id": 10001,
+                "time": 1700000000,
+                "message_type": "group",
+                "sub_type": "normal",
+                "message_id": 92,
+                "user_id": 888,
+                "group_id": 999,
                 "message": [
-                    {"type": "image", "data": {
-                        "file": "PHOTO.png", "sub_type": "0", "summary": "",
-                        "url": "https://x/photo.png",
-                    }}
+                    {
+                        "type": "image",
+                        "data": {
+                            "file": "PHOTO.png",
+                            "sub_type": "0",
+                            "summary": "",
+                            "url": "https://x/photo.png",
+                        },
+                    }
                 ],
                 "raw_message": "[图片]",
                 "sender": {"user_id": 888, "nickname": "空凛", "role": "member"},
@@ -409,9 +444,7 @@ class TestPlainImageRecognition:
                 await bot.plugins.loaded["character"].drain_background()
             beats = self._beats(caplog)
             assert _beat_index(beats, "收到图片") < _beat_index(beats, f"看懂了：{summary}")
-            assert _beat_index(beats, f"看懂了：{summary}") < _beat_index(
-                beats, "不接", "要回"
-            )
+            assert _beat_index(beats, f"看懂了：{summary}") < _beat_index(beats, "不接", "要回")
             assert seen and summary in seen[0]
             # a plain photo is not a sticker — nothing enters the library
             assert await bot.media.library.all() == []
@@ -421,9 +454,7 @@ class TestPlainImageRecognition:
     async def test_captioned_meme_photo_is_kept_as_a_sticker(self, tmp_path, caplog) -> None:
         """The v1.1 boundary: a photo only enters the library when vision
         confirms it is a meme (caption text counts)."""
-        bot = await self._make(
-            tmp_path, summary="一只猫举着牌子", ocr=["在吗"]
-        )
+        bot = await self._make(tmp_path, summary="一只猫举着牌子", ocr=["在吗"])
         try:
             with caplog.at_level(logging.INFO, logger="CatooBot.Narration"):
                 await bot.event_bus.emit(self._event())
@@ -455,14 +486,23 @@ class TestPlainImageRecognition:
         try:
             event = PrivateMessageEvent.model_validate(
                 {
-                    "post_type": "message", "self_id": 10001, "time": 1700000000,
-                    "message_type": "private", "sub_type": "friend", "message_id": 93,
+                    "post_type": "message",
+                    "self_id": 10001,
+                    "time": 1700000000,
+                    "message_type": "private",
+                    "sub_type": "friend",
+                    "message_id": 93,
                     "user_id": 777,
                     "message": [
-                        {"type": "image", "data": {
-                            "file": "MEME.jpg", "sub_type": "0", "summary": "",
-                            "url": "https://x/meme.jpg",
-                        }}
+                        {
+                            "type": "image",
+                            "data": {
+                                "file": "MEME.jpg",
+                                "sub_type": "0",
+                                "summary": "",
+                                "url": "https://x/meme.jpg",
+                            },
+                        }
                     ],
                     "raw_message": "[图片]",
                     "sender": {"user_id": 777, "nickname": "空凛猫"},
@@ -473,7 +513,7 @@ class TestPlainImageRecognition:
             await bot.plugins.loaded["character"].drain_background()
             assert provider.calls, "私聊图片应当触发回复"
             user_text = "\n".join(m.content for m in provider.calls[0]["messages"])
-            assert "你在干森么呢" in user_text      # the caption is visible
-            assert "配字" in user_text              # …and framed as what she means
+            assert "你在干森么呢" in user_text  # the caption is visible
+            assert "配字" in user_text  # …and framed as what she means
         finally:
             await bot.shutdown()

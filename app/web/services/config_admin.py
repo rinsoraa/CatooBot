@@ -183,7 +183,7 @@ class ConfigAdminService:
 
     async def save(self, payload: dict[str, Any]) -> dict[str, Any]:
         """Persist ``payload`` into overrides.yaml, then apply it live."""
-        candidate = self._validate(payload)          # raises before touching disk
+        candidate = self._validate(payload)  # raises before touching disk
         stored = deep_merge(self.overrides(), payload)
         write_overrides(stored, self.overrides_path)
         notes = await self.apply(candidate)
@@ -359,8 +359,7 @@ class ConfigAdminService:
                 {
                     "name": new_model,
                     "provider": str(form.get("m_new_provider", "")).strip(),
-                    "model": str(form.get("m_new_model", "")).strip()
-                    or new_model,
+                    "model": str(form.get("m_new_model", "")).strip() or new_model,
                     "enabled": True,
                 }
             )
@@ -504,7 +503,7 @@ def _indexes(form: dict[str, Any], prefix: str) -> list[int]:
     found: list[int] = []
     for key in form:
         if key.startswith(prefix):
-            suffix = key[len(prefix):]
+            suffix = key[len(prefix) :]
             if suffix.isdigit():
                 found.append(int(suffix))
     return sorted(found)

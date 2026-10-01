@@ -246,9 +246,7 @@ class AdminService:
         ) or {}
         return {
             "persona_system_prompt": self.bot.personas.persona.system_prompt,
-            "memory_extraction_prompt": str(
-                overrides.get("memory_extraction_prompt", "")
-            ),
+            "memory_extraction_prompt": str(overrides.get("memory_extraction_prompt", "")),
         }
 
     async def save_prompts(self, data: dict[str, str]) -> None:

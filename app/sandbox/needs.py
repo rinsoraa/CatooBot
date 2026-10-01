@@ -67,10 +67,7 @@ class NeedSystem:
         return [need for need in self._needs.values() if need.band() == "critical"]
 
     def pressing(self) -> list[NeedState]:
-        return [
-            need for need in self._needs.values()
-            if need.band() in ("strong", "critical")
-        ]
+        return [need for need in self._needs.values() if need.band() in ("strong", "critical")]
 
     def pressure(self, key: str) -> float:
         """0..1 urgency used as a decision weight (§36 bands)."""
@@ -97,10 +94,16 @@ class NeedSystem:
         """Prompt-ready: only the notable pressures (§86 — not a full dump)."""
         notable = sorted(self.pressing(), key=lambda n: n.level, reverse=True)[:limit]
         labels = {
-            "hunger": "有点饿", "thirst": "想喝点冰的", "sleepiness": "困了",
-            "energy": "没什么力气", "hygiene": "该洗澡了", "social_need": "想上网找人聊",
-            "entertainment": "想找点乐子", "pet_care": "该管管小喵了",
-            "household_maintenance": "家里该收拾了", "work_need": "有个活拖着",
+            "hunger": "有点饿",
+            "thirst": "想喝点冰的",
+            "sleepiness": "困了",
+            "energy": "没什么力气",
+            "hygiene": "该洗澡了",
+            "social_need": "想上网找人聊",
+            "entertainment": "想找点乐子",
+            "pet_care": "该管管小喵了",
+            "household_maintenance": "家里该收拾了",
+            "work_need": "有个活拖着",
             "project_progress": "想着没建完的城",
         }
         return "；".join(

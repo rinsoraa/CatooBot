@@ -108,9 +108,7 @@ def attr_tip(text: str) -> str:
 # ----------------------------------------------------------------- components
 
 
-def stat(
-    label: str, value: Any, *, tip_text: str = "", hint: str = "", tone: str = ""
-) -> str:
+def stat(label: str, value: Any, *, tip_text: str = "", hint: str = "", tone: str = "") -> str:
     """A metric tile: big value, hover explanation, optional footnote."""
     klass = f"stat {tone}".strip()
     hint_html = f"<span class='hint'>{esc(hint)}</span>" if hint else ""
@@ -188,8 +186,7 @@ def table(
 ) -> str:
     tips = list(tips or [])
     head_cells = "".join(
-        f"<th{attr_tip(tips[index]) if index < len(tips) and tips[index] else ''}>"
-        f"{esc(name)}</th>"
+        f"<th{attr_tip(tips[index]) if index < len(tips) and tips[index] else ''}>{esc(name)}</th>"
         for index, name in enumerate(headers)
     )
     body_rows = list(rows)
@@ -241,7 +238,7 @@ def textarea(
     return (
         f"<label class='field'><span class='field-label'>{esc(label)}</span>"
         f"<textarea name='{esc(name)}' rows='{rows}'"
-        f"{' class=\"mono\"' if mono else ''}"
+        f"{' class="mono"' if mono else ''}"
         f"{' placeholder=' + repr(placeholder) if placeholder else ''}"
         f"{attr_tip(tip_text)}>{esc(value)}</textarea></label>"
     )
@@ -292,10 +289,7 @@ def button(
     small: bool = False,
 ) -> str:
     klass = f"btn btn-{esc(variant)}" + (" btn-sm" if small else "")
-    return (
-        f"<button class='{klass}' type='{esc(type)}'{attr_tip(tip_text)}>"
-        f"{esc(label)}</button>"
-    )
+    return f"<button class='{klass}' type='{esc(type)}'{attr_tip(tip_text)}>{esc(label)}</button>"
 
 
 def form_button(
@@ -347,7 +341,11 @@ def empty(text: str, *, icon: str = "🗂️") -> str:
 
 
 def json_block(payload: Any, *, tip_text: str = "", collapsed: bool = False) -> str:
-    body = json.dumps(payload, ensure_ascii=False, indent=2) if not isinstance(payload, str) else payload
+    body = (
+        json.dumps(payload, ensure_ascii=False, indent=2)
+        if not isinstance(payload, str)
+        else payload
+    )
     klass = "code-block collapsed" if collapsed else "code-block"
     return (
         f"<div class='{klass}'>"
@@ -363,7 +361,12 @@ NAV: tuple[tuple[str, str, str, str], ...] = (
     ("/", "仪表盘", "◎", "总览：连接状态、当前模型、消息与 AI 指标"),
     ("/character", "角色", "☺", "人设、身份与当前状态（心情/精力/活动）"),
     ("/conversation", "对话", "⇄", "v1.2 对话轮次与延续状态：Turn、过期响应、Open Loop、共同经历"),
-    ("/sandbox", "沙盒", "🏠", "v2.0 生活沙盒：她此刻在哪个房间、做什么、小喵在干嘛；对话行为（私聊/群聊/主动）也在这里"),
+    (
+        "/sandbox",
+        "沙盒",
+        "🏠",
+        "v2.0 生活沙盒：她此刻在哪个房间、做什么、小喵在干嘛；对话行为（私聊/群聊/主动）也在这里",
+    ),
     ("/topics", "话题", "❝", "未聊完的话题与重要度管理"),
     ("/memory", "记忆", "✦", "长期记忆：搜索、时间线、健康度、修正"),
     ("/users", "用户", "☷", "用户档案、关系阶段、主动聊天开关"),
@@ -386,7 +389,19 @@ NAV_GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("概览", ("/", "/runtime", "/logs")),
     ("角色", ("/character", "/sandbox", "/conversation", "/topics")),
     ("数据", ("/memory", "/users", "/groups", "/sessions")),
-    ("能力", ("/models", "/config", "/prompts", "/credentials", "/tools", "/agent", "/social", "/stickers")),
+    (
+        "能力",
+        (
+            "/models",
+            "/config",
+            "/prompts",
+            "/credentials",
+            "/tools",
+            "/agent",
+            "/social",
+            "/stickers",
+        ),
+    ),
 )
 
 
@@ -765,7 +780,7 @@ def page(
     <div style="display:flex;gap:6px;align-items:center">{theme_swatches}</div>
     {lang_button}
     <button class="icon-btn" id="mode-btn" type="button" onclick="cbToggleMode()"
-      data-tip="{esc(L('切换日间 / 夜间模式'))}">{mode_icon}</button>
+      data-tip="{esc(L("切换日间 / 夜间模式"))}">{mode_icon}</button>
   </header>
   <main class="content">{body}</main>
 </div>
@@ -792,8 +807,8 @@ def page(
     </div>
     {nav_html(active)}
     <div class="sidebar-foot">
-      {esc(L('开发者'))} {esc(AUTHOR)}<br>
-      {esc(L('QQ 端零指令 · 一切管理在此'))}
+      {esc(L("开发者"))} {esc(AUTHOR)}<br>
+      {esc(L("QQ 端零指令 · 一切管理在此"))}
     </div>
   </aside>
   <div class="main">
@@ -802,17 +817,17 @@ def page(
         data-tip="折叠 / 展开左侧导航">☰</button>
       <div>
         <h1>{esc(title)}</h1>
-        {f'<div class="subtitle">{subtitle}</div>' if subtitle else ''}
+        {f'<div class="subtitle">{subtitle}</div>' if subtitle else ""}
       </div>
       <div class="topbar-spacer"></div>
       <div style="display:flex;gap:6px;align-items:center">{theme_swatches}</div>
       {lang_button}
       <button class="icon-btn" id="mode-btn" type="button" onclick="cbToggleMode()"
-        data-tip="{esc(L('切换日间 / 夜间模式'))}">{mode_icon}</button>
+        data-tip="{esc(L("切换日间 / 夜间模式"))}">{mode_icon}</button>
       {actions}
       <form method="post" action="/logout" class="inline">
         <button class="btn btn-secondary btn-sm" type="submit"
-          data-tip="{esc(L('退出登录'))}">{esc(L('退出'))}</button>
+          data-tip="{esc(L("退出登录"))}">{esc(L("退出"))}</button>
       </form>
     </header>
     <main class="content">{body}</main>

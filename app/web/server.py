@@ -187,13 +187,9 @@ class WebServer:
     # ------------------------------------------------------------------ auth
 
     @web.middleware
-    async def _auth_middleware(
-        self, request: web.Request, handler: Any
-    ) -> Any:
+    async def _auth_middleware(self, request: web.Request, handler: Any) -> Any:
         ui.set_preferences(ui.preferences_from(request.cookies))
-        if request.path in ("/login",) or (
-            request.path == "/api/login"
-        ):
+        if request.path in ("/login",) or (request.path == "/api/login"):
             return await handler(request)
         token = request.cookies.get(SESSION_COOKIE)
         if not self._auth.validate(token):
@@ -245,8 +241,11 @@ class WebServer:
         stats = [
             ("NapCat 连接", "在线" if online else "离线", ""),
             ("机器人 QQ", data["self_id"] or "-", ""),
-            ("当前模型", data["current_model"] or "-",
-             "最近一次成功调用使用的模型；限流时会自动切到备用模型"),
+            (
+                "当前模型",
+                data["current_model"] or "-",
+                "最近一次成功调用使用的模型；限流时会自动切到备用模型",
+            ),
             ("会话数", data["sessions"], ""),
             ("用户数", data["users"], ""),
             ("群数", data["groups"], ""),
@@ -255,7 +254,7 @@ class WebServer:
             ("AI 请求", metrics["ai_requests"], ""),
             ("限流 429", metrics["rate_limited"], "被服务商限流时自动故障转移到备用模型"),
             ("AI 失败", metrics["ai_errors"], ""),
-            ("运行时长", f'{metrics["uptime_seconds"] // 60} 分钟', ""),
+            ("运行时长", f"{metrics['uptime_seconds'] // 60} 分钟", ""),
         ]
         cards = ui.stats_grid(stats)
 
@@ -264,23 +263,21 @@ class WebServer:
             state = await self._admin.character_state()
             state_bits = [
                 ("角色", state.get("mood") or "-", "她当前的心情阶梯（down→cheerful）"),
-                ("精力", f"{float(state.get('energy') or 0):.0%}",
-                 "0~100%，随活动与睡眠变化，太低时回复会更短"),
-                ("正在做", state.get("activity") or "发呆",
-                 "来自生活沙盒：她此刻在做的事"),
+                (
+                    "精力",
+                    f"{float(state.get('energy') or 0):.0%}",
+                    "0~100%，随活动与睡眠变化，太低时回复会更短",
+                ),
+                ("正在做", state.get("activity") or "发呆", "来自生活沙盒：她此刻在做的事"),
             ]
         if sandbox is not None and sandbox.enabled:
             try:
                 context = sandbox.context()
-                state_bits.append(
-                    ("地点", context.get("location", "-"), "她此刻所在的空间")
-                )
+                state_bits.append(("地点", context.get("location", "-"), "她此刻所在的空间"))
                 state_bits.append(
                     ("模式", " + ".join(context.get("modes", [])) or "-", "可叠加的人格模式")
                 )
-                state_bits.append(
-                    ("小喵", context.get("pet", "-"), "她的猫此刻的状态")
-                )
+                state_bits.append(("小喵", context.get("pet", "-"), "她的猫此刻的状态"))
             except Exception:  # noqa: BLE001 - dashboard must never fail
                 pass
         character_card = (
@@ -327,14 +324,22 @@ class WebServer:
         quick = ui.card(
             "常见操作",
             "<div class='toolbar'>"
-            + ui.link_button("/config", "改配置（Provider/模型/权限）",
-                             tip_text="不用再手工编辑 YAML")
-            + ui.link_button("/memory/correction", "修正一条记忆",
-                             tip_text="用一句人话让她记住新的说法")
-            + ui.link_button("/sandbox", "看看她现在在干嘛",
-                             tip_text="生活沙盒：她在哪个房间、正在做什么、小喵在干嘛")
-            + ui.link_button("/sandbox/chat", "调回复节奏与主动性",
-                             tip_text="私聊回复、群聊参与、主动回复（已并入沙盒页）")
+            + ui.link_button(
+                "/config", "改配置（Provider/模型/权限）", tip_text="不用再手工编辑 YAML"
+            )
+            + ui.link_button(
+                "/memory/correction", "修正一条记忆", tip_text="用一句人话让她记住新的说法"
+            )
+            + ui.link_button(
+                "/sandbox",
+                "看看她现在在干嘛",
+                tip_text="生活沙盒：她在哪个房间、正在做什么、小喵在干嘛",
+            )
+            + ui.link_button(
+                "/sandbox/chat",
+                "调回复节奏与主动性",
+                tip_text="私聊回复、群聊参与、主动回复（已并入沙盒页）",
+            )
             + ui.link_button("/tools", "管理工具", tip_text="启用/限流/权限与执行记录")
             + ui.link_button("/runtime", "运行时与插件", tip_text="重载插件、健康检查")
             + "</div>",
@@ -378,34 +383,42 @@ class WebServer:
 
         body = f"""
 <div class="card"><h3>Identity</h3><form method="post" action="/character">
-{field('名字', 'name', identity.name, "她自称的名字，会出现在人设与提示词里")}{field('昵称', 'nickname', identity.nickname, "别人可能怎么叫她；留空就用名字")}
-{field('年龄', 'age', identity.age, "设定年龄；只是人设，不影响功能")}{field('生日', 'birthday', identity.birthday)}
-{field('性别', 'gender', identity.gender)}{field('职业', 'occupation', identity.occupation, "她对外的人设身份，例如「家里蹲」")}
-{field('所在地', 'location', identity.location, "人设里的地点，会参与「她在家/在外面」这类叙事")}
-{area('背景故事', 'background', identity.background)}
-{list_field('性格 traits', 'traits', persona.personality.traits)}
-{list_field('喜欢', 'likes', persona.personality.likes)}
-{list_field('不喜欢', 'dislikes', persona.personality.dislikes)}
-{list_field('习惯', 'habits', persona.personality.habits)}
-{list_field('兴趣', 'interests', persona.personality.interests)}
+{field("名字", "name", identity.name, "她自称的名字，会出现在人设与提示词里")}{field("昵称", "nickname", identity.nickname, "别人可能怎么叫她；留空就用名字")}
+{field("年龄", "age", identity.age, "设定年龄；只是人设，不影响功能")}{field("生日", "birthday", identity.birthday)}
+{field("性别", "gender", identity.gender)}{field("职业", "occupation", identity.occupation, "她对外的人设身份，例如「家里蹲」")}
+{field("所在地", "location", identity.location, "人设里的地点，会参与「她在家/在外面」这类叙事")}
+{area("背景故事", "background", identity.background)}
+{list_field("性格 traits", "traits", persona.personality.traits)}
+{list_field("喜欢", "likes", persona.personality.likes)}
+{list_field("不喜欢", "dislikes", persona.personality.dislikes)}
+{list_field("习惯", "habits", persona.personality.habits)}
+{list_field("兴趣", "interests", persona.personality.interests)}
 <label>语气 tone</label><input name="tone" value="{esc(persona.speaking_style.tone)}">
 <label>回复长度偏好 short/mixed/long</label><input name="length_preference" value="{esc(persona.speaking_style.length_preference)}">
-<label>Emoji</label><select name="emoji"><option value="1" {'selected' if persona.speaking_style.emoji else ''}>允许</option><option value="0" {'selected' if not persona.speaking_style.emoji else ''}>不用</option></select>
-<label>颜文字</label><select name="kaomoji"><option value="1" {'selected' if persona.speaking_style.kaomoji else ''}>允许</option><option value="0" {'selected' if not persona.speaking_style.kaomoji else ''}>不用</option></select>
-{area('风格备注', 'style_notes', persona.speaking_style.notes, 2)}
-{area('行为规则（每行一条）', 'rules', chr(10).join(persona.behavior_rules.rules), 4)}
-{area('System Prompt（角色自由补充）', 'system_prompt', persona.system_prompt, 6)}
+<label>Emoji</label><select name="emoji"><option value="1" {"selected" if persona.speaking_style.emoji else ""}>允许</option><option value="0" {"selected" if not persona.speaking_style.emoji else ""}>不用</option></select>
+<label>颜文字</label><select name="kaomoji"><option value="1" {"selected" if persona.speaking_style.kaomoji else ""}>允许</option><option value="0" {"selected" if not persona.speaking_style.kaomoji else ""}>不用</option></select>
+{area("风格备注", "style_notes", persona.speaking_style.notes, 2)}
+{area("行为规则（每行一条）", "rules", chr(10).join(persona.behavior_rules.rules), 4)}
+{area("System Prompt（角色自由补充）", "system_prompt", persona.system_prompt, 6)}
 <p><button class="btn btn-primary">保存并热加载</button></p>
 <p class="hint">人设由人物档案 <code>config/character_bible.md</code> 编译；
 档案变化（或人设为空）时启动会自动同步到这里，手工修改后以页面为准。</p></form></div>
 
 <div class="card"><h3>当前状态（narrative）</h3><form method="post" action="/character/state">
-{field('心情 mood', 'mood', state['mood'])}{field('能量 energy (0-1)', 'energy', str(state['energy']))}
-{field('正在做 activity', 'activity', state['activity'])}{field('关注 current_focus', 'current_focus', state['current_focus'])}
+{field("心情 mood", "mood", state["mood"])}{field("能量 energy (0-1)", "energy", str(state["energy"]))}
+{field("正在做 activity", "activity", state["activity"])}{field("关注 current_focus", "current_focus", state["current_focus"])}
 <p><button class="btn btn-primary">更新状态</button></p>
 <p class="hint">「正在做 / 位置 / 精力」由生活沙盒自动同步（她切换动作时会覆盖手工值）；
 想看细节去 <a href="/sandbox">沙盒</a> 页。</p></form></div>"""
-        return web.Response(text=layout("角色", "/character", body, subtitle="人设、身份、状态与说话风格（QQ 端看不到这些设置）"), content_type="text/html")
+        return web.Response(
+            text=layout(
+                "角色",
+                "/character",
+                body,
+                subtitle="人设、身份、状态与说话风格（QQ 端看不到这些设置）",
+            ),
+            content_type="text/html",
+        )
 
     async def _character_save(self, request: web.Request) -> web.Response:
         form = await request.post()
@@ -419,8 +432,19 @@ class WebServer:
             return _re.split(r"[、,;\n]+", value)
 
         data = {
-            "identity": {k: str(form.get(k, "")).strip() for k in
-                         ("name", "nickname", "age", "birthday", "gender", "occupation", "location", "background")},
+            "identity": {
+                k: str(form.get(k, "")).strip()
+                for k in (
+                    "name",
+                    "nickname",
+                    "age",
+                    "birthday",
+                    "gender",
+                    "occupation",
+                    "location",
+                    "background",
+                )
+            },
             "personality": {
                 "traits": split_list(str(form.get("traits", ""))),
                 "likes": split_list(str(form.get("likes", ""))),
@@ -435,7 +459,9 @@ class WebServer:
                 "kaomoji": str(form.get("kaomoji")) == "1",
                 "notes": str(form.get("style_notes", "")).strip(),
             },
-            "behavior_rules": {"rules": [r.strip() for r in str(form.get("rules", "")).splitlines() if r.strip()]},
+            "behavior_rules": {
+                "rules": [r.strip() for r in str(form.get("rules", "")).splitlines() if r.strip()]
+            },
             "system_prompt": str(form.get("system_prompt", "")).strip(),
         }
         try:
@@ -444,8 +470,12 @@ class WebServer:
         except ValueError as exc:
             note = f"保存失败：{exc}"  # old persona stays active (spec §53)
         return web.Response(
-            text=layout("角色", "/character", f'<div class="card">{esc(note)}</div>'
-                        '<meta http-equiv="refresh" content="1;url=/character">'),
+            text=layout(
+                "角色",
+                "/character",
+                f'<div class="card">{esc(note)}</div>'
+                '<meta http-equiv="refresh" content="1;url=/character">',
+            ),
             content_type="text/html",
         )
 
@@ -518,16 +548,29 @@ class WebServer:
         )
         filters = (
             "<form method='get' action='/memory'><div class='grid'>"
-            + ui.field("搜索内容", "q", keyword,
-                       tip_text="按关键词过滤（不做语义检索，语义搜索请用「搜索」页）")
-            + ui.select("类型", "category", options, category,
-                        tip_text="记忆的语义分类，影响检索时的加权")
-            + ui.field("Scope", "scope", scope_key,
-                       tip_text="按用户/群过滤：user:123456 或 group:654321；留空查看全部")
+            + ui.field(
+                "搜索内容",
+                "q",
+                keyword,
+                tip_text="按关键词过滤（不做语义检索，语义搜索请用「搜索」页）",
+            )
+            + ui.select(
+                "类型", "category", options, category, tip_text="记忆的语义分类，影响检索时的加权"
+            )
+            + ui.field(
+                "Scope",
+                "scope",
+                scope_key,
+                tip_text="按用户/群过滤：user:123456 或 group:654321；留空查看全部",
+            )
             + "</div><p><button class='btn btn-secondary' type='submit'"
-              + ui.attr_tip("应用过滤条件") + ">筛选</button>"
-            + ui.link_button("/memory/correction", "用一句话修正记忆",
-                             tip_text="不用删改数据库：写清「改成什么」，她就会当作一直如此")
+            + ui.attr_tip("应用过滤条件")
+            + ">筛选</button>"
+            + ui.link_button(
+                "/memory/correction",
+                "用一句话修正记忆",
+                tip_text="不用删改数据库：写清「改成什么」，她就会当作一直如此",
+            )
             + "</p></form>"
         )
         table = ui.table(
@@ -550,8 +593,11 @@ class WebServer:
         body = (
             self._memory_tabs("/memory")
             + ui.card("筛选", filters, tip_text="这里按元数据过滤；语义相似度搜索在「搜索」标签页")
-            + ui.card(f"记忆({len(memories)})", table,
-                      tip_text="只列出状态为 active 的记忆；被取代/归档的旧事实在时间线里可查")
+            + ui.card(
+                f"记忆({len(memories)})",
+                table,
+                tip_text="只列出状态为 active 的记忆；被取代/归档的旧事实在时间线里可查",
+            )
         )
         return web.Response(
             text=layout("记忆", "/memory", body, subtitle="她长期记住的事，以及为什么"),
@@ -568,26 +614,32 @@ class WebServer:
 
     async def _users_page(self, request: web.Request) -> web.Response:
         users = await self._admin.list_users()
+
         def toggle(checked: bool) -> str:
             return "checked" if checked else ""
 
         rows = "".join(
-            f"""<tr><td>{esc(u['user_id'])}</td><td>{esc(u['nickname'] or '')}</td>
-<td>{esc(u['nickname_override'] or '')}</td><td>{u['interactions']}</td><td>{esc(u['stage'])}</td>
-<td class="muted">{esc(format_ts(u['last_seen']))}</td><td>{esc(u['notes'] or '')}</td>
+            f"""<tr><td>{esc(u["user_id"])}</td><td>{esc(u["nickname"] or "")}</td>
+<td>{esc(u["nickname_override"] or "")}</td><td>{u["interactions"]}</td><td>{esc(u["stage"])}</td>
+<td class="muted">{esc(format_ts(u["last_seen"]))}</td><td>{esc(u["notes"] or "")}</td>
 <td><details><summary class="muted">编辑</summary><form method="post" action="/users">
-<input type="hidden" name="user_id" value="{esc(u['user_id'])}">
-<label>Nickname override</label><input name="nickname_override" value="{esc(u['nickname_override'] or '')}">
-<label>Notes</label><textarea name="notes" rows="2">{esc(u['notes'] or '')}</textarea>
+<input type="hidden" name="user_id" value="{esc(u["user_id"])}">
+<label>Nickname override</label><input name="nickname_override" value="{esc(u["nickname_override"] or "")}">
+<label>Notes</label><textarea name="notes" rows="2">{esc(u["notes"] or "")}</textarea>
 <label style="display:inline-block"><input type="checkbox" name="initiative_enabled" value="1"
- {toggle(bool(u.get('initiative_enabled', 1)))} style="width:auto"> 允许主动聊天</label>
+ {toggle(bool(u.get("initiative_enabled", 1)))} style="width:auto"> 允许主动聊天</label>
 <p><button class="btn btn-secondary btn-sm">保存</button></p></form></details></td></tr>"""
             for u in users
         )
         body = f"""<div class="card"><h3>Users ({len(users)})</h3>
 <table><tr><th>QQ</th><th>Nickname</th><th>Override</th><th>Interactions</th><th>Stage</th><th>Last Seen</th><th>Notes</th><th>Initiative</th><th></th></tr>
 {rows or '<tr><td colspan="9" class="muted">暂无用户</td></tr>'}</table></div>"""
-        return web.Response(text=layout("用户", "/users", body, subtitle="谁在和她聊天、关系到什么程度、是否允许主动找他"), content_type="text/html")
+        return web.Response(
+            text=layout(
+                "用户", "/users", body, subtitle="谁在和她聊天、关系到什么程度、是否允许主动找他"
+            ),
+            content_type="text/html",
+        )
 
     async def _users_save(self, request: web.Request) -> web.Response:
         form = await request.post()
@@ -604,19 +656,24 @@ class WebServer:
     async def _groups_page(self, request: web.Request) -> web.Response:
         groups = await self._admin.list_groups()
         rows = "".join(
-            f"""<tr><td>{esc(g['group_id'])}</td><td>{esc(g['name'] or '')}</td>
-<td class="muted">{esc(format_ts(g['last_seen']))}</td>
-<td>{'✓' if g.get('participation_enabled', 1) else '✗'}</td>
+            f"""<tr><td>{esc(g["group_id"])}</td><td>{esc(g["name"] or "")}</td>
+<td class="muted">{esc(format_ts(g["last_seen"]))}</td>
+<td>{"✓" if g.get("participation_enabled", 1) else "✗"}</td>
 <td><form class="inline" method="post" action="/groups/toggle">
-<input type="hidden" name="group_id" value="{esc(g['group_id'])}">
-<input type="hidden" name="enabled" value="{0 if g.get('participation_enabled', 1) else 1}">
+<input type="hidden" name="group_id" value="{esc(g["group_id"])}">
+<input type="hidden" name="enabled" value="{0 if g.get("participation_enabled", 1) else 1}">
 <button class="btn btn-secondary btn-sm">切换参与</button></form></td></tr>"""
             for g in groups
         )
         body = f"""<div class="card"><h3>Groups ({len(groups)})</h3>
 <table><tr><th>Group</th><th>Name</th><th>Last Seen</th><th>参与</th><th></th></tr>
 {rows or '<tr><td colspan="5" class="muted">暂无群组</td></tr>'}</table></div>"""
-        return web.Response(text=layout("群组", "/groups", body, subtitle="群里的资料与参与开关（进群不说话就关掉它）"), content_type="text/html")
+        return web.Response(
+            text=layout(
+                "群组", "/groups", body, subtitle="群里的资料与参与开关（进群不说话就关掉它）"
+            ),
+            content_type="text/html",
+        )
 
     async def _groups_toggle(self, request: web.Request) -> web.Response:
         form = await request.post()
@@ -637,8 +694,8 @@ class WebServer:
         session_id = request.query.get("id", "")
         sessions = await self._admin.list_sessions()
         rows = "".join(
-            f"""<tr><td><a href="/sessions?id={esc(s['session_id'])}">{esc(s['session_id'])}</a></td>
-<td>{esc(s['type'])}</td><td>{s['messages']}</td><td class="muted">{esc(format_ts(s['last_at']))}</td></tr>"""
+            f"""<tr><td><a href="/sessions?id={esc(s["session_id"])}">{esc(s["session_id"])}</a></td>
+<td>{esc(s["type"])}</td><td>{s["messages"]}</td><td class="muted">{esc(format_ts(s["last_at"]))}</td></tr>"""
             for s in sessions
         )
         context_html = ""
@@ -651,7 +708,10 @@ class WebServer:
 <button class="danger">清空该会话上下文</button></form></div>"""
         body = f"""<div class="card"><h3>Sessions ({len(sessions)})</h3>
 <table><tr><th>Session</th><th>Type</th><th>Messages</th><th>Last</th></tr>{rows}</table></div>{context_html}"""
-        return web.Response(text=layout("会话", "/sessions", body, subtitle="按会话隔离的短期上下文，可单独清空"), content_type="text/html")
+        return web.Response(
+            text=layout("会话", "/sessions", body, subtitle="按会话隔离的短期上下文，可单独清空"),
+            content_type="text/html",
+        )
 
     async def _api_session_clear(self, request: web.Request) -> web.Response:
         form = await request.post()
@@ -664,23 +724,26 @@ class WebServer:
         models = self._bot.ai.router.snapshot()
         providers = list(self._bot.ai._providers)
         rows = "".join(
-            f"""<tr><td>{esc(m['name'])}</td>
+            f"""<tr><td>{esc(m["name"])}</td>
 <td><details><summary class="muted">修改</summary>
 <form method="post" action="/api/models/override">
-<input type="hidden" name="name" value="{esc(m['name'])}">
-<label>Provider</label><select name="provider">{''.join(f'<option>{esc(p)}</option>' for p in providers)}</select>
-<label>Model ID</label><input name="model" value="{esc(m['model'])}">
+<input type="hidden" name="name" value="{esc(m["name"])}">
+<label>Provider</label><select name="provider">{"".join(f"<option>{esc(p)}</option>" for p in providers)}</select>
+<label>Model ID</label><input name="model" value="{esc(m["model"])}">
 <label>Priority</label><input name="priority" value="{i}">
 <label>Enabled</label><select name="enabled"><option value="1">启用</option><option value="0">禁用</option></select>
 <p><button class="btn btn-secondary btn-sm">应用（热更新）</button></p></form></details></td>
-<td>{esc(m['provider'])}</td><td>{esc(m['model'])}</td><td>{'✓' if m['enabled'] else '✗'}</td>
-<td>{'❄' if m['in_cooldown'] else ''}</td><td>{m['failure_count']}</td><td class="muted">{esc(m['last_error'] or '')}</td></tr>"""
+<td>{esc(m["provider"])}</td><td>{esc(m["model"])}</td><td>{"✓" if m["enabled"] else "✗"}</td>
+<td>{"❄" if m["in_cooldown"] else ""}</td><td>{m["failure_count"]}</td><td class="muted">{esc(m["last_error"] or "")}</td></tr>"""
             for i, m in enumerate(models)
         )
         body = f"""<div class="card"><h3>Model Router（修改立即生效，无需重启）</h3>
 <table><tr><th>Name</th><th>Edit</th><th>Provider</th><th>Model</th><th>Enabled</th><th>Cooldown</th><th>Fails</th><th>Last Error</th></tr>
 {rows or '<tr><td colspan="8" class="muted">No models.</td></tr>'}</table></div>"""
-        return web.Response(text=layout("模型", "/models", body, subtitle="模型优先级、启用状态与故障转移情况"), content_type="text/html")
+        return web.Response(
+            text=layout("模型", "/models", body, subtitle="模型优先级、启用状态与故障转移情况"),
+            content_type="text/html",
+        )
 
     async def _api_model_override(self, request: web.Request) -> web.Response:
         form = await request.post()
@@ -705,13 +768,21 @@ class WebServer:
         prompts = await self._admin.get_prompts()
         body = f"""<div class="card"><h3>Prompts</h3><form method="post" action="/prompts">
 <label>Persona System Prompt（角色自由补充段）</label>
-<textarea name="persona_system_prompt" rows="8">{esc(prompts['persona_system_prompt'])}</textarea>
+<textarea name="persona_system_prompt" rows="8">{esc(prompts["persona_system_prompt"])}</textarea>
 <p class="hint">角色的身份/性格/规则来自人物档案（<code>config/character_bible.md</code>）并同步在
 <a href="/character">角色</a>页；这里只放自由补充段，长期设定请改档案。</p>
 <label>Memory Extraction Prompt（留空使用内置默认）</label>
-<textarea name="memory_extraction_prompt" rows="8">{esc(prompts['memory_extraction_prompt'])}</textarea>
+<textarea name="memory_extraction_prompt" rows="8">{esc(prompts["memory_extraction_prompt"])}</textarea>
 <p><button class="btn btn-primary">保存并热加载</button></p></form></div>"""
-        return web.Response(text=layout("提示词", "/prompts", body, subtitle="系统提示词覆盖项（写在这里的内容会优先于默认值）"), content_type="text/html")
+        return web.Response(
+            text=layout(
+                "提示词",
+                "/prompts",
+                body,
+                subtitle="系统提示词覆盖项（写在这里的内容会优先于默认值）",
+            ),
+            content_type="text/html",
+        )
 
     async def _prompts_save(self, request: web.Request) -> web.Response:
         form = await request.post()
@@ -722,8 +793,12 @@ class WebServer:
             }
         )
         return web.Response(
-            text=layout("提示词", "/prompts", '<div class="card">已保存</div>'
-                        '<meta http-equiv="refresh" content="1;url=/prompts">'),
+            text=layout(
+                "提示词",
+                "/prompts",
+                '<div class="card">已保存</div>'
+                '<meta http-equiv="refresh" content="1;url=/prompts">',
+            ),
             content_type="text/html",
         )
 
@@ -741,8 +816,11 @@ class WebServer:
 <label>等级</label><select name="level">{options}</select>
 <label>关键词</label><input name="q" value="{esc(keyword)}">
 <p><button class="btn btn-primary">过滤</button></p></form></div>
-<div class="card"><pre>{esc(chr(10).join(lines)) or '（无日志）'}</pre></div>"""
-        return web.Response(text=layout("日志", "/logs", body, subtitle="最近的运行日志，含她的内心播报"), content_type="text/html")
+<div class="card"><pre>{esc(chr(10).join(lines)) or "（无日志）"}</pre></div>"""
+        return web.Response(
+            text=layout("日志", "/logs", body, subtitle="最近的运行日志，含她的内心播报"),
+            content_type="text/html",
+        )
 
     # --------------------------------------------------------------- runtime
 
@@ -758,17 +836,22 @@ class WebServer:
             body += f"""<form class="inline" method="post" action="/api/runtime/{action}">
 <button class="btn btn-primary">{label}</button></form>"""
         body += "</div></div>"
-        return web.Response(text=layout("运行", "/runtime", body, subtitle="运行时开关、插件重载与健康检查"), content_type="text/html")
+        return web.Response(
+            text=layout("运行", "/runtime", body, subtitle="运行时开关、插件重载与健康检查"),
+            content_type="text/html",
+        )
 
     async def _api_runtime_action(self, request: web.Request) -> web.Response:
         result = await self._admin.runtime_action(request.match_info["action"])
         return web.Response(
-            text=layout("运行", "/runtime",
-                        f'<div class="card">{esc(json.dumps(result, ensure_ascii=False))}</div>'
-                        '<meta http-equiv="refresh" content="2;url=/runtime">'),
+            text=layout(
+                "运行",
+                "/runtime",
+                f'<div class="card">{esc(json.dumps(result, ensure_ascii=False))}</div>'
+                '<meta http-equiv="refresh" content="2;url=/runtime">',
+            ),
             content_type="text/html",
         )
-
 
     async def _sandbox_chat_page(self, request: web.Request) -> web.Response:
         """Chat-surface behaviour, merged into the sandbox area (three parts).
@@ -787,28 +870,57 @@ class WebServer:
             "<p class='hint'>有人私聊她时的节奏：延迟、分段与作息门控。"
             "她“正在做什么”由生活沙盒决定，这里只管回话方式。</p>"
             "<div class='grid'>"
-            + ui.switch("reply_enabled", cfg.reply.enabled, "启用延迟回复",
-                        tip_text="关掉后总是秒回；开着则按下方区间随机延迟")
-            + ui.field("最小延迟（秒）", "min_delay", cfg.reply.min_delay, tip_text="最短等多久再回")
-            + ui.field("最大延迟（秒）", "max_delay", cfg.reply.max_delay, tip_text="最长等多久再回")
-            + ui.switch("chunking_enabled", cfg.chunking.enabled, "启用自然分段",
-                        tip_text="偶尔把一段回复拆成几条，更像真人")
-            + ui.field("分段概率", "chunk_probability", cfg.chunking.chunk_probability,
-                       tip_text="0~1，越大越常拆")
-            + ui.field("最多段数", "max_chunks", cfg.chunking.max_chunks,
-                       tip_text="一条回复最多拆成几段")
+            + ui.switch(
+                "reply_enabled",
+                cfg.reply.enabled,
+                "启用延迟回复",
+                tip_text="关掉后总是秒回；开着则按下方区间随机延迟",
+            )
+            + ui.field(
+                "最小延迟（秒）", "min_delay", cfg.reply.min_delay, tip_text="最短等多久再回"
+            )
+            + ui.field(
+                "最大延迟（秒）", "max_delay", cfg.reply.max_delay, tip_text="最长等多久再回"
+            )
+            + ui.switch(
+                "chunking_enabled",
+                cfg.chunking.enabled,
+                "启用自然分段",
+                tip_text="偶尔把一段回复拆成几条，更像真人",
+            )
+            + ui.field(
+                "分段概率",
+                "chunk_probability",
+                cfg.chunking.chunk_probability,
+                tip_text="0~1，越大越常拆",
+            )
+            + ui.field(
+                "最多段数", "max_chunks", cfg.chunking.max_chunks, tip_text="一条回复最多拆成几段"
+            )
             + "</div>"
             "<div class='grid'>"
-            + ui.switch("sleep_enabled", cfg.schedule.sleep_enabled, "启用睡眠时段",
-                        tip_text="这个时段回复更慢更困，也不主动说话")
+            + ui.switch(
+                "sleep_enabled",
+                cfg.schedule.sleep_enabled,
+                "启用睡眠时段",
+                tip_text="这个时段回复更慢更困，也不主动说话",
+            )
             + ui.field("入睡", "sleep_start", cfg.schedule.sleep_start, tip_text="HH:MM")
             + ui.field("起床", "sleep_end", cfg.schedule.sleep_end, tip_text="HH:MM")
-            + ui.switch("dnd_enabled", cfg.schedule.dnd_enabled, "启用免打扰",
-                        tip_text="这个时段不主动、也可以不回应")
+            + ui.switch(
+                "dnd_enabled",
+                cfg.schedule.dnd_enabled,
+                "启用免打扰",
+                tip_text="这个时段不主动、也可以不回应",
+            )
             + ui.field("免打扰开始", "dnd_start", cfg.schedule.dnd_start, tip_text="HH:MM")
             + ui.field("免打扰结束", "dnd_end", cfg.schedule.dnd_end, tip_text="HH:MM")
-            + ui.switch("dnd_blocks_replies", cfg.schedule.dnd_blocks_replies, "免打扰也阻止被动回复",
-                        tip_text="关闭时只是不主动，别人叫她还是回")
+            + ui.switch(
+                "dnd_blocks_replies",
+                cfg.schedule.dnd_blocks_replies,
+                "免打扰也阻止被动回复",
+                tip_text="关闭时只是不主动，别人叫她还是回",
+            )
             + "</div>",
             tip_text="私聊永远会回（除非免打扰配置成不回）；这里调的是“怎么回”",
         )
@@ -818,13 +930,25 @@ class WebServer:
             "<p class='hint'>@ 她 / 回复她 → 必回；下面只管“没 @ 她”的自主插话。"
             "先由社交认知做结构化判断（话题相关、能补充、时机合适就参与）。</p>"
             "<div class='grid'>"
-            + ui.switch("participation_enabled", cfg.group.participation_enabled, "允许非 @ 插话",
-                        tip_text="关掉后群里只有 @ / 回复她才会说话")
-            + ui.field("参与频率", "participation_probability", cfg.group.participation_probability,
-                       tip_text="确定性的额度累积：每条合格消息攒这么多额度，攒满 1 参与一次。"
-                                "1.0 ≈ 每条都参与（仍受冷却/每日额度约束）；0 = 完全交给社交认知")
-            + ui.field("最短消息长度", "min_message_length", cfg.group.min_message_length,
-                       tip_text="短于此长度的群消息不参与判断（“哈哈哈”这种）")
+            + ui.switch(
+                "participation_enabled",
+                cfg.group.participation_enabled,
+                "允许非 @ 插话",
+                tip_text="关掉后群里只有 @ / 回复她才会说话",
+            )
+            + ui.field(
+                "参与频率",
+                "participation_probability",
+                cfg.group.participation_probability,
+                tip_text="确定性的额度累积：每条合格消息攒这么多额度，攒满 1 参与一次。"
+                "1.0 ≈ 每条都参与（仍受冷却/每日额度约束）；0 = 完全交给社交认知",
+            )
+            + ui.field(
+                "最短消息长度",
+                "min_message_length",
+                cfg.group.min_message_length,
+                tip_text="短于此长度的群消息不参与判断（“哈哈哈”这种）",
+            )
             + "</div>"
             "<p class='hint'>冷却、每日上限、观察批次与阈值在 "
             "<a href='/social/policy'>社交策略</a> 页；单个群的参与开关在 "
@@ -837,20 +961,44 @@ class WebServer:
             "<p class='hint'>没人找她时，她会不会主动发消息（会被多重硬限制拦住）。"
             "她在生活里发生的事（做完的事、零工、快递）会作为话题来源。</p>"
             "<div class='grid'>"
-            + ui.switch("initiative_enabled", cfg.initiative.enabled, "启用主动聊天",
-                        tip_text="总开关；下面所有硬性上限仍然会拦")
-            + ui.field("最小间隔（分）", "min_interval_minutes", cfg.initiative.min_interval_minutes,
-                       tip_text="两次主动之间至少隔多久")
+            + ui.switch(
+                "initiative_enabled",
+                cfg.initiative.enabled,
+                "启用主动聊天",
+                tip_text="总开关；下面所有硬性上限仍然会拦",
+            )
+            + ui.field(
+                "最小间隔（分）",
+                "min_interval_minutes",
+                cfg.initiative.min_interval_minutes,
+                tip_text="两次主动之间至少隔多久",
+            )
             + ui.field("每日上限", "daily_limit", cfg.initiative.daily_limit, tip_text="")
             + ui.field("每小时上限", "hourly_limit", cfg.initiative.hourly_limit, tip_text="")
-            + ui.field("闲置（小时）", "idle_hours", cfg.initiative.idle_hours,
-                       tip_text="对方多久没说话才主动")
-            + ui.select("最低关系", "min_relationship_stage",
-                        [("new", "new"), ("familiar", "familiar"), ("close", "close"),
-                         ("very_close", "very_close")],
-                        cfg.initiative.min_relationship_stage, tip_text="关系熟到这个程度才主动")
-            + ui.field("未回复上限", "max_unanswered", cfg.initiative.max_unanswered,
-                       tip_text="主动发了没回，达到上限就不再追问")
+            + ui.field(
+                "闲置（小时）",
+                "idle_hours",
+                cfg.initiative.idle_hours,
+                tip_text="对方多久没说话才主动",
+            )
+            + ui.select(
+                "最低关系",
+                "min_relationship_stage",
+                [
+                    ("new", "new"),
+                    ("familiar", "familiar"),
+                    ("close", "close"),
+                    ("very_close", "very_close"),
+                ],
+                cfg.initiative.min_relationship_stage,
+                tip_text="关系熟到这个程度才主动",
+            )
+            + ui.field(
+                "未回复上限",
+                "max_unanswered",
+                cfg.initiative.max_unanswered,
+                tip_text="主动发了没回，达到上限就不再追问",
+            )
             + "</div>"
             "<p class='hint'>后台消息额度在沙盒配置 <code>sandbox."
             "max_background_messages_per_day</code>。</p>",
@@ -863,7 +1011,7 @@ class WebServer:
             + group_card
             + initiative_card
             + "<p><button class='btn btn-primary' type='submit' "
-              "data-tip='保存并热加载，无需重启'>保存设置</button></p></form>"
+            "data-tip='保存并热加载，无需重启'>保存设置</button></p></form>"
         )
 
         manual_html = (
@@ -888,14 +1036,22 @@ class WebServer:
             + ui.field("时间", "sim_time", "23:50")
             + ui.field("心情", "mood", "relaxed")
             + ui.field("参考活动", "activity", "reading")
-            + ui.select("关系", "relationship",
-                        [("new", "new"), ("familiar", "familiar"), ("close", "close"),
-                         ("very_close", "very_close")], "familiar")
+            + ui.select(
+                "关系",
+                "relationship",
+                [
+                    ("new", "new"),
+                    ("familiar", "familiar"),
+                    ("close", "close"),
+                    ("very_close", "very_close"),
+                ],
+                "familiar",
+            )
             + ui.field("话题", "topic", "未完成的项目")
             + "</div>"
             + ui.textarea("示例回复文本", "sample_reply", "好呀。\n\n等我看一下再说。", rows=3)
             + "<p><button class='btn btn-primary' type='submit' "
-              "data-tip='只预览，不会发送到 QQ'>预览</button></p></form>"
+            "data-tip='只预览，不会发送到 QQ'>预览</button></p></form>"
         )
 
         events = data["recent_events"]
@@ -909,7 +1065,9 @@ class WebServer:
             ["时间", "类型", "Scope", "原因", "详情"],
             event_rows or '<tr><td colspan="5" class="muted">暂无行为记录</td></tr>',
             tips=["发生时间", "事件类型", "所属会话", "触发原因", "详情"],
-            empty="暂无行为记录", table_id="behavior-events", filterable=False,
+            empty="暂无行为记录",
+            table_id="behavior-events",
+            filterable=False,
         )
 
         stats = ui.stats_grid(
@@ -933,7 +1091,9 @@ class WebServer:
         )
         return web.Response(
             text=layout(
-                "沙盒 · 对话行为", "/sandbox", body,
+                "沙盒 · 对话行为",
+                "/sandbox",
+                body,
                 subtitle="私聊回复 / 群聊参与 / 主动回复（她怎么做人，由沙盒决定）",
             ),
             content_type="text/html",
@@ -946,9 +1106,12 @@ class WebServer:
         form = await request.post()
         await self._behavior.save_settings(dict(form))
         return web.Response(
-            text=layout("沙盒 · 对话行为", "/sandbox",
-                        '<div class="card">设置已保存并热加载</div>'
-                        '<meta http-equiv="refresh" content="1;url=/sandbox/chat">'),
+            text=layout(
+                "沙盒 · 对话行为",
+                "/sandbox",
+                '<div class="card">设置已保存并热加载</div>'
+                '<meta http-equiv="refresh" content="1;url=/sandbox/chat">',
+            ),
             content_type="text/html",
         )
 
@@ -957,9 +1120,12 @@ class WebServer:
         result = await self._behavior.preview(dict(form))
         rendered = json.dumps(result, ensure_ascii=False, indent=2)
         return web.Response(
-            text=layout("沙盒 · 对话行为", "/sandbox",
-                        f'<div class="card"><h3>Preview 结果（未发送任何消息）</h3><pre>{esc(rendered)}</pre>'
-                        '<p><a href="/sandbox/chat">返回</a></p></div>'),
+            text=layout(
+                "沙盒 · 对话行为",
+                "/sandbox",
+                f'<div class="card"><h3>Preview 结果（未发送任何消息）</h3><pre>{esc(rendered)}</pre>'
+                '<p><a href="/sandbox/chat">返回</a></p></div>',
+            ),
             content_type="text/html",
         )
 
@@ -1037,7 +1203,10 @@ class WebServer:
             + (rows or '<tr><td colspan="7" class="muted">暂无话题</td></tr>')
             + "</table></div>"
         )
-        return web.Response(text=layout("话题", "/topics", body, subtitle="还没聊完的事，以及她的主动话题来源"), content_type="text/html")
+        return web.Response(
+            text=layout("话题", "/topics", body, subtitle="还没聊完的事，以及她的主动话题来源"),
+            content_type="text/html",
+        )
 
     async def _api_topic_action(self, request: web.Request) -> web.Response:
         action = request.match_info["action"]
@@ -1065,8 +1234,12 @@ class WebServer:
                 f"<td>{esc(r.get('content'))}</td></tr>"
                 for r in data.get("results", [])
             )
-            note = "" if data.get("semantic_available") else (
-                '<p class="muted">语义检索不可用（Embedding 未配置或失败）— 已降级为关键词+元数据排序</p>'
+            note = (
+                ""
+                if data.get("semantic_available")
+                else (
+                    '<p class="muted">语义检索不可用（Embedding 未配置或失败）— 已降级为关键词+元数据排序</p>'
+                )
             )
             results_html = (
                 f'<div class="card"><h3>结果 ({len(data.get("results", []))}) — mode={esc(mode)}</h3>{note}'
@@ -1076,7 +1249,9 @@ class WebServer:
                 + "</table></div>"
             )
 
-        body = self._memory_tabs("/memory/search") + f"""
+        body = (
+            self._memory_tabs("/memory/search")
+            + f"""
 <div class="card"><h3>记忆搜索</h3><form method="post" action="/memory/search">
 <label>查询</label><input name="q" value="{esc(query)}">
 <label>模式</label><select name="mode">
@@ -1088,7 +1263,13 @@ class WebServer:
 <input name="scope" value="{esc(scope_key)}">
 <p><button class="btn btn-primary">搜索</button></p></form></div>
 {results_html}"""
-        return web.Response(text=layout("记忆 · 搜索", "/memory", body, subtitle="语义 + 关键词混合检索，可看每项得分"), content_type="text/html")
+        )
+        return web.Response(
+            text=layout(
+                "记忆 · 搜索", "/memory", body, subtitle="语义 + 关键词混合检索，可看每项得分"
+            ),
+            content_type="text/html",
+        )
 
     async def _memory_timeline_page(self, request: web.Request) -> web.Response:
         scope_key = request.query.get("scope", "")
@@ -1101,60 +1282,83 @@ class WebServer:
             f"<td>{esc(m.get('summary') or m['content'])}</td></tr>"
             for m in memories
         )
-        body = self._memory_tabs("/memory/timeline") + f"""
+        body = (
+            self._memory_tabs("/memory/timeline")
+            + f"""
 <div class="card"><form method="get" action="/memory/timeline">
 <label>Scope（留空=全部）</label><input name="scope" value="{esc(scope_key)}">
 <p><button class="btn btn-primary">筛选</button></p></form></div>
 <div class="card"><h3>时间线 ({len(memories)})</h3>
 <table><tr><th>时间</th><th>层</th><th>类型</th><th>状态</th><th>Scope</th><th>ID</th><th>内容</th></tr>
 {rows or '<tr><td colspan="7" class="muted">暂无记忆</td></tr>'}</table></div>"""
-        return web.Response(text=layout("记忆 · 时间线", "/memory", body, subtitle="她的记忆是怎么长出来的（含被取代的旧事实）"), content_type="text/html")
+        )
+        return web.Response(
+            text=layout(
+                "记忆 · 时间线",
+                "/memory",
+                body,
+                subtitle="她的记忆是怎么长出来的（含被取代的旧事实）",
+            ),
+            content_type="text/html",
+        )
 
     async def _memory_detail_page(self, request: web.Request) -> web.Response:
         memory_id = int(request.match_info["memory_id"])
         data = await self._memory_admin.detail(memory_id)
         if not data:
             return web.Response(
-                text=layout("记忆", "/memory", self._memory_tabs("/memory")
-                            + '<div class="card">记忆不存在</div>'),
+                text=layout(
+                    "记忆",
+                    "/memory",
+                    self._memory_tabs("/memory") + '<div class="card">记忆不存在</div>',
+                ),
                 content_type="text/html",
             )
         memory = data["memory"]
         relations = data["relations"]
         previous = data["supersedes"]
 
-        rel_rows = "".join(
-            f"<tr><td>{esc(r['relation'])}</td><td>{r['to_id']}</td>"
-            f"<td>{esc(r.get('related_status') or '')}</td>"
-            f"<td>{esc((r.get('related_content') or '')[:80])}</td></tr>"
-            for r in relations
-        ) or '<tr><td colspan="4" class="muted">无关联</td></tr>'
+        rel_rows = (
+            "".join(
+                f"<tr><td>{esc(r['relation'])}</td><td>{r['to_id']}</td>"
+                f"<td>{esc(r.get('related_status') or '')}</td>"
+                f"<td>{esc((r.get('related_content') or '')[:80])}</td></tr>"
+                for r in relations
+            )
+            or '<tr><td colspan="4" class="muted">无关联</td></tr>'
+        )
         prev_html = "".join(
             f"<li>#{p['id']}（{esc(p['status'])}）{esc(p['content'])}</li>" for p in previous
         )
-        body = self._memory_tabs("/memory") + f"""
-<div class="card"><h3>记忆 #{memory['id']}</h3>
+        body = (
+            self._memory_tabs("/memory")
+            + f"""
+<div class="card"><h3>记忆 #{memory["id"]}</h3>
 <table>
-<tr><th>内容</th><td>{esc(memory['content'])}</td></tr>
-<tr><th>Summary</th><td>{esc(memory.get('summary') or '-')}</td></tr>
-<tr><th>Layer / Type</th><td>{esc(memory['layer'])} / {esc(memory['category'])}</td></tr>
-<tr><th>Scope</th><td>{esc(memory['scope_key'])}</td></tr>
-<tr><th>Status</th><td>{esc(memory['status'])}</td></tr>
-<tr><th>Importance / Confidence</th><td>{memory['importance']:.2f} / {memory['confidence']:.2f}</td></tr>
-<tr><th>来源</th><td>{esc(memory['source'])}</td></tr>
-<tr><th>使用次数</th><td>{memory['use_count']}（最近 {esc(format_ts(memory.get('last_used_at'))) }）</td></tr>
-<tr><th>创建 / 更新</th><td>{esc(format_ts(memory['created_at']))} / {esc(format_ts(memory['updated_at']))}</td></tr>
-<tr><th>有效期</th><td>{esc(format_ts(memory.get('valid_from')))} ~ {esc(format_ts(memory.get('valid_until')))}</td></tr>
+<tr><th>内容</th><td>{esc(memory["content"])}</td></tr>
+<tr><th>Summary</th><td>{esc(memory.get("summary") or "-")}</td></tr>
+<tr><th>Layer / Type</th><td>{esc(memory["layer"])} / {esc(memory["category"])}</td></tr>
+<tr><th>Scope</th><td>{esc(memory["scope_key"])}</td></tr>
+<tr><th>Status</th><td>{esc(memory["status"])}</td></tr>
+<tr><th>Importance / Confidence</th><td>{memory["importance"]:.2f} / {memory["confidence"]:.2f}</td></tr>
+<tr><th>来源</th><td>{esc(memory["source"])}</td></tr>
+<tr><th>使用次数</th><td>{memory["use_count"]}（最近 {esc(format_ts(memory.get("last_used_at")))}）</td></tr>
+<tr><th>创建 / 更新</th><td>{esc(format_ts(memory["created_at"]))} / {esc(format_ts(memory["updated_at"]))}</td></tr>
+<tr><th>有效期</th><td>{esc(format_ts(memory.get("valid_from")))} ~ {esc(format_ts(memory.get("valid_until")))}</td></tr>
 </table>
-<p><form class="inline" method="post" action="/api/memory/activate/{memory['id']}"><button class="btn btn-secondary btn-sm">激活</button></form>
-<form class="inline" method="post" action="/api/memory/archive/{memory['id']}"><button class="btn btn-secondary btn-sm">归档</button></form>
-<form class="inline" method="post" action="/api/memory/reembed/{memory['id']}"><button class="btn btn-secondary btn-sm">重新向量化</button></form>
-<form class="inline" method="post" action="/api/memory/delete/{memory['id']}"><button class="btn btn-danger btn-sm">删除</button></form></p>
+<p><form class="inline" method="post" action="/api/memory/activate/{memory["id"]}"><button class="btn btn-secondary btn-sm">激活</button></form>
+<form class="inline" method="post" action="/api/memory/archive/{memory["id"]}"><button class="btn btn-secondary btn-sm">归档</button></form>
+<form class="inline" method="post" action="/api/memory/reembed/{memory["id"]}"><button class="btn btn-secondary btn-sm">重新向量化</button></form>
+<form class="inline" method="post" action="/api/memory/delete/{memory["id"]}"><button class="btn btn-danger btn-sm">删除</button></form></p>
 </div>
 <div class="card"><h3>替代的历史记忆</h3><ul>{prev_html or '<li class="muted">无</li>'}</ul></div>
 <div class="card"><h3>关联关系</h3>
 <table><tr><th>关系</th><th>目标 ID</th><th>状态</th><th>内容</th></tr>{rel_rows}</table></div>"""
-        return web.Response(text=layout("记忆 · 详情", "/memory", body, subtitle="一条记忆的来源、关系与演化"), content_type="text/html")
+        )
+        return web.Response(
+            text=layout("记忆 · 详情", "/memory", body, subtitle="一条记忆的来源、关系与演化"),
+            content_type="text/html",
+        )
 
     async def _memory_health_page(self, request: web.Request) -> web.Response:
         health = await self._memory_admin.health()
@@ -1179,28 +1383,37 @@ class WebServer:
                 ("Avg Confidence", health.get("average_confidence", 0)),
                 ("向量化覆盖率", health.get("embedding_coverage", 0)),
                 ("已向量化", health.get("embedded", 0)),
-                ("Semantic Search", "on" if health.get("retrieval", {}).get("semantic_available") else "off"),
+                (
+                    "Semantic Search",
+                    "on" if health.get("retrieval", {}).get("semantic_available") else "off",
+                ),
             )
         )
-        body = self._memory_tabs("/memory/health") + f"""
+        body = (
+            self._memory_tabs("/memory/health")
+            + f"""
 <div class="grid">{cards}</div>
 <div class="card"><h3>Embedding</h3>
 <table>
-<tr><th>Provider / Model</th><td>{esc(embedding.get('provider') or '-')} / {esc(embedding.get('model') or '-')}</td></tr>
-<tr><th>Dimensions</th><td>{esc(embedding.get('dimensions') or '-')}</td></tr>
-<tr><th>Cache hits / misses</th><td>{esc(embedding.get('hits', 0))} / {esc(embedding.get('misses', 0))}</td></tr>
-<tr><th>Failures</th><td>{esc(embedding.get('failures', 0))}</td></tr>
-<tr><th>Last error</th><td class="muted">{esc(embedding.get('last_error') or '-')}</td></tr>
+<tr><th>Provider / Model</th><td>{esc(embedding.get("provider") or "-")} / {esc(embedding.get("model") or "-")}</td></tr>
+<tr><th>Dimensions</th><td>{esc(embedding.get("dimensions") or "-")}</td></tr>
+<tr><th>Cache hits / misses</th><td>{esc(embedding.get("hits", 0))} / {esc(embedding.get("misses", 0))}</td></tr>
+<tr><th>Failures</th><td>{esc(embedding.get("failures", 0))}</td></tr>
+<tr><th>Last error</th><td class="muted">{esc(embedding.get("last_error") or "-")}</td></tr>
 </table></div>
 <div class="card"><h3>Consolidation</h3>
 <table>
-<tr><th>Schedule</th><td>{esc(scheduler.get('schedule') or '-')}（running={esc(scheduler.get('running'))}, runs={esc(scheduler.get('runs', 0))}）</td></tr>
-<tr><th>Next run in</th><td>{esc(scheduler.get('next_run_in'))}</td></tr>
-<tr><th>Last report</th><td>{esc(last.get('summary') or '-')}</td></tr>
+<tr><th>Schedule</th><td>{esc(scheduler.get("schedule") or "-")}（running={esc(scheduler.get("running"))}, runs={esc(scheduler.get("runs", 0))}）</td></tr>
+<tr><th>Next run in</th><td>{esc(scheduler.get("next_run_in"))}</td></tr>
+<tr><th>Last report</th><td>{esc(last.get("summary") or "-")}</td></tr>
 </table></div>
 <div class="card"><h3>Policy / Retention</h3>
-<pre>{esc(json.dumps({'policy': health.get('policy'), 'retention': health.get('retention'), 'retrieval': health.get('retrieval')}, ensure_ascii=False, indent=2))}</pre></div>"""
-        return web.Response(text=layout("记忆 · 健康度", "/memory", body, subtitle="向量化覆盖、配额与降级情况"), content_type="text/html")
+<pre>{esc(json.dumps({"policy": health.get("policy"), "retention": health.get("retention"), "retrieval": health.get("retrieval")}, ensure_ascii=False, indent=2))}</pre></div>"""
+        )
+        return web.Response(
+            text=layout("记忆 · 健康度", "/memory", body, subtitle="向量化覆盖、配额与降级情况"),
+            content_type="text/html",
+        )
 
     async def _memory_debug_page(self, request: web.Request) -> web.Response:
         form = await request.post() if request.method == "POST" else {}
@@ -1219,30 +1432,44 @@ class WebServer:
             )
             result_html = f"""
 <div class="card"><h3>管线</h3>
-<pre>{esc(json.dumps({k: v for k, v in data.items() if k != 'results'}, ensure_ascii=False, indent=2))}</pre></div>
+<pre>{esc(json.dumps({k: v for k, v in data.items() if k != "results"}, ensure_ascii=False, indent=2))}</pre></div>
 <div class="card"><h3>打分明细</h3>
 <table><tr><th>ID</th><th>final</th><th>semantic</th><th>keyword</th><th>importance</th>
 <th>confidence</th><th>recency</th><th>relationship</th><th>topic</th><th>temporal</th>
 <th>来源</th><th>内容</th></tr>
 {rows or '<tr><td colspan="12" class="muted">无结果</td></tr>'}</table></div>"""
-        body = self._memory_tabs("/memory/retrieval-debug") + f"""
+        body = (
+            self._memory_tabs("/memory/retrieval-debug")
+            + f"""
 <div class="card"><h3>检索调试器（仅后台）</h3><form method="post" action="/memory/retrieval-debug">
 <label>查询</label><input name="q" value="{esc(query)}">
 <label>Scope（留空=全部）</label><input name="scope" value="{esc(scope_key)}">
 <p><button class="btn btn-primary">运行</button></p></form></div>
 {result_html}"""
-        return web.Response(text=layout("记忆 · 检索调试", "/memory", body, subtitle="为什么这条记忆会被想起（打分明细）"), content_type="text/html")
+        )
+        return web.Response(
+            text=layout(
+                "记忆 · 检索调试", "/memory", body, subtitle="为什么这条记忆会被想起（打分明细）"
+            ),
+            content_type="text/html",
+        )
 
     async def _memory_embeddings_page(self, request: web.Request) -> web.Response:
         status = await self._memory_admin.embedding_status()
-        body = self._memory_tabs("/memory/embeddings") + f"""
+        body = (
+            self._memory_tabs("/memory/embeddings")
+            + f"""
 <div class="card"><h3>向量状态</h3>
 <pre>{esc(json.dumps(status, ensure_ascii=False, indent=2))}</pre>
 <form class="inline" method="post" action="/memory/embeddings/rebuild"><button class="btn btn-secondary btn-sm">重建向量</button></form>
 <form class="inline" method="post" action="/memory/embeddings/retry"><button class="btn btn-secondary btn-sm">重试失败项</button></form>
 <form class="inline" method="post" action="/memory/embeddings/clear-cache"><button class="btn btn-danger btn-sm">清空缓存</button></form>
 <p class="muted">重建/补齐在后台执行，不会阻塞 QQ 聊天。</p></div>"""
-        return web.Response(text=layout("记忆 · 向量", "/memory", body, subtitle="Embedding 服务状态、缓存与重建"), content_type="text/html")
+        )
+        return web.Response(
+            text=layout("记忆 · 向量", "/memory", body, subtitle="Embedding 服务状态、缓存与重建"),
+            content_type="text/html",
+        )
 
     async def _memory_embedding_action(self, request: web.Request) -> web.Response:
         action = request.match_info["action"]
@@ -1255,32 +1482,46 @@ class WebServer:
         else:
             result = {"error": f"unknown action: {action}"}
         return web.Response(
-            text=layout("记忆 · 向量", "/memory", self._memory_tabs("/memory/embeddings")
-                        + f'<div class="card"><pre>{esc(json.dumps(result, ensure_ascii=False))}</pre>'
-                          '<p><a href="/memory/embeddings">返回</a></p></div>'),
+            text=layout(
+                "记忆 · 向量",
+                "/memory",
+                self._memory_tabs("/memory/embeddings")
+                + f'<div class="card"><pre>{esc(json.dumps(result, ensure_ascii=False))}</pre>'
+                '<p><a href="/memory/embeddings">返回</a></p></div>',
+            ),
             content_type="text/html",
         )
 
     async def _memory_consolidation_page(self, request: web.Request) -> web.Response:
         status = await self._memory_admin.consolidation_status()
         last = status.get("last_report") or {}
-        body = self._memory_tabs("/memory/consolidation") + f"""
+        body = (
+            self._memory_tabs("/memory/consolidation")
+            + f"""
 <div class="card"><h3>巩固状态</h3>
 <pre>{esc(json.dumps(status, ensure_ascii=False, indent=2))}</pre></div>
 <div class="card"><h3>手动执行</h3><form method="post" action="/memory/consolidation/run">
 <label>Scope（留空=全部；user:123 / group:456）</label><input name="scope" value="">
 <p><button class="btn btn-primary">运行巩固</button></p></form>
 <p class="muted">去重合并、事件压缩、过期归档、配额清理；后台执行，不阻塞聊天。</p></div>
-<div class="card"><h3>上次结果</h3><pre>{esc(last.get('summary') or '尚未运行')}</pre></div>"""
-        return web.Response(text=layout("记忆 · 巩固", "/memory", body, subtitle="后台整理记忆的时间与结果"), content_type="text/html")
+<div class="card"><h3>上次结果</h3><pre>{esc(last.get("summary") or "尚未运行")}</pre></div>"""
+        )
+        return web.Response(
+            text=layout("记忆 · 巩固", "/memory", body, subtitle="后台整理记忆的时间与结果"),
+            content_type="text/html",
+        )
 
     async def _memory_consolidation_run(self, request: web.Request) -> web.Response:
         form = await request.post()
         result = await self._memory_admin.run_consolidation(str(form.get("scope", "")).strip())
         return web.Response(
-            text=layout("记忆 · 巩固", "/memory", self._memory_tabs("/memory/consolidation")
-                        + f'<div class="card"><pre>{esc(json.dumps(result, ensure_ascii=False, indent=2))}</pre>'
-                          '<p><a href="/memory/consolidation">返回</a></p></div>'),
+            text=layout(
+                "记忆 · 巩固",
+                "/memory",
+                self._memory_tabs("/memory/consolidation")
+                + f'<div class="card"><pre>{esc(json.dumps(result, ensure_ascii=False, indent=2))}</pre>'
+                '<p><a href="/memory/consolidation">返回</a></p></div>',
+            ),
             content_type="text/html",
         )
 
@@ -1332,7 +1573,7 @@ class WebServer:
         policy = data.get("policy", {})
         body = f"""
 <div class="card"><p class="muted">工具调用对 QQ 用户完全不可见；这里的管理项保存后立即生效。
-{'' if data.get('enabled') else '⚠️ 工具运行时当前未启用（config.yaml 的 tools.enabled）'}</p></div>
+{"" if data.get("enabled") else "⚠️ 工具运行时当前未启用（config.yaml 的 tools.enabled）"}</p></div>
 <div class="grid">{cards}</div>
 <div class="card"><h3>Tool Registry</h3>
 <table><tr><th>Tool</th><th>Version</th><th>Description</th><th>Category</th>
@@ -1359,9 +1600,7 @@ class WebServer:
         settings = detail.get("settings") or {}
         metrics = detail.get("metrics") or {}
         executions = detail.get("executions") or []
-        credential: dict[str, Any] = next(
-            iter((detail.get("credentials") or {}).values()), {}
-        )
+        credential: dict[str, Any] = next(iter((detail.get("credentials") or {}).values()), {})
 
         exec_rows = "".join(
             f"<tr><td class='muted'>{esc(format_ts(r['created_at']))}</td>"
@@ -1372,46 +1611,46 @@ class WebServer:
         )
         provider_options = "".join(
             f'<option value="{esc(p)}" {"selected" if settings.get("provider") == p else ""}>{esc(p)}</option>'
-            for p in (["open_meteo", "weatherapi"] if name == "weather" else ["tavily", "brave"] )
+            for p in (["open_meteo", "weatherapi"] if name == "weather" else ["tavily", "brave"])
         )
         locator_block = ""
         if name == "weather":
             locator_block = (
-                '<label>默认地点（用户未指定时使用）</label>'
+                "<label>默认地点（用户未指定时使用）</label>"
                 f'<input name="default_location" value="{esc(settings.get("default_location", ""))}">'
             )
         elif name == "web_search":
             locator_block = (
-                '<label>每次最多返回条数</label>'
+                "<label>每次最多返回条数</label>"
                 f'<input name="max_results" value="{esc(settings.get("max_results", 5))}">'
             )
         body = f"""
-<div class="card"><h3>{esc(meta['display_name'])}（{esc(name)}）</h3>
+<div class="card"><h3>{esc(meta["display_name"])}（{esc(name)}）</h3>
 <table>
-<tr><th>Description</th><td>{esc(meta['description'])}</td></tr>
-<tr><th>When to use</th><td>{esc(meta['when_to_use'])}</td></tr>
-<tr><th>When NOT to use</th><td>{esc(meta['when_not_to_use'])}</td></tr>
-<tr><th>Limitations</th><td>{esc(meta['limitations'])}</td></tr>
-<tr><th>Risk / Category</th><td>{esc(meta['risk_level'])} / {esc(meta['category'])}</td></tr>
-<tr><th>Enabled</th><td>{'✓' if meta['enabled'] else '✗'}</td></tr>
+<tr><th>Description</th><td>{esc(meta["description"])}</td></tr>
+<tr><th>When to use</th><td>{esc(meta["when_to_use"])}</td></tr>
+<tr><th>When NOT to use</th><td>{esc(meta["when_not_to_use"])}</td></tr>
+<tr><th>Limitations</th><td>{esc(meta["limitations"])}</td></tr>
+<tr><th>Risk / Category</th><td>{esc(meta["risk_level"])} / {esc(meta["category"])}</td></tr>
+<tr><th>Enabled</th><td>{"✓" if meta["enabled"] else "✗"}</td></tr>
 </table>
 <form class="inline" method="post" action="/api/tools/toggle">
 <input type="hidden" name="name" value="{esc(name)}">
-<input type="hidden" name="enabled" value="{0 if meta['enabled'] else 1}">
-<button class="btn btn-secondary btn-sm">{'禁用' if meta['enabled'] else '启用'}</button></form></div>
+<input type="hidden" name="enabled" value="{0 if meta["enabled"] else 1}">
+<button class="btn btn-secondary btn-sm">{"禁用" if meta["enabled"] else "启用"}</button></form></div>
 
 <div class="card"><h3>配置（保存立即生效）</h3>
 <form method="post" action="/api/tools/config">
 <input type="hidden" name="name" value="{esc(name)}">
 <label>Provider</label><select name="provider">{provider_options}</select>
 {locator_block}
-<label>超时（秒）</label><input name="timeout" value="{esc(meta['timeout'] or '')}">
-<label>缓存 TTL（秒，0=不缓存）</label><input name="cache_ttl_seconds" value="{esc(meta['cache_ttl_seconds'])}">
+<label>超时（秒）</label><input name="timeout" value="{esc(meta["timeout"] or "")}">
+<label>缓存 TTL（秒，0=不缓存）</label><input name="cache_ttl_seconds" value="{esc(meta["cache_ttl_seconds"])}">
 <label>凭据环境变量名（如 TAVILY_API_KEY，可留空）</label>
-<input name="api_key_env" value="{esc(settings.get('api_key_env', ''))}">
+<input name="api_key_env" value="{esc(settings.get("api_key_env", ""))}">
 <label>凭据值（留空表示不修改；只写入本地凭据库，永不回显）</label>
 <input name="api_key_value" type="password" value="">
-<p class="muted">当前凭据：{esc(credential.get('masked') or '未设置')}（来源：{esc(credential.get('source') or 'unset')}）</p>
+<p class="muted">当前凭据：{esc(credential.get("masked") or "未设置")}（来源：{esc(credential.get("source") or "unset")}）</p>
 <p><button class="btn btn-primary">保存</button></p></form></div>
 
 <div class="card"><h3>手动测试（不会发送到 QQ）</h3>
@@ -1422,7 +1661,7 @@ class WebServer:
 <p><button class="btn btn-primary">测试</button></p></form></div>
 
 <div class="card"><h3>Schema</h3>
-<pre>{esc(json.dumps(meta['input_schema'], ensure_ascii=False, indent=2))}</pre></div>
+<pre>{esc(json.dumps(meta["input_schema"], ensure_ascii=False, indent=2))}</pre></div>
 
 <div class="card"><h3>指标</h3><pre>{esc(json.dumps(metrics, ensure_ascii=False, indent=2))}</pre>
 <form class="inline" method="post" action="/api/tools/cache/clear">
@@ -1452,7 +1691,9 @@ class WebServer:
 <table><tr><th>时间</th><th>Tool</th><th>User</th><th>Group</th><th>状态</th>
 <th>错误</th><th>耗时(ms)</th><th>原因</th><th>摘要</th></tr>
 {body_rows or '<tr><td colspan="9" class="muted">暂无记录</td></tr>'}</table></div>"""
-        return web.Response(text=layout("工具 · 执行记录", "/tools", body), content_type="text/html")
+        return web.Response(
+            text=layout("工具 · 执行记录", "/tools", body), content_type="text/html"
+        )
 
     async def _tools_metrics_page(self, request: web.Request) -> web.Response:
         metrics = await self._tool_admin.metrics()
@@ -1482,18 +1723,20 @@ class WebServer:
 <div class="card"><h3>候选工具</h3>
 <table><tr><th>Tool</th><th>score</th><th>Enabled</th><th>Risk</th></tr>
 {rows or '<tr><td colspan="4" class="muted">没有候选（会直接聊天）</td></tr>'}</table>
-<p>Selected: <b>{esc(data['selected'] or 'none')}</b>（decision_mode={esc(data['decision_mode'])}）</p></div>
+<p>Selected: <b>{esc(data["selected"] or "none")}</b>（decision_mode={esc(data["decision_mode"])}）</p></div>
 <div class="card"><h3>被排除的候选</h3>
 <table><tr><th>Tool</th><th>状态</th><th>原因</th></tr>
 {rejected or '<tr><td colspan="3" class="muted">无</td></tr>'}</table></div>
-<div class="card"><h3>注入模型的工具说明（预览）</h3><pre>{esc(data['instruction_preview'] or '（无）')}</pre></div>"""
+<div class="card"><h3>注入模型的工具说明（预览）</h3><pre>{esc(data["instruction_preview"] or "（无）")}</pre></div>"""
         body = f"""<div class="card"><h3>Tool Decision Debug（仅后台）</h3>
 <form method="post" action="/tools/decision-debug">
 <label>模拟用户消息</label><input name="q" value="{esc(query)}">
 <p><button class="btn btn-primary">分析</button></p></form>
 <p class="muted">这里展示的是"会选哪些工具"，不会真的调用或发送任何消息。</p></div>
 {result_html}"""
-        return web.Response(text=layout("工具 · 决策调试", "/tools", body), content_type="text/html")
+        return web.Response(
+            text=layout("工具 · 决策调试", "/tools", body), content_type="text/html"
+        )
 
     async def _tools_permissions_page(self, request: web.Request) -> web.Response:
         rules = await self._tool_admin.permissions()
@@ -1550,7 +1793,9 @@ class WebServer:
 
     async def _api_tool_toggle(self, request: web.Request) -> web.Response:
         form = await request.post()
-        await self._tool_admin.set_enabled(str(form.get("name", "")), str(form.get("enabled")) == "1")
+        await self._tool_admin.set_enabled(
+            str(form.get("name", "")), str(form.get("enabled")) == "1"
+        )
         raise web.HTTPFound(f"/tools/{form.get('name', '')}")
 
     async def _api_tool_config(self, request: web.Request) -> web.Response:
@@ -1583,10 +1828,13 @@ class WebServer:
             result = await self._tool_admin.test_tool(name, arguments)
         rendered = json.dumps(result, ensure_ascii=False, indent=2)
         return web.Response(
-            text=layout("工具 · 测试", "/tools",
-                        f'<div class="card"><h3>{esc(name)} 测试结果</h3>'
-                        f"<pre>{esc(rendered)}</pre>"
-                        f'<p><a href="/tools/{esc(name)}">返回</a></p></div>'),
+            text=layout(
+                "工具 · 测试",
+                "/tools",
+                f'<div class="card"><h3>{esc(name)} 测试结果</h3>'
+                f"<pre>{esc(rendered)}</pre>"
+                f'<p><a href="/tools/{esc(name)}">返回</a></p></div>',
+            ),
             content_type="text/html",
         )
 
@@ -1666,7 +1914,7 @@ class WebServer:
         )
         body = f"""
 <div class="card"><p class="muted">Agent 只在多步任务时介入；QQ 用户只会看到自然回复。
-{'' if policy.get('enabled') else '⚠️ Agent 当前未启用（config.yaml 的 agent.enabled）'}</p></div>
+{"" if policy.get("enabled") else "⚠️ Agent 当前未启用（config.yaml 的 agent.enabled）"}</p></div>
 <div class="grid">{cards}</div>
 <div class="card"><h3>最近任务</h3>
 <table><tr><th>Task</th><th>类型</th><th>状态</th><th>User</th><th>Steps</th><th>Tools</th>
@@ -1683,8 +1931,17 @@ class WebServer:
         options = "".join(
             f'<option value="{s}" {"selected" if s == status else ""}>{s or "全部"}</option>'
             for s in (
-                "", "created", "planning", "ready", "running", "paused", "replanning",
-                "completed", "failed", "cancelled", "expired",
+                "",
+                "created",
+                "planning",
+                "ready",
+                "running",
+                "paused",
+                "replanning",
+                "completed",
+                "failed",
+                "cancelled",
+                "expired",
             )
         )
         rows = "".join(
@@ -1778,19 +2035,19 @@ class WebServer:
         body = f"""
 <div class="card"><h3>Task {esc(task_id)}</h3>
 <table>
-<tr><th>目标</th><td>{esc(goal.get('description') or '')}</td></tr>
-<tr><th>状态</th><td>{esc(task['status'])}（结果：{esc(task.get('result_status') or '-')}）</td></tr>
-<tr><th>类型 / 用户</th><td>{esc(task['classification'])} / {esc(task.get('user_id') or '')}</td></tr>
-<tr><th>步骤 / 工具调用 / 重规划</th><td>{esc(task.get('step_count') or 0)} / {esc(task.get('tool_calls') or 0)} / {esc(task.get('replans') or 0)}</td></tr>
-<tr><th>耗时</th><td>{esc(round(task.get('duration_ms') or 0))} ms</td></tr>
-<tr><th>错误</th><td>{esc(task.get('error_type') or '-')}</td></tr>
+<tr><th>目标</th><td>{esc(goal.get("description") or "")}</td></tr>
+<tr><th>状态</th><td>{esc(task["status"])}（结果：{esc(task.get("result_status") or "-")}）</td></tr>
+<tr><th>类型 / 用户</th><td>{esc(task["classification"])} / {esc(task.get("user_id") or "")}</td></tr>
+<tr><th>步骤 / 工具调用 / 重规划</th><td>{esc(task.get("step_count") or 0)} / {esc(task.get("tool_calls") or 0)} / {esc(task.get("replans") or 0)}</td></tr>
+<tr><th>耗时</th><td>{esc(round(task.get("duration_ms") or 0))} ms</td></tr>
+<tr><th>错误</th><td>{esc(task.get("error_type") or "-")}</td></tr>
 </table>
 <p>{control_button("pause", "暂停")}{control_button("resume", "继续")}
 {control_button("cancel", "取消", danger=True)}{control_button("retry", "重试（重新执行）")}
 {control_button("replay", "回放（仅重放规划，不发送）")}</p></div>
 
 <div class="card"><h3>结果</h3>
-<p>{esc(task.get('result_summary') or '（无）')}</p>
+<p>{esc(task.get("result_summary") or "（无）")}</p>
 <p class="muted">已确认信息</p><ul>{facts or '<li class="muted">无</li>'}</ul>
 <p class="muted">未完成</p><ul>{unresolved or '<li class="muted">无</li>'}</ul>
 <p class="muted">来源</p><ul>{sources or '<li class="muted">无</li>'}</ul></div>
@@ -1808,14 +2065,18 @@ class WebServer:
 <div class="card"><h3>Trace（结构化事件，不含模型思维链）</h3>
 <table><tr><th>时间</th><th>级别</th><th>事件</th><th>详情</th></tr>
 {trace_rows or '<tr><td colspan="4" class="muted">无</td></tr>'}</table></div>"""
-        return web.Response(text=layout("Agent · 任务详情", "/agent", body), content_type="text/html")
+        return web.Response(
+            text=layout("Agent · 任务详情", "/agent", body), content_type="text/html"
+        )
 
     async def _agent_simulator_page(self, request: web.Request) -> web.Response:
         form = await request.post() if request.method == "POST" else {}
         query = str(form.get("q") or request.query.get("q", "")).strip()
         result_html = ""
         if query:
-            payload = await self._agent_admin.simulate(query, execute=str(form.get("execute")) == "1")
+            payload = await self._agent_admin.simulate(
+                query, execute=str(form.get("execute")) == "1"
+            )
             result_html = (
                 '<div class="card"><h3>模拟结果（不会执行外部请求）</h3>'
                 f"<pre>{esc(json.dumps(payload, ensure_ascii=False, indent=2))}</pre></div>"
@@ -1853,13 +2114,15 @@ class WebServer:
         action = str(form.get("action", ""))
         result = await self._agent_admin.control(action, task_id)
         return web.Response(
-            text=layout("Agent", "/agent",
-                        f'<div class="card"><h3>{esc(action)}</h3>'
-                        f"<pre>{esc(json.dumps(result, ensure_ascii=False, indent=2))}</pre>"
-                        f'<p><a href="/agent/tasks/{esc(task_id)}">返回任务</a></p></div>'),
+            text=layout(
+                "Agent",
+                "/agent",
+                f'<div class="card"><h3>{esc(action)}</h3>'
+                f"<pre>{esc(json.dumps(result, ensure_ascii=False, indent=2))}</pre>"
+                f'<p><a href="/agent/tasks/{esc(task_id)}">返回任务</a></p></div>',
+            ),
             content_type="text/html",
         )
-
 
     # --------------------------------------------------- config editor (v0.9)
 
@@ -1880,13 +2143,13 @@ class WebServer:
             content_type="text/html",
         )
 
-    async def _config_save(self, request: web.Request, payload: dict[str, Any], tab: str) -> web.Response:
+    async def _config_save(
+        self, request: web.Request, payload: dict[str, Any], tab: str
+    ) -> web.Response:
         try:
             outcome = await self._config_admin.save(payload)
         except Exception as exc:  # noqa: BLE001 - validation errors are user-facing
-            raise web.HTTPFound(
-                f"/config?tab={tab}&result={quote('!' + str(exc)[:300])}"
-            ) from exc
+            raise web.HTTPFound(f"/config?tab={tab}&result={quote('!' + str(exc)[:300])}") from exc
         notes = outcome.get("notes") or []
         message = "已保存并生效" if not notes else "已保存 · " + "；".join(notes)
         raise web.HTTPFound(f"/config?tab={tab}&result={quote(message)}")
@@ -1985,15 +2248,11 @@ class WebServer:
                 f"/memory/correction?result={quote('!修正失败：' + str(exc)[:200])}"
             ) from exc
         if result.get("changed"):
-            message = (
-                f"已修正：{str(plan.get('before') or '')[:40]} → {str(result.get('content') or '')[:40]}"
-            )
+            message = f"已修正：{str(plan.get('before') or '')[:40]} → {str(result.get('content') or '')[:40]}"
         else:
             message = "没有需要修改的内容"
         scope_key = str(plan.get("scope_key") or "")
-        raise web.HTTPFound(
-            f"/memory/correction?scope={quote(scope_key)}&result={quote(message)}"
-        )
+        raise web.HTTPFound(f"/memory/correction?scope={quote(scope_key)}&result={quote(message)}")
 
     # ---------------------------------------------------- social cognition (v0.9)
 
@@ -2008,9 +2267,13 @@ class WebServer:
     async def _social_observations_page(self, request: web.Request) -> web.Response:
         group_id = request.query.get("group", "")
         rows = await self._social_admin.observations(group_id=group_id)
-        body = social_page._tabs("/social/observations") + social_page.observations_page(rows, group_id)
+        body = social_page._tabs("/social/observations") + social_page.observations_page(
+            rows, group_id
+        )
         return web.Response(
-            text=layout("社交 · 观察记录", "/social", body, subtitle="结构化决策日志（调试用，不保存隐私）"),
+            text=layout(
+                "社交 · 观察记录", "/social", body, subtitle="结构化决策日志（调试用，不保存隐私）"
+            ),
             content_type="text/html",
         )
 
@@ -2068,8 +2331,12 @@ class WebServer:
         }
         body = conversation_page._tabs("/conversation") + conversation_page.dashboard(data, turns)
         return web.Response(
-            text=layout("对话轮次", "/conversation", body,
-                        subtitle="连续消息合并为一个 Turn；改口让旧回复作废（v1.2）"),
+            text=layout(
+                "对话轮次",
+                "/conversation",
+                body,
+                subtitle="连续消息合并为一个 Turn；改口让旧回复作废（v1.2）",
+            ),
             content_type="text/html",
         )
 
@@ -2136,8 +2403,12 @@ class WebServer:
         body = conversation_page._tabs("/conversation/continuity")
         body += conversation_page.continuity_page(data)
         return web.Response(
-            text=layout("对话 · 延续状态", "/conversation", body,
-                        subtitle="她最近关注什么、有什么没做完、和谁的共同经历（v1.2）"),
+            text=layout(
+                "对话 · 延续状态",
+                "/conversation",
+                body,
+                subtitle="她最近关注什么、有什么没做完、和谁的共同经历（v1.2）",
+            ),
             content_type="text/html",
         )
 
@@ -2154,20 +2425,17 @@ class WebServer:
                 "context": sandbox.context(),
                 "spaces": [s.model_dump(mode="json") for s in sandbox.spaces.all()],
                 "objects": [o.model_dump(mode="json") for o in sandbox.objects.all()],
-                "inventories": {
-                    key: inv.items for key, inv in sandbox.inventories.all().items()
-                },
+                "inventories": {key: inv.items for key, inv in sandbox.inventories.all().items()},
                 "needs": {
-                    key: need.model_dump(mode="json")
-                    for key, need in sandbox.needs.all().items()
+                    key: need.model_dump(mode="json") for key, need in sandbox.needs.all().items()
                 },
                 "action": (
                     sandbox.current_action.model_dump(mode="json")
-                    if sandbox.current_action else None
+                    if sandbox.current_action
+                    else None
                 ),
                 "action_defs": [
-                    d.model_dump(mode="json")
-                    for d in sandbox.actions.definitions.values()
+                    d.model_dump(mode="json") for d in sandbox.actions.definitions.values()
                 ],
                 "pet": sandbox.pet_system.snapshot(),
                 "social_spaces": [
@@ -2199,9 +2467,7 @@ class WebServer:
         )
 
     async def _sandbox_needs_page(self, request: web.Request) -> web.Response:
-        body = sandbox_page._tabs("/sandbox/needs") + sandbox_page.needs_page(
-            self._sandbox_data()
-        )
+        body = sandbox_page._tabs("/sandbox/needs") + sandbox_page.needs_page(self._sandbox_data())
         return web.Response(
             text=layout("沙盒 · 需求与动作", "/sandbox", body, subtitle="她为什么做这件事"),
             content_type="text/html",
@@ -2209,13 +2475,9 @@ class WebServer:
 
     async def _sandbox_bible_page(self, request: web.Request) -> web.Response:
         msg = request.query.get("msg", "")
-        body = sandbox_page._tabs("/sandbox/bible") + sandbox_page.bible_page(
-            self._sandbox_data()
-        )
+        body = sandbox_page._tabs("/sandbox/bible") + sandbox_page.bible_page(self._sandbox_data())
         if msg:
-            body = (
-                f"<div class='card'><p class='muted'>{ui.esc(msg)}</p></div>" + body
-            )
+            body = f"<div class='card'><p class='muted'>{ui.esc(msg)}</p></div>" + body
         return web.Response(
             text=layout("沙盒 · 人物档案", "/sandbox", body, subtitle="Canonical Source 与覆盖率"),
             content_type="text/html",
@@ -2249,7 +2511,9 @@ class WebServer:
             sandbox._restore_state(backup)  # noqa: SLF001 - dry run never sticks
             sandbox.current_action = before
         self._bot.log.info("[Web] sandbox dry-run %.0fh: %s", hours, sim)
-        raise web.HTTPFound("/sandbox/trace?msg=" + quote(f"干跑 {hours:.0f}h 完成（未发送任何 QQ）"))
+        raise web.HTTPFound(
+            "/sandbox/trace?msg=" + quote(f"干跑 {hours:.0f}h 完成（未发送任何 QQ）")
+        )
 
     async def _api_sandbox_control(self, request: web.Request) -> web.Response:
         import json as _json
@@ -2307,10 +2571,16 @@ class WebServer:
                 "表情包库未启用",
                 "<p class='muted'>在 config 打开 <code>media.enabled</code>。</p>",
             )
-            return web.Response(text=layout("表情", "/stickers", body, subtitle="角色的表情资产库"), content_type="text/html")
+            return web.Response(
+                text=layout("表情", "/stickers", body, subtitle="角色的表情资产库"),
+                content_type="text/html",
+            )
 
         def tag_badges(tags: list[str]) -> str:
-            return " ".join(ui.badge(tag, "info") for tag in (tags or [])[:6]) or '<span class="muted">-</span>'
+            return (
+                " ".join(ui.badge(tag, "info") for tag in (tags or [])[:6])
+                or '<span class="muted">-</span>'
+            )
 
         rows = "".join(
             f"<tr><td>{esc(s['file_name'] or s['id'])}</td>"
@@ -2334,8 +2604,11 @@ class WebServer:
                 ("表情总数", stats["total"], "已收藏、可用的表情"),
                 ("已禁用", stats["disabled"], ""),
                 ("原生表情", stats["native_faces"], "QQ 原生 face，可低成本复用"),
-                ("视觉识别", "可用" if stats["vision_enabled"] else "未配置",
-                 "是否配置了视觉模型（未配置时表情只靠文字摘要打标签）"),
+                (
+                    "视觉识别",
+                    "可用" if stats["vision_enabled"] else "未配置",
+                    "是否配置了视觉模型（未配置时表情只靠文字摘要打标签）",
+                ),
             ]
         )
         filters = (
@@ -2347,9 +2620,19 @@ class WebServer:
         )
         table = ui.table(
             ["名称", "情绪", "意图", "描述", "使用", "状态", ""],
-            rows or '<tr><td colspan="7" class="muted">还没有表情包，把文件放进 data/stickers 或等她自动收藏</td></tr>',
-            tips=["文件名/emoji", "情绪标签", "意图标签", "视觉摘要", "被使用的次数", "状态", "禁用/启用/删除"],
-            empty="还没有表情包", table_id="stickers",
+            rows
+            or '<tr><td colspan="7" class="muted">还没有表情包，把文件放进 data/stickers 或等她自动收藏</td></tr>',
+            tips=[
+                "文件名/emoji",
+                "情绪标签",
+                "意图标签",
+                "视觉摘要",
+                "被使用的次数",
+                "状态",
+                "禁用/启用/删除",
+            ],
+            empty="还没有表情包",
+            table_id="stickers",
         )
         controls = (
             "<form class='inline' method='post' action='/api/stickers/reindex'>"
@@ -2358,12 +2641,18 @@ class WebServer:
         body = (
             ui.flash("ok", msg)
             + tiles
-            + ui.card("表情包库", controls + filters + table,
-                      tip_text="表情是角色的表达资产（≠ 记忆）；普通图片永远不会进入这里")
+            + ui.card(
+                "表情包库",
+                controls + filters + table,
+                tip_text="表情是角色的表达资产（≠ 记忆）；普通图片永远不会进入这里",
+            )
             + '<p class="hint">手动导入：把文件放进 <code>data/stickers/</code> 后点「重建索引」。'
-            '收到用户 mface/face 时她会后台自行判断是否收藏，不需要任何命令。</p>'
+            "收到用户 mface/face 时她会后台自行判断是否收藏，不需要任何命令。</p>"
         )
-        return web.Response(text=layout("表情", "/stickers", body, subtitle="角色的表情资产库"), content_type="text/html")
+        return web.Response(
+            text=layout("表情", "/stickers", body, subtitle="角色的表情资产库"),
+            content_type="text/html",
+        )
 
     async def _api_sticker_action(self, request: web.Request) -> web.Response:
         action = request.match_info["action"]
@@ -2379,6 +2668,7 @@ class WebServer:
     async def _api_sticker_reindex(self, request: web.Request) -> web.Response:
         await self._sticker_admin.reindex()
         raise web.HTTPFound("/stickers?msg=" + quote("已重新建立索引（后台完成）"))
+
 
 def _sample_arguments(name: str) -> dict[str, Any]:
     """Prefilled test payloads for the WebUI test box (spec §41)."""
@@ -2412,4 +2702,3 @@ def format_ts(timestamp: Any) -> str:
         return "-"
 
     # ------------------------------------------------------------- behavior
-

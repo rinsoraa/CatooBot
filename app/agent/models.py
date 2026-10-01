@@ -166,13 +166,13 @@ class AgentResult(BaseModel):
 
     task_id: str
     goal_id: str = ""
-    status: str = "completed"          # completed | partial | failed | cancelled | expired
+    status: str = "completed"  # completed | partial | failed | cancelled | expired
     summary: str = ""
     facts: list[str] = Field(default_factory=list)
     sources: list[str] = Field(default_factory=list)
     unresolved: list[str] = Field(default_factory=list)
     confidence: float = 0.0
-    error_type: str = ""          # e.g. planning_failed (goal unclear)
+    error_type: str = ""  # e.g. planning_failed (goal unclear)
     completed_at: int = 0
 
     @property
@@ -244,9 +244,7 @@ class AgentBudget:
         }
 
 
-def observations_to_context(
-    observations: Iterable[Observation], *, limit: int = 6
-) -> str:
+def observations_to_context(observations: Iterable[Observation], *, limit: int = 6) -> str:
     """Compress observations for the model (spec §143: recent + facts only)."""
     items = list(observations)
     if not items:

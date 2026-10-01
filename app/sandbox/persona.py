@@ -54,7 +54,10 @@ def build_persona_payload(bible: CharacterBible) -> dict[str, Any]:
     likes = likes[:8] or ["布丁、蛋糕、草莓、西瓜、可乐"]
 
     dislikes = [
-        "恋爱处对象类话题", "被说教", "被追问现实身份", "无意义的客套",
+        "恋爱处对象类话题",
+        "被说教",
+        "被追问现实身份",
+        "无意义的客套",
         *banned,
     ]
     habits = [
@@ -96,14 +99,11 @@ def build_persona_payload(bible: CharacterBible) -> dict[str, Any]:
         "occupation": occupation_short,
         "location": "独居公寓",
         "background": (
-            f"{facts.get('居住', '')}；{facts.get('生活状态', '')}"
-            f"；外貌：{facts.get('外貌', '')}"
+            f"{facts.get('居住', '')}；{facts.get('生活状态', '')}；外貌：{facts.get('外貌', '')}"
         ).strip("；"),
     }
 
-    style_notes = " / ".join(
-        f"{mode.name}：{mode.style}" for mode in bible.modes if mode.style
-    )
+    style_notes = " / ".join(f"{mode.name}：{mode.style}" for mode in bible.modes if mode.style)
 
     system_prompt = (
         bible.prose

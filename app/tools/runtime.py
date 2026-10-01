@@ -225,9 +225,7 @@ class ToolRuntime:
             ),
         )
 
-    async def set_permission(
-        self, scope: str, ref: str, tool_name: str, allowed: bool
-    ) -> bool:
+    async def set_permission(self, scope: str, ref: str, tool_name: str, allowed: bool) -> bool:
         if self._db is None:
             return False
         await self._db.execute(

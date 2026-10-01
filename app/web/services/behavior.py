@@ -49,11 +49,7 @@ class BehaviorService:
     # ------------------------------------------------------------- settings
 
     async def load_overrides(self) -> dict[str, Any]:
-        data = (
-            await self.bot.database.get_setting_json(SETTINGS_KEY)
-            if self.bot.database
-            else None
-        )
+        data = await self.bot.database.get_setting_json(SETTINGS_KEY) if self.bot.database else None
         return data if isinstance(data, dict) else {}
 
     async def apply_overrides(self, overrides: dict[str, Any]) -> BehaviorConfig:
@@ -141,9 +137,7 @@ class BehaviorService:
         }
         overrides.update(payload)
         if self.bot.database:
-            await self.bot.database.set_setting_json(
-                SETTINGS_KEY, overrides, int(time.time())
-            )
+            await self.bot.database.set_setting_json(SETTINGS_KEY, overrides, int(time.time()))
         await self.apply_overrides(overrides)
         # Presence windows are owned by the resolver instance; rebuild it.
         self.bot.presence = PresenceResolver(
@@ -285,17 +279,13 @@ class BehaviorService:
             def now(self) -> datetime:
                 return simulated
 
-        frozen = _Frozen(
-            self.bot.config.character.timezone, self.bot.config.behavior.schedule
-        )
+        frozen = _Frozen(self.bot.config.character.timezone, self.bot.config.behavior.schedule)
         return frozen
 
     # ------------------------------------------------------- state controls
 
     async def test_state_transition(self, direction: int) -> dict[str, Any]:
-        state = await self.bot.character.states.nudge_mood(
-            direction, source="webui_manual"
-        )
+        state = await self.bot.character.states.nudge_mood(direction, source="webui_manual")
         return {"ok": True, "state": state.model_dump()}
 
     async def reset_state(self) -> dict[str, Any]:

@@ -50,9 +50,7 @@ def make_router(
     clock = clock or FakeClock()
     model_names = model_names or list(behaviors)
     provider = MockAIProvider(behaviors=behaviors)
-    specs = [
-        ModelSpec(name=n, provider="mock", model=n) for n in model_names
-    ]
+    specs = [ModelSpec(name=n, provider="mock", model=n) for n in model_names]
     router = ModelRouter(
         specs,
         {"mock": provider},
@@ -279,9 +277,7 @@ class TestEmptyResponsePolicy:
     """A reasoning-only empty stop: retry the same model once, then fail over."""
 
     async def test_retries_same_model_once_then_succeeds(self) -> None:
-        router, provider, _ = make_router(
-            {"A": [EmptyResponseError("mock", "A"), "这下有了"]}
-        )
+        router, provider, _ = make_router({"A": [EmptyResponseError("mock", "A"), "这下有了"]})
         response = await router.chat(request())
         assert response.content == "这下有了"
         assert provider.call_count("A") == 2

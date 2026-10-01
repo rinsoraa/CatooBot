@@ -55,8 +55,8 @@ FileFetcher = Callable[[str], Awaitable[tuple[bytes, str]]]
 class RecognitionOutcome:
     """What the (awaited) recognition step produced — feeds the decision."""
 
-    status: str                        # disabled / throttled / done
-    vision: Any = None                 # VisionResult | None
+    status: str  # disabled / throttled / done
+    vision: Any = None  # VisionResult | None
     vision_text: str = ""
 
 
@@ -64,7 +64,7 @@ class RecognitionOutcome:
 class BackgroundMediaOutcome:
     """What the background sticker/vision pass did (for narration + tests)."""
 
-    status: str                        # disabled / throttled / done
+    status: str  # disabled / throttled / done
     vision_text: str = ""
     decision: AcquisitionDecision | None = None
 
@@ -101,11 +101,15 @@ class MediaRuntime:
         self.normalizer = MessageMediaNormalizer(logger=self._log)
 
         self.vision = ImageUnderstandingRuntime(
-            engine=engine, database=database, vision_model=config.vision_model,
-            logger=self._log, clock=clock,
+            engine=engine,
+            database=database,
+            vision_model=config.vision_model,
+            logger=self._log,
+            clock=clock,
         )
-        self.library = StickerLibrary(database=database, sticker_dir=config.sticker_dir,
-                                      logger=self._log, clock=clock)
+        self.library = StickerLibrary(
+            database=database, sticker_dir=config.sticker_dir, logger=self._log, clock=clock
+        )
         self.analyzer = StickerAnalyzer(analysis_version=config.analysis_version)
         self.acquisition = StickerAcquisitionEvaluator()
         self.faces = NativeFaceRegistry()
@@ -114,13 +118,18 @@ class MediaRuntime:
             max_per_turn=config.max_stickers_per_turn,
             clock=clock,
         )
-        self.selector = StickerSelector(library=self.library, faces=self.faces,
-                                        logger=self._log, clock=clock)
+        self.selector = StickerSelector(
+            library=self.library, faces=self.faces, logger=self._log, clock=clock
+        )
         self.sender = StickerSender()
         self.indexer = StickerLibraryIndexer(
-            library=self.library, analyzer=self.analyzer, vision=self.vision,
-            import_dir=config.sticker_dir, analysis_version=config.analysis_version,
-            analysis_model=config.vision_model, logger=self._log,
+            library=self.library,
+            analyzer=self.analyzer,
+            vision=self.vision,
+            import_dir=config.sticker_dir,
+            analysis_version=config.analysis_version,
+            analysis_model=config.vision_model,
+            logger=self._log,
         )
 
     @property
@@ -177,9 +186,7 @@ class MediaRuntime:
         self._bg_vision[key] = (hour, used + 1)
         return True
 
-    async def recognize(
-        self, media: MediaContent, *, scope_key: str = ""
-    ) -> RecognitionOutcome:
+    async def recognize(self, media: MediaContent, *, scope_key: str = "") -> RecognitionOutcome:
         """Download + vision for an incoming image/sticker (no acquisition).
 
         Split out so the *decision* (reply or not) can wait for the result and
@@ -263,9 +270,7 @@ class MediaRuntime:
     @staticmethod
     def as_sticker_candidate(item: MediaContent) -> MediaContent:
         """Reclassify one vision-confirmed meme into a sticker source."""
-        return item.model_copy(
-            update={"media_type": "sticker", "source_type": "vision_meme"}
-        )
+        return item.model_copy(update={"media_type": "sticker", "source_type": "vision_meme"})
 
     async def collect_recognized(
         self, item: MediaContent, vision: VisionResult | None
@@ -278,9 +283,7 @@ class MediaRuntime:
         if item.media_type == "sticker":
             return await self.consider_collect(item, vision=vision)
         if vision is not None and self.looks_like_sticker(vision):
-            return await self.consider_collect(
-                self.as_sticker_candidate(item), vision=vision
-            )
+            return await self.consider_collect(self.as_sticker_candidate(item), vision=vision)
         return None
 
     async def _persist_file(self, asset: StickerAsset, media: MediaContent) -> None:
@@ -301,8 +304,12 @@ class MediaRuntime:
             data, content_type = fetched
             digest = sha256_bytes(data)
             mime = (content_type or "image/jpeg").split(";")[0].strip().lower()
-            ext = {"image/jpeg": ".jpg", "image/png": ".png", "image/gif": ".gif",
-                   "image/webp": ".webp"}.get(mime, ".jpg")
+            ext = {
+                "image/jpeg": ".jpg",
+                "image/png": ".png",
+                "image/gif": ".gif",
+                "image/webp": ".webp",
+            }.get(mime, ".jpg")
             directory = Path(self.config.sticker_dir)
             if not directory.is_absolute():
                 directory = PROJECT_ROOT / directory

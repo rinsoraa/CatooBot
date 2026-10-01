@@ -46,9 +46,7 @@ class ToolResultProcessor:
         metadata.setdefault("confidence", 0.6 if result.success else 0.0)
         metadata.setdefault("timestamp", metadata.get("timestamp", ""))
 
-        return result.model_copy(
-            update={"data": data, "summary": summary, "metadata": metadata}
-        )
+        return result.model_copy(update={"data": data, "summary": summary, "metadata": metadata})
 
     # ------------------------------------------------------------ internals
 

@@ -41,12 +41,15 @@ class ConversationDecisionEngine:
         # --- hard gates (structured, ordered) ----------------------------
         if hard_block:
             return ConversationDecision(
-                respond=False, intent=turn.classification.value,
-                silence_reason=hard_block, reasons=["hard_block"],
+                respond=False,
+                intent=turn.classification.value,
+                silence_reason=hard_block,
+                reasons=["hard_block"],
             )
         if social_decision is not None and not getattr(social_decision, "should_reply", True):
             return ConversationDecision(
-                respond=False, intent=turn.classification.value,
+                respond=False,
+                intent=turn.classification.value,
                 silence_reason=getattr(social_decision, "reason_code", "") or "social_declined",
                 reasons=["social_declined"],
             )

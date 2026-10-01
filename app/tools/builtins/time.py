@@ -62,8 +62,7 @@ class TimeTool(ToolBase):
         period = next((label for start, end, label in _PERIODS if start <= now.hour < end), "现在")
         weekday = _WEEKDAYS[now.weekday()]
         summary = (
-            f"当前时间：{now.strftime('%Y-%m-%d %H:%M')}（{weekday}，{period}），"
-            f"时区 {tz_name}。"
+            f"当前时间：{now.strftime('%Y-%m-%d %H:%M')}（{weekday}，{period}），时区 {tz_name}。"
         )
         return ToolResult(
             tool_name=self.metadata.name,

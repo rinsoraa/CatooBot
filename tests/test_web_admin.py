@@ -183,8 +183,13 @@ async def test_webui_http_gate(tmp_path, unused_tcp_port) -> None:
                 assert resp.status == 200
                 assert "记忆" in body and "记忆修正" in body
             other_pages = (
-                "/users", "/groups", "/sessions", "/models",
-                "/prompts", "/logs", "/runtime",
+                "/users",
+                "/groups",
+                "/sessions",
+                "/models",
+                "/prompts",
+                "/logs",
+                "/runtime",
             )
             for path in other_pages:
                 async with session.get(base + path) as resp:

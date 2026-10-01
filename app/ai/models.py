@@ -55,9 +55,7 @@ class ChatMessage(BaseModel):
 
     def to_openai(self) -> dict[str, Any]:
         if self.images:
-            parts: list[dict[str, Any]] = [
-                {"type": "text", "text": self.content or ""}
-            ]
+            parts: list[dict[str, Any]] = [{"type": "text", "text": self.content or ""}]
             for image in self.images:
                 parts.append({"type": "image_url", "image_url": {"url": image}})
             return {"role": self.role, "content": parts}

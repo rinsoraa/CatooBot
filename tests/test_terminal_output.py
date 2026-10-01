@@ -111,7 +111,7 @@ class TestNarrator:
             )
         text = console.strip(self._capture(caplog)[0])
         assert "心情 happy" in text
-        assert "▰▰▰▰▰▱▱▱▱▱" in text          # energy bar, half full
+        assert "▰▰▰▰▰▱▱▱▱▱" in text  # energy bar, half full
         assert "正在 打游戏（房间）" in text
 
     def test_panel_emits_bordered_block(self, caplog) -> None:
@@ -141,9 +141,7 @@ class _ExplodingLogger:
 
 class TestLogRendering:
     def _record(self, message: str, *, level: int = logging.INFO) -> logging.LogRecord:
-        return logging.LogRecord(
-            "CatooBot.World", level, __file__, 10, message, None, None
-        )
+        return logging.LogRecord("CatooBot.World", level, __file__, 10, message, None, None)
 
     def test_console_formatter_shows_badges_and_names(self) -> None:
         from app.utils.logger import ConsoleFormatter
@@ -205,7 +203,7 @@ class TestNarrationInChat:
             joined = console.strip("\n".join(r.getMessage() for r in caplog.records))
             assert "感知" in joined
             assert "判断" in joined
-            assert "在的呀" in joined          # the outgoing text is echoed back
+            assert "在的呀" in joined  # the outgoing text is echoed back
         finally:
             await bot.shutdown()
 
@@ -215,9 +213,7 @@ class TestNarrationInChat:
         from app.sandbox import BibleCompiler, SandboxRuntime, SandboxStore
 
         bible = BibleCompiler("config/character_bible.md").compile()
-        runtime = SandboxRuntime(
-            SandboxConfig(simulation_seed=3), SandboxStore(None), bible=bible
-        )
+        runtime = SandboxRuntime(SandboxConfig(simulation_seed=3), SandboxStore(None), bible=bible)
         await runtime.start()
         runtime.narrate_ticks = False
         caplog.clear()

@@ -73,22 +73,16 @@ def _state() -> CharacterStateManager:
 
 class TestPrivateReplies:
     def test_reply_disabled_means_instant(self) -> None:
-        timing = ReplyTiming(
-            BehaviorReplyTimingConfig(enabled=False), FrozenPresence()
-        )
+        timing = ReplyTiming(BehaviorReplyTimingConfig(enabled=False), FrozenPresence())
         assert timing.compute(reply_text="你好呀", state=_state().state) == 0.0
 
     def test_min_and_max_delay_bound_the_delay(self) -> None:
-        cfg = BehaviorReplyTimingConfig(
-            enabled=True, min_delay=3.0, max_delay=3.0, jitter=0.0
-        )
+        cfg = BehaviorReplyTimingConfig(enabled=True, min_delay=3.0, max_delay=3.0, jitter=0.0)
         timing = ReplyTiming(cfg, FrozenPresence())
         assert timing.compute(reply_text="随便一句话", state=_state().state) == 3.0
 
     def test_sleeping_makes_replies_slower(self) -> None:
-        cfg = BehaviorReplyTimingConfig(
-            enabled=True, min_delay=0.1, max_delay=60.0, jitter=0.0
-        )
+        cfg = BehaviorReplyTimingConfig(enabled=True, min_delay=0.1, max_delay=60.0, jitter=0.0)
         schedule = BehaviorScheduleConfig(
             sleep_enabled=True, sleep_start="00:30", sleep_end="08:00"
         )
@@ -110,9 +104,7 @@ class TestPrivateReplies:
         from app.config.settings import BehaviorChunkingConfig
 
         chunker = MessageChunker(BehaviorChunkingConfig(enabled=False))
-        assert chunker.plan("第一句话。第二句话。第三句话。") == [
-            "第一句话。第二句话。第三句话。"
-        ]
+        assert chunker.plan("第一句话。第二句话。第三句话。") == ["第一句话。第二句话。第三句话。"]
 
     def test_chunk_probability_one_splits_and_max_chunks_caps(self) -> None:
         from app.config.settings import BehaviorChunkingConfig
@@ -129,9 +121,7 @@ class TestPrivateReplies:
             dnd_enabled=True, dnd_start="14:00", dnd_end="16:00", dnd_blocks_replies=True
         )
         config = BehaviorConfig()
-        engine = CharacterBehaviorEngine(
-            config, FrozenPresence(DAY, schedule), _state()
-        )
+        engine = CharacterBehaviorEngine(config, FrozenPresence(DAY, schedule), _state())
         event = _fake_private_event("在吗")
         blocked = await engine.consider_private(event, "在吗")
         assert blocked.respond is False and blocked.reason == "dnd"
@@ -176,9 +166,7 @@ async def _social_engine(tmp_path, **group_overrides):  # type: ignore[no-untype
         update={"behavior": bot.config.behavior.model_copy(update={"group": group_cfg})}
     )
     clock = FakeClock()
-    engine = SocialCognitionEngine(
-        config=bot.config.social, bot=bot, database=None, clock=clock
-    )
+    engine = SocialCognitionEngine(config=bot.config.social, bot=bot, database=None, clock=clock)
     bot.social = engine
     return bot, engine, clock
 
@@ -198,34 +186,26 @@ async def _decide(engine, text: str, *, mid: str = "1", mentioned: bool = False)
 
 class TestGroupParticipation:
     async def test_switch_off_means_no_organic_talk(self, tmp_path) -> None:
-        _bot, engine, _clock = await _social_engine(
-            tmp_path, participation_enabled=False
-        )
+        _bot, engine, _clock = await _social_engine(tmp_path, participation_enabled=False)
         decision = await _decide(engine, "今天天气不错啊")
         assert decision.decision == "ignore"
         assert decision.reason_code == "participation_disabled"
 
     async def test_rate_one_joins_every_eligible_message(self, tmp_path) -> None:
         """频率 1.0：第一条合格消息就参与（额度一次攒满）。"""
-        _bot, engine, _clock = await _social_engine(
-            tmp_path, participation_probability=1.0
-        )
+        _bot, engine, _clock = await _social_engine(tmp_path, participation_probability=1.0)
         decision = await _decide(engine, "你们说这个游戏好玩吗")
         assert decision.decision == "reply"
         assert decision.reason_code == "participation_rate"
 
     async def test_rate_zero_pure_cognition(self, tmp_path) -> None:
-        _bot, engine, _clock = await _social_engine(
-            tmp_path, participation_probability=0.0
-        )
+        _bot, engine, _clock = await _social_engine(tmp_path, participation_probability=0.0)
         decision = await _decide(engine, "你们说这个游戏好玩吗")
         assert decision.decision == "observe"
 
     async def test_rate_half_accumulates_deterministically(self, tmp_path) -> None:
         """0.5：第一条攒额度不参与，第二条攒满参与——确定性累积，不是掷骰。"""
-        _bot, engine, _clock = await _social_engine(
-            tmp_path, participation_probability=0.5
-        )
+        _bot, engine, _clock = await _social_engine(tmp_path, participation_probability=0.5)
         first = await _decide(engine, "第一句话在这里", mid="1")
         second = await _decide(engine, "第二句话还是这里", mid="2")
         assert first.decision in ("observe", "ignore")
@@ -233,9 +213,7 @@ class TestGroupParticipation:
         assert second.reason_code == "participation_rate"
 
     async def test_cooldown_blocks_right_after_a_reply(self, tmp_path) -> None:
-        _bot, engine, clock = await _social_engine(
-            tmp_path, participation_probability=1.0
-        )
+        _bot, engine, clock = await _social_engine(tmp_path, participation_probability=1.0)
         assert (await _decide(engine, "第一条合格消息", mid="1")).decision == "reply"
         engine.policy.record_send("g1")  # the plugin does this after delivery
         blocked = await _decide(engine, "紧接着的第二条", mid="2")
@@ -259,9 +237,7 @@ class TestGroupParticipation:
 
     async def test_batch_path_falls_back_to_rate(self, tmp_path) -> None:
         """攒够一批（5 条）后仍由结构化判断；频率 0 时不抢话。"""
-        _bot, engine, _clock = await _social_engine(
-            tmp_path, participation_probability=0.0
-        )
+        _bot, engine, _clock = await _social_engine(tmp_path, participation_probability=0.0)
         for index in range(5):
             decision = await _decide(engine, f"第{index}条普通聊天内容", mid=str(index))
         assert decision.decision in ("observe", "ignore", "defer")
@@ -281,9 +257,7 @@ async def _initiative(tmp_path, **overrides):  # type: ignore[no-untyped-def]
 
 
 def _candidate() -> InitiativeCandidate:
-    return InitiativeCandidate(
-        scope_key="private:7", user_id="7", reason="long_absence", topic=""
-    )
+    return InitiativeCandidate(scope_key="private:7", user_id="7", reason="long_absence", topic="")
 
 
 class TestProactiveReplies:
@@ -327,17 +301,13 @@ class TestProactiveReplies:
         await database.close()
 
     async def test_relationship_stage_gate(self, tmp_path) -> None:
-        engine, database = await _initiative(
-            tmp_path, min_relationship_stage="close"
-        )
+        engine, database = await _initiative(tmp_path, min_relationship_stage="close")
         gate = await engine.evaluate(_candidate(), relationship_stage="new")
         assert gate.reason == "relationship_too_new"
         await database.close()
 
     async def test_max_unanswered_gate(self, tmp_path) -> None:
-        engine, database = await _initiative(
-            tmp_path, max_unanswered=1, min_interval_minutes=1
-        )
+        engine, database = await _initiative(tmp_path, max_unanswered=1, min_interval_minutes=1)
         await engine.record_sent("private:7", "第一句", reason="long_absence")
         gate = await engine.evaluate(_candidate(), relationship_stage="close")
         assert gate.reason == "awaiting_reply"
@@ -348,11 +318,15 @@ class TestProactiveReplies:
         engine, database = await _initiative(tmp_path, idle_hours=6.0)
         clock: FakeClock = engine._clock  # type: ignore[assignment]
         recent = await engine.build_candidates(
-            scope_key="private:7", user_id="7", relationship_stage="close",
+            scope_key="private:7",
+            user_id="7",
+            relationship_stage="close",
             last_seen=int(clock() - 2 * 3600),
         )
         stale = await engine.build_candidates(
-            scope_key="private:7", user_id="7", relationship_stage="close",
+            scope_key="private:7",
+            user_id="7",
+            relationship_stage="close",
             last_seen=int(clock() - 10 * 3600),
         )
         assert not any(c.reason == "long_absence" for c in recent)
@@ -436,8 +410,13 @@ class TestChatPageRendersEveryField:
         config = AppConfig(
             database={"url": f"sqlite:///{tmp_path / 'page.db'}"},
             logging={"log_dir": str(tmp_path / "logs")},
-            web={"enabled": True, "host": "127.0.0.1", "port": port,
-                 "username": "admin", "password": "pw123"},
+            web={
+                "enabled": True,
+                "host": "127.0.0.1",
+                "port": port,
+                "username": "admin",
+                "password": "pw123",
+            },
         )
         bot = Bot(config, FakeAdapter())
         await bot.database.connect()
@@ -457,17 +436,31 @@ class TestChatPageRendersEveryField:
             await bot.shutdown()
 
         for name in (
-            "reply_enabled", "min_delay", "max_delay",
-            "chunking_enabled", "chunk_probability", "max_chunks",
-            "sleep_enabled", "sleep_start", "sleep_end",
-            "dnd_enabled", "dnd_start", "dnd_end", "dnd_blocks_replies",
-            "participation_enabled", "participation_probability", "min_message_length",
-            "initiative_enabled", "min_interval_minutes", "daily_limit",
-            "hourly_limit", "idle_hours", "min_relationship_stage", "max_unanswered",
+            "reply_enabled",
+            "min_delay",
+            "max_delay",
+            "chunking_enabled",
+            "chunk_probability",
+            "max_chunks",
+            "sleep_enabled",
+            "sleep_start",
+            "sleep_end",
+            "dnd_enabled",
+            "dnd_start",
+            "dnd_end",
+            "dnd_blocks_replies",
+            "participation_enabled",
+            "participation_probability",
+            "min_message_length",
+            "initiative_enabled",
+            "min_interval_minutes",
+            "daily_limit",
+            "hourly_limit",
+            "idle_hours",
+            "min_relationship_stage",
+            "max_unanswered",
         ):
-            assert (
-                f"name='{name}'" in body or f'name="{name}"' in body
-            ), f"missing input: {name}"
+            assert f"name='{name}'" in body or f'name="{name}"' in body, f"missing input: {name}"
 
 
 # ============================================== 端到端：群消息 → 参与频率

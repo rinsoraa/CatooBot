@@ -210,8 +210,12 @@ class TestPlanner:
         payload = plan_payload(
             [
                 tool_step("step_1", "weather", location="Singapore", days=2),
-                {"id": "step_2", "description": "比较并给结论", "tool": None,
-                 "depends_on": ["step_1"]},
+                {
+                    "id": "step_2",
+                    "description": "比较并给结论",
+                    "tool": None,
+                    "depends_on": ["step_1"],
+                },
             ]
         )
         runtime, engine, tools, database = await make_runtime(tmp_path, [payload])
@@ -343,8 +347,12 @@ class TestExecution:
         payload = plan_payload(
             [
                 tool_step("step_1", "time"),
-                {"id": "step_2", "description": "根据时间给建议", "tool": None,
-                 "depends_on": ["step_1"]},
+                {
+                    "id": "step_2",
+                    "description": "根据时间给建议",
+                    "tool": None,
+                    "depends_on": ["step_1"],
+                },
             ]
         )
         runtime, engine, tools, database = await make_runtime(
@@ -368,13 +376,15 @@ class TestExecution:
             [
                 tool_step("step_1", "weather", location="Singapore"),
                 tool_step("step_2", "weather", location="Tokyo"),
-                {"id": "step_3", "description": "比较", "tool": None,
-                 "depends_on": ["step_1", "step_2"]},
+                {
+                    "id": "step_3",
+                    "description": "比较",
+                    "tool": None,
+                    "depends_on": ["step_1", "step_2"],
+                },
             ]
         )
-        runtime, engine, tools, database = await make_runtime(
-            tmp_path, [payload, "两地比较结果"]
-        )
+        runtime, engine, tools, database = await make_runtime(tmp_path, [payload, "两地比较结果"])
         try:
             result = await runtime.run("比较两地天气", session_id="private:1", user_id="1")
             assert result.status == "completed"
@@ -520,8 +530,7 @@ class TestReplan:
             detail = await runtime.task_detail(result.task_id)
             assert len(detail["plans"]) == 2  # v1 + exactly one replan
             assert any(
-                trace["event"] in ("replan_limit", "budget_exceeded")
-                for trace in detail["traces"]
+                trace["event"] in ("replan_limit", "budget_exceeded") for trace in detail["traces"]
             )
         finally:
             await engine.close()
@@ -557,7 +566,10 @@ class TestLifecycle:
         try:
             goal = Goal(goal_id="g", session_id="private:7", description="查天气")
             await runtime._store_task(  # noqa: SLF001
-                "task-9", goal, status="running", classification="multi_step",
+                "task-9",
+                goal,
+                status="running",
+                classification="multi_step",
                 budget=AgentBudget(),
             )
             runtime._active_by_session["private:7"] = "task-9"  # noqa: SLF001
@@ -575,7 +587,10 @@ class TestLifecycle:
         try:
             goal = Goal(goal_id="g", session_id="private:8", description="查天气")
             await runtime._store_task(  # noqa: SLF001
-                "task-p", goal, status="running", classification="multi_step",
+                "task-p",
+                goal,
+                status="running",
+                classification="multi_step",
                 budget=AgentBudget(),
             )
             assert await runtime.pause("task-p") is True
@@ -628,7 +643,10 @@ class TestLifecycle:
         try:
             goal = Goal(goal_id="g", session_id="s", description="僵尸任务")
             await runtime._store_task(  # noqa: SLF001
-                "task-z", goal, status="running", classification="multi_step",
+                "task-z",
+                goal,
+                status="running",
+                classification="multi_step",
                 budget=AgentBudget(),
             )
             summary = await runtime.housekeeping()
@@ -645,9 +663,7 @@ class TestLifecycle:
 
 class TestContextCompression:
     def test_observations_compressed_to_recent(self) -> None:
-        observations = [
-            Observation(step_id=f"s{i}", summary=f"结果{i}") for i in range(1, 11)
-        ]
+        observations = [Observation(step_id=f"s{i}", summary=f"结果{i}") for i in range(1, 11)]
         block = observations_to_context(observations, limit=3)
         assert "结果10" in block and "结果8" in block
         assert "结果7" not in block

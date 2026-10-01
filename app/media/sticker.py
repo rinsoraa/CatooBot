@@ -29,20 +29,47 @@ from app.memory.retrieval import bigrams
 #: a small built-in QQ native-face map (face_id -> meaning). The operator may
 #: extend this in the WebUI; we only ship a useful subset (§30).
 DEFAULT_NATIVE_FACES: dict[int, NativeFace] = {
-    14: NativeFace(face_id=14, display_name="微笑", emotion="开心", intent="友好", tags=["微笑", "友善"]),
-    66: NativeFace(face_id=66, display_name="害羞", emotion="害羞", intent="回应", tags=["害羞", "可爱"]),
-    12: NativeFace(face_id=12, display_name="发怒", emotion="生气", intent="吐槽", tags=["生气", "愤怒"]),
-    5: NativeFace(face_id=5, display_name="难过", emotion="难过", intent="安慰", tags=["难过", "哭"]),
-    6: NativeFace(face_id=6, display_name="惊讶", emotion="震惊", intent="回应", tags=["惊讶", "震惊"]),
-    4: NativeFace(face_id=4, display_name="尴尬", emotion="尴尬", intent="缓和", tags=["尴尬", "无语"]),
-    274: NativeFace(face_id=274, display_name="笑哭", emotion="开心", intent="好笑", tags=["笑哭", "开心", "爆笑"]),
-    34: NativeFace(face_id=34, display_name="亲亲", emotion="亲密", intent="亲昵", tags=["亲亲", "喜欢"]),
+    14: NativeFace(
+        face_id=14, display_name="微笑", emotion="开心", intent="友好", tags=["微笑", "友善"]
+    ),
+    66: NativeFace(
+        face_id=66, display_name="害羞", emotion="害羞", intent="回应", tags=["害羞", "可爱"]
+    ),
+    12: NativeFace(
+        face_id=12, display_name="发怒", emotion="生气", intent="吐槽", tags=["生气", "愤怒"]
+    ),
+    5: NativeFace(
+        face_id=5, display_name="难过", emotion="难过", intent="安慰", tags=["难过", "哭"]
+    ),
+    6: NativeFace(
+        face_id=6, display_name="惊讶", emotion="震惊", intent="回应", tags=["惊讶", "震惊"]
+    ),
+    4: NativeFace(
+        face_id=4, display_name="尴尬", emotion="尴尬", intent="缓和", tags=["尴尬", "无语"]
+    ),
+    274: NativeFace(
+        face_id=274,
+        display_name="笑哭",
+        emotion="开心",
+        intent="好笑",
+        tags=["笑哭", "开心", "爆笑"],
+    ),
+    34: NativeFace(
+        face_id=34, display_name="亲亲", emotion="亲密", intent="亲昵", tags=["亲亲", "喜欢"]
+    ),
 }
 
 #: emotion -> default intent when the analyzer can't infer one.
 _EMOTION_INTENT = {
-    "开心": "开心", "好笑": "好笑", "震惊": "惊讶", "难过": "安慰", "生气": "吐槽",
-    "无语": "吐槽", "尴尬": "缓和", "疲惫": "无奈", "害羞": "回应",
+    "开心": "开心",
+    "好笑": "好笑",
+    "震惊": "惊讶",
+    "难过": "安慰",
+    "生气": "吐槽",
+    "无语": "吐槽",
+    "尴尬": "缓和",
+    "疲惫": "无奈",
+    "害羞": "回应",
 }
 
 _STICKER_EXTS = {".gif", ".png", ".jpg", ".jpeg", ".webp", ".bmp"}
@@ -164,7 +191,9 @@ class StickerLibrary:
         )
         return True
 
-    async def record_usage(self, sticker_id: str, *, scope_key: str = "", success: bool = True) -> None:
+    async def record_usage(
+        self, sticker_id: str, *, scope_key: str = "", success: bool = True
+    ) -> None:
         now = int(self._clock())
         await self._db.execute(
             "INSERT INTO sticker_usage (sticker_id, scope_key, success, created_at) VALUES (?, ?, ?, ?)",
@@ -201,51 +230,92 @@ class StickerLibrary:
 
     def _tuple(self, asset: StickerAsset) -> tuple[Any, ...]:
         return (
-            asset.id, asset.file_path, asset.file_name, asset.mime_type, asset.file_size,
-            asset.sha256, asset.phash, asset.width, asset.height,
-            1 if asset.is_animated else 0, asset.origin, asset.origin_user_id,
-            asset.origin_group_id, asset.origin_message_id, asset.emoji_id,
-            asset.emoji_package_id, asset.emoji_key, asset.visual_summary, asset.ocr_text,
+            asset.id,
+            asset.file_path,
+            asset.file_name,
+            asset.mime_type,
+            asset.file_size,
+            asset.sha256,
+            asset.phash,
+            asset.width,
+            asset.height,
+            1 if asset.is_animated else 0,
+            asset.origin,
+            asset.origin_user_id,
+            asset.origin_group_id,
+            asset.origin_message_id,
+            asset.emoji_id,
+            asset.emoji_package_id,
+            asset.emoji_key,
+            asset.visual_summary,
+            asset.ocr_text,
             json.dumps(asset.emotion_tags, ensure_ascii=False),
             json.dumps(asset.intent_tags, ensure_ascii=False),
             json.dumps(asset.scene_tags, ensure_ascii=False),
             json.dumps(asset.style_tags, ensure_ascii=False),
             json.dumps(asset.general_tags, ensure_ascii=False),
-            asset.intensity, asset.humor, asset.expressiveness, asset.reusability,
-            asset.novelty, asset.quality_score, asset.safety_status,
-            asset.analysis_version, asset.analysis_model, asset.analyzed_at, asset.embedding_status,
-            asset.usage_count, asset.last_used_at, asset.last_selected_at,
-            asset.created_at, asset.updated_at, asset.status,
+            asset.intensity,
+            asset.humor,
+            asset.expressiveness,
+            asset.reusability,
+            asset.novelty,
+            asset.quality_score,
+            asset.safety_status,
+            asset.analysis_version,
+            asset.analysis_model,
+            asset.analyzed_at,
+            asset.embedding_status,
+            asset.usage_count,
+            asset.last_used_at,
+            asset.last_selected_at,
+            asset.created_at,
+            asset.updated_at,
+            asset.status,
         )
 
     @staticmethod
     def _from_row(row: dict[str, Any]) -> StickerAsset:
         return StickerAsset(
-            id=row["id"], file_path=row.get("file_path") or "", file_name=row.get("file_name") or "",
-            mime_type=row.get("mime_type") or "", file_size=int(row.get("file_size") or 0),
-            sha256=row.get("sha256") or "", phash=row.get("phash") or "",
-            width=int(row.get("width") or 0), height=int(row.get("height") or 0),
+            id=row["id"],
+            file_path=row.get("file_path") or "",
+            file_name=row.get("file_name") or "",
+            mime_type=row.get("mime_type") or "",
+            file_size=int(row.get("file_size") or 0),
+            sha256=row.get("sha256") or "",
+            phash=row.get("phash") or "",
+            width=int(row.get("width") or 0),
+            height=int(row.get("height") or 0),
             is_animated=bool(row.get("is_animated")),
             origin=row.get("origin") or "manual_import",
-            origin_user_id=row.get("origin_user_id") or "", origin_group_id=row.get("origin_group_id") or "",
+            origin_user_id=row.get("origin_user_id") or "",
+            origin_group_id=row.get("origin_group_id") or "",
             origin_message_id=row.get("origin_message_id") or "",
-            emoji_id=row.get("emoji_id") or "", emoji_package_id=row.get("emoji_package_id") or "",
-            emoji_key=row.get("emoji_key") or "", visual_summary=row.get("visual_summary") or "",
+            emoji_id=row.get("emoji_id") or "",
+            emoji_package_id=row.get("emoji_package_id") or "",
+            emoji_key=row.get("emoji_key") or "",
+            visual_summary=row.get("visual_summary") or "",
             ocr_text=row.get("ocr_text") or "",
             emotion_tags=_json_list(_maybe_json(row.get("emotion_tags"))),
             intent_tags=_json_list(_maybe_json(row.get("intent_tags"))),
             scene_tags=_json_list(_maybe_json(row.get("scene_tags"))),
             style_tags=_json_list(_maybe_json(row.get("style_tags"))),
             general_tags=_json_list(_maybe_json(row.get("general_tags"))),
-            intensity=float(row.get("intensity") or 0.0), humor=float(row.get("humor") or 0.0),
-            expressiveness=float(row.get("expressiveness") or 0.0), reusability=float(row.get("reusability") or 0.0),
-            novelty=float(row.get("novelty") or 0.0), quality_score=float(row.get("quality_score") or 0.0),
+            intensity=float(row.get("intensity") or 0.0),
+            humor=float(row.get("humor") or 0.0),
+            expressiveness=float(row.get("expressiveness") or 0.0),
+            reusability=float(row.get("reusability") or 0.0),
+            novelty=float(row.get("novelty") or 0.0),
+            quality_score=float(row.get("quality_score") or 0.0),
             safety_status=row.get("safety_status") or "ok",
-            analysis_version=row.get("analysis_version") or "", analysis_model=row.get("analysis_model") or "",
-            analyzed_at=int(row.get("analyzed_at") or 0), embedding_status=row.get("embedding_status") or "none",
-            usage_count=int(row.get("usage_count") or 0), last_used_at=int(row.get("last_used_at") or 0),
+            analysis_version=row.get("analysis_version") or "",
+            analysis_model=row.get("analysis_model") or "",
+            analyzed_at=int(row.get("analyzed_at") or 0),
+            embedding_status=row.get("embedding_status") or "none",
+            usage_count=int(row.get("usage_count") or 0),
+            last_used_at=int(row.get("last_used_at") or 0),
             last_selected_at=int(row.get("last_selected_at") or 0),
-            created_at=int(row.get("created_at") or 0), updated_at=int(row.get("updated_at") or 0),
+            created_at=int(row.get("created_at") or 0),
+            updated_at=int(row.get("updated_at") or 0),
             status=row.get("status") or "active",
         )
 
@@ -317,13 +387,25 @@ def _infer_emotion(text: str) -> str:
     if not text or len(text) > 16:
         return ""
     cues = [
-        ("笑死", "开心"), ("笑哭", "开心"), ("哈哈哈", "开心"), ("哈哈", "开心"), ("嘿嘿", "开心"),
-        ("呜呜", "难过"), ("难过", "难过"), ("伤心", "难过"), ("哭", "难过"),
-        ("生气", "生气"), ("气死", "生气"), ("气人", "生气"), ("愤怒", "生气"),
-        ("震惊", "震惊"), ("惊讶", "震惊"),
+        ("笑死", "开心"),
+        ("笑哭", "开心"),
+        ("哈哈哈", "开心"),
+        ("哈哈", "开心"),
+        ("嘿嘿", "开心"),
+        ("呜呜", "难过"),
+        ("难过", "难过"),
+        ("伤心", "难过"),
+        ("哭", "难过"),
+        ("生气", "生气"),
+        ("气死", "生气"),
+        ("气人", "生气"),
+        ("愤怒", "生气"),
+        ("震惊", "震惊"),
+        ("惊讶", "震惊"),
         ("无语", "无语"),
         ("尴尬", "尴尬"),
-        ("好累", "疲惫"), ("困死", "疲惫"),
+        ("好累", "疲惫"),
+        ("困死", "疲惫"),
     ]
     for cue, emotion in cues:
         if cue in text:
@@ -354,7 +436,9 @@ class StickerAcquisitionEvaluator:
             existing = await library.by_sha256(asset.sha256)
             if existing is not None:
                 return AcquisitionDecision(
-                    decision="reject", confidence=1.0, novelty=0.0,
+                    decision="reject",
+                    confidence=1.0,
+                    novelty=0.0,
                     reason_codes=["duplicate_sha256"],
                 )
         # semantic/lexical similarity to existing assets -> low novelty
@@ -370,31 +454,47 @@ class StickerAcquisitionEvaluator:
         novelty = round(1.0 - similarity, 3)
 
         if not asset.visual_summary and not asset.emoji_id:
-            return AcquisitionDecision(decision="defer", confidence=0.4, novelty=novelty,
-                                       reason_codes=["insufficient_info"])
+            return AcquisitionDecision(
+                decision="defer",
+                confidence=0.4,
+                novelty=novelty,
+                reason_codes=["insufficient_info"],
+            )
         if similarity >= 0.85:
-            return AcquisitionDecision(decision="reject", confidence=0.9, novelty=novelty,
-                                       reason_codes=["low_novelty", "semantic_duplicate"])
+            return AcquisitionDecision(
+                decision="reject",
+                confidence=0.9,
+                novelty=novelty,
+                reason_codes=["low_novelty", "semantic_duplicate"],
+            )
         if novelty >= 0.6 and asset.expressiveness >= 0.4:
             return AcquisitionDecision(
-                decision="save", confidence=0.8 + 0.2 * novelty, novelty=novelty,
-                reusability=asset.reusability, expressiveness=asset.expressiveness,
+                decision="save",
+                confidence=0.8 + 0.2 * novelty,
+                novelty=novelty,
+                reusability=asset.reusability,
+                expressiveness=asset.expressiveness,
                 reason_codes=["novel_expression", "fits_character_style"],
             )
-        return AcquisitionDecision(decision="defer", confidence=0.5, novelty=novelty,
-                                   reason_codes=["uncertain_value"])
+        return AcquisitionDecision(
+            decision="defer", confidence=0.5, novelty=novelty, reason_codes=["uncertain_value"]
+        )
 
 
 class ExpressionDecisionEngine:
     """Should the character attach a sticker now? (structured, no random)."""
 
-    def __init__(self, *, cooldown_seconds: int = 60, max_per_turn: int = 1, clock: Any = time.time) -> None:
+    def __init__(
+        self, *, cooldown_seconds: int = 60, max_per_turn: int = 1, clock: Any = time.time
+    ) -> None:
         self._cooldown = cooldown_seconds
         self._max_per_turn = max_per_turn
         self._clock = clock
         self._last_sent: dict[str, float] = {}
 
-    def decide(self, context: ExpressionContext, *, user_text: str, scope_key: str = "") -> ExpressionDecision:
+    def decide(
+        self, context: ExpressionContext, *, user_text: str, scope_key: str = ""
+    ) -> ExpressionDecision:
         media_type = context.incoming_media_type
         last = self._last_sent.get(scope_key)
         if last is not None and self._clock() - last < self._cooldown:
@@ -403,14 +503,13 @@ class ExpressionDecisionEngine:
         # emotionally flat text (amusement from a shared joke, warmth from a
         # close relationship) — still structured, never a dice (§122).
         hint = (getattr(context, "emotion_hint", "") or "").strip()
-        if (
-            not media_type
-            and not _infer_emotion(user_text)
-            and hint in ("开心", "好笑")
-        ):
+        if not media_type and not _infer_emotion(user_text) and hint in ("开心", "好笑"):
             return ExpressionDecision(
-                response_mode="text_and_sticker", sticker_intent="回应",
-                emotion=hint, intensity=0.4, selection_required=True,
+                response_mode="text_and_sticker",
+                sticker_intent="回应",
+                emotion=hint,
+                intensity=0.4,
+                selection_required=True,
             )
         # A sticker in is a strong cue that a sticker out is natural.
         if media_type in ("sticker", "native_face"):
@@ -425,8 +524,11 @@ class ExpressionDecisionEngine:
         emotion = _infer_emotion(user_text)
         if emotion and emotion in ("开心", "好笑", "难过", "生气", "震惊", "无语"):
             return ExpressionDecision(
-                response_mode="text_and_sticker", sticker_intent="回应",
-                emotion=emotion, intensity=0.5, selection_required=True,
+                response_mode="text_and_sticker",
+                sticker_intent="回应",
+                emotion=emotion,
+                intensity=0.5,
+                selection_required=True,
             )
         return ExpressionDecision(response_mode="text")
 
@@ -437,8 +539,14 @@ class ExpressionDecisionEngine:
 class StickerSelector:
     """Chooses one sticker for a given expression intent (§28)."""
 
-    def __init__(self, *, library: StickerLibrary, faces: NativeFaceRegistry,
-                 logger: logging.Logger | None = None, clock: Any = time.time) -> None:
+    def __init__(
+        self,
+        *,
+        library: StickerLibrary,
+        faces: NativeFaceRegistry,
+        logger: logging.Logger | None = None,
+        clock: Any = time.time,
+    ) -> None:
         self._library = library
         self._faces = faces
         self._log = logger or logging.getLogger("CatooBot.Media")
@@ -477,11 +585,13 @@ class StickerSender:
         if isinstance(item, NativeFace):
             return Message([Face(item.face_id)])
         if item.emoji_id and item.emoji_package_id:
-            return Message([Mface(item.emoji_id, item.emoji_package_id, item.emoji_key,
-                                  item.visual_summary)])
+            return Message(
+                [Mface(item.emoji_id, item.emoji_package_id, item.emoji_key, item.visual_summary)]
+            )
         if item.file_path:
             return Message([ImageSegment(type="image", data={"file": item.file_path})])
         if item.emoji_id:
-            return Message([Mface(item.emoji_id, item.emoji_package_id, item.emoji_key,
-                                  item.visual_summary)])
+            return Message(
+                [Mface(item.emoji_id, item.emoji_package_id, item.emoji_key, item.visual_summary)]
+            )
         return Message([])

@@ -24,8 +24,8 @@ class TestThemeAndShell:
 
     def test_login_uses_minimal_shell_without_nav(self) -> None:
         page = ui.page("登录", "", "hello", minimal=True)
-        assert "<aside" not in page            # no sidebar shell on the login screen
-        assert "cbToggleMode" in page          # theme/mode still work
+        assert "<aside" not in page  # no sidebar shell on the login screen
+        assert "cbToggleMode" in page  # theme/mode still work
         assert "hello" in page
 
     def test_regular_page_has_sidebar_and_signature(self) -> None:
@@ -90,13 +90,13 @@ class TestComponents:
         assert "啥也没有" in html
 
     def test_badge_and_progress(self) -> None:
-        assert 'badge-success' in ui.badge("开启", "success")
+        assert "badge-success" in ui.badge("开启", "success")
         assert "progress-bar" in ui.progress(0.5)
 
     def test_flash_and_tabs(self) -> None:
         assert "flash-ok" in ui.flash("ok", "成功")
         tabs = ui.tabs([("/a", "甲"), ("/b", "乙")], "/b")
-        assert 'active' in tabs and "乙" in tabs
+        assert "active" in tabs and "乙" in tabs
 
 
 class TestThemes:

@@ -119,9 +119,7 @@ class RelationshipManager:
             self._log.exception("Failed to load relationship for %s", key)
             row = None
         self._cache[key] = (
-            Relationship.model_validate(dict(row))
-            if row is not None
-            else Relationship(user_id=key)
+            Relationship.model_validate(dict(row)) if row is not None else Relationship(user_id=key)
         )
 
     async def _persist(self, rel: Relationship) -> None:

@@ -61,8 +61,11 @@ class TestSemanticChatPipeline:
         bot = await make_semantic_bot(tmp_path, provider)
         try:
             await bot.memory.remember(
-                "user", "777", "用户在做个人网站的音乐播放器",
-                category="project", importance=0.9,
+                "user",
+                "777",
+                "用户在做个人网站的音乐播放器",
+                category="project",
+                importance=0.9,
             )
             await bot.event_bus.emit(private_event("之前那个听歌的东西做好了吗", user_id=777))
             await bot.conversation.wait_idle()
@@ -150,9 +153,7 @@ class TestDegradation:
         bot.embeddings = EmbeddingService(
             bot.config.memory.semantic.embedding, bot.database, provider=Broken()
         )
-        bot.memory = MemoryManager(
-            bot.config.memory, bot.database, embeddings=bot.embeddings
-        )
+        bot.memory = MemoryManager(bot.config.memory, bot.database, embeddings=bot.embeddings)
         bot.character.memory = bot.memory
         try:
             await bot.memory.remember("user", "1", "用户喜欢猫", category="preference")

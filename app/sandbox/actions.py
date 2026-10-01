@@ -36,7 +36,9 @@ class ActionSystem:
     def plan_duration(self, definition: ActionDefinition, *, urgency: float) -> float:
         """Minutes for this run: urgent needs → shorter; leisure → longer."""
         low, mid, high = (
-            definition.min_minutes, definition.typical_minutes, definition.max_minutes,
+            definition.min_minutes,
+            definition.typical_minutes,
+            definition.max_minutes,
         )
         if urgency >= 0.6:
             span = mid - low
@@ -134,9 +136,8 @@ class ActionSystem:
 
     def can_extend(self, instance: ActionInstance, definition: ActionDefinition) -> bool:
         return (
-            (instance.planned_end_at - instance.started_at) / 60.0
-            < definition.max_minutes * 0.95
-        )
+            instance.planned_end_at - instance.started_at
+        ) / 60.0 < definition.max_minutes * 0.95
 
     def extend(self, instance: ActionInstance, definition: ActionDefinition) -> float:
         """Push the planned end toward the max band; returns extra minutes."""

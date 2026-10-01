@@ -51,8 +51,9 @@ class FrozenPresence(PresenceResolver):
 class FakeEvent:
     """Minimal stand-in for a group MessageEvent."""
 
-    def __init__(self, text: str = "今天吃什么", at_self_id: int | None = None,
-                 at_others: bool = False) -> None:
+    def __init__(
+        self, text: str = "今天吃什么", at_self_id: int | None = None, at_others: bool = False
+    ) -> None:
         from app.message.message import Message
         from app.message.segment import AtSegment, TextSegment
 

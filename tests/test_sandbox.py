@@ -35,9 +35,7 @@ class FakeClock:
         import time as _time
 
         local = _time.localtime(self.now)
-        self.now = _time.mktime(
-            (local.tm_year, local.tm_mon, local.tm_mday, hour, 0, 0, 0, 0, -1)
-        )
+        self.now = _time.mktime((local.tm_year, local.tm_mon, local.tm_mday, hour, 0, 0, 0, 0, -1))
 
 
 async def make_runtime(*, clock: FakeClock | None = None, ai_decider=None):
@@ -46,9 +44,7 @@ async def make_runtime(*, clock: FakeClock | None = None, ai_decider=None):
     bible = BibleCompiler(BIBLE_PATH).compile()
     store = SandboxStore(None, clock=clock)
     config = SandboxConfig(simulation_seed=7)
-    runtime = SandboxRuntime(
-        config, store, bible=bible, clock=clock, ai_decider=ai_decider
-    )
+    runtime = SandboxRuntime(config, store, bible=bible, clock=clock, ai_decider=ai_decider)
     await runtime.start()
     return runtime, clock
 
@@ -83,7 +79,11 @@ class TestBible:
         bible = BibleCompiler(BIBLE_PATH).compile()
         assert bible.facts["角色名"] == "罐头"
         assert {mode.id for mode in bible.modes} == {
-            "outdoor", "home", "deep_night", "gaming", "online_social",
+            "outdoor",
+            "home",
+            "deep_night",
+            "gaming",
+            "online_social",
         }
         assert bible.has_rule("homewear_on_arrival")
         assert bible.has_rule("romance_avoidance")
@@ -192,9 +192,10 @@ class TestCausality:
         assert "fridge_no_cola" in runtime.knowledge
         runtime.needs.add("thirst", 0.8)
         transitions = await run(runtime, clock, hours=12)
-        bought = any(
-            new == "go_shopping_cola" for _, _, new in transitions
-        ) or runtime.inventories.get("fridge").count("可乐") > 0
+        bought = (
+            any(new == "go_shopping_cola" for _, _, new in transitions)
+            or runtime.inventories.get("fridge").count("可乐") > 0
+        )
         assert bought, "empty fridge must eventually produce a shopping trip"
 
     async def test_trash_accumulation_leads_to_taking_it_out(self) -> None:
@@ -202,9 +203,10 @@ class TestCausality:
         runtime.objects.get("trash_bag").state["level"] = 0.95
         runtime.needs.add("household_maintenance", 0.95)
         transitions = await run(runtime, clock, hours=8)
-        assert any(
-            new == "take_out_trash" for _, _, new in transitions
-        ) or runtime.objects.get("trash_bag").state["level"] <= 0.95
+        assert (
+            any(new == "take_out_trash" for _, _, new in transitions)
+            or runtime.objects.get("trash_bag").state["level"] <= 0.95
+        )
 
     async def test_pet_hunger_brings_cat_and_feeding_relieves(self) -> None:
         """场景4: 小喵 hunger ↑ → 蹭过来 → 罐头添粮."""
@@ -215,7 +217,9 @@ class TestCausality:
         runtime.character.location = "livingroom"
         await runtime.tick(minutes=10)
         assert runtime.pet_system.pet.activity in (
-            PetActivity.approaching_owner, PetActivity.eating, PetActivity.idle,
+            PetActivity.approaching_owner,
+            PetActivity.eating,
+            PetActivity.idle,
         )
         # feeding works and lowers hunger
         assert runtime.pet_system.feed() is True
@@ -247,8 +251,11 @@ class TestInterrupts:
         await runtime._start_action("watch_animation")
         result = await runtime.handle_external(
             ExternalEvent(
-                id="e1", kind="user_message", priority=EventPriority.high,
-                summary="空凛: 来一起联机", user_id="10001",
+                id="e1",
+                kind="user_message",
+                priority=EventPriority.high,
+                summary="空凛: 来一起联机",
+                user_id="10001",
                 data={"text": "来一起联机", "is_core_friend": True},
             )
         )
@@ -264,8 +271,11 @@ class TestInterrupts:
         before = runtime.current_action.definition_id
         result = await runtime.handle_external(
             ExternalEvent(
-                id="e2", kind="user_message", priority=EventPriority.normal,
-                summary="网友: 晚上好", user_id="20002",
+                id="e2",
+                kind="user_message",
+                priority=EventPriority.normal,
+                summary="网友: 晚上好",
+                user_id="20002",
                 data={"text": "晚上好", "is_core_friend": False},
             )
         )
@@ -280,8 +290,11 @@ class TestInterrupts:
         await runtime._start_action("think")
         await runtime.handle_external(
             ExternalEvent(
-                id="e3", kind="user_message", priority=EventPriority.high,
-                summary="空凛: 还没睡？", user_id="10001",
+                id="e3",
+                kind="user_message",
+                priority=EventPriority.high,
+                summary="空凛: 还没睡？",
+                user_id="10001",
                 data={"text": "还没睡？", "is_core_friend": True},
             )
         )
@@ -314,9 +327,7 @@ class TestPersistence:
         clock.advance((finished_at - clock.now) + 3600)  # 1h past its end
         await runtime._settle_gap(90.0)
         # the old episode is settled once; a new decision happened; not 9 replays
-        assert runtime.current_action is None or (
-            runtime.current_action.planned_end_at > clock.now
-        )
+        assert runtime.current_action is None or (runtime.current_action.planned_end_at > clock.now)
 
     async def test_knowledge_reports_discovered_state(self) -> None:
         runtime, clock = await make_runtime()
@@ -387,9 +398,7 @@ class TestQQIntegration:
         from app.sandbox import BibleCompiler, SandboxRuntime, SandboxStore
 
         bible = BibleCompiler(BIBLE_PATH).compile()
-        bot.sandbox = SandboxRuntime(
-            bot.config.sandbox, SandboxStore(None), bible=bible, bot=bot
-        )
+        bot.sandbox = SandboxRuntime(bot.config.sandbox, SandboxStore(None), bible=bible, bot=bot)
         bot.character.sandbox = bot.sandbox
         await bot.plugins.load_all()
         await bot.event_bus.emit(group_event("晚上好", user_id=123))

@@ -197,10 +197,7 @@ class FactSelector:
 
         kept: list[str] = []
         for clause in self._CLAUSE.finditer(text):
-            if any(
-                not (clause.end() <= start or clause.start() >= end)
-                for start, end in spans
-            ):
+            if any(not (clause.end() <= start or clause.start() >= end) for start, end in spans):
                 continue
             kept.append(clause.group(0))
         cleaned = self._tidy("".join(kept))
@@ -236,9 +233,7 @@ class FactSelector:
             total = sum(inventory.items.values())
             if total > 0:
                 # container is NOT empty: any "冰箱空了/没东西" claim is false
-                rules.append(
-                    re.compile(rf"{re.escape(obj.name)}(?:里|里都|都)?{gone}")
-                )
+                rules.append(re.compile(rf"{re.escape(obj.name)}(?:里|里都|都)?{gone}"))
                 rules.append(
                     re.compile(rf"{re.escape(obj.name)}[^。！？!?\n]{{0,4}}没(?:东西|啥|什么)")
                 )

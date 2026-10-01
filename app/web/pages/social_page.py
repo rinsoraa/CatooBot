@@ -54,23 +54,31 @@ def dashboard(data: dict[str, Any]) -> str:
         ]
     )
     threads = data.get("active_threads", [])
-    thread_rows = "".join(
-        f"<tr><td>{esc(t['group_id'])}</td><td>{esc(t['topic'] or '-')}</td>"
-        f"<td>{esc('、'.join(t['participants']))}</td>"
-        f"<td>{esc(t['last_bot_message'][:40])}</td></tr>"
-        for t in threads
-    ) or '<tr><td colspan="4" class="muted">当前没有活跃对话线程</td></tr>'
+    thread_rows = (
+        "".join(
+            f"<tr><td>{esc(t['group_id'])}</td><td>{esc(t['topic'] or '-')}</td>"
+            f"<td>{esc('、'.join(t['participants']))}</td>"
+            f"<td>{esc(t['last_bot_message'][:40])}</td></tr>"
+            for t in threads
+        )
+        or '<tr><td colspan="4" class="muted">当前没有活跃对话线程</td></tr>'
+    )
     thread_card = ui.table(
         ["群", "话题", "参与者", "她上一句"],
         thread_rows,
         tips=["群号", "线程话题", "参与的人", "她最近一次发言"],
-        empty="当前没有活跃线程", table_id="social-threads", filterable=False,
+        empty="当前没有活跃线程",
+        table_id="social-threads",
+        filterable=False,
     )
     groups = data.get("groups", [])
-    group_links = "".join(
-        f"<a class='btn btn-ghost btn-sm' href='/social/group?group={esc(g)}'>{esc(g)}</a> "
-        for g in groups[:12]
-    ) or '<span class="muted">还没有群聊记录</span>'
+    group_links = (
+        "".join(
+            f"<a class='btn btn-ghost btn-sm' href='/social/group?group={esc(g)}'>{esc(g)}</a> "
+            for g in groups[:12]
+        )
+        or '<span class="muted">还没有群聊记录</span>'
+    )
 
     return (
         tiles
@@ -89,20 +97,31 @@ def dashboard(data: dict[str, Any]) -> str:
 
 
 def observations_page(rows: list[dict[str, Any]], group_id: str) -> str:
-    body_rows = "".join(
-        f"<tr><td class='muted'>{esc(ts(row['created_at']))}</td>"
-        f"<td>{esc(row['group_id'])}</td><td>{_decision_badge(row['decision'])}</td>"
-        f"<td>{esc(row['reason_code'])}</td><td>{row['confidence']:.2f}</td>"
-        f"<td>{esc(row['topic'] or '-')}</td>"
-        f"<td>{esc(row['response_goal'] or '-')}</td></tr>"
-        for row in rows
-    ) or '<tr><td colspan="7" class="muted">还没有观察记录</td></tr>'
+    body_rows = (
+        "".join(
+            f"<tr><td class='muted'>{esc(ts(row['created_at']))}</td>"
+            f"<td>{esc(row['group_id'])}</td><td>{_decision_badge(row['decision'])}</td>"
+            f"<td>{esc(row['reason_code'])}</td><td>{row['confidence']:.2f}</td>"
+            f"<td>{esc(row['topic'] or '-')}</td>"
+            f"<td>{esc(row['response_goal'] or '-')}</td></tr>"
+            for row in rows
+        )
+        or '<tr><td colspan="7" class="muted">还没有观察记录</td></tr>'
+    )
     table = ui.table(
         ["时间", "群", "决定", "原因", "置信度", "话题", "回应目标"],
         body_rows,
-        tips=["触发时间", "群号", "reply/observe/ignore/defer", "原因代码",
-              "结构化置信度（不是概率）", "当时话题", "简短回应目标"],
-        empty="还没有观察记录", table_id="social-observations",
+        tips=[
+            "触发时间",
+            "群号",
+            "reply/observe/ignore/defer",
+            "原因代码",
+            "结构化置信度（不是概率）",
+            "当时话题",
+            "简短回应目标",
+        ],
+        empty="还没有观察记录",
+        table_id="social-observations",
     )
     form = (
         "<form method='get' action='/social/observations'>"
@@ -126,11 +145,14 @@ def group_page(snapshot: dict[str, Any] | None, group_id: str) -> str:
     attention = snapshot.get("attention", {})
     policy = snapshot.get("policy", {})
     recent = monitor.get("recent_messages", [])
-    recent_rows = "".join(
-        f"<tr><td class='muted'>{'我' if m['is_bot'] else esc(m['nickname'])}</td>"
-        f"<td>{esc(m['content'])}</td></tr>"
-        for m in recent
-    ) or '<tr><td colspan="2" class="muted">无</td></tr>'
+    recent_rows = (
+        "".join(
+            f"<tr><td class='muted'>{'我' if m['is_bot'] else esc(m['nickname'])}</td>"
+            f"<td>{esc(m['content'])}</td></tr>"
+            for m in recent
+        )
+        or '<tr><td colspan="2" class="muted">无</td></tr>'
+    )
 
     kv = ui.kv(
         [
@@ -154,8 +176,11 @@ def group_page(snapshot: dict[str, Any] | None, group_id: str) -> str:
         + ui.card(
             "最近消息",
             ui.table(
-                ["发言者", "内容"], recent_rows,
-                empty="无", table_id="social-group-msgs", filterable=False,
+                ["发言者", "内容"],
+                recent_rows,
+                empty="无",
+                table_id="social-group-msgs",
+                filterable=False,
             ),
         )
     )
@@ -204,21 +229,37 @@ def policy_page(config: dict[str, Any], msg: str = "") -> str:
     form = (
         "<form method='post' action='/social/policy'>"
         + '<div class="section-title">总开关</div>'
-        + ui.switch("social_enabled", config.get("enabled", True), "启用社交认知",
-                    tip_text="关闭后回退到旧的概率参与逻辑")
-        + ui.field("决策模型", "decision_model", config.get("decision_model", ""),
-                   tip_text="ai.models 里的别名；留空用路由默认（快速）模型")
+        + ui.switch(
+            "social_enabled",
+            config.get("enabled", True),
+            "启用社交认知",
+            tip_text="关闭后回退到旧的概率参与逻辑",
+        )
+        + ui.field(
+            "决策模型",
+            "decision_model",
+            config.get("decision_model", ""),
+            tip_text="ai.models 里的别名；留空用路由默认（快速）模型",
+        )
         + '<div class="section-title">对话延续</div>'
         + "<div class='grid'>"
-        + ui.switch("continuation_enabled", continuation.get("enabled", True), "启用无 @ 追问识别",
-                    tip_text="识别「看的什么剧？」这类继续对话，优先级高于观察器")
+        + ui.switch(
+            "continuation_enabled",
+            continuation.get("enabled", True),
+            "启用无 @ 追问识别",
+            tip_text="识别「看的什么剧？」这类继续对话，优先级高于观察器",
+        )
         + ui.field("窗口（分钟）", "window_minutes", continuation.get("window_minutes", 10))
         + ui.field("窗口最大消息", "continuation_max_messages", continuation.get("max_messages", 8))
         + "</div>"
         + '<div class="section-title">观察器</div>'
         + "<div class='grid'>"
-        + ui.field("批量大小", "batch_size", observer.get("batch_size", 5),
-                   tip_text="每几条外部消息触发一次观察器")
+        + ui.field(
+            "批量大小",
+            "batch_size",
+            observer.get("batch_size", 5),
+            tip_text="每几条外部消息触发一次观察器",
+        )
         + ui.field("上下文条数", "min_context", observer.get("min_context_messages", 20))
         + ui.field("过期阈值", "max_staleness", observer.get("max_staleness_messages", 5))
         + "</div>"
@@ -236,7 +277,12 @@ def policy_page(config: dict[str, Any], msg: str = "") -> str:
         + "</div>"
         + '<div class="section-title">行为</div>'
         + ui.switch("attention_enabled", attention.get("enabled", True), "社交注意", tip_text="")
-        + ui.switch("fatigue_enabled", fatigue.get("enabled", True), "社交疲劳", tip_text="只软化判断，不强制沉默")
+        + ui.switch(
+            "fatigue_enabled",
+            fatigue.get("enabled", True),
+            "社交疲劳",
+            tip_text="只软化判断，不强制沉默",
+        )
         + ui.switch("topic_enabled", topic.get("enabled", True), "话题感知", tip_text="")
         + "<p><button class='btn btn-primary' type='submit'>保存并热加载</button></p></form>"
     )

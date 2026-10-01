@@ -94,9 +94,7 @@ class OpenMeteoWeatherProvider(WeatherProvider):
         place = results[0]
         latitude, longitude = place["latitude"], place["longitude"]
         display_name = ", ".join(
-            part
-            for part in (place.get("name"), place.get("admin1"), place.get("country"))
-            if part
+            part for part in (place.get("name"), place.get("admin1"), place.get("country")) if part
         )
 
         async with self._client(self.FORECAST_URL) as client:
@@ -191,9 +189,7 @@ class WeatherApiProvider(WeatherProvider):
                     "condition": ((day.get("day") or {}).get("condition") or {}).get("text", ""),
                     "high_c": (day.get("day") or {}).get("maxtemp_c"),
                     "low_c": (day.get("day") or {}).get("mintemp_c"),
-                    "precipitation_probability": (day.get("day") or {}).get(
-                        "daily_chance_of_rain"
-                    ),
+                    "precipitation_probability": (day.get("day") or {}).get("daily_chance_of_rain"),
                 }
                 for day in days
             ],
@@ -202,11 +198,32 @@ class WeatherApiProvider(WeatherProvider):
 
 # WMO weather codes used by Open-Meteo (kept local: no vendor import in core).
 _WMO_TEXT: dict[int, str] = {
-    0: "晴", 1: "大致晴朗", 2: "局部多云", 3: "阴", 45: "雾", 48: "雾凇",
-    51: "毛毛雨", 53: "小雨", 55: "中雨", 61: "小雨", 63: "中雨", 65: "大雨",
-    66: "冻雨", 67: "冻雨", 71: "小雪", 73: "中雪", 75: "大雪", 77: "雪粒",
-    80: "阵雨", 81: "较强阵雨", 82: "强阵雨", 85: "阵雪", 86: "强阵雪",
-    95: "雷阵雨", 96: "雷阵雨伴冰雹", 99: "强雷暴伴冰雹",
+    0: "晴",
+    1: "大致晴朗",
+    2: "局部多云",
+    3: "阴",
+    45: "雾",
+    48: "雾凇",
+    51: "毛毛雨",
+    53: "小雨",
+    55: "中雨",
+    61: "小雨",
+    63: "中雨",
+    65: "大雨",
+    66: "冻雨",
+    67: "冻雨",
+    71: "小雪",
+    73: "中雪",
+    75: "大雪",
+    77: "雪粒",
+    80: "阵雨",
+    81: "较强阵雨",
+    82: "强阵雨",
+    85: "阵雪",
+    86: "强阵雪",
+    95: "雷阵雨",
+    96: "雷阵雨伴冰雹",
+    99: "强雷暴伴冰雹",
 }
 
 

@@ -62,7 +62,7 @@ class MemoryExtractor:
         logger: logging.Logger | None = None,
         clock: Any = time.time,
     ) -> None:
-        self.config = config    # public: toggled at runtime/WebUI
+        self.config = config  # public: toggled at runtime/WebUI
         self.engine = engine  # public: re-pointable when tests/ops swap engines
         self._manager = manager
         self._log = logger or logging.getLogger("CatooBot.Memory")

@@ -76,9 +76,7 @@ class ThreadManager:
         thread.updated_at = now
         thread.expires_at = now + self._window_seconds()
         self._threads[str(group_id)] = thread
-        self._log.info(
-            "[Social] thread open group=%s topic=%.30s", group_id, thread.topic or "-"
-        )
+        self._log.info("[Social] thread open group=%s topic=%.30s", group_id, thread.topic or "-")
         return thread
 
     def note_user_message(

@@ -33,9 +33,7 @@ class PluginLoader:
         self._bot = bot
         self._log = logging.getLogger("CatooBot.Plugin")
         self._loaded: dict[str, Plugin] = {}
-        self._user_dir = (
-            Path(user_plugin_dir) if user_plugin_dir is not None else Path("plugins")
-        )
+        self._user_dir = Path(user_plugin_dir) if user_plugin_dir is not None else Path("plugins")
 
     @property
     def loaded(self) -> dict[str, Plugin]:

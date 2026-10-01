@@ -274,11 +274,7 @@ class CharacterContextBuilder:
         tagged: list[ChatMessage] = []
         for msg in history:
             created = msg.created_at
-            if (
-                created is None
-                or now - created < self.STALE_HISTORY_SECONDS
-                or not msg.content
-            ):
+            if created is None or now - created < self.STALE_HISTORY_SECONDS or not msg.content:
                 tagged.append(msg)
                 continue
             tag = _human_time_tag(created, tz, now)
@@ -321,9 +317,8 @@ class CharacterContextBuilder:
             bits.append(f"你上一句刚说过: {last}")
         if not bits:
             return ""
-        return (
-            "你最近的延续状态（自然带入，不要逐条汇报，被问到时可以自然提起）: "
-            + "；".join(bits)
+        return "你最近的延续状态（自然带入，不要逐条汇报，被问到时可以自然提起）: " + "；".join(
+            bits
         )
 
     @staticmethod
@@ -348,9 +343,7 @@ class CharacterContextBuilder:
             bits.append("偏短消息" if length.value < 0.35 else "消息偏长")
         if not bits:
             return ""
-        return (
-            "这位用户的聊天习惯（观察到的倾向，参考即可，不要说破）: " + "、".join(bits) + "。"
-        )
+        return "这位用户的聊天习惯（观察到的倾向，参考即可，不要说破）: " + "、".join(bits) + "。"
 
     @staticmethod
     def _shared_block(shared_experiences: list | None) -> str:
@@ -409,9 +402,7 @@ class CharacterContextBuilder:
             if value
         ]
         if identity_bits:
-            blocks.append(
-                "你的角色设定（始终保持一致）: " + "；".join(identity_bits)
-            )
+            blocks.append("你的角色设定（始终保持一致）: " + "；".join(identity_bits))
         if identity.background:
             blocks.append("你的背景故事: " + identity.background)
 

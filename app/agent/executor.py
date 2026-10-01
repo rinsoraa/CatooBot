@@ -115,9 +115,7 @@ class ExecutionEngine:
 
             outcomes = await asyncio.gather(
                 *(
-                    self._execute_step(
-                        step, goal_description, observations, context, budget
-                    )
+                    self._execute_step(step, goal_description, observations, context, budget)
                     for step in batch
                 )
             )
@@ -137,9 +135,7 @@ class ExecutionEngine:
         if cancelled is not None and getattr(cancelled, "is_set", lambda: False)():
             raise TaskCancelledError("task cancelled by user")
         if budget.expired():
-            raise TaskTimeoutError(
-                f"task exceeded {budget.max_execution_seconds:.0f}s"
-            )
+            raise TaskTimeoutError(f"task exceeded {budget.max_execution_seconds:.0f}s")
         if budget.steps_left <= 0:
             raise BudgetExceededError(f"step budget exhausted ({budget.max_steps})")
 
@@ -156,13 +152,9 @@ class ExecutionEngine:
 
         try:
             if step.tool:
-                observation = await self._run_tool_step(
-                    step, observations, context, budget
-                )
+                observation = await self._run_tool_step(step, observations, context, budget)
             else:
-                observation = await self._run_analysis_step(
-                    step, goal_description, observations
-                )
+                observation = await self._run_analysis_step(step, goal_description, observations)
         except Exception as exc:  # noqa: BLE001 - a step failure is data, not a crash
             self._log.warning("[Agent] step %s failed: %s", step.id, exc)
             observation = Observation(
@@ -268,9 +260,7 @@ class ExecutionEngine:
 
     @staticmethod
     def _needs_resolution(arguments: dict[str, Any]) -> bool:
-        return any(
-            isinstance(value, str) and PLACEHOLDER in value for value in arguments.values()
-        )
+        return any(isinstance(value, str) and PLACEHOLDER in value for value in arguments.values())
 
     async def _resolve_arguments(
         self,
@@ -284,12 +274,15 @@ class ExecutionEngine:
         context_block = observations_to_context(
             observations, limit=self.config.max_observations_in_context
         )
-        prompt = ARGUMENT_PROMPT.format(
-            tool=step.tool,
-            schema=json.dumps(schema, ensure_ascii=False),
-            step=step.description or step.id,
-            observations=context_block or "（无）",
-        ) + f"\n已有参数（可覆盖）：{json.dumps(arguments, ensure_ascii=False)}\n"
+        prompt = (
+            ARGUMENT_PROMPT.format(
+                tool=step.tool,
+                schema=json.dumps(schema, ensure_ascii=False),
+                step=step.description or step.id,
+                observations=context_block or "（无）",
+            )
+            + f"\n已有参数（可覆盖）：{json.dumps(arguments, ensure_ascii=False)}\n"
+        )
 
         from app.ai.models import AIRequest, ChatMessage
 

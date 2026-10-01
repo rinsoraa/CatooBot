@@ -71,21 +71,34 @@ CHARACTER_SETTINGS: tuple[str, ...] = (
 
 #: tables that MUST survive the reset (§4/§7 + §7 users/QQ data)
 PRESERVED_TABLES: tuple[str, ...] = (
-    "users", "groups", "group_profiles", "messages", "settings",
-    "users_profiles", "user_profiles", "schema_migrations",
-    "sticker_assets", "sticker_usage", "native_faces", "image_analysis",
-    "tool_executions", "tool_credentials", "tool_cache", "tool_permissions",
+    "users",
+    "groups",
+    "group_profiles",
+    "messages",
+    "settings",
+    "users_profiles",
+    "user_profiles",
+    "schema_migrations",
+    "sticker_assets",
+    "sticker_usage",
+    "native_faces",
+    "image_analysis",
+    "tool_executions",
+    "tool_credentials",
+    "tool_cache",
+    "tool_permissions",
     "web_users",
 )
 
 
 class CharacterLifecycleManager:
-    def __init__(self, database: Any, *, clock: Any = time.time,
-                 backup_dir: str | Path | None = None) -> None:
+    def __init__(
+        self, database: Any, *, clock: Any = time.time, backup_dir: str | Path | None = None
+    ) -> None:
         self._db = database
         self._clock = clock
-        self._backup_dir = Path(backup_dir) if backup_dir else (
-            PROJECT_ROOT / "data" / "character_reset_backup"
+        self._backup_dir = (
+            Path(backup_dir) if backup_dir else (PROJECT_ROOT / "data" / "character_reset_backup")
         )
 
     # ---------------------------------------------------------------- reset

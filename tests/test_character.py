@@ -136,9 +136,7 @@ class TestRuntime:
         )
         memory = MemoryManager(MemoryConfig(), database)
         await memory.remember("user", "9", "用户喜欢猫", category="preference")
-        persona_manager = PersonaManager(
-            CharacterConfig(identity={"name": "小星"}), database
-        )
+        persona_manager = PersonaManager(CharacterConfig(identity={"name": "小星"}), database)
         runtime = CharacterRuntime(persona_manager, engine, memory, database=database)
         await runtime.start()
 

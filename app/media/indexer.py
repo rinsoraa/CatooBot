@@ -45,7 +45,8 @@ class StickerLibraryIndexer:
         if not self._dir.exists():
             return []
         return [
-            path for path in sorted(self._dir.rglob("*"))
+            path
+            for path in sorted(self._dir.rglob("*"))
             if path.is_file() and path.suffix.lower() in _STICKER_EXTS
         ]
 
@@ -76,8 +77,12 @@ class StickerLibraryIndexer:
         self.state["analyzing"] += 1
         mime = _mime(path.suffix)
         media = MediaContent(
-            media_type="sticker", source_type="manual_import",
-            file=str(path), mime_type=mime, file_size=len(data), sha256=sha,
+            media_type="sticker",
+            source_type="manual_import",
+            file=str(path),
+            mime_type=mime,
+            file_size=len(data),
+            sha256=sha,
             is_animated=path.suffix.lower() in (".gif", ".webp"),
         )
         vision_result = None
@@ -109,6 +114,10 @@ class StickerLibraryIndexer:
 
 def _mime(suffix: str) -> str:
     return {
-        ".gif": "image/gif", ".png": "image/png", ".jpg": "image/jpeg",
-        ".jpeg": "image/jpeg", ".webp": "image/webp", ".bmp": "image/bmp",
+        ".gif": "image/gif",
+        ".png": "image/png",
+        ".jpg": "image/jpeg",
+        ".jpeg": "image/jpeg",
+        ".webp": "image/webp",
+        ".bmp": "image/bmp",
     }.get(suffix.lower(), "application/octet-stream")

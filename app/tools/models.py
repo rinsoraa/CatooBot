@@ -44,9 +44,9 @@ class ToolMetadata(BaseModel):
     input_schema: dict[str, Any] = Field(default_factory=dict)
     output_schema: dict[str, Any] = Field(default_factory=dict)
     enabled: bool = True
-    timeout: float | None = None          # None -> config default
+    timeout: float | None = None  # None -> config default
     risk_level: str = "low"
-    cache_ttl_seconds: float = 0.0        # 0 = no caching
+    cache_ttl_seconds: float = 0.0  # 0 = no caching
     requires_credentials: list[str] = Field(default_factory=list)
 
     def __init__(self, **data: Any) -> None:

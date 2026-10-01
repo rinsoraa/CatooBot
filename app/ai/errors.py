@@ -93,9 +93,7 @@ class AIConnectionError(AIError):
 class ServerError(AIError):
     """Temporary provider-side error (5xx). Switchable + cooldown."""
 
-    def __init__(
-        self, provider: str, model: str = "", status: int = 0, detail: str = ""
-    ) -> None:
+    def __init__(self, provider: str, model: str = "", status: int = 0, detail: str = "") -> None:
         self.provider = provider
         self.model = model
         self.status = status

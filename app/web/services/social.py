@@ -164,11 +164,7 @@ class SocialAdminService:
     # ------------------------------------------------------------- settings
 
     async def load_overrides(self) -> dict[str, Any]:
-        data = (
-            await self.bot.database.get_setting_json(SETTINGS_KEY)
-            if self.bot.database
-            else None
-        )
+        data = await self.bot.database.get_setting_json(SETTINGS_KEY) if self.bot.database else None
         return data if isinstance(data, dict) else {}
 
     async def save_settings(self, form: dict[str, Any]) -> dict[str, Any]:

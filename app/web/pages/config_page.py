@@ -23,7 +23,7 @@ TABS: tuple[tuple[str, str, str], ...] = (
 def _tab_links(active: str) -> str:
     links = " ".join(
         f'<a href="/config?tab={key}" class="tab{" active" if key == active else ""}"'
-        f'{ui.attr_tip(tip_text)}>{ui.esc(label)}</a>'
+        f"{ui.attr_tip(tip_text)}>{ui.esc(label)}</a>"
         for key, label, tip_text in TABS
     )
     return f"<nav class='tabs'>{links}</nav>"
@@ -75,38 +75,121 @@ def _basic(service: Any, snapshot: dict[str, Any]) -> str:
     memory = cfg["memory"]
     content = f"""
 <form method="post" action="/config/basic">
-  {ui.field("机器人名称", "bot_name", bot["name"], tip_text="显示在 WebUI 与日志里的名字，不影响 QQ 昵称")}
-  {ui.field("命令前缀", "command_prefix", bot["command_prefix"],
-            tip_text="内部命令系统的前缀；QQ 端自 v0.3 起没有任何命令，这一项只影响插件/内部调用")}
-  {ui.switch("bot_debug", bot["debug"], "调试模式",
-             tip_text="打开后日志会输出原始 OneBot JSON，排查连接问题时很有用（信息量大）")}
+  {
+        ui.field(
+            "机器人名称",
+            "bot_name",
+            bot["name"],
+            tip_text="显示在 WebUI 与日志里的名字，不影响 QQ 昵称",
+        )
+    }
+  {
+        ui.field(
+            "命令前缀",
+            "command_prefix",
+            bot["command_prefix"],
+            tip_text="内部命令系统的前缀；QQ 端自 v0.3 起没有任何命令，这一项只影响插件/内部调用",
+        )
+    }
+  {
+        ui.switch(
+            "bot_debug",
+            bot["debug"],
+            "调试模式",
+            tip_text="打开后日志会输出原始 OneBot JSON，排查连接问题时很有用（信息量大）",
+        )
+    }
   <div class="section-title">日志与终端</div>
-  {ui.select("日志级别", "log_level",
-             [("DEBUG", "DEBUG（最详细）"), ("INFO", "INFO（推荐）"),
-              ("WARNING", "WARNING"), ("ERROR", "ERROR")],
-             logging_cfg["level"], tip_text="控制台与文件同时生效；调高之后播报也会安静下来")}
+  {
+        ui.select(
+            "日志级别",
+            "log_level",
+            [
+                ("DEBUG", "DEBUG（最详细）"),
+                ("INFO", "INFO（推荐）"),
+                ("WARNING", "WARNING"),
+                ("ERROR", "ERROR"),
+            ],
+            logging_cfg["level"],
+            tip_text="控制台与文件同时生效；调高之后播报也会安静下来",
+        )
+    }
   <div>
-    {ui.switch("log_color", logging_cfg["color"], "彩色终端输出",
-               tip_text="管道/重定向到文件时自动变纯文本；NO_COLOR 环境变量优先级最高")}
-    {ui.switch("log_narrate", logging_cfg["narrate"], "内心播报",
-               tip_text="在控制台打印她的心理历程 / 思考 / 心流 / 碎碎念 / 世界状态（只给运营者看，不进 QQ）")}
-    {ui.switch("log_narrate_ticks", logging_cfg["narrate_world_ticks"], "每次沙盒心跳都播报",
-               tip_text="默认只在状态变化时播报；打开后每 tick 都会打印一行（信息较密）")}
+    {
+        ui.switch(
+            "log_color",
+            logging_cfg["color"],
+            "彩色终端输出",
+            tip_text="管道/重定向到文件时自动变纯文本；NO_COLOR 环境变量优先级最高",
+        )
+    }
+    {
+        ui.switch(
+            "log_narrate",
+            logging_cfg["narrate"],
+            "内心播报",
+            tip_text="在控制台打印她的心理历程 / 思考 / 心流 / 碎碎念 / 世界状态（只给运营者看，不进 QQ）",
+        )
+    }
+    {
+        ui.switch(
+            "log_narrate_ticks",
+            logging_cfg["narrate_world_ticks"],
+            "每次沙盒心跳都播报",
+            tip_text="默认只在状态变化时播报；打开后每 tick 都会打印一行（信息较密）",
+        )
+    }
   </div>
   <div class="section-title">权限</div>
-  {ui.field("超级管理员 QQ", "superusers", "、".join(permissions["superusers"]),
-            tip_text="拥有全部权限；多个用逗号/空格分隔")}
-  {ui.field("管理员 QQ", "admins", "、".join(permissions["admins"]),
-            tip_text="比普通用户高一级，不能改配置")}
+  {
+        ui.field(
+            "超级管理员 QQ",
+            "superusers",
+            "、".join(permissions["superusers"]),
+            tip_text="拥有全部权限；多个用逗号/空格分隔",
+        )
+    }
+  {
+        ui.field(
+            "管理员 QQ",
+            "admins",
+            "、".join(permissions["admins"]),
+            tip_text="比普通用户高一级，不能改配置",
+        )
+    }
   <div class="section-title">记忆</div>
-  {ui.switch("memory_enabled", memory["enabled"], "启用长期记忆",
-             tip_text="关闭后不再提取与检索记忆（已有数据保留，可在记忆页查看）")}
-  {ui.switch("memory_extraction", memory["extraction"]["enabled"], "回复后自动提取记忆",
-             tip_text="后台异步执行，不阻塞聊天；关掉后只能靠「记忆修正」手工写入")}
-  {ui.field("提取使用的模型", "memory_extract_model", memory["extraction"]["model"],
-            tip_text="填 ai.models 里的名字；留空使用主模型")}
-  {ui.field("提取超时（秒）", "memory_extract_timeout", memory["extraction"]["timeout"],
-            tip_text="超时后放弃这次提取，不会重试")}
+  {
+        ui.switch(
+            "memory_enabled",
+            memory["enabled"],
+            "启用长期记忆",
+            tip_text="关闭后不再提取与检索记忆（已有数据保留，可在记忆页查看）",
+        )
+    }
+  {
+        ui.switch(
+            "memory_extraction",
+            memory["extraction"]["enabled"],
+            "回复后自动提取记忆",
+            tip_text="后台异步执行，不阻塞聊天；关掉后只能靠「记忆修正」手工写入",
+        )
+    }
+  {
+        ui.field(
+            "提取使用的模型",
+            "memory_extract_model",
+            memory["extraction"]["model"],
+            tip_text="填 ai.models 里的名字；留空使用主模型",
+        )
+    }
+  {
+        ui.field(
+            "提取超时（秒）",
+            "memory_extract_timeout",
+            memory["extraction"]["timeout"],
+            tip_text="超时后放弃这次提取，不会重试",
+        )
+    }
   <p><button class="btn btn-primary" type="submit"
       data-tip="保存这一页的改动并立即生效">保存基础设置</button></p>
 </form>
@@ -116,9 +199,7 @@ def _basic(service: Any, snapshot: dict[str, Any]) -> str:
     return ui.card("基础设置", content, tip_text="这些开关都会立刻作用到运行中的进程")
 
 
-def _ai(
-    service: Any, snapshot: dict[str, Any], engine_report: dict[str, Any] | None
-) -> str:
+def _ai(service: Any, snapshot: dict[str, Any], engine_report: dict[str, Any] | None) -> str:
     ai = snapshot["ai"]
     providers = ai["providers"]
     models = ai["models"]
@@ -134,8 +215,10 @@ def _ai(
 
     provider_rows = []
     for index, (name, data) in enumerate(providers.items()):
-        key_state = ui.badge("Key 已就绪", "success") if data["has_key"] else ui.badge(
-            "缺少 Key", "warning"
+        key_state = (
+            ui.badge("Key 已就绪", "success")
+            if data["has_key"]
+            else ui.badge("缺少 Key", "warning")
         )
         provider_rows.append(
             f"<tr><td><input name='p_name_{index}' value='{ui.esc(name)}'"
@@ -197,8 +280,14 @@ def _ai(
     model_table = ui.table(
         ["别名", "Provider", "模型 ID", "状态", "停用", "删除"],
         model_rows,
-        tips=["模型别名", "使用哪个 Provider", "服务商模型 ID", "是否已装载到运行时",
-              "临时停用（不删除）", "勾选并保存即移除"],
+        tips=[
+            "模型别名",
+            "使用哪个 Provider",
+            "服务商模型 ID",
+            "是否已装载到运行时",
+            "临时停用（不删除）",
+            "勾选并保存即移除",
+        ],
         empty="还没有模型",
     )
 
@@ -206,15 +295,39 @@ def _ai(
 {report_html}
 <form method="post" action="/config/ai">
   <div class="section-title">全局</div>
-  {ui.switch("ai_enabled", ai["enabled"], "启用 AI",
-             tip_text="总开关；关闭后 QQ 里只会收到固定的忙碌回复")}
-  {ui.field("默认温度", "ai_temperature", ai["default_temperature"],
-            tip_text="0~2，越高越活泼；角色聊天一般 0.7~0.9")}
+  {
+        ui.switch(
+            "ai_enabled",
+            ai["enabled"],
+            "启用 AI",
+            tip_text="总开关；关闭后 QQ 里只会收到固定的忙碌回复",
+        )
+    }
+  {
+        ui.field(
+            "默认温度",
+            "ai_temperature",
+            ai["default_temperature"],
+            tip_text="0~2，越高越活泼；角色聊天一般 0.7~0.9",
+        )
+    }
   {ui.field("请求超时（秒）", "ai_timeout", ai["timeout"], tip_text="超过这个时间就换下一个模型")}
-  {ui.field("限流冷却（秒）", "ai_rate_cooldown", ai["cooldown"]["rate_limit_seconds"],
-            tip_text="遇到 429 时该模型冷却多久，期间自动走备用模型")}
-  {ui.field("服务错误冷却（秒）", "ai_server_cooldown", ai["cooldown"]["server_error_seconds"],
-            tip_text="5xx/超时后的冷却时间")}
+  {
+        ui.field(
+            "限流冷却（秒）",
+            "ai_rate_cooldown",
+            ai["cooldown"]["rate_limit_seconds"],
+            tip_text="遇到 429 时该模型冷却多久，期间自动走备用模型",
+        )
+    }
+  {
+        ui.field(
+            "服务错误冷却（秒）",
+            "ai_server_cooldown",
+            ai["cooldown"]["server_error_seconds"],
+            tip_text="5xx/超时后的冷却时间",
+        )
+    }
 
   <div class="section-title">Provider（模型服务商）</div>
   {provider_table}
@@ -248,20 +361,53 @@ def _onebot(snapshot: dict[str, Any]) -> str:
     onebot = snapshot["onebot"]
     content = f"""
 <form method="post" action="/config/onebot">
-  {ui.field("监听地址", "onebot_host", onebot["host"],
-            tip_text="NapCat 反向 WebSocket 要连接到这里；改动需要重启")}
-  {ui.field("监听端口", "onebot_port", onebot["port"],
-            tip_text="默认 8080，改完记得同步修改 NapCat 的 URL")}
-  {ui.field("WebSocket 路径", "onebot_path", onebot["path"],
-            tip_text="默认 /onebot/v11/ws，必须与 NapCat 里填的完全一致")}
-  {ui.field("API 调用超时（秒）", "onebot_api_timeout", onebot["api_timeout"],
-            tip_text="调用 send_* 等接口的等待上限")}
-  {ui.field("访问令牌", "onebot_token", "", type="password",
-            tip_text="写入 .env 的 CATOOBOT_ONEBOT_ACCESS_TOKEN；留空表示不修改（YAML 里永远是空值）")}
+  {
+        ui.field(
+            "监听地址",
+            "onebot_host",
+            onebot["host"],
+            tip_text="NapCat 反向 WebSocket 要连接到这里；改动需要重启",
+        )
+    }
+  {
+        ui.field(
+            "监听端口",
+            "onebot_port",
+            onebot["port"],
+            tip_text="默认 8080，改完记得同步修改 NapCat 的 URL",
+        )
+    }
+  {
+        ui.field(
+            "WebSocket 路径",
+            "onebot_path",
+            onebot["path"],
+            tip_text="默认 /onebot/v11/ws，必须与 NapCat 里填的完全一致",
+        )
+    }
+  {
+        ui.field(
+            "API 调用超时（秒）",
+            "onebot_api_timeout",
+            onebot["api_timeout"],
+            tip_text="调用 send_* 等接口的等待上限",
+        )
+    }
+  {
+        ui.field(
+            "访问令牌",
+            "onebot_token",
+            "",
+            type="password",
+            tip_text="写入 .env 的 CATOOBOT_ONEBOT_ACCESS_TOKEN；留空表示不修改（YAML 里永远是空值）",
+        )
+    }
   <p><button class="btn btn-primary" type="submit"
       data-tip="保存；地址/端口/路径需要重启进程才会生效">保存 OneBot 设置</button></p>
 </form>
-<p class="hint">当前生效地址：<code>{ui.esc(snapshot["onebot"]["host"])}:{snapshot["onebot"]["port"]}{ui.esc(snapshot["onebot"]["path"])}</code></p>
+<p class="hint">当前生效地址：<code>{ui.esc(snapshot["onebot"]["host"])}:{
+        snapshot["onebot"]["port"]
+    }{ui.esc(snapshot["onebot"]["path"])}</code></p>
 """
     return ui.card("OneBot 接入", content, tip_text="CatooBot 在这里监听 NapCat 的连接")
 
@@ -271,9 +417,23 @@ def _web(snapshot: dict[str, Any]) -> str:
     content = f"""
 <form method="post" action="/config/web">
   {ui.field("用户名", "web_username", web["username"], tip_text="WebUI 登录账号，可改名")}
-  {ui.field("新密码", "web_password", "", type="password",
-            tip_text="至少 6 位；保存后所有已登录会话会失效，需要重新登录")}
-  {ui.field("监听地址", "web_host", web["host"], tip_text="默认 127.0.0.1（只允许本机访问），改动需要重启")}
+  {
+        ui.field(
+            "新密码",
+            "web_password",
+            "",
+            type="password",
+            tip_text="至少 6 位；保存后所有已登录会话会失效，需要重新登录",
+        )
+    }
+  {
+        ui.field(
+            "监听地址",
+            "web_host",
+            web["host"],
+            tip_text="默认 127.0.0.1（只允许本机访问），改动需要重启",
+        )
+    }
   {ui.field("监听端口", "web_port", web["port"], tip_text="默认 8500，改动需要重启")}
   <p><button class="btn btn-primary" type="submit"
       data-tip="保存账号设置；端口改动重启后生效">保存 WebUI 设置</button></p>

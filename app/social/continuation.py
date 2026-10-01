@@ -22,9 +22,32 @@ from app.social.relevance import lexical_similarity
 
 #: Words that only make sense when continuing an already-opened exchange.
 FOLLOW_UP_MARKERS = (
-    "那", "呢", "什么", "哪个", "哪一", "哪部", "哪集", "为什么", "怎么", "谁",
-    "哪里", "哪儿", "几", "多少", "好看吗", "好不好", "讲什么", "说什么", "然后",
-    "所以", "那你", "那你呢", "这剧", "这部剧", "那部剧", "它",
+    "那",
+    "呢",
+    "什么",
+    "哪个",
+    "哪一",
+    "哪部",
+    "哪集",
+    "为什么",
+    "怎么",
+    "谁",
+    "哪里",
+    "哪儿",
+    "几",
+    "多少",
+    "好看吗",
+    "好不好",
+    "讲什么",
+    "说什么",
+    "然后",
+    "所以",
+    "那你",
+    "那你呢",
+    "这剧",
+    "这部剧",
+    "那部剧",
+    "它",
 )
 
 #: Anaphora that points back to the bot's last message.

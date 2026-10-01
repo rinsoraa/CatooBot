@@ -74,8 +74,7 @@ class TestMultiStepFlow:
         plan = plan_payload(
             [
                 tool_step("s1", "weather", location="Singapore", days=3),
-                {"id": "s2", "description": "比较两天并给建议", "tool": None,
-                 "depends_on": ["s1"]},
+                {"id": "s2", "description": "比较两天并给建议", "tool": None, "depends_on": ["s1"]},
             ]
         )
         replies = [plan, "周六雨挺大的，周日好一些", "看下来周日更适合出门，天气会稳一点。"]
@@ -182,7 +181,10 @@ class TestNaturalControls:
 
             goal = Goal(goal_id="g", session_id="private:7", description="查天气")
             await bot.agent._store_task(  # noqa: SLF001
-                "task-live", goal, status="running", classification="multi_step",
+                "task-live",
+                goal,
+                status="running",
+                classification="multi_step",
                 budget=AgentBudget(),
             )
             bot.agent._active_by_session["private:7"] = "task-live"  # noqa: SLF001
@@ -203,7 +205,10 @@ class TestNaturalControls:
 
             goal = Goal(goal_id="g", session_id="private:8", description="查天气")
             await bot.agent._store_task(  # noqa: SLF001
-                "task-pause", goal, status="running", classification="multi_step",
+                "task-pause",
+                goal,
+                status="running",
+                classification="multi_step",
                 budget=AgentBudget(),
             )
             bot.agent._active_by_session["private:8"] = "task-pause"  # noqa: SLF001
@@ -269,9 +274,7 @@ class TestFailureHandling:
             assert "任务" not in text and "失败" not in text
             # the persona prompt still frames the answer (it may sit after the
             # tool-decision block, which the orchestrator inserts first)
-            joined = chr(10).join(
-                message.content for message in provider.calls[-1]["messages"]
-            )
+            joined = chr(10).join(message.content for message in provider.calls[-1]["messages"])
             assert "像真人朋友一样自然聊天" in joined
         finally:
             await bot.shutdown()
@@ -329,9 +332,7 @@ class TestQQSurface:
 class TestAgentConfigOff:
     async def test_agent_disabled_keeps_everything_working(self, tmp_path) -> None:
         plan = plan_payload([tool_step("s1", "time")])
-        bot, _ = await make_agent_bot(
-            tmp_path, [plan, "普通回复"], **{"enabled": False}
-        )
+        bot, _ = await make_agent_bot(tmp_path, [plan, "普通回复"], **{"enabled": False})
         try:
             await bot.event_bus.emit(private_event(MULTI_STEP_QUESTION, user_id=7))
             await bot.conversation.wait_idle()
@@ -378,7 +379,10 @@ class TestWebsiteAgentPages:
 
             goal = Goal(goal_id="g", session_id="private:tr", description="查天气")
             await bot.agent._store_task(  # noqa: SLF001
-                "task-web", goal, status="running", classification="multi_step",
+                "task-web",
+                goal,
+                status="running",
+                classification="multi_step",
                 budget=AgentBudget(),
             )
             service = AgentAdminService(bot)

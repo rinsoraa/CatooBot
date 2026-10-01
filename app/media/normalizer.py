@@ -77,9 +77,7 @@ class MessageMediaNormalizer:
         #    summary=[动画表情]); otherwise a plain image.
         if isinstance(segment, ImageSegment):
             data = segment.data
-            has_emoji_meta = any(
-                key in data for key in ("emoji_id", "emoji_package_id", "key")
-            )
+            has_emoji_meta = any(key in data for key in ("emoji_id", "emoji_package_id", "key"))
             summary = str(data.get("summary", "") or "")
             sub_type = str(data.get("sub_type", "") or "")
             qq_sticker = sub_type == "1" or "动画表情" in summary
@@ -111,9 +109,7 @@ class MessageMediaNormalizer:
         from app.message.segment import TextSegment
 
         text = "".join(
-            segment.data.get("text", "")
-            for segment in message
-            if isinstance(segment, TextSegment)
+            segment.data.get("text", "") for segment in message if isinstance(segment, TextSegment)
         )
         return text, MessageMediaNormalizer().normalize(message)
 

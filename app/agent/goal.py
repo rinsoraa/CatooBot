@@ -31,7 +31,7 @@ CONTROL_RESUME = "resume"
 class Classification:
     kind: str = "simple"
     reason: str = ""
-    control: str = ""                 # "", cancel, pause, resume
+    control: str = ""  # "", cancel, pause, resume
     confidence: float = 0.6
     markers: list[str] = field(default_factory=list)
 
@@ -119,9 +119,7 @@ class TaskClassifier:
             )
 
         if tool_candidates:
-            return Classification(
-                kind="tool_assisted", reason="tool_candidates", confidence=0.7
-            )
+            return Classification(kind="tool_assisted", reason="tool_candidates", confidence=0.7)
 
         return Classification(kind="simple", reason="plain_chat")
 

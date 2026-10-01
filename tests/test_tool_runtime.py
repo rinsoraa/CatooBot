@@ -505,9 +505,7 @@ class TestExecutor:
 
     async def test_concurrent_execution(self, tmp_path) -> None:
         tools = [EchoTool()]
-        executor, registry, _, database = await make_executor(
-            tmp_path, tools, max_concurrent=4
-        )
+        executor, registry, _, database = await make_executor(tmp_path, tools, max_concurrent=4)
         budget = TurnBudget(max_calls=10)
         results = await executor.execute_all(
             [call("echo", text=str(i)) for i in range(4)], make_context(), budget

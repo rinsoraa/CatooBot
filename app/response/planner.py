@@ -76,6 +76,4 @@ class CharacterResponsePlanner:
         low, high = cfg.inter_chunk_delay_min, cfg.inter_chunk_delay_max
         if high < low:
             low, high = high, low
-        return [
-            self._rng.uniform(low, high) if high > low else low for _ in range(count)
-        ]
+        return [self._rng.uniform(low, high) if high > low else low for _ in range(count)]

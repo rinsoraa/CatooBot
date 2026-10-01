@@ -53,9 +53,7 @@ class CoreRouter:
         """Best-effort persistence; failures only log."""
         try:
             now = int(time.time())
-            await self._bot.database.upsert_user(
-                event.user_id, event.sender.display_name, now
-            )
+            await self._bot.database.upsert_user(event.user_id, event.sender.display_name, now)
             if event.is_group and event.group_id is not None:
                 await self._bot.database.upsert_group(event.group_id, None, now)
         except Exception:  # noqa: BLE001

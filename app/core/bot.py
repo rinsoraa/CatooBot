@@ -85,9 +85,7 @@ class Bot:
             if config.memory.enabled
             else None
         )
-        self.consolidator = (
-            MemoryConsolidator(config.memory, self.memory) if self.memory else None
-        )
+        self.consolidator = MemoryConsolidator(config.memory, self.memory) if self.memory else None
         self.consolidation_scheduler = (
             ConsolidationScheduler(self.consolidator, config.memory.consolidation.schedule)
             if self.consolidator is not None
@@ -135,16 +133,12 @@ class Bot:
 
         # v0.9 social cognition: *when* the character joins a group conversation.
         # Reuses behavior/topic/memory/state/world — no second engine, no dice.
-        self.social = SocialCognitionEngine(
-            config=config.social, bot=self, database=self.database
-        )
+        self.social = SocialCognitionEngine(config=config.social, bot=self, database=self.database)
 
         # v1.1 media + sticker runtime: image understanding, sticker library,
         # acquisition (background) and expression. Ordinary images never become
         # stickers — the boundary lives in app/media/normalizer.
-        self.media = MediaRuntime(
-            config=config.media, engine=self.ai, database=self.database
-        )
+        self.media = MediaRuntime(config=config.media, engine=self.ai, database=self.database)
 
         # v1.2 character continuity + conversation turn runtime. The runtime
         # only buffers/classifies/decides; the chat plugin binds the actual
@@ -179,9 +173,7 @@ class Bot:
                 )
                 from app.sandbox.ai import SandboxAIDecider
 
-                bible = BibleCompiler(
-                    PROJECT_ROOT / config.sandbox.bible_path
-                ).compile()
+                bible = BibleCompiler(PROJECT_ROOT / config.sandbox.bible_path).compile()
                 store = SandboxStore(self.database, clock=self._clock)
                 self.sandbox = SandboxRuntime(
                     config.sandbox,
@@ -191,9 +183,7 @@ class Bot:
                     clock=self._clock,
                     ai_decider=SandboxAIDecider(self.ai),
                 )
-                self.lifecycle_manager = CharacterLifecycleManager(
-                    self.database, clock=self._clock
-                )
+                self.lifecycle_manager = CharacterLifecycleManager(self.database, clock=self._clock)
                 self.character.sandbox = self.sandbox
                 # The sandbox owns her life; v1.2 continuity receives its events.
                 self.sandbox.narrate_ticks = config.logging.narrate_world_ticks
@@ -251,9 +241,7 @@ class Bot:
 
     # ------------------------------------------------------------ lifecycle
 
-    async def _sync_sandbox_state(
-        self, activity: str, location: str, energy: float
-    ) -> None:
+    async def _sync_sandbox_state(self, activity: str, location: str, energy: float) -> None:
         """The sandbox is the only writer of her life: mirror it onto state."""
         await self.character.states.update(
             activity=activity, location=location, energy=energy, reason="sandbox"
@@ -304,9 +292,7 @@ class Bot:
                     payload = build_persona_payload(sandbox.bible)
                     await self.personas.save(Persona.model_validate(payload))
                     await self.character.personas.load()
-                    await sandbox.store.state_set(
-                        "persona_synced_version", sandbox.bible.version
-                    )
+                    await sandbox.store.state_set("persona_synced_version", sandbox.bible.version)
                     self.log.info("[Sandbox] persona synced from bible %s", sandbox.bible.version)
             except Exception:  # noqa: BLE001 - persona sync must not stop boot
                 self.log.exception("[Sandbox] persona sync from bible failed")
@@ -390,9 +376,7 @@ class Bot:
                     ScheduledJob(
                         name="memory_consolidation",
                         handler=self.consolidation_scheduler.tick,
-                        interval_seconds=float(
-                            self.consolidation_scheduler.interval_seconds
-                        ),
+                        interval_seconds=float(self.consolidation_scheduler.interval_seconds),
                         run_immediately=False,
                         misfire_policy="skip",
                     )
@@ -403,13 +387,8 @@ class Bot:
         if self.config.tools.enabled:
             await self.tools.start()
             self.log.info(
-                "[Tool] runtime ready: %d tool(s) enabled (%s),"
-                " decision=%s, budget=%d/turn",
-                sum(
-                    1
-                    for t in self.tools.registry.all()
-                    if self.tools.is_enabled(t.metadata.name)
-                ),
+                "[Tool] runtime ready: %d tool(s) enabled (%s), decision=%s, budget=%d/turn",
+                sum(1 for t in self.tools.registry.all() if self.tools.is_enabled(t.metadata.name)),
                 ", ".join(self.tools.registry.names()),
                 self.config.tools.decision_mode,
                 self.config.tools.max_calls_per_turn,
@@ -520,10 +499,7 @@ class Bot:
         lines.append(
             f"模型       {self.ai.router.model_count} 个"
             + (
-                "  ·  "
-                + ", ".join(
-                    state.spec.name for state in self.ai.router.states.values()
-                )
+                "  ·  " + ", ".join(state.spec.name for state in self.ai.router.states.values())
                 if self.ai.router.model_count
                 else "（AI 未启用）"
             )
@@ -563,9 +539,7 @@ class Bot:
         """Background scan of the sticker import directory (§15-§17)."""
         try:
             stats = await self.media.indexer.scan()
-            self.log.info(
-                "[Media.Indexer] scan done: %s", stats
-            )
+            self.log.info("[Media.Indexer] scan done: %s", stats)
         except Exception:  # noqa: BLE001 - indexing must never kill the bot
             self.log.exception("[Media.Indexer] startup scan failed")
 
@@ -579,7 +553,7 @@ class Bot:
                 name="sandbox_tick",
                 handler=sandbox.tick,
                 interval_seconds=float(self.config.sandbox.tick_seconds),
-                run_immediately=False,   # start() already settled the gap
+                run_immediately=False,  # start() already settled the gap
                 misfire_policy="skip",
             )
         )

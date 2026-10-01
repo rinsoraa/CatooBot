@@ -56,19 +56,19 @@ class CharacterState(BaseModel):
     current_focus: str = ""
     updated_at: int = 0
     # --- v0.8 world fields: EXTEND this one state, never a parallel copy (§8/§9)
-    location: str = ""              # fictional place: 房间 / 客厅 / 便利店
-    social_state: str = "alone"     # alone / chatting / with_friends / quiet
-    schedule_state: str = "awake"   # awake / resting / sleeping / busy
-    current_goal: str = ""          # goal_id the character is pursuing
-    current_project: str = ""       # project_id she is slowly building
+    location: str = ""  # fictional place: 房间 / 客厅 / 便利店
+    social_state: str = "alone"  # alone / chatting / with_friends / quiet
+    schedule_state: str = "awake"  # awake / resting / sleeping / busy
+    current_goal: str = ""  # goal_id the character is pursuing
+    current_project: str = ""  # project_id she is slowly building
     last_activity_change: int = 0
-    last_change_reason: str = ""    # why the world moved last (spec §20)
+    last_change_reason: str = ""  # why the world moved last (spec §20)
     # --- v1.0 episode fields: activity is a derived snapshot of the episode (§7/§8)
     current_activity_episode_id: str = ""
     activity_started_at: int = 0
     activity_planned_end_at: int = 0
     activity_status: str = ""
-    interaction_overlay: str = ""   # chatting / assisting_user (never the primary activity)
+    interaction_overlay: str = ""  # chatting / assisting_user (never the primary activity)
 
     def decayed(self, now: int) -> CharacterState:
         """A copy with mood drifting one step toward neutral when stale."""

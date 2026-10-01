@@ -222,9 +222,7 @@ class Planner:
             raise
         remaining = self.validate(repaired, allowed_tools=allowed_tools)
         if remaining:
-            raise PlanValidationError(
-                "计划无法通过校验：" + "；".join(remaining[:4])
-            )
+            raise PlanValidationError("计划无法通过校验：" + "；".join(remaining[:4]))
         return repaired
 
     # -------------------------------------------------------------- helpers

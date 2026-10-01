@@ -110,7 +110,7 @@ class InitiativeState(BaseModel):
 class ResponseStep:
     """One outgoing step (v1.2 §72/§73): text / sticker / pause."""
 
-    type: str                 # text | sticker | pause
+    type: str  # text | sticker | pause
     text: str = ""
     attachment: Any = None
     duration: float = 0.0
@@ -170,6 +170,7 @@ class BehaviorDecision:
     probability: float = 0.0
     detail: dict[str, Any] = field(default_factory=dict)
 
+
 @dataclass
 class ScheduledJob:
     """A job registered on the ONE shared scheduler.
@@ -180,12 +181,12 @@ class ScheduledJob:
     """
 
     name: str
-    handler: Any                    # async callable, no arguments
+    handler: Any  # async callable, no arguments
     interval_seconds: float
     enabled: bool = True
     run_immediately: bool = False
-    misfire_policy: str = "skip"    # skip | catch_up
-    max_runs_per_day: int = 0       # 0 = unlimited
+    misfire_policy: str = "skip"  # skip | catch_up
+    max_runs_per_day: int = 0  # 0 = unlimited
     last_run: float = 0.0
     runs_today: int = 0
     day_key: str = ""

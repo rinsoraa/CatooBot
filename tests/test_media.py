@@ -49,9 +49,9 @@ class TestNormalizer:
         assert media[0].face_id == 66
 
     def test_mface_is_sticker(self) -> None:
-        message = Message([
-            Mface(emoji_id="1", emoji_package_id="2", key="cat", summary="猫猫无语")
-        ])
+        message = Message(
+            [Mface(emoji_id="1", emoji_package_id="2", key="cat", summary="猫猫无语")]
+        )
         media = MessageMediaNormalizer().normalize(message)
         assert media[0].media_type == "sticker"
         assert media[0].emoji_summary == "猫猫无语"
@@ -60,9 +60,9 @@ class TestNormalizer:
     def test_image_with_emoji_metadata_is_sticker(self) -> None:
         from app.message.segment import ImageSegment
 
-        message = Message([
-            ImageSegment(type="image", data={"url": "http://x.gif", "emoji_id": "9"})
-        ])
+        message = Message(
+            [ImageSegment(type="image", data={"url": "http://x.gif", "emoji_id": "9"})]
+        )
         media = MessageMediaNormalizer().normalize(message)
         assert media[0].media_type == "sticker"
 
@@ -102,8 +102,14 @@ class TestStickerLibrary:
         await database.connect()
         library = StickerLibrary(database=database, sticker_dir=str(tmp_path / "stickers"))
         asset = StickerAnalyzer().analyze(
-            MediaContent(media_type="sticker", source_type="qq_mface", sha256="abc123",
-                         emoji_id="1", emoji_package_id="2", emoji_summary="猫猫无语"),
+            MediaContent(
+                media_type="sticker",
+                source_type="qq_mface",
+                sha256="abc123",
+                emoji_id="1",
+                emoji_package_id="2",
+                emoji_summary="猫猫无语",
+            ),
             None,
         )
         await library.insert(asset)
@@ -123,9 +129,7 @@ class TestStickerLibrary:
             MediaContent(media_type="sticker", emoji_summary="一只猫在笑"), None
         )
         happy.emotion_tags = ["开心"]
-        sad = analyzer.analyze(
-            MediaContent(media_type="sticker", emoji_summary="一只猫在哭"), None
-        )
+        sad = analyzer.analyze(MediaContent(media_type="sticker", emoji_summary="一只猫在哭"), None)
         sad.emotion_tags = ["难过"]
         await library.insert(happy)
         await library.insert(sad)
@@ -249,7 +253,10 @@ class TestIndexer:
         library = StickerLibrary(database=database, sticker_dir=str(import_dir))
         analyzer = StickerAnalyzer(analysis_version="v1")
         indexer = StickerLibraryIndexer(
-            library=library, analyzer=analyzer, vision=None, import_dir=str(import_dir),
+            library=library,
+            analyzer=analyzer,
+            vision=None,
+            import_dir=str(import_dir),
             analysis_version="v1",
         )
         # first scan: one file -> analysed
@@ -285,6 +292,7 @@ class TestVisionCollection:
 
     async def test_vision_meme_is_collected_and_file_downloaded(self, tmp_path) -> None:
         png = b"\x89PNG\r\n\x1a\nfake-cat-image"
+
         async def fetcher(url):  # type: ignore[no-untyped-def]
             return png, "image/png"
 
@@ -315,6 +323,7 @@ class TestVisionCollection:
 
     async def test_duplicate_download_rejected_by_sha256(self, tmp_path) -> None:
         png = b"\x89PNG\r\n\x1a\nfake-cat-image"
+
         async def fetcher(url):  # type: ignore[no-untyped-def]
             return png, "image/png"
 
@@ -349,6 +358,4 @@ class TestVisionCollection:
 
     @staticmethod
     def _image(url: str) -> MediaContent:
-        return MediaContent(
-            media_type="image", source_type="qq_image", url=url, is_animated=True
-        )
+        return MediaContent(media_type="image", source_type="qq_image", url=url, is_animated=True)

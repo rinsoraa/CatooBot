@@ -30,10 +30,38 @@ _DIMENSIONS = list(_CONCEPTS)
 
 
 _VOCAB = (
-    "用户", "喜欢", "猫", "狗", "养", "网站", "个人", "做", "页面", "前端",
-    "播放器", "音乐", "开始", "继续", "完善", "修好", "进度条", "比赛", "参加",
-    "minecraft", "游戏", "windows", "电脑", "鹦鹉", "钓鱼", "小说", "相机",
-    "听歌", "界面", "天气", "吃饭", "睡觉",
+    "用户",
+    "喜欢",
+    "猫",
+    "狗",
+    "养",
+    "网站",
+    "个人",
+    "做",
+    "页面",
+    "前端",
+    "播放器",
+    "音乐",
+    "开始",
+    "继续",
+    "完善",
+    "修好",
+    "进度条",
+    "比赛",
+    "参加",
+    "minecraft",
+    "游戏",
+    "windows",
+    "电脑",
+    "鹦鹉",
+    "钓鱼",
+    "小说",
+    "相机",
+    "听歌",
+    "界面",
+    "天气",
+    "吃饭",
+    "睡觉",
 )
 
 
@@ -103,21 +131,20 @@ async def make_manager(tmp_path, *, semantic: bool = True, config: MemoryConfig 
         service = EmbeddingService(
             MemoryConfig().semantic.embedding, database, provider=KeywordEmbeddingProvider()
         )
-    manager = MemoryManager(config or MemoryConfig(semantic={"enabled": True}), database,
-                            embeddings=service)
+    manager = MemoryManager(
+        config or MemoryConfig(semantic={"enabled": True}), database, embeddings=service
+    )
     return manager, database
 
 
 async def seed(manager) -> None:
     """The scenario from the spec: a website project plus unrelated facts."""
-    await manager.remember("user", "1", "用户正在开发个人网站", category="project",
-                           importance=0.8)
-    await manager.remember("user", "1", "用户最近在做音乐播放器", category="project",
-                           importance=0.7)
-    await manager.remember("user", "1", "用户喜欢 Minecraft", category="interest",
-                           importance=0.6)
-    await manager.remember("user", "1", "用户使用 Windows", category="fact",
-                           importance=0.4)
+    await manager.remember("user", "1", "用户正在开发个人网站", category="project", importance=0.8)
+    await manager.remember(
+        "user", "1", "用户最近在做音乐播放器", category="project", importance=0.7
+    )
+    await manager.remember("user", "1", "用户喜欢 Minecraft", category="interest", importance=0.6)
+    await manager.remember("user", "1", "用户使用 Windows", category="fact", importance=0.4)
 
 
 class TestSemanticRetrieval:
@@ -172,8 +199,9 @@ class TestHybridWeighting:
     async def test_high_semantic_low_keyword_recall(self, tmp_path) -> None:
         """A memory with no shared words is still recalled (spec §78)."""
         manager, database = await make_manager(tmp_path)
-        await manager.remember("user", "1", "用户最近在折腾个人网站的前端页面",
-                               category="project", importance=0.8)
+        await manager.remember(
+            "user", "1", "用户最近在折腾个人网站的前端页面", category="project", importance=0.8
+        )
         scored = await manager.retrieve_scored("播放器现在怎么样了", scope_keys=["user:1"])
         assert scored, "semantic similarity alone should be able to recall"
         assert scored[0].semantic > 0
@@ -183,10 +211,12 @@ class TestHybridWeighting:
 
     async def test_importance_breaks_ties(self, tmp_path) -> None:
         manager, database = await make_manager(tmp_path)
-        await manager.remember("user", "1", "用户喜欢猫", category="preference",
-                               importance=0.95, confidence=0.95)
-        await manager.remember("user", "1", "用户喜欢狗", category="preference",
-                               importance=0.3, confidence=0.6)
+        await manager.remember(
+            "user", "1", "用户喜欢猫", category="preference", importance=0.95, confidence=0.95
+        )
+        await manager.remember(
+            "user", "1", "用户喜欢狗", category="preference", importance=0.3, confidence=0.6
+        )
         scored = await manager.retrieve_scored("用户喜欢什么动物", scope_keys=["user:1"])
         assert scored[0].memory.importance >= scored[-1].memory.importance
         await database.close()
@@ -198,17 +228,25 @@ class TestHybridWeighting:
             retrieval={"min_final_score": 0.9},
         )
         manager, database = await make_manager(tmp_path, config=config)
-        await manager.remember("user", "1", "用户使用 Windows", category="fact",
-                               importance=0.2, confidence=0.5)
+        await manager.remember(
+            "user", "1", "用户使用 Windows", category="fact", importance=0.2, confidence=0.5
+        )
         scored = await manager.retrieve_scored("今天天气怎么样", scope_keys=["user:1"])
         assert scored == []
         await database.close()
 
     async def test_weights_are_configurable(self, tmp_path) -> None:
         config = MemoryConfig(
-            retrieval={"weights": MemoryWeightsConfig(semantic=0.0, keyword=1.0,
-                                                      importance=0.0, confidence=0.0,
-                                                      recency=0.0, relationship=0.0)},
+            retrieval={
+                "weights": MemoryWeightsConfig(
+                    semantic=0.0,
+                    keyword=1.0,
+                    importance=0.0,
+                    confidence=0.0,
+                    recency=0.0,
+                    relationship=0.0,
+                )
+            },
         )
         retriever = HybridRetriever(config.retrieval)
         memories = [
@@ -262,10 +300,10 @@ class TestTemporal:
     async def test_recent_memory_beats_old_one(self, tmp_path) -> None:
         """'最近在干嘛' should prefer the fresh project (spec §80)."""
         manager, database = await make_manager(tmp_path)
-        old = await manager.remember("user", "1", "用户在玩 Minecraft", category="interest",
-                                     importance=0.6)
-        await manager.remember("user", "1", "用户在做个人网站", category="project",
-                               importance=0.6)
+        old = await manager.remember(
+            "user", "1", "用户在玩 Minecraft", category="interest", importance=0.6
+        )
+        await manager.remember("user", "1", "用户在做个人网站", category="project", importance=0.6)
         two_years = 2 * 365 * 86400
         now = int(manager._clock())  # noqa: SLF001
         await database.execute(
@@ -281,14 +319,16 @@ class TestTemporal:
     async def test_expired_memory_fades_but_survives(self, tmp_path) -> None:
         manager, database = await make_manager(tmp_path)
         memory = await manager.remember(
-            "user", "1", "用户本周要参加比赛", category="event",
-            temporal_scope="short_term", importance=0.9,
+            "user",
+            "1",
+            "用户本周要参加比赛",
+            category="event",
+            temporal_scope="short_term",
+            importance=0.9,
         )
         assert memory.valid_until is not None
         # force expiry
-        await database.execute(
-            "UPDATE memories SET valid_until = 1 WHERE id = ?", (memory.id,)
-        )
+        await database.execute("UPDATE memories SET valid_until = 1 WHERE id = ?", (memory.id,))
         scored = await manager.retrieve_scored("比赛", scope_keys=["user:1"])
         assert scored and scored[0].temporal < 1.0  # faded, still retrievable
         assert (await manager.repository.get(memory.id)).status == "active"
@@ -303,8 +343,13 @@ class TestConsolidation:
         first = await manager.remember("user", "1", "用户喜欢猫", category="preference")
         # a near-duplicate inserted directly (bypassing write-time dedup)
         duplicate = await manager.repository.add(
-            Memory(scope_key="user:1", content="用户非常喜欢猫", category="preference",
-                   importance=0.4, confidence=0.7)
+            Memory(
+                scope_key="user:1",
+                content="用户非常喜欢猫",
+                category="preference",
+                importance=0.4,
+                confidence=0.7,
+            )
         )
         # give both the same vector so consolidation can see the similarity
         vector = fake_vector("用户喜欢猫")
@@ -359,8 +404,12 @@ class TestConsolidation:
         config = MemoryConfig(retention={"episodic_days": 30})
         manager, database = await make_manager(tmp_path, config=config)
         memory = await manager.remember(
-            "user", "1", "用户当时遇到一个播放器问题", category="event",
-            layer="episodic", event_at=1,
+            "user",
+            "1",
+            "用户当时遇到一个播放器问题",
+            category="event",
+            layer="episodic",
+            event_at=1,
         )
         consolidator = MemoryConsolidator(config, manager)
         report = await consolidator.run("user:1")
@@ -409,8 +458,14 @@ class TestPresentation:
         memories = [
             MemoryModel(id=1, scope_key="user:1", content="用户喜欢猫", category="preference"),
             MemoryModel(id=2, scope_key="user:1", content="用户在做个人网站", category="project"),
-            MemoryModel(id=3, scope_key="user:1", content="用户修好了播放器", category="event",
-                        layer="episodic", event_at=1_800_000_000),
+            MemoryModel(
+                id=3,
+                scope_key="user:1",
+                content="用户修好了播放器",
+                category="event",
+                layer="episodic",
+                event_at=1_800_000_000,
+            ),
         ]
         text = format_memories(memories)
         assert "参考资料" in text and "不是" in text  # reference-not-instruction
@@ -427,8 +482,14 @@ class TestManagerUpgrades:
     async def test_layer_and_summary_roundtrip(self, tmp_path) -> None:
         manager, database = await make_manager(tmp_path)
         memory = await manager.remember(
-            "user", "1", "用户昨天把播放器修好了", category="event", layer="episodic",
-            summary="用户修好了播放器", source="conversation", temporal_scope="event",
+            "user",
+            "1",
+            "用户昨天把播放器修好了",
+            category="event",
+            layer="episodic",
+            summary="用户修好了播放器",
+            source="conversation",
+            temporal_scope="event",
         )
         assert memory.layer == "episodic"
         assert memory.summary == "用户修好了播放器"
@@ -478,9 +539,7 @@ class TestManagerUpgrades:
 def test_fake_vector_is_deterministic(seed: int) -> None:
     random.seed(seed)
     identical = cosine_similarity(fake_vector("用户喜欢猫"), fake_vector("用户喜欢猫"))
-    related = cosine_similarity(
-        fake_vector("用户在做个人网站"), fake_vector("用户在做网站的页面")
-    )
+    related = cosine_similarity(fake_vector("用户在做个人网站"), fake_vector("用户在做网站的页面"))
     unrelated = cosine_similarity(fake_vector("用户喜欢猫"), fake_vector("用户使用 Windows"))
     assert identical == pytest.approx(1.0)
     assert related > 0.6

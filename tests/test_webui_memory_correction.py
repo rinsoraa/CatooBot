@@ -37,18 +37,14 @@ class TestForceSupersede:
         assert [m.content for m in active] == ["用户喜欢吃草莓"]
 
         # the old fact is retired, not deleted (audit trail intact)
-        history = await manager.list_memories(
-            scope_key="user:123456789", status="superseded"
-        )
+        history = await manager.list_memories(scope_key="user:123456789", status="superseded")
         assert [m.content for m in history] == ["用户喜欢吃西瓜"]
         assert replacement.supersedes_id == old.id
         await database.close()
 
     async def test_no_correction_marker_in_the_new_fact(self, tmp_path) -> None:
         manager, database = await make_memory_manager(tmp_path)
-        old = await manager.remember(
-            "user", "1", "用户不喜欢出门", category="habit", user_id="1"
-        )
+        old = await manager.remember("user", "1", "用户不喜欢出门", category="habit", user_id="1")
         replacement = await manager.force_supersede(old.id, content="用户喜欢宅在家")
         for marker in ("改成", "更正", "不再", "以前", "现在", "更新", "修正"):
             assert marker not in replacement.content

@@ -62,8 +62,7 @@ SEARCH_METADATA = ToolMetadata(
     when_to_use="需要最新、实时或超出角色知识范围的事实信息时（新闻、产品、事件）。",
     when_not_to_use="日常闲聊、常识问题、或可以用已有记忆/工具回答的问题。",
     limitations=(
-        "只返回标题/摘要/链接，不抓取整篇网页；结果可能不完整，"
-        "信息不足时必须说明而不是编造。"
+        "只返回标题/摘要/链接，不抓取整篇网页；结果可能不完整，信息不足时必须说明而不是编造。"
     ),
     input_schema={
         "type": "object",
@@ -139,9 +138,7 @@ class WeatherTool(ToolBase):
 
         providers = self._providers or self._build_providers()
         if not providers:
-            return self.failure(
-                self.metadata.name, "没有可用的天气服务", error_type="unavailable"
-            )
+            return self.failure(self.metadata.name, "没有可用的天气服务", error_type="unavailable")
 
         last_error = ""
         for provider in providers:

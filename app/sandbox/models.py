@@ -101,7 +101,7 @@ class SpaceNode(BaseModel):
     connects: list[str] = Field(default_factory=list)  # reachable space ids
     allowed_actions: list[str] = Field(default_factory=list)
     objects: list[str] = Field(default_factory=list)
-    private: bool = True          # indoors / needs outdoor mode to leave
+    private: bool = True  # indoors / needs outdoor mode to leave
     #: semantic tags for fact injection (吃喝/睡觉/游戏…) — see facts.py
     tags: list[str] = Field(default_factory=list)
 
@@ -112,10 +112,10 @@ class WorldObjectItem(BaseModel):
     id: str
     name: str
     space_id: str
-    kind: str = "object"          # furniture / appliance / container / wearable
+    kind: str = "object"  # furniture / appliance / container / wearable
     interactions: list[str] = Field(default_factory=list)
     state: dict[str, Any] = Field(default_factory=dict)
-    inventory_key: str = ""       # when it holds items (fridge…)
+    inventory_key: str = ""  # when it holds items (fridge…)
     owner: str = ""
     #: semantic tags for fact injection (吃喝/猫/游戏/快递…) — see facts.py
     tags: list[str] = Field(default_factory=list)
@@ -126,7 +126,7 @@ class Inventory(BaseModel):
 
     key: str
     items: dict[str, int] = Field(default_factory=dict)
-    capacity: int = 0             # 0 = unlimited
+    capacity: int = 0  # 0 = unlimited
 
     def count(self, item: str) -> int:
         return int(self.items.get(item, 0))
@@ -177,7 +177,7 @@ class ActionDefinition(BaseModel):
 
     id: str
     name: str
-    spaces: list[str] = Field(default_factory=list)        # where it can run
+    spaces: list[str] = Field(default_factory=list)  # where it can run
     required_objects: list[str] = Field(default_factory=list)
     min_minutes: float = 5.0
     typical_minutes: float = 30.0
@@ -193,8 +193,8 @@ class ActionDefinition(BaseModel):
     consumes: dict[str, dict[str, int]] = Field(default_factory=dict)
     # effects applied on completion: e.g. {"project:mc_city": 0.02}
     effects: dict[str, float] = Field(default_factory=dict)
-    modes: list[str] = Field(default_factory=list)         # implied mode ids
-    detail_pool: list[str] = Field(default_factory=list)   # deterministic labels
+    modes: list[str] = Field(default_factory=list)  # implied mode ids
+    detail_pool: list[str] = Field(default_factory=list)  # deterministic labels
     social_space: str = ""
     # walk somewhere while it runs (shops); she returns home on completion
     destination: str = ""
@@ -212,12 +212,12 @@ class ActionInstance(BaseModel):
     ended_at: float = 0.0
     status: ActionStatus = ActionStatus.active
     detail: str = ""
-    source: str = "decision"      # decision / seed / external / recovery
+    source: str = "decision"  # decision / seed / external / recovery
     reason_code: str = ""
     space_id: str = ""
     progress: float = Field(default=0.0, ge=0.0, le=1.0)
     involved_entities: list[str] = Field(default_factory=list)
-    previous_definition_id: str = ""   # to resume after an interruption
+    previous_definition_id: str = ""  # to resume after an interruption
 
 
 class PetState(BaseModel):
@@ -267,14 +267,14 @@ class Commission(BaseModel):
     """One casual online commission (§65)."""
 
     id: str
-    kind: str = "mc_build"        # mc_build / game_guide / illustration
+    kind: str = "mc_build"  # mc_build / game_guide / illustration
     title: str = ""
-    client_type: str = "online"   # simulated community member
+    client_type: str = "online"  # simulated community member
     scope: str = ""
     progress: float = Field(default=0.0, ge=0.0, le=1.0)
     deadline: float = 0.0
     reward: float = 0.0
-    status: str = "open"          # open / active / delivered / expired
+    status: str = "open"  # open / active / delivered / expired
     detail: str = ""
 
 
@@ -283,11 +283,11 @@ class SocialSpace(BaseModel):
 
     id: str
     name: str
-    kind: str = "simulated"       # qq_group / simulated
+    kind: str = "simulated"  # qq_group / simulated
     topic: str = ""
     qq_group_id: str = ""
     participants: list[str] = Field(default_factory=list)
-    character_presence: str = "offline"   # active / lurking / offline
+    character_presence: str = "offline"  # active / lurking / offline
     interest: float = Field(default=0.5, ge=0.0, le=1.0)
     social_temperature: float = 0.5
 
@@ -296,7 +296,7 @@ class ExternalEvent(BaseModel):
     """Something the outside world did (§49-§50/§70)."""
 
     id: str
-    kind: str                     # user_message / group_mention / delivery_arrived / admin
+    kind: str  # user_message / group_mention / delivery_arrived / admin
     priority: EventPriority = EventPriority.normal
     source: EventSource = EventSource.external_event
     summary: str = ""
@@ -313,7 +313,7 @@ class SandboxEventRecord(BaseModel):
     """A world event that happened (§134-§136) — meaningful only."""
 
     id: str
-    kind: str                     # action_completed / need_critical / interrupt / pet / recovery
+    kind: str  # action_completed / need_critical / interrupt / pet / recovery
     level: EventLevel = EventLevel.normal
     source: EventSource = EventSource.system
     summary: str = ""
@@ -336,7 +336,7 @@ class DecisionTrace(BaseModel):
 class SandboxDecision(BaseModel):
     """Structured output of the decision engine (§43/§124)."""
 
-    decision: str                 # continue / extend / switch / interrupt / sleep / move / interact
+    decision: str  # continue / extend / switch / interrupt / sleep / move / interact
     action_id: str = ""
     reason_codes: list[str] = Field(default_factory=list)
     factors: dict[str, Any] = Field(default_factory=dict)
@@ -370,6 +370,6 @@ class KnowledgeEntry(BaseModel):
 
     key: str
     known: bool = False
-    source: str = ""              # observation / memory / interaction / discovered
+    source: str = ""  # observation / memory / interaction / discovered
     learned_at: float = 0.0
     data: dict[str, Any] = Field(default_factory=dict)

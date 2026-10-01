@@ -85,7 +85,9 @@ class OpenAICompatibleProvider(AIProvider):
 
         self._log.info(
             "Sending request provider=%s model=%s (%d messages)",
-            self.name, request.model, len(request.messages),
+            self.name,
+            request.model,
+            len(request.messages),
         )
         try:
             response = await self._client.post("/chat/completions", json=payload)

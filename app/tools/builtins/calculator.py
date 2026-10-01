@@ -32,13 +32,24 @@ _UNARY_OPS: dict[type[ast.unaryop], Callable[[float], float]] = {
 
 # unit -> (dimension, factor to the dimension's base unit)
 _UNITS: dict[str, tuple[str, float]] = {
-    "mm": ("length", 0.001), "cm": ("length", 0.01), "m": ("length", 1.0),
-    "km": ("length", 1000.0), "inch": ("length", 0.0254), "ft": ("length", 0.3048),
+    "mm": ("length", 0.001),
+    "cm": ("length", 0.01),
+    "m": ("length", 1.0),
+    "km": ("length", 1000.0),
+    "inch": ("length", 0.0254),
+    "ft": ("length", 0.3048),
     "mile": ("length", 1609.344),
-    "mg": ("mass", 1e-6), "g": ("mass", 0.001), "kg": ("mass", 1.0), "t": ("mass", 1000.0),
+    "mg": ("mass", 1e-6),
+    "g": ("mass", 0.001),
+    "kg": ("mass", 1.0),
+    "t": ("mass", 1000.0),
     "lb": ("mass", 0.45359237),
-    "ml": ("volume", 0.001), "l": ("volume", 1.0), "m3": ("volume", 1000.0),
-    "c": ("temperature", 1.0), "f": ("temperature", 1.0), "k": ("temperature", 1.0),
+    "ml": ("volume", 0.001),
+    "l": ("volume", 1.0),
+    "m3": ("volume", 1000.0),
+    "c": ("temperature", 1.0),
+    "f": ("temperature", 1.0),
+    "k": ("temperature", 1.0),
 }
 
 METADATA = ToolMetadata(
@@ -111,9 +122,7 @@ class CalculatorTool(ToolBase):
     @staticmethod
     def evaluate(expression: str) -> float:
         """Evaluate a arithmetic-only expression. Raises InvalidArgumentsError."""
-        cleaned = (
-            expression.replace("×", "*").replace("÷", "/").replace("−", "-").replace("，", "")
-        )
+        cleaned = expression.replace("×", "*").replace("÷", "/").replace("−", "-").replace("，", "")
         try:
             tree = ast.parse(cleaned, mode="eval")
         except SyntaxError as exc:
@@ -149,9 +158,7 @@ class CalculatorTool(ToolBase):
         dimension, factor = _UNITS[from_unit]
         target_dimension, target_factor = _UNITS[to_unit]
         if dimension != target_dimension:
-            raise InvalidArgumentsError(
-                f"cannot convert {dimension} to {target_dimension}"
-            )
+            raise InvalidArgumentsError(f"cannot convert {dimension} to {target_dimension}")
         if dimension == "temperature":
             value = _convert_temperature(amount, from_unit, to_unit)
         else:

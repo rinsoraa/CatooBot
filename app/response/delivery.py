@@ -97,9 +97,7 @@ class MessageDelivery:
                     await self._sleep(step.duration)
                 continue
             if stale():
-                self._log.info(
-                    "[Response] delivery aborted mid-sequence: generation went stale"
-                )
+                self._log.info("[Response] delivery aborted mid-sequence: generation went stale")
                 break
             if step.type == "text":
                 last_id = await self._send_one(target, step.text)

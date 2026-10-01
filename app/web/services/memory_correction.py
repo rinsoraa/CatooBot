@@ -129,9 +129,7 @@ class MemoryCorrectionService:
         if not memories:
             raise ValueError("这个 scope 下没有可修正的记忆")
 
-        listing = "\n".join(
-            f"- id={m['id']} [{m['category']}] {m['content']}" for m in memories
-        )
+        listing = "\n".join(f"- id={m['id']} [{m['category']}] {m['content']}" for m in memories)
         payload = f"修正指令：{instruction}\n\n当前记忆列表：\n{listing}"
         response = await self._ask(payload)
         plan = self._parse(response)
@@ -216,9 +214,7 @@ class MemoryCorrectionService:
                 summary=str(plan.get("summary") or ""),
             )
             if created is not None:
-                result.update(
-                    {"changed": True, "new_id": created.id, "content": created.content}
-                )
+                result.update({"changed": True, "new_id": created.id, "content": created.content})
         elif action == "remove" and memory_id:
             result["changed"] = await memory.forget(int(memory_id), reason="webui_correction")
         else:

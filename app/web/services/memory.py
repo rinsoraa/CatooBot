@@ -57,9 +57,16 @@ class MemoryAdminService:
         if mode == "keyword":
             rows = await memory.repository.search(keyword=query, limit=limit, status="active")
             results = [
-                {"id": m.id, "content": m.display_text, "final": None, "layer": m.layer,
-                 "category": m.category, "scope_key": m.scope_key, "status": m.status,
-                 "origin": "keyword"}
+                {
+                    "id": m.id,
+                    "content": m.display_text,
+                    "final": None,
+                    "layer": m.layer,
+                    "category": m.category,
+                    "scope_key": m.scope_key,
+                    "status": m.status,
+                    "origin": "keyword",
+                }
                 for m in rows
             ]
             return {"mode": mode, "results": results, "semantic_available": False}

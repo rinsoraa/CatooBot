@@ -281,15 +281,11 @@ class MemoryRepository:
         return int(row["n"]) if row else 0
 
     async def status_counts(self) -> dict[str, int]:
-        rows = await self._db.fetchall(
-            "SELECT status, COUNT(*) AS n FROM memories GROUP BY status"
-        )
+        rows = await self._db.fetchall("SELECT status, COUNT(*) AS n FROM memories GROUP BY status")
         return {row["status"]: int(row["n"]) for row in rows}
 
     async def all_scopes(self) -> list[str]:
-        rows = await self._db.fetchall(
-            "SELECT DISTINCT scope_key FROM memories ORDER BY scope_key"
-        )
+        rows = await self._db.fetchall("SELECT DISTINCT scope_key FROM memories ORDER BY scope_key")
         return [row["scope_key"] for row in rows]
 
     # -------------------------------------------------------------- helpers

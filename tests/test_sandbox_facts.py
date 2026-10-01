@@ -184,9 +184,7 @@ class TestEndToEnd:
         """端到端复现 15:55 那条消息：模型编的“冰箱空了”会被拦下。"""
         from tests.conftest import private_event
 
-        bot, _provider = await self._bot(
-            tmp_path, ["刚喝完最后一罐可乐，冰箱空了……不想出门补货"]
-        )
+        bot, _provider = await self._bot(tmp_path, ["刚喝完最后一罐可乐，冰箱空了……不想出门补货"])
         try:
             await bot.event_bus.emit(private_event("随便聊聊", user_id=777))
             await bot.conversation.wait_idle()
@@ -210,8 +208,10 @@ class TestEndToEnd:
             moment_text, _event_id = await bot.sandbox.life_moment()
             assert "喝可乐" in moment_text
             await bot.character.compose_initiative(
-                session_id="private:777", user_id=777,
-                reason="life_event", topic=moment_text,
+                session_id="private:777",
+                user_id=777,
+                reason="life_event",
+                topic=moment_text,
             )
             system = provider.calls[0]["messages"][0].content
             assert "世界事实" in system and "可乐×" in system

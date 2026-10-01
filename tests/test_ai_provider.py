@@ -109,9 +109,7 @@ class TestErrorMapping:
         ],
     )
     async def test_status_codes(self, status: int, expected: type[Exception]) -> None:
-        provider, _ = make_provider(
-            lambda req: httpx.Response(status, json=error_body("boom"))
-        )
+        provider, _ = make_provider(lambda req: httpx.Response(status, json=error_body("boom")))
         with pytest.raises(expected):
             await provider.chat(request())
 

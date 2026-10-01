@@ -90,9 +90,7 @@ class SandboxDecisionEngine:
         hour = _hour_of(self._clock())
         sleep_pressure = self.needs.pressure("sleepiness")
         for action_id, definition in self.actions.definitions.items():
-            if definition.id == "sleep" and not (
-                sleep_pressure >= 0.6 or 1 <= hour < 7
-            ):
+            if definition.id == "sleep" and not (sleep_pressure >= 0.6 or 1 <= hour < 7):
                 continue  # sleep appears at night or under real sleep pressure
             if definition.id == "nap" and self.needs.level("sleepiness") >= 0.9:
                 continue  # not a substitute for the real thing
@@ -139,14 +137,19 @@ class SandboxDecisionEngine:
     def _reachable_from(self, space_id: str, targets: list[str]) -> bool:
         """Walking to another home space is allowed; shops are handled by needs."""
         allowed = {
-            "kitchen", "livingroom", "bedroom", "bathroom", "entrance", "apartment",
+            "kitchen",
+            "livingroom",
+            "bedroom",
+            "bathroom",
+            "entrance",
+            "apartment",
         }
         return any(target in allowed for target in targets) or "*" in targets
 
     def _score(self, definition: ActionDefinition, *, hour: int) -> float:
         score = 0.0
-        score += self.needs.weight_for(definition)              # need pressure
-        score += PREFERENCE_BONUS.get(definition.id, 0.0)       # bible preference
+        score += self.needs.weight_for(definition)  # need pressure
+        score += PREFERENCE_BONUS.get(definition.id, 0.0)  # bible preference
         if definition.requires_absent:
             # It only appears when something she relies on ran out (§33/§175):
             # a real, deferrable pull — not a forced action.
@@ -186,11 +189,15 @@ class SandboxDecisionEngine:
         if asleep:
             definition = self.actions.definitions.get("sleep")
             decision = SandboxDecision(
-                decision="continue", action_id="sleep", reason_codes=["asleep"],
+                decision="continue",
+                action_id="sleep",
+                reason_codes=["asleep"],
             )
             trace = DecisionTrace(
-                ts=float(self._clock()), kind="decision",
-                summary="继续睡", reason_code="asleep",
+                ts=float(self._clock()),
+                kind="decision",
+                summary="继续睡",
+                reason_code="asleep",
             )
             assert definition is not None
             return decision, trace
@@ -215,14 +222,17 @@ class SandboxDecisionEngine:
                 key=lambda definition: definition.need_relief.get(need.key, 0.0),
             )
             decision = SandboxDecision(
-                decision="switch", action_id=pick.id,
+                decision="switch",
+                action_id=pick.id,
                 reason_codes=[f"critical:{need.key}"],
                 factors={"relief": pick.need_relief.get(need.key, 0.0)},
             )
             trace = DecisionTrace(
-                ts=float(self._clock()), kind="decision",
+                ts=float(self._clock()),
+                kind="decision",
                 summary=f"{need.key} 到临界 → {pick.name}",
-                reason_code=f"critical:{need.key}", factors=[pick.id],
+                reason_code=f"critical:{need.key}",
+                factors=[pick.id],
             )
             return decision, trace
 
@@ -231,11 +241,15 @@ class SandboxDecisionEngine:
                 iter(self.actions.definitions.values())
             )
             decision = SandboxDecision(
-                decision="switch", action_id=fallback.id, reason_codes=["no_options"],
+                decision="switch",
+                action_id=fallback.id,
+                reason_codes=["no_options"],
             )
             trace = DecisionTrace(
-                ts=float(self._clock()), kind="decision",
-                summary=f"没得选 → {fallback.name}", reason_code="no_options",
+                ts=float(self._clock()),
+                kind="decision",
+                summary=f"没得选 → {fallback.name}",
+                reason_code="no_options",
             )
             return decision, trace
 
@@ -253,22 +267,31 @@ class SandboxDecisionEngine:
         definition, score, reasons = top
         if current is not None and definition.id == current.definition_id:
             decision = SandboxDecision(
-                decision="extend", action_id=definition.id,
-                reason_codes=["still_best", *reasons], factors={"score": score},
+                decision="extend",
+                action_id=definition.id,
+                reason_codes=["still_best", *reasons],
+                factors={"score": score},
             )
             trace = DecisionTrace(
-                ts=float(self._clock()), kind="decision",
-                summary=f"继续 {definition.name}", reason_code="still_best", factors=reasons,
+                ts=float(self._clock()),
+                kind="decision",
+                summary=f"继续 {definition.name}",
+                reason_code="still_best",
+                factors=reasons,
             )
             return decision, trace
         decision = SandboxDecision(
-            decision="switch", action_id=definition.id,
-            reason_codes=reasons or ["best_candidate"], factors={"score": score},
+            decision="switch",
+            action_id=definition.id,
+            reason_codes=reasons or ["best_candidate"],
+            factors={"score": score},
         )
         trace = DecisionTrace(
-            ts=float(self._clock()), kind="decision",
+            ts=float(self._clock()),
+            kind="decision",
             summary=f"转向 {definition.name}",
-            reason_code=(reasons[0] if reasons else "best_candidate"), factors=reasons,
+            reason_code=(reasons[0] if reasons else "best_candidate"),
+            factors=reasons,
         )
         return decision, trace
 
@@ -292,8 +315,7 @@ class SandboxDecisionEngine:
         except Exception:  # noqa: BLE001 - AI failure must not stall the world
             proposed = None
         allowed = {
-            definition.id: (definition, score, reasons)
-            for definition, score, reasons in options
+            definition.id: (definition, score, reasons) for definition, score, reasons in options
         }
         if isinstance(proposed, SandboxDecision) and proposed.action_id in allowed:
             definition, score, reasons = allowed[proposed.action_id]
@@ -307,12 +329,14 @@ class SandboxDecisionEngine:
         else:
             definition, score, reasons = options[0]
             decision = SandboxDecision(
-                decision="switch", action_id=definition.id,
+                decision="switch",
+                action_id=definition.id,
                 reason_codes=["deterministic_fallback", *reasons],
                 factors={"score": score},
             )
         trace = DecisionTrace(
-            ts=float(self._clock()), kind="decision",
+            ts=float(self._clock()),
+            kind="decision",
             summary=f"歧义裁决 → {definition.name}",
             reason_code="ai_tiebreak" if decision.via_ai else "deterministic_fallback",
             factors=[definition.id],

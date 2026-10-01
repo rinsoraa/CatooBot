@@ -54,7 +54,7 @@ class TestMonitor:
         monitor.record("g", "1", "a", "A", "你好", timestamp=1.0)
         monitor.record_bot("g", "2", "在的", timestamp=2.0)
         monitor.record("g", "3", "b", "B", "吃了吗", timestamp=3.0)
-        assert monitor.unobserved_count("g") == 2          # bot msg not counted
+        assert monitor.unobserved_count("g") == 2  # bot msg not counted
         assert [m.message_id for m in monitor.unobserved("g")] == ["1", "3"]
 
     def test_buffer_is_bounded(self) -> None:
@@ -76,9 +76,7 @@ class TestMonitor:
 class TestThreadManager:
     def test_thread_expires_after_window(self) -> None:
         clock = FakeTime()
-        manager = ThreadManager(
-            config=SocialConfig().continuation, clock=clock
-        )
+        manager = ThreadManager(config=SocialConfig().continuation, clock=clock)
         manager.open("g", topic="看剧", bot_message="我在看剧", bot_message_id="1")
         assert manager.get("g") is not None
         clock.advance(11 * 60)  # 11 minutes > 10 minute window
@@ -99,9 +97,15 @@ class TestContinuationDetector:
         clock = FakeTime()
         detector = ContinuationDetector(follow_up_threshold=0.75, window_minutes=10, clock=clock)
         thread = ConversationThread(
-            thread_id="t", group_id="g", topic="看剧",
-            last_bot_message="我在看剧", last_bot_message_id="1",
-            participants={"a"}, created_at=clock(), updated_at=clock(), expires_at=clock() + 600,
+            thread_id="t",
+            group_id="g",
+            topic="看剧",
+            last_bot_message="我在看剧",
+            last_bot_message_id="1",
+            participants={"a"},
+            created_at=clock(),
+            updated_at=clock(),
+            expires_at=clock() + 600,
         )
         decision = await detector.detect(
             message=msg("g", "2", "a", "看的什么剧？", at=clock()), thread=thread
@@ -113,9 +117,15 @@ class TestContinuationDetector:
         clock = FakeTime()
         detector = ContinuationDetector(follow_up_threshold=0.75, window_minutes=10, clock=clock)
         thread = ConversationThread(
-            thread_id="t", group_id="g", topic="看剧",
-            last_bot_message="我在看剧", last_bot_message_id="1",
-            participants={"a"}, created_at=clock(), updated_at=clock(), expires_at=clock() + 600,
+            thread_id="t",
+            group_id="g",
+            topic="看剧",
+            last_bot_message="我在看剧",
+            last_bot_message_id="1",
+            participants={"a"},
+            created_at=clock(),
+            updated_at=clock(),
+            expires_at=clock() + 600,
         )
         decision = await detector.detect(
             message=msg("g", "2", "b", "明天几点开会？", at=clock()), thread=thread
@@ -134,7 +144,10 @@ class TestRelevance:
         evaluator = RelevanceEvaluator()
         scores = await evaluator.evaluate(
             messages=[msg("g", "1", "a", "哈哈哈哈")],
-            topic="电视剧", interests=[], activity_text="", focus="",
+            topic="电视剧",
+            interests=[],
+            activity_text="",
+            focus="",
         )
         assert scores.contribution_value <= 0.3
 
@@ -142,11 +155,17 @@ class TestRelevance:
         evaluator = RelevanceEvaluator()
         scores = await evaluator.evaluate(
             messages=[msg("g", "1", "a", "最近有人玩 Minecraft 吗")],
-            topic="Minecraft", interests=["Minecraft"], activity_text="正在打游戏", focus="",
+            topic="Minecraft",
+            interests=["Minecraft"],
+            activity_text="正在打游戏",
+            focus="",
         )
         for value in (
-            scores.topic_relevance, scores.character_relevance,
-            scores.conversation_relevance, scores.social_fit, scores.contribution_value,
+            scores.topic_relevance,
+            scores.character_relevance,
+            scores.conversation_relevance,
+            scores.social_fit,
+            scores.contribution_value,
         ):
             assert 0.0 <= value <= 1.0
         assert scores.character_relevance > 0.0
@@ -161,8 +180,17 @@ class TestPolicy:
         clock = FakeTime()
         policy = self._policy(clock)
         policy.record_send("g")
-        assert policy.block_reason("g", group_enabled=True, text="你好", min_length=1,
-                                   addressed_other=False, hard_block=None) == "cooldown"
+        assert (
+            policy.block_reason(
+                "g",
+                group_enabled=True,
+                text="你好",
+                min_length=1,
+                addressed_other=False,
+                hard_block=None,
+            )
+            == "cooldown"
+        )
 
     def test_daily_limit_blocks(self) -> None:
         clock = FakeTime()
@@ -171,20 +199,47 @@ class TestPolicy:
         clock.advance(200)
         policy.record_send("g")
         clock.advance(200)
-        assert policy.block_reason("g", group_enabled=True, text="你好", min_length=1,
-                                   addressed_other=False, hard_block=None) == "daily_limit"
+        assert (
+            policy.block_reason(
+                "g",
+                group_enabled=True,
+                text="你好",
+                min_length=1,
+                addressed_other=False,
+                hard_block=None,
+            )
+            == "daily_limit"
+        )
 
     def test_disabled_group_blocks(self) -> None:
         clock = FakeTime()
         policy = self._policy(clock)
-        assert policy.block_reason("g", group_enabled=False, text="你好", min_length=1,
-                                   addressed_other=False, hard_block=None) == "group_disabled"
+        assert (
+            policy.block_reason(
+                "g",
+                group_enabled=False,
+                text="你好",
+                min_length=1,
+                addressed_other=False,
+                hard_block=None,
+            )
+            == "group_disabled"
+        )
 
     def test_sleeping_blocks(self) -> None:
         clock = FakeTime()
         policy = self._policy(clock)
-        assert policy.block_reason("g", group_enabled=True, text="你好", min_length=1,
-                                   addressed_other=False, hard_block="sleeping") == "sleeping"
+        assert (
+            policy.block_reason(
+                "g",
+                group_enabled=True,
+                text="你好",
+                min_length=1,
+                addressed_other=False,
+                hard_block="sleeping",
+            )
+            == "sleeping"
+        )
 
 
 class TestAttention:
@@ -215,8 +270,14 @@ class TestCognitionEngine:
         bot, social = self._engine(tmp_path)
         await bot.database.connect()
         decision = await social.decide(
-            group_id="g1", message_id="1", user_id="u1", nickname="A", text="在干嘛",
-            mentioned=True, reply_to_bot=False, group_enabled=False,  # even group disabled
+            group_id="g1",
+            message_id="1",
+            user_id="u1",
+            nickname="A",
+            text="在干嘛",
+            mentioned=True,
+            reply_to_bot=False,
+            group_enabled=False,  # even group disabled
         )
         assert decision.should_reply is True
         assert decision.reason_code == "direct_mention"
@@ -226,8 +287,14 @@ class TestCognitionEngine:
         bot, social = self._engine(tmp_path)
         await bot.database.connect()
         decision = await social.decide(
-            group_id="g1", message_id="1", user_id="u1", nickname="A", text="好看吗",
-            mentioned=False, reply_to_bot=True, group_enabled=True,
+            group_id="g1",
+            message_id="1",
+            user_id="u1",
+            nickname="A",
+            text="好看吗",
+            mentioned=False,
+            reply_to_bot=True,
+            group_enabled=True,
         )
         assert decision.should_reply is True
         assert decision.reason_code == "reply_to_bot"
@@ -238,15 +305,27 @@ class TestCognitionEngine:
         await bot.database.connect()
         for index in range(4):
             decision = await social.decide(
-                group_id="g2", message_id=str(index), user_id=f"u{index}", nickname="A",
-                text=f"普通消息{index}", mentioned=False, reply_to_bot=False, group_enabled=True,
+                group_id="g2",
+                message_id=str(index),
+                user_id=f"u{index}",
+                nickname="A",
+                text=f"普通消息{index}",
+                mentioned=False,
+                reply_to_bot=False,
+                group_enabled=True,
             )
             assert decision.decision in ("observe", "ignore")
         # the 5th message triggers the observer (rule-based fallback → ignore for
         # unrelated filler, but it must not be a bare "observe")
         decision = await social.decide(
-            group_id="g2", message_id="5", user_id="u5", nickname="A",
-            text="哈哈哈哈", mentioned=False, reply_to_bot=False, group_enabled=True,
+            group_id="g2",
+            message_id="5",
+            user_id="u5",
+            nickname="A",
+            text="哈哈哈哈",
+            mentioned=False,
+            reply_to_bot=False,
+            group_enabled=True,
         )
         assert decision.decision in ("ignore", "reply", "defer")
         await bot.database.close()
@@ -255,12 +334,21 @@ class TestCognitionEngine:
         bot, social = self._engine(tmp_path)
         await bot.database.connect()
         await social.after_reply(
-            group_id="g3", message_id="bot1", content="我在看剧",
-            topic="看剧", participants=["u1"],
+            group_id="g3",
+            message_id="bot1",
+            content="我在看剧",
+            topic="看剧",
+            participants=["u1"],
         )
         decision = await social.decide(
-            group_id="g3", message_id="2", user_id="u1", nickname="A", text="看的什么剧？",
-            mentioned=False, reply_to_bot=False, group_enabled=True,
+            group_id="g3",
+            message_id="2",
+            user_id="u1",
+            nickname="A",
+            text="看的什么剧？",
+            mentioned=False,
+            reply_to_bot=False,
+            group_enabled=True,
         )
         assert decision.should_reply is True
         assert decision.reason_code in ("direct_follow_up", "topic_continuation")
@@ -274,8 +362,14 @@ class TestCognitionEngine:
         for _ in range(5):
             results.append(
                 await social.decide(
-                    group_id="g4", message_id="1", user_id="u1", nickname="A", text="在干嘛",
-                    mentioned=True, reply_to_bot=False, group_enabled=True,
+                    group_id="g4",
+                    message_id="1",
+                    user_id="u1",
+                    nickname="A",
+                    text="在干嘛",
+                    mentioned=True,
+                    reply_to_bot=False,
+                    group_enabled=True,
                 )
             )
         assert all(d.should_reply and d.reason_code == "direct_mention" for d in results)
@@ -287,8 +381,9 @@ class TestCognitionEngine:
         await social._record_observation(  # noqa: SLF001
             "g5",
             [msg("g5", "1", "a", "你好"), msg("g5", "2", "b", "大家好")],
-            ParticipationDecision(decision="ignore", reason_code="no_relevance",
-                                  scores=RelevanceScores()),
+            ParticipationDecision(
+                decision="ignore", reason_code="no_relevance", scores=RelevanceScores()
+            ),
             "闲聊",
         )
         row = await bot.database.fetchone("SELECT decision FROM social_observations LIMIT 1")

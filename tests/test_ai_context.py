@@ -8,9 +8,7 @@ from app.database.database import Database
 
 
 def make_manager(database: Database | None, max_messages: int = 20) -> ConversationManager:
-    return ConversationManager(
-        AIContextConfig(enabled=True, max_messages=max_messages), database
-    )
+    return ConversationManager(AIContextConfig(enabled=True, max_messages=max_messages), database)
 
 
 async def make_db(tmp_path) -> Database:

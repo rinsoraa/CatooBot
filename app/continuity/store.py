@@ -29,8 +29,13 @@ _STATE_KEY = "character_continuity"
 
 
 class ContinuityStore:
-    def __init__(self, database: Any, config: Any, logger: logging.Logger | None = None,
-                 clock: Any = time.time) -> None:
+    def __init__(
+        self,
+        database: Any,
+        config: Any,
+        logger: logging.Logger | None = None,
+        clock: Any = time.time,
+    ) -> None:
         self._db = database
         self._config = config
         self._log = logger or logging.getLogger("CatooBot.Continuity")
@@ -45,9 +50,7 @@ class ContinuityStore:
         if self._db is None:
             return state
         try:
-            row = await self._db.fetchone(
-                "SELECT value FROM settings WHERE key = ?", (_STATE_KEY,)
-            )
+            row = await self._db.fetchone("SELECT value FROM settings WHERE key = ?", (_STATE_KEY,))
         except Exception:  # noqa: BLE001
             return state
         if row is not None and row["value"]:
@@ -71,7 +74,7 @@ class ContinuityStore:
         if updates:
             state = state.model_copy(update=updates)
         state.affect.decay(now)
-        state.recent_events = state.recent_events[-cfg.max_recent_events:]
+        state.recent_events = state.recent_events[-cfg.max_recent_events :]
         return state
 
     async def save_state(self, state: CharacterContinuityState) -> None:
@@ -112,9 +115,17 @@ class ContinuityStore:
                        confidence=excluded.confidence, updated_at=excluded.updated_at,
                        expires_at=excluded.expires_at""",
                 (
-                    loop.id, loop.type.value, loop.summary, loop.detail, loop.status.value,
-                    loop.scope_key, loop.progress, loop.source, loop.confidence,
-                    int(loop.created_at), int(loop.updated_at),
+                    loop.id,
+                    loop.type.value,
+                    loop.summary,
+                    loop.detail,
+                    loop.status.value,
+                    loop.scope_key,
+                    loop.progress,
+                    loop.source,
+                    loop.confidence,
+                    int(loop.created_at),
+                    int(loop.updated_at),
                     int(loop.expires_at) if loop.expires_at else None,
                 ),
             )
@@ -135,11 +146,17 @@ class ContinuityStore:
         for row in rows:
             try:
                 loop = OpenLoop(
-                    id=row["id"], type=row["type"], summary=row["summary"],
-                    detail=row["detail"] or "", status=row["status"],
-                    scope_key=row["scope_key"] or "", progress=row["progress"],
-                    source=row["source"] or "", confidence=row["confidence"],
-                    created_at=float(row["created_at"]), updated_at=float(row["updated_at"]),
+                    id=row["id"],
+                    type=row["type"],
+                    summary=row["summary"],
+                    detail=row["detail"] or "",
+                    status=row["status"],
+                    scope_key=row["scope_key"] or "",
+                    progress=row["progress"],
+                    source=row["source"] or "",
+                    confidence=row["confidence"],
+                    created_at=float(row["created_at"]),
+                    updated_at=float(row["updated_at"]),
                     expires_at=float(row["expires_at"]) if row["expires_at"] else None,
                 )
             except (TypeError, ValueError):
@@ -171,9 +188,17 @@ class ContinuityStore:
                        times_referenced=excluded.times_referenced,
                        confidence=excluded.confidence, updated_at=excluded.updated_at""",
                 (
-                    exp.id, exp.user_id, exp.type.value, exp.summary, exp.detail,
-                    json.dumps(exp.keywords, ensure_ascii=False), exp.times_referenced,
-                    exp.confidence, exp.source, int(exp.created_at), int(exp.updated_at),
+                    exp.id,
+                    exp.user_id,
+                    exp.type.value,
+                    exp.summary,
+                    exp.detail,
+                    json.dumps(exp.keywords, ensure_ascii=False),
+                    exp.times_referenced,
+                    exp.confidence,
+                    exp.source,
+                    int(exp.created_at),
+                    int(exp.updated_at),
                 ),
             )
         except Exception:  # noqa: BLE001
@@ -195,12 +220,17 @@ class ContinuityStore:
             try:
                 out.append(
                     SharedExperience(
-                        id=row["id"], user_id=row["user_id"], type=row["type"],
-                        summary=row["summary"], detail=row["detail"] or "",
+                        id=row["id"],
+                        user_id=row["user_id"],
+                        type=row["type"],
+                        summary=row["summary"],
+                        detail=row["detail"] or "",
                         keywords=json.loads(row["keywords"] or "[]"),
                         times_referenced=row["times_referenced"],
-                        confidence=row["confidence"], source=row["source"] or "",
-                        created_at=float(row["created_at"]), updated_at=float(row["updated_at"]),
+                        confidence=row["confidence"],
+                        source=row["source"] or "",
+                        created_at=float(row["created_at"]),
+                        updated_at=float(row["updated_at"]),
                     )
                 )
             except (TypeError, ValueError, json.JSONDecodeError):
@@ -270,8 +300,12 @@ class ContinuityStore:
                 "INSERT INTO micro_events (id, summary, kind, related_activity,"
                 " reason_code, created_at) VALUES (?, ?, ?, ?, ?, ?)",
                 (
-                    event.id, event.summary, event.kind, event.related_activity,
-                    event.reason_code, int(event.created_at),
+                    event.id,
+                    event.summary,
+                    event.kind,
+                    event.related_activity,
+                    event.reason_code,
+                    int(event.created_at),
                 ),
             )
         except Exception:  # noqa: BLE001
@@ -283,17 +317,19 @@ class ContinuityStore:
         cutoff = int(self._clock()) - self._config.micro_event_ttl_minutes * 60
         try:
             rows = await self._db.fetchall(
-                "SELECT * FROM micro_events WHERE created_at >= ?"
-                " ORDER BY created_at DESC LIMIT ?",
+                "SELECT * FROM micro_events WHERE created_at >= ? ORDER BY created_at DESC LIMIT ?",
                 (cutoff, limit),
             )
         except Exception:  # noqa: BLE001
             return []
         return [
             MicroEvent(
-                id=row["id"], summary=row["summary"], kind=row["kind"],
+                id=row["id"],
+                summary=row["summary"],
+                kind=row["kind"],
                 related_activity=row["related_activity"] or "",
-                reason_code=row["reason_code"] or "", created_at=float(row["created_at"]),
+                reason_code=row["reason_code"] or "",
+                created_at=float(row["created_at"]),
             )
             for row in rows
         ]
@@ -326,11 +362,18 @@ class ContinuityStore:
                    ON CONFLICT(turn_id) DO UPDATE SET status=excluded.status,
                        ended_at=excluded.ended_at, silence_reason=excluded.silence_reason""",
                 (
-                    turn.turn_id, turn.generation_id, turn.session_id, turn.user_id,
-                    turn.group_id or "", turn.classification.value, turn.status.value,
-                    turn.text[:2000], turn.silence_reason,
+                    turn.turn_id,
+                    turn.generation_id,
+                    turn.session_id,
+                    turn.user_id,
+                    turn.group_id or "",
+                    turn.classification.value,
+                    turn.status.value,
+                    turn.text[:2000],
+                    turn.silence_reason,
                     json.dumps([m.message_id for m in turn.messages]),
-                    int(turn.started_at), int(turn.ended_at or self._clock()),
+                    int(turn.started_at),
+                    int(turn.ended_at or self._clock()),
                 ),
             )
         except Exception:  # noqa: BLE001

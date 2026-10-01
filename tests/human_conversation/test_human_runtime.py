@@ -26,9 +26,7 @@ from app.database.database import Database
 
 
 def make_config() -> ConversationConfig:
-    return ConversationConfig(
-        debounce={"direct_message_ms": 20, "group_message_ms": 30}
-    )
+    return ConversationConfig(debounce={"direct_message_ms": 20, "group_message_ms": 30})
 
 
 class Harness:
@@ -51,7 +49,7 @@ class Harness:
         )
 
     async def _respond(self, turn, decision, generation):  # type: ignore[no-untyped-def]
-        #模拟一次需要几个循环才能完成的生成
+        # 模拟一次需要几个循环才能完成的生成
         for _ in range(3):
             await asyncio.sleep(0.01)
         if not self.respond_gate["open"] or not generation.is_current():
@@ -130,7 +128,9 @@ async def test_low_information_message_gets_short_shape():
     """§146: 哈哈 → the decision allows a mirror-register reply."""
     engine = ConversationDecisionEngine(make_config())
     turn = ConversationTurn(
-        turn_id="t", session_id="s", user_id="1",
+        turn_id="t",
+        session_id="s",
+        user_id="1",
         messages=[TurnMessage(user_id="1", text="哈哈")],
     )
     decision = await engine.decide(turn)
@@ -145,7 +145,9 @@ async def test_consecutive_question_guard():
     """§147: after two bot questions the third turn gets should_ask=False."""
     engine = ConversationDecisionEngine(make_config())
     turn = ConversationTurn(
-        turn_id="t", session_id="s", user_id="1",
+        turn_id="t",
+        session_id="s",
+        user_id="1",
         messages=[TurnMessage(user_id="1", text="然后呢？")],
     )
     ok = await engine.decide(turn, consecutive_questions=1)
@@ -159,14 +161,18 @@ async def test_silence_has_structured_reason():
     """§80/§81: hard blocks produce a named silence reason, never a dice."""
     engine = ConversationDecisionEngine(make_config())
     turn = ConversationTurn(
-        turn_id="t", session_id="s", user_id="1",
+        turn_id="t",
+        session_id="s",
+        user_id="1",
         messages=[TurnMessage(user_id="1", text="在吗")],
     )
     decision = await engine.decide(turn, hard_block="sleeping")
     assert not decision.respond
     assert decision.silence_reason == "sleeping"
     social_turn = ConversationTurn(
-        turn_id="t2", session_id="s", user_id="1",
+        turn_id="t2",
+        session_id="s",
+        user_id="1",
         messages=[TurnMessage(user_id="1", text="大家好")],
     )
 
@@ -182,7 +188,9 @@ async def test_silence_has_structured_reason():
 def test_classifier_cues():
     def turn_with(text: str) -> ConversationTurn:
         return ConversationTurn(
-            turn_id="t", session_id="s", user_id="1",
+            turn_id="t",
+            session_id="s",
+            user_id="1",
             messages=[TurnMessage(user_id="1", text=text)],
         )
 

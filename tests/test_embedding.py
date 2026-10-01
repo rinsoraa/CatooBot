@@ -85,9 +85,7 @@ class TestOpenAIEmbeddingProvider:
             await provider.embed(["x"])
 
     async def test_count_mismatch(self) -> None:
-        provider = make_provider(
-            lambda request: httpx.Response(200, json=embedding_body([[0.1]]))
-        )
+        provider = make_provider(lambda request: httpx.Response(200, json=embedding_body([[0.1]])))
         with pytest.raises(EmbeddingError):
             await provider.embed(["a", "b"])
 

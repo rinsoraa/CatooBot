@@ -52,9 +52,7 @@ def attach_behavior(bot: Bot, provider: MockAIProvider) -> MockAIProvider:
 async def make_bot_with_behavior(
     tmp_path, *, timing: bool, chunking: bool, probability: float = 1.0
 ):
-    provider = MockAIProvider(
-        behaviors={"A": [REPLY]}
-    )
+    provider = MockAIProvider(behaviors={"A": [REPLY]})
     bot = make_bot(tmp_path)
     config = bot.config.model_copy(
         update={
@@ -67,9 +65,7 @@ async def make_bot_with_behavior(
                         enabled=chunking, paragraph_always_split=True
                     ),
                     # no sleep/DND window: these tests must not depend on the hour
-                    "schedule": BehaviorScheduleConfig(
-                        sleep_enabled=False, dnd_enabled=False
-                    ),
+                    "schedule": BehaviorScheduleConfig(sleep_enabled=False, dnd_enabled=False),
                 }
             )
         }
@@ -78,9 +74,7 @@ async def make_bot_with_behavior(
     # Rebuild the response layer exactly as production wiring does, so the
     # test config is what the delivery path actually uses.
     bot.reply_timing = ReplyTiming(config.behavior.reply, bot.presence)
-    bot.response_planner = CharacterResponsePlanner(
-        bot.reply_timing, config.behavior.chunking
-    )
+    bot.response_planner = CharacterResponsePlanner(bot.reply_timing, config.behavior.chunking)
     attach_behavior(bot, provider)
     await bot.database.connect()
     bot.event_bus.on("message", bot.core_router.on_message)

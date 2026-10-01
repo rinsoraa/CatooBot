@@ -214,9 +214,7 @@ class BehaviorScheduler:
                 if not candidates:
                     continue
                 for candidate in candidates:
-                    await self._behavior.initiative.mark_candidate(
-                        scope_key, candidate.reason
-                    )
+                    await self._behavior.initiative.mark_candidate(scope_key, candidate.reason)
                     gate = await self._behavior.initiative.evaluate(
                         candidate,
                         relationship_stage=relationship.stage,

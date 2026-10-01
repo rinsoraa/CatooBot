@@ -160,9 +160,7 @@ class MemoryConsolidator:
         return [memory for memory in ordered if memory.id not in superseded]
 
     @staticmethod
-    def _pair_similarity(
-        left: Memory, right: Memory, vectors: dict[int, list[float]]
-    ) -> float:
+    def _pair_similarity(left: Memory, right: Memory, vectors: dict[int, list[float]]) -> float:
         left_vector, right_vector = vectors.get(left.id), vectors.get(right.id)
         if left_vector and right_vector:
             return cosine_similarity(left_vector, right_vector)
@@ -299,12 +297,8 @@ class MemoryConsolidator:
         rows = await repository.candidates(
             await repository.all_scopes(), limit=self._config.consolidation.max_scan
         )
-        avg_importance = (
-            round(sum(m.importance for m in rows) / len(rows), 3) if rows else 0.0
-        )
-        avg_confidence = (
-            round(sum(m.confidence for m in rows) / len(rows), 3) if rows else 0.0
-        )
+        avg_importance = round(sum(m.importance for m in rows) / len(rows), 3) if rows else 0.0
+        avg_confidence = round(sum(m.confidence for m in rows) / len(rows), 3) if rows else 0.0
         return {
             "total": total,
             "active": active,
@@ -318,9 +312,7 @@ class MemoryConsolidator:
             "average_importance": avg_importance,
             "average_confidence": avg_confidence,
             "retrieval": self._manager.retriever.snapshot(),
-            "last_consolidation": (
-                self.last_report.to_dict() if self.last_report else None
-            ),
+            "last_consolidation": (self.last_report.to_dict() if self.last_report else None),
         }
 
 

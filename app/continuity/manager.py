@@ -89,18 +89,26 @@ class ContinuityManager:
 
     # ------------------------------------------------------- micro events (§98)
 
-    async def add_micro_event(self, summary: str, *, kind: str = "ambient",
-                              related_activity: str = "", reason_code: str = "") -> None:
+    async def add_micro_event(
+        self,
+        summary: str,
+        *,
+        kind: str = "ambient",
+        related_activity: str = "",
+        reason_code: str = "",
+    ) -> None:
         if _TRIVIAL.match(summary.strip()):
             return
         event = MicroEvent(
-            summary=summary.strip()[:120], kind=kind,
-            related_activity=related_activity, reason_code=reason_code or "world_tick",
+            summary=summary.strip()[:120],
+            kind=kind,
+            related_activity=related_activity,
+            reason_code=reason_code or "world_tick",
             created_at=float(self._clock()),
         )
         await self.store.add_micro_event(event)
         self.state.recent_events.append(event.summary)
-        capped = self.state.recent_events[-self.store._config.max_recent_events:]
+        capped = self.state.recent_events[-self.store._config.max_recent_events :]
         self.state.recent_events = capped
         await self.store.save_state(self.state)
 
@@ -157,9 +165,7 @@ class ContinuityManager:
         # Interaction profile learning (§114): statistics + decay, never labels.
         profile = await self._profile(turn.user_id)
         profile.observe("burst_length", min(1.0, len(turn.messages) / 4.0), now=now)
-        profile.observe(
-            "message_length", min(1.0, len(turn.text) / 60.0), now=now
-        )
+        profile.observe("message_length", min(1.0, len(turn.text) / 60.0), now=now)
         if turn.classification.value in ("follow_up", "continuation"):
             profile.observe("follow_up_habit", 1.0, now=now)
         else:
@@ -180,8 +186,13 @@ class ContinuityManager:
     # --------------------------------------------------------------- open loops
 
     async def _ensure_open_loop(
-        self, summary: str, *, loop_type: OpenLoopType, scope_key: str,
-        source: str, confidence: float,
+        self,
+        summary: str,
+        *,
+        loop_type: OpenLoopType,
+        scope_key: str,
+        source: str,
+        confidence: float,
     ) -> OpenLoop | None:
         existing = await self.store.open_loops()
         for loop in existing:
@@ -192,8 +203,11 @@ class ContinuityManager:
         if len(existing) >= self.store._config.max_open_loops:
             return None
         loop = OpenLoop(
-            type=loop_type, summary=summary, scope_key=scope_key,
-            source=source, confidence=confidence,
+            type=loop_type,
+            summary=summary,
+            scope_key=scope_key,
+            source=source,
+            confidence=confidence,
             expires_at=float(self._clock()) + self.store._config.open_loop_ttl_days * 86400,
         )
         await self.store.save_open_loop(loop)
@@ -213,10 +227,7 @@ class ContinuityManager:
         loops = await self.store.open_loops()
         if not user_id:
             return [loop for loop in loops if not loop.scope_key]
-        return [
-            loop for loop in loops
-            if not loop.scope_key or loop.scope_key == f"user:{user_id}"
-        ]
+        return [loop for loop in loops if not loop.scope_key or loop.scope_key == f"user:{user_id}"]
 
     # ------------------------------------------------------ shared experiences
 
@@ -242,7 +253,8 @@ class ContinuityManager:
             type=SharedExperienceType.shared_topic,
             summary=text.strip()[:120],
             keywords=list(_keywords(text)),
-            confidence=0.45, source="conversation_cue",
+            confidence=0.45,
+            source="conversation_cue",
         )
         await self.store.save_shared_experience(exp)
 

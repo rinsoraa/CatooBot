@@ -14,23 +14,33 @@ from app.sandbox.models import ActionDefinition, ModeState
 SPEECH_POLICY: dict[str, dict[str, Any]] = {
     "home": {
         "style": "懒散、拖长音、自言自语式；常用“啊——”“好麻烦”“不想动”“再一局”",
-        "length": "短，可以自言自语", "tone": "casual", "emoji": "偶尔",
+        "length": "短，可以自言自语",
+        "tone": "casual",
+        "emoji": "偶尔",
     },
     "outdoor": {
         "style": "简洁、温和、标准敬语；不拖长音，礼貌但疏离",
-        "length": "很短", "tone": "polite", "emoji": "几乎不用",
+        "length": "很短",
+        "tone": "polite",
+        "emoji": "几乎不用",
     },
     "gaming": {
         "style": "简短、利落、术语多；不撒娇，像冷静的玩家",
-        "length": "很短", "tone": "focused", "emoji": "很少",
+        "length": "很短",
+        "tone": "focused",
+        "emoji": "很少",
     },
     "online_social": {
         "style": "轻松、随意、话多、有梗；句尾可用“www”“草”“笑死”“确实”“有一说一”",
-        "length": "灵活", "tone": "chatty", "emoji": "可以接梗发表情",
+        "length": "灵活",
+        "tone": "chatty",
+        "emoji": "可以接梗发表情",
     },
     "deep_night": {
         "style": "低沉、缓慢、少话；偶尔哲思式短句，很快被“好饿”“算了”打断",
-        "length": "短", "tone": "quiet", "emoji": "几乎不用",
+        "length": "短",
+        "tone": "quiet",
+        "emoji": "几乎不用",
     },
 }
 
@@ -68,9 +78,7 @@ class ModeRuntime:
             modes.append("outdoor")
         if definition is not None and "gaming" in definition.modes:
             modes.append("gaming")
-        if (
-            definition is not None and "online_social" in definition.modes and social_active
-        ):
+        if definition is not None and "online_social" in definition.modes and social_active:
             modes.append("online_social")
         # A live exchange (someone is talking to her right now) puts the
         # online-social face on regardless of what she was doing (§2.5 overlap).
@@ -89,8 +97,10 @@ class ModeRuntime:
         for mode_id in modes:
             if mode_id not in self._active:
                 self._active[mode_id] = ModeState(
-                    id=mode_id, priority=MODE_PRIORITY.get(mode_id, 0),
-                    entered_at=now, trigger="derived",
+                    id=mode_id,
+                    priority=MODE_PRIORITY.get(mode_id, 0),
+                    entered_at=now,
+                    trigger="derived",
                 )
                 entered.append(mode_id)
         for mode_id in list(self._active):
@@ -124,8 +134,11 @@ class ModeRuntime:
         policy = self.speech_policy()
         style = str(policy.get("style", "") or "")
         labels = {
-            "home": "宅家", "outdoor": "外出", "gaming": "游戏",
-            "online_social": "网络社交", "deep_night": "深夜",
+            "home": "宅家",
+            "outdoor": "外出",
+            "gaming": "游戏",
+            "online_social": "网络社交",
+            "deep_night": "深夜",
         }
         shown = " + ".join(labels.get(mode, mode) for mode in ids)
         line = f"你现在的状态：{shown}"

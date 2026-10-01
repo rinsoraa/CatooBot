@@ -38,9 +38,9 @@ class OpenLoop(BaseModel):
     summary: str
     detail: str = ""
     status: OpenLoopStatus = OpenLoopStatus.open
-    scope_key: str = ""                   # "" = hers alone; user:<id> = shared with user
+    scope_key: str = ""  # "" = hers alone; user:<id> = shared with user
     progress: float = Field(default=0.0, ge=0.0, le=1.0)
-    source: str = ""                      # reason_code of creation (§46)
+    source: str = ""  # reason_code of creation (§46)
     confidence: float = Field(default=0.5, ge=0.0, le=1.0)
     created_at: float = 0.0
     updated_at: float = 0.0
@@ -173,8 +173,8 @@ class MicroEvent(BaseModel):
 
     id: str = ""
     summary: str
-    kind: str = "ambient"                 # ambient / discovery / progress / mishap
-    related_activity: str = ""            # activity key when it belongs to one
+    kind: str = "ambient"  # ambient / discovery / progress / mishap
+    related_activity: str = ""  # activity key when it belongs to one
     reason_code: str = ""
     created_at: float = 0.0
 
@@ -183,17 +183,17 @@ class CharacterContinuityState(BaseModel):
     """The assembled short-timescale self (§25). Persisted with per-field TTLs
     (§106); loaded through the store which applies decay on read (§105)."""
 
-    user_id: str = ""                     # "" = character-global parts
-    current_interest: str = ""            # "Minecraft 木屋屋顶"
-    current_focus: str = ""               # "正在看动画高潮部分"
-    unfinished_thought: str = ""          # "刚才想到一个新房间布局" — not reasoning
-    recent_emotion: str = ""              # short-lived emotional tint
+    user_id: str = ""  # "" = character-global parts
+    current_interest: str = ""  # "Minecraft 木屋屋顶"
+    current_focus: str = ""  # "正在看动画高潮部分"
+    unfinished_thought: str = ""  # "刚才想到一个新房间布局" — not reasoning
+    recent_emotion: str = ""  # short-lived emotional tint
     interest_updated_at: float = 0.0
     focus_updated_at: float = 0.0
     thought_updated_at: float = 0.0
     emotion_updated_at: float = 0.0
     affect: AffectiveContext = Field(default_factory=AffectiveContext)
-    recent_events: list[str] = Field(default_factory=list)   # capped, compressed (§172)
+    recent_events: list[str] = Field(default_factory=list)  # capped, compressed (§172)
     open_loops: list[OpenLoop] = Field(default_factory=list)
     last_response_context: str = ""
     next_natural_direction: str = ""

@@ -106,7 +106,11 @@ def mirror(changes: list[str]) -> None:
 def push(message: str) -> None:
     def git(*args: str) -> None:
         result = subprocess.run(
-            ["git", *args], cwd=TARGET, capture_output=True, text=True, encoding="utf-8",
+            ["git", *args],
+            cwd=TARGET,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
             errors="replace",
         )
         if result.returncode != 0:

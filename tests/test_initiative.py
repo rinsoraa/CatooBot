@@ -74,9 +74,7 @@ async def open_db(engine: InitiativeEngine) -> None:
 def candidate(
     reason: str = "unfinished_topic", topic: str = "网站的音乐页面"
 ) -> InitiativeCandidate:
-    return InitiativeCandidate(
-        scope_key="private:1", user_id="1", reason=reason, topic=topic
-    )
+    return InitiativeCandidate(scope_key="private:1", user_id="1", reason=reason, topic=topic)
 
 
 class TestGateHardRules:
@@ -107,9 +105,7 @@ class TestGateHardRules:
     async def test_user_disabled_blocks(self, tmp_path) -> None:
         engine, _ = make_engine(tmp_path)
         await open_db(engine)
-        result = await engine.evaluate(
-            candidate(), relationship_stage="close", user_enabled=False
-        )
+        result = await engine.evaluate(candidate(), relationship_stage="close", user_enabled=False)
         assert not result.allowed and result.reason == "user_disabled"
         await engine._db.close()  # noqa: SLF001
 
@@ -139,8 +135,12 @@ class TestGateHardRules:
     async def test_daily_limit(self, tmp_path) -> None:
         clock = Clock()
         engine, _ = make_engine(
-            tmp_path, clock=clock, daily_limit=2, hourly_limit=99,
-            min_interval_minutes=1, max_unanswered=5,
+            tmp_path,
+            clock=clock,
+            daily_limit=2,
+            hourly_limit=99,
+            min_interval_minutes=1,
+            max_unanswered=5,
         )
         await open_db(engine)
         for _ in range(2):
@@ -153,8 +153,12 @@ class TestGateHardRules:
     async def test_hourly_limit(self, tmp_path) -> None:
         clock = Clock()
         engine, _ = make_engine(
-            tmp_path, clock=clock, hourly_limit=1, daily_limit=10,
-            min_interval_minutes=1, max_unanswered=5,
+            tmp_path,
+            clock=clock,
+            hourly_limit=1,
+            daily_limit=10,
+            min_interval_minutes=1,
+            max_unanswered=5,
         )
         await open_db(engine)
         await engine.record_sent("private:1", "发过的话", reason="long_absence")
@@ -225,8 +229,12 @@ class TestDuplicateDetection:
         """Recent repeat wording must not be sent again (spec §57/§73)."""
         clock = Clock()
         engine, _ = make_engine(
-            tmp_path, clock=clock, min_interval_minutes=1, max_unanswered=5,
-            hourly_limit=99, daily_limit=99,
+            tmp_path,
+            clock=clock,
+            min_interval_minutes=1,
+            max_unanswered=5,
+            hourly_limit=99,
+            daily_limit=99,
         )
         await open_db(engine)
         await engine.record_sent("private:1", "最近忙不忙呀", reason="long_absence")

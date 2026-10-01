@@ -81,9 +81,7 @@ class CharacterResponseProcessor:
 
     def sanitize(self, content: str) -> str:
         """Conservative last-resort cleanup: drop lines that hard-leak internals."""
-        content = "\n".join(
-            self._strip_imitated_tag(line) for line in content.splitlines()
-        )
+        content = "\n".join(self._strip_imitated_tag(line) for line in content.splitlines())
         report = self.inspect(content)
         if not report.leaked:
             return content

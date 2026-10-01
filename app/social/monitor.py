@@ -76,7 +76,7 @@ class GroupConversationMonitor:
         buffer = self._buffers.get(str(group_id))
         if not buffer:
             return []
-        return list(buffer)[-(limit or len(buffer)):]
+        return list(buffer)[-(limit or len(buffer)) :]
 
     def external_recent(self, group_id: str, limit: int | None = None) -> list[GroupMessage]:
         return [m for m in self.recent(group_id, limit) if m.external]
@@ -117,8 +117,7 @@ class GroupConversationMonitor:
 
     def is_bot_message_id(self, group_id: str, message_id: str) -> bool:
         return any(
-            m.is_bot_message and m.message_id == str(message_id)
-            for m in self.recent(str(group_id))
+            m.is_bot_message and m.message_id == str(message_id) for m in self.recent(str(group_id))
         )
 
     # ------------------------------------------------------------------ view

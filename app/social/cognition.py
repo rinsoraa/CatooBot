@@ -104,8 +104,13 @@ class SocialCognitionEngine:
             return
         group_id = str(group_id)
         self.monitor.record(
-            group_id, message_id, user_id, nickname, text,
-            timestamp=self._clock(), reply_to=str(message_id) if reply_to_bot else None,
+            group_id,
+            message_id,
+            user_id,
+            nickname,
+            text,
+            timestamp=self._clock(),
+            reply_to=str(message_id) if reply_to_bot else None,
         )
 
     async def decide_for_turn(
@@ -156,8 +161,13 @@ class SocialCognitionEngine:
         now = self._clock()
         if record:
             self.monitor.record(
-                group_id, message_id, user_id, nickname, text,
-                timestamp=now, reply_to=str(message_id) if reply_to_bot else None,
+                group_id,
+                message_id,
+                user_id,
+                nickname,
+                text,
+                timestamp=now,
+                reply_to=str(message_id) if reply_to_bot else None,
             )
 
         # ---- hard priority: direct address / reply-to-bot (spec §20/§21) ----
@@ -219,9 +229,7 @@ class SocialCognitionEngine:
         # ---- the operator's non-@ switch (live) ----
         group_cfg = getattr(self.bot.config.behavior, "group", None)
         if group_cfg is not None and not getattr(group_cfg, "participation_enabled", True):
-            return ParticipationDecision(
-                decision="ignore", reason_code="participation_disabled"
-            )
+            return ParticipationDecision(decision="ignore", reason_code="participation_disabled")
 
         # ---- 5-message observer (spec §24/§25) ----
         unobserved = self.monitor.unobserved(group_id)
@@ -275,9 +283,7 @@ class SocialCognitionEngine:
 
     # --------------------------------------------------------------- observe
 
-    async def _observe(
-        self, group_id: str, batch: list[Any]
-    ) -> ParticipationDecision:
+    async def _observe(self, group_id: str, batch: list[Any]) -> ParticipationDecision:
         topic = await self._active_topic(group_id)
         character_block = await self._character_block(group_id, batch)
         recent = self.monitor.recent(group_id, limit=self.config.observer.min_context_messages)
@@ -366,8 +372,7 @@ class SocialCognitionEngine:
             manager = getattr(bot.behavior, "topics", None)
             if manager is not None:
                 topics = [
-                    t.title
-                    for t in await manager.get_active_topics(f"group:{group_id}", limit=5)
+                    t.title for t in await manager.get_active_topics(f"group:{group_id}", limit=5)
                 ]
         except Exception:  # noqa: BLE001
             topics = []
@@ -381,8 +386,7 @@ class SocialCognitionEngine:
             try:
                 activity_context = {
                     "primary_activity": (
-                        sandbox.current_action.definition_id
-                        if sandbox.current_action else None
+                        sandbox.current_action.definition_id if sandbox.current_action else None
                     ),
                     "activity_detail": (
                         sandbox.current_action.detail if sandbox.current_action else ""

@@ -18,9 +18,9 @@ from app.social.models import SocialAttentionState
 _MENTION_BOOST = 0.45
 _THREAD_BOOST = 0.35
 _TOPIC_BOOST = 0.20
-_DECAY_PER_SECOND = 0.0004          # ~2.4%/min
+_DECAY_PER_SECOND = 0.0004  # ~2.4%/min
 _FATIGUE_PER_REPLY = 0.18
-_FATIGUE_DECAY = 0.00005            # slow recovery
+_FATIGUE_DECAY = 0.00005  # slow recovery
 
 
 class SocialAttention:
@@ -76,7 +76,9 @@ class SocialAttention:
         state = self.get(str(group_id))
         level = min(1.0, state.attention_level + _TOPIC_BOOST)
         self._commit(
-            state, attention_level=level, current_topic=topic,
+            state,
+            attention_level=level,
+            current_topic=topic,
             momentum=min(1.0, state.momentum + 0.2),
         )
 

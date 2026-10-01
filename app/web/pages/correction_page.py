@@ -58,16 +58,17 @@ def _explainer() -> str:
     )
 
 
-def _picker(
-    targets: list[dict[str, Any]], scope_key: str, instruction: str
-) -> str:
-    options = "".join(
-        f"<option value='{ui.esc(item['scope_key'])}'"
-        f"{' selected' if item['scope_key'] == scope_key else ''}>"
-        f"{ui.esc(item['label'])}（{ui.esc(item['scope_key'])}，"
-        f"{item['active']} 条生效 / 共 {item['total']}）</option>"
-        for item in targets
-    ) or "<option value=''>（还没有任何用户记忆）</option>"
+def _picker(targets: list[dict[str, Any]], scope_key: str, instruction: str) -> str:
+    options = (
+        "".join(
+            f"<option value='{ui.esc(item['scope_key'])}'"
+            f"{' selected' if item['scope_key'] == scope_key else ''}>"
+            f"{ui.esc(item['label'])}（{ui.esc(item['scope_key'])}，"
+            f"{item['active']} 条生效 / 共 {item['total']}）</option>"
+            for item in targets
+        )
+        or "<option value=''>（还没有任何用户记忆）</option>"
+    )
     field = f"""
 <form method="get" action="/memory/correction">
   <label class="field">

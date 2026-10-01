@@ -67,8 +67,8 @@ class CharacterRuntime:
         self.states = StateManager(database, logger=self._log, clock=clock)
         self.relationships = RelationshipManager(database, logger=self._log, clock=clock)
         self.topics = topics  # optional TopicManager: boosts related memories
-        self.tools = tools    # optional ToolRuntime: enables contextual tool use
-        self.agent = agent    # optional AgentRuntime: enables multi-step goals
+        self.tools = tools  # optional ToolRuntime: enables contextual tool use
+        self.agent = agent  # optional AgentRuntime: enables multi-step goals
         self.sandbox: Any = None  # optional SandboxRuntime (v2.0): her life
         self.builder = CharacterContextBuilder()
         self.processor = CharacterResponseProcessor(logger=self._log)
@@ -83,9 +83,7 @@ class CharacterRuntime:
         if persona.is_configured():
             self._log.info("Character active: %s", persona.identity.name or persona.name)
         else:
-            self._log.info(
-                "Character persona is empty — configure it in the WebUI (/character)"
-            )
+            self._log.info("Character persona is empty — configure it in the WebUI (/character)")
 
     # ------------------------------------------------------------ main chat
 
@@ -147,11 +145,7 @@ class CharacterRuntime:
             shared_experiences=shared_experiences,
             context_trace=context_trace,
         )
-        temp = (
-            temperature
-            if temperature is not None
-            else self.engine.config.default_temperature
-        )
+        temp = temperature if temperature is not None else self.engine.config.default_temperature
         started = time.perf_counter()
         where = f"（{state.location}）" if state.location else ""
         narrate().thought(
@@ -335,12 +329,8 @@ class CharacterRuntime:
             if control:
                 return await self._control_reply(messages, temperature, control)
 
-            candidates = (
-                self.tools.registry.candidates(user_text) if self.tools is not None else []
-            )
-            classification = agent.classifier.classify(
-                user_text, tool_candidates=len(candidates)
-            )
+            candidates = self.tools.registry.candidates(user_text) if self.tools is not None else []
+            classification = agent.classifier.classify(user_text, tool_candidates=len(candidates))
             narrate().thought(
                 THOUGHT_TEXT.get(classification.kind, classification.kind),
                 detail=(
@@ -381,8 +371,7 @@ class CharacterRuntime:
                 narrate().task("这次没查出东西，按普通聊天回", detail=result.status)
                 return None  # nothing to say beyond the normal reply
             prompt = (  # facts travel as untrusted reference data (spec §109)
-                result.to_prompt_block()
-                + "\n\n请基于以上结果，用你自己的语气自然地回答用户。"
+                result.to_prompt_block() + "\n\n请基于以上结果，用你自己的语气自然地回答用户。"
                 "不要提及工具、计划、步骤或任务。"
             )
             response = await self.engine.chat(
@@ -406,16 +395,17 @@ class CharacterRuntime:
         """Natural acknowledgement of cancel/pause/resume (spec §97/§98/§99)."""
         hints = {
             "cancel": (
-                "用户刚打断了你正在做的事（不用继续了）。"
-                "用一句话自然回应，不要再执行任何任务。"
+                "用户刚打断了你正在做的事（不用继续了）。用一句话自然回应，不要再执行任何任务。"
             ),
             "pause": "用户让你先停一下。用一句话自然回应，表示可以先放一放。",
         }
         key = control.split(":")[0]
         hint = hints.get(key, "用户让你继续刚才的事。用一句话自然回应，表示你接着去看。")
         response = await self.engine.chat(
-            AIRequest(messages=[*messages, ChatMessage.user(f"（系统提示：{hint}）")],
-                      temperature=temperature)
+            AIRequest(
+                messages=[*messages, ChatMessage.user(f"（系统提示：{hint}）")],
+                temperature=temperature,
+            )
         )
         self._narrate_thinking(response)
         return response.content
@@ -501,15 +491,11 @@ class CharacterRuntime:
         if sandbox is None or not getattr(sandbox, "enabled", False):
             return
         try:
-            await sandbox.note_user_interaction(
-                user_id=str(user_id), session_id=session_id
-            )
+            await sandbox.note_user_interaction(user_id=str(user_id), session_id=session_id)
         except Exception:  # noqa: BLE001
             self._log.debug("Sandbox interaction note failed", exc_info=True)
 
-    async def _note_agent_result(
-        self, result: Any, *, session_id: str, user_id: int | str
-    ) -> None:
+    async def _note_agent_result(self, result: Any, *, session_id: str, user_id: int | str) -> None:
         """Task finished → her life notes it; the agent never writes state."""
         sandbox = getattr(self, "sandbox", None)
         if sandbox is None or not getattr(sandbox, "enabled", False):

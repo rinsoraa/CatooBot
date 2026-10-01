@@ -54,9 +54,7 @@ class MemoryManager:
         self._clock = clock
         self.repository = MemoryRepository(database, logger=self._log, clock=clock)
         self.embeddings = embeddings
-        self.vectors = vector_store or SqliteVectorStore(
-            database, logger=self._log, clock=clock
-        )
+        self.vectors = vector_store or SqliteVectorStore(database, logger=self._log, clock=clock)
         self.retriever = HybridRetriever(
             config.retrieval,
             vector_store=self.vectors if embeddings is not None else None,
@@ -442,9 +440,7 @@ class MemoryManager:
                 content=clean,
                 summary=" ".join(str(summary).split()),
                 importance=(
-                    previous.importance
-                    if importance is None
-                    else max(0.0, min(1.0, importance))
+                    previous.importance if importance is None else max(0.0, min(1.0, importance))
                 ),
                 confidence=max(0.0, min(0.99, confidence)),
                 layer=previous.layer,

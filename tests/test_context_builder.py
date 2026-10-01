@@ -101,9 +101,14 @@ class TestContextBuilder:
         now = time_mod.time()
         stale = now - 16 * 3600  # ~16h ago
         tc = TimeContext(
-            timezone="Asia/Shanghai", local_time="20:32", date_text="2026-09-30",
-            weekday="星期三", period="evening", is_weekend=False,
-            is_sleeping=False, in_dnd=False,
+            timezone="Asia/Shanghai",
+            local_time="20:32",
+            date_text="2026-09-30",
+            weekday="星期三",
+            period="evening",
+            is_weekend=False,
+            is_sleeping=False,
+            in_dnd=False,
         )
         messages = build_messages(
             history=[
@@ -127,9 +132,7 @@ class TestContextBuilder:
         from app.ai.models import ChatMessage
 
         messages = build_messages(
-            history=[
-                ChatMessage(role="user", content="刚聊的话", created_at=time_mod.time() - 60)
-            ]
+            history=[ChatMessage(role="user", content="刚聊的话", created_at=time_mod.time() - 60)]
         )
         assert messages[1].content == "刚聊的话"
         assert "过去的聊天记录" not in messages[0].content

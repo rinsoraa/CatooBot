@@ -54,9 +54,7 @@ class Context:
         return self.bot.permissions.is_admin(self.user_id, group_role=self.event.sender.role)
 
     def has_permission(self, required: str) -> bool:
-        return self.bot.permissions.has(
-            self.user_id, required, group_role=self.event.sender.role
-        )
+        return self.bot.permissions.has(self.user_id, required, group_role=self.event.sender.role)
 
     # ------------------------------------------------------------- replies
 

@@ -69,12 +69,8 @@ class TestTiming:
         # A long enough reply keeps both values above the min_delay floor so the
         # rhythm factor is observable.
         timing = make_timing(jitter=0.0, min_delay=0.0)
-        slow = timing.compute(
-            reply_text="字" * 80, state=state(), seconds_since_last_exchange=3600
-        )
-        fast = timing.compute(
-            reply_text="字" * 80, state=state(), seconds_since_last_exchange=5
-        )
+        slow = timing.compute(reply_text="字" * 80, state=state(), seconds_since_last_exchange=3600)
+        fast = timing.compute(reply_text="字" * 80, state=state(), seconds_since_last_exchange=5)
         assert fast < slow
 
     def test_close_relationship_is_faster(self) -> None:

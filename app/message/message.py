@@ -73,10 +73,7 @@ class Message:
             return cls([raw])
         if isinstance(raw, list):
             return cls(
-                [
-                    Segment.from_onebot(item) if isinstance(item, dict) else item
-                    for item in raw
-                ]
+                [Segment.from_onebot(item) if isinstance(item, dict) else item for item in raw]
             )
         raise TypeError(f"Cannot build Message from {type(raw).__name__}")
 
@@ -105,9 +102,7 @@ class Message:
     def is_mentioned(self, user_id: int | str) -> bool:
         """True if the message contains an @ targeting ``user_id`` (not @all)."""
         uid = int(user_id)
-        return any(
-            isinstance(seg, AtSegment) and seg.user_id == uid for seg in self._segments
-        )
+        return any(isinstance(seg, AtSegment) and seg.user_id == uid for seg in self._segments)
 
     def strip_prefix_at(self, user_id: int | str) -> bool:
         """Remove leading @bot segments (and stray whitespace text) in-place.
@@ -187,6 +182,7 @@ class Message:
 
 
 # Convenience constructors matching the spec's example usage ---------------
+
 
 def Text(text: str) -> TextSegment:  # noqa: N802 - mirrors spec naming
     return TextSegment(type="text", data={"text": text})

@@ -71,11 +71,7 @@ class CredentialManager:
         return self.mask(self.get_secret(name))
 
     def names(self) -> list[str]:
-        from_env = {
-            key
-            for key in os.environ
-            if key.endswith(("_KEY", "_TOKEN", "_SECRET"))
-        }
+        from_env = {key for key in os.environ if key.endswith(("_KEY", "_TOKEN", "_SECRET"))}
         merged = set(self._load()) | from_env
         return sorted(merged)
 
@@ -120,9 +116,7 @@ class CredentialManager:
 
     def _save(self, data: dict[str, str]) -> None:
         self._path.parent.mkdir(parents=True, exist_ok=True)
-        self._path.write_text(
-            json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8"
-        )
+        self._path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
         try:  # best effort on POSIX; Windows ACLs are inherited from the folder
             self._path.chmod(0o600)
         except OSError:

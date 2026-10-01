@@ -121,9 +121,7 @@ class GroupObserver:
             return None
         return self._from_json(parsed, [m.message_id for m in batch])
 
-    async def _rule_decision(
-        self, batch: list[GroupMessage], topic: str
-    ) -> ParticipationDecision:
+    async def _rule_decision(self, batch: list[GroupMessage], topic: str) -> ParticipationDecision:
         if self._relevance is None:
             return ParticipationDecision(decision="ignore", reason_code="no_relevance")
         # Minimal character signals when the engine is offline (tests / fallback).

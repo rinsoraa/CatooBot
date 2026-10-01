@@ -67,9 +67,7 @@ class ToolRouter:
     def candidates(
         self, query: str, *, allowed: list[str] | None = None
     ) -> list[tuple[ToolBase, float]]:
-        return self.registry.candidates(
-            query, limit=self.config.candidate_tools, allowed=allowed
-        )
+        return self.registry.candidates(query, limit=self.config.candidate_tools, allowed=allowed)
 
     def build_instruction(self, candidates: list[tuple[ToolBase, float]]) -> str:
         """Render only the candidate schemas — never the whole registry (§12)."""
@@ -157,9 +155,7 @@ class ToolOrchestrator:
         safe_messages = list(messages) or [ChatMessage.user(query)]
         candidates = self.router.candidates(query, allowed=allowed_tools)
         if not candidates:
-            response = await engine.chat(
-                AIRequest(messages=safe_messages, temperature=temperature)
-            )
+            response = await engine.chat(AIRequest(messages=safe_messages, temperature=temperature))
             return response.content, []
 
         names = [tool.metadata.name for tool, _ in candidates]
@@ -199,9 +195,11 @@ class ToolOrchestrator:
                 decision["selected"] = call.name
                 decision["reason"] = "budget_exceeded"
                 # Ask once more with an explicit "no more tools" instruction.
-                working.append(ChatMessage.system(
-                    "工具调用次数已达上限，请直接用现有信息回答，不要再调用工具。"
-                ))
+                working.append(
+                    ChatMessage.system(
+                        "工具调用次数已达上限，请直接用现有信息回答，不要再调用工具。"
+                    )
+                )
                 final = await engine.chat(AIRequest(messages=working, temperature=temperature))
                 return final.content, results
 

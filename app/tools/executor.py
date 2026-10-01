@@ -42,8 +42,10 @@ def _narrate_tool_call(trace: Any, result: Any) -> None:
         args = trace.arguments_preview.strip()
         if len(args) > 60:
             args = args[:60] + "…"
-        outcome = "ok" if getattr(result, "success", False) else (
-            getattr(result, "error_type", "") or "error"
+        outcome = (
+            "ok"
+            if getattr(result, "success", False)
+            else (getattr(result, "error_type", "") or "error")
         )
         detail = f"{trace.duration_ms:.0f}ms · {outcome}"
         if getattr(result, "cache_hit", False) or getattr(trace, "cache_hit", False):
@@ -72,7 +74,7 @@ class ToolExecutor:
         self._log = logger or logging.getLogger("CatooBot.Tools")
         self._clock = clock
         self._semaphore = asyncio.Semaphore(max(1, config.max_concurrent))
-        self.traces: list[ToolTrace] = []          # bounded, in-memory audit tail
+        self.traces: list[ToolTrace] = []  # bounded, in-memory audit tail
         self._max_traces = 200
 
     # ------------------------------------------------------------ execution
@@ -98,13 +100,15 @@ class ToolExecutor:
         tool = self.registry.maybe_get(call.name)
         if tool is None:
             return await self._finish(
-                trace, started, ToolResult(
+                trace,
+                started,
+                ToolResult(
                     tool_name=call.name,
                     success=False,
                     error=f"Unknown tool '{call.name}'",
                     error_type="unknown_tool",
                     metadata={"source_type": "internal", "confidence": 0.0},
-                )
+                ),
             )
 
         metadata = tool.metadata
@@ -115,13 +119,15 @@ class ToolExecutor:
         if problems:
             self._log.warning("[Tool] %s rejected arguments: %s", call.name, problems)
             return await self._finish(
-                trace, started, ToolResult(
+                trace,
+                started,
+                ToolResult(
                     tool_name=call.name,
                     success=False,
                     error="; ".join(problems),
                     error_type="invalid_arguments",
                     metadata={"source_type": "internal", "confidence": 0.0},
-                )
+                ),
             )
 
         # 2) hard rules: permissions, budget, loops, rate limits (§21/§32/§34/§35)
@@ -135,9 +141,7 @@ class ToolExecutor:
             )
         except ToolError as exc:
             self._log.info("[Tool] %s blocked: %s", call.name, exc)
-            await self._record(
-                trace, status="blocked", error_type=exc.error_type, started=started
-            )
+            await self._record(trace, status="blocked", error_type=exc.error_type, started=started)
             return ToolResult(
                 tool_name=call.name,
                 success=False,
@@ -167,9 +171,7 @@ class ToolExecutor:
         for attempt in range(1, attempts + 1):
             try:
                 async with self._semaphore:
-                    raw = await asyncio.wait_for(
-                        tool.execute(arguments, context), timeout=timeout
-                    )
+                    raw = await asyncio.wait_for(tool.execute(arguments, context), timeout=timeout)
                 result = self.processor.process(raw)
                 break
             except TimeoutError:
@@ -228,9 +230,7 @@ class ToolExecutor:
         """Run independent calls concurrently (order preserved, §70)."""
         if len(calls) <= 1:
             return [await self.execute(call, context, budget) for call in calls]
-        return list(
-            await asyncio.gather(*(self.execute(call, context, budget) for call in calls))
-        )
+        return list(await asyncio.gather(*(self.execute(call, context, budget) for call in calls)))
 
     # ------------------------------------------------------------- helpers
 
@@ -265,9 +265,7 @@ class ToolExecutor:
         _narrate_tool_call(trace, result)
         # Awaited, not fire-and-forget: a queued write could otherwise race with
         # database shutdown and crash sqlite (Windows access violation).
-        await self._record(
-            trace, status=trace.status, error_type=trace.error_type, started=started
-        )
+        await self._record(trace, status=trace.status, error_type=trace.error_type, started=started)
         return result
 
     def _remember_trace(self, trace: ToolTrace) -> None:
@@ -375,9 +373,16 @@ class ToolExecutor:
     async def metrics(self) -> dict[str, Any]:
         """Calls / success / failure / timeout / latency percentiles (§43/§79)."""
         empty = {
-            "calls": 0, "success": 0, "failure": 0, "timeout": 0,
-            "rate_limit": 0, "cache_hits": 0, "avg_latency_ms": 0.0,
-            "p50_latency_ms": 0.0, "p95_latency_ms": 0.0, "by_tool": {},
+            "calls": 0,
+            "success": 0,
+            "failure": 0,
+            "timeout": 0,
+            "rate_limit": 0,
+            "cache_hits": 0,
+            "avg_latency_ms": 0.0,
+            "p50_latency_ms": 0.0,
+            "p95_latency_ms": 0.0,
+            "by_tool": {},
         }
         if self._db is None:
             return empty
@@ -395,8 +400,13 @@ class ToolExecutor:
             stats = by_tool.setdefault(
                 row["tool_name"],
                 {
-                    "calls": 0, "success": 0, "failure": 0, "timeout": 0,
-                    "rate_limit": 0, "cache_hits": 0, "latencies": [],
+                    "calls": 0,
+                    "success": 0,
+                    "failure": 0,
+                    "timeout": 0,
+                    "rate_limit": 0,
+                    "cache_hits": 0,
+                    "latencies": [],
                 },
             )
             stats["calls"] += 1

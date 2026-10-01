@@ -57,11 +57,11 @@ class _Session:
     worker_task: asyncio.Task | None = None
     queue: asyncio.Queue[ConversationTurn | None] = field(default_factory=asyncio.Queue)
     active_generation: Generation | None = None
-    processing: bool = False             # worker picked a turn, decision in flight
+    processing: bool = False  # worker picked a turn, decision in flight
     last_turn_text: str = ""
     last_generation_id: int = 0
-    consecutive_questions: int = 0        # bot asked; user replied without new question
-    momentum: float = 0.5                 # structured input, never a dice (§66/§67)
+    consecutive_questions: int = 0  # bot asked; user replied without new question
+    momentum: float = 0.5  # structured input, never a dice (§66/§67)
     last_activity: float = 0.0
 
 
@@ -128,6 +128,7 @@ class ConversationTurnRuntime:
 
     async def wait_idle(self, timeout: float = 10.0) -> None:
         """Wait until no session is buffering, queued or generating (tests/WebUI)."""
+
         async def _idle() -> None:
             while True:
                 if self._busy():
@@ -240,9 +241,9 @@ class ConversationTurnRuntime:
         if turn and turn.messages:
             last = turn.messages[-1].text
             if len(last) >= 30:
-                delay *= 0.6        # long message: user is probably done typing
+                delay *= 0.6  # long message: user is probably done typing
             elif len(last) <= 4:
-                delay *= 1.4        # "在吗" — give them a beat to continue
+                delay *= 1.4  # "在吗" — give them a beat to continue
         return max(0.05, delay)
 
     def _schedule_flush(self, session: _Session) -> None:

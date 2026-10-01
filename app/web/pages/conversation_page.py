@@ -41,29 +41,39 @@ def dashboard(data: dict[str, Any], turns: list[dict[str, Any]]) -> str:
             "连续消息会合并为一个 Turn，只产生一次自然回复。</p>",
         )
     sessions = data.get("sessions", [])
-    session_rows = "".join(
-        f"<tr><td>{ui.esc(s['session_id'])}</td>"
-        f"<td>{'群聊' if s['is_group'] else '私聊'}</td>"
-        f"<td>{s['buffered_messages']}</td>"
-        f"<td>{s['queued_turns']}</td>"
-        f"<td>{'#' + str(s['active_generation']) if s['active_generation'] else '-'}</td>"
-        f"<td>{ui.badge('已过期' if s['generation_stale'] else '正常',
-                        'warning' if s['generation_stale'] else 'success')}</td>"
-        f"<td>{s['momentum']:.2f}</td>"
-        f"<td>{s['consecutive_questions']}</td></tr>"
-        for s in sessions
-    ) or "<tr><td colspan='8' class='muted'>暂无活跃会话</td></tr>"
+    session_rows = (
+        "".join(
+            f"<tr><td>{ui.esc(s['session_id'])}</td>"
+            f"<td>{'群聊' if s['is_group'] else '私聊'}</td>"
+            f"<td>{s['buffered_messages']}</td>"
+            f"<td>{s['queued_turns']}</td>"
+            f"<td>{'#' + str(s['active_generation']) if s['active_generation'] else '-'}</td>"
+            f"<td>{
+                ui.badge(
+                    '已过期' if s['generation_stale'] else '正常',
+                    'warning' if s['generation_stale'] else 'success',
+                )
+            }</td>"
+            f"<td>{s['momentum']:.2f}</td>"
+            f"<td>{s['consecutive_questions']}</td></tr>"
+            for s in sessions
+        )
+        or "<tr><td colspan='8' class='muted'>暂无活跃会话</td></tr>"
+    )
 
-    turn_rows = "".join(
-        f"<tr><td class='mono'>{ui.esc(t['turn_id'])}</td>"
-        f"<td>{ui.esc(t['session_id'])}</td>"
-        f"<td>{ui.esc(t['classification'])}</td>"
-        f"<td>{ui.badge(t['status'], STATUS_TONE.get(t['status'], 'default'))}</td>"
-        f"<td>{ui.esc((t['text'] or '')[:60])}</td>"
-        f"<td>{ui.esc(t['silence_reason'] or '-')}</td>"
-        f"<td class='mono'>#{t['generation_id'] or '-'}</td></tr>"
-        for t in turns
-    ) or "<tr><td colspan='7' class='muted'>还没有已完成的对话轮次</td></tr>"
+    turn_rows = (
+        "".join(
+            f"<tr><td class='mono'>{ui.esc(t['turn_id'])}</td>"
+            f"<td>{ui.esc(t['session_id'])}</td>"
+            f"<td>{ui.esc(t['classification'])}</td>"
+            f"<td>{ui.badge(t['status'], STATUS_TONE.get(t['status'], 'default'))}</td>"
+            f"<td>{ui.esc((t['text'] or '')[:60])}</td>"
+            f"<td>{ui.esc(t['silence_reason'] or '-')}</td>"
+            f"<td class='mono'>#{t['generation_id'] or '-'}</td></tr>"
+            for t in turns
+        )
+        or "<tr><td colspan='7' class='muted'>还没有已完成的对话轮次</td></tr>"
+    )
 
     return (
         ui.stats_grid(
@@ -103,41 +113,50 @@ def continuity_page(data: dict[str, Any]) -> str:
         return f"<div class='field-row'><strong>{ui.esc(label)}</strong>{shown}{tip}</div>"
 
     loops = data.get("open_loops", [])
-    loop_rows = "".join(
-        f"<tr><td>{ui.esc(loop['summary'])}</td><td>{ui.esc(loop['type'])}</td>"
-        f"<td>{ui.badge(loop['status'], 'success' if loop['status'] == 'open' else 'default')}</td>"
-        f"<td>{loop['progress']:.0%}</td><td>{ui.esc(loop['source'] or '-')}</td>"
-        f"<td>{loop['confidence']:.2f}</td></tr>"
-        for loop in loops
-    ) or "<tr><td colspan='6' class='muted'>暂无未完成的事</td></tr>"
+    loop_rows = (
+        "".join(
+            f"<tr><td>{ui.esc(loop['summary'])}</td><td>{ui.esc(loop['type'])}</td>"
+            f"<td>{ui.badge(loop['status'], 'success' if loop['status'] == 'open' else 'default')}</td>"
+            f"<td>{loop['progress']:.0%}</td><td>{ui.esc(loop['source'] or '-')}</td>"
+            f"<td>{loop['confidence']:.2f}</td></tr>"
+            for loop in loops
+        )
+        or "<tr><td colspan='6' class='muted'>暂无未完成的事</td></tr>"
+    )
 
     shared = data.get("shared_experiences", [])
-    shared_rows = "".join(
-        f"<tr><td>{ui.esc(exp['summary'])}</td><td>{ui.esc(exp['type'])}</td>"
-        f"<td>{ui.esc('、'.join(exp['keywords']))}</td><td>{exp['times_referenced']}</td>"
-        f"<td>{exp['confidence']:.2f}</td></tr>"
-        for exp in shared
-    ) or "<tr><td colspan='5' class='muted'>暂无共同经历记录</td></tr>"
+    shared_rows = (
+        "".join(
+            f"<tr><td>{ui.esc(exp['summary'])}</td><td>{ui.esc(exp['type'])}</td>"
+            f"<td>{ui.esc('、'.join(exp['keywords']))}</td><td>{exp['times_referenced']}</td>"
+            f"<td>{exp['confidence']:.2f}</td></tr>"
+            for exp in shared
+        )
+        or "<tr><td colspan='5' class='muted'>暂无共同经历记录</td></tr>"
+    )
 
     affect = state.get("affect", {})
     dimensions = affect.get("dimensions", {})
-    affect_bits = "、".join(
-        f"{name} {level:.2f}" for name, level in dimensions.items()
-    ) or "（平静）"
+    affect_bits = (
+        "、".join(f"{name} {level:.2f}" for name, level in dimensions.items()) or "（平静）"
+    )
 
     profiles = data.get("profiles", [])
-    profile_rows = "".join(
-        "<tr><td class='mono'>{}</td><td>{}</td><td>{}</td></tr>".format(
-            ui.esc(p["user_id"]),
-            "、".join(
-                f"{key}={pat['value']:.2f}(±{pat['confidence']:.2f},n={pat['sample_count']})"
-                for key, pat in p["patterns"].items()
+    profile_rows = (
+        "".join(
+            "<tr><td class='mono'>{}</td><td>{}</td><td>{}</td></tr>".format(
+                ui.esc(p["user_id"]),
+                "、".join(
+                    f"{key}={pat['value']:.2f}(±{pat['confidence']:.2f},n={pat['sample_count']})"
+                    for key, pat in p["patterns"].items()
+                )
+                or "<span class='muted'>观察中</span>",
+                f"<span class='mono'>{p['updated_at'] or '-'}</span>",
             )
-            or "<span class='muted'>观察中</span>",
-            f"<span class='mono'>{p['updated_at'] or '-'}</span>",
+            for p in profiles
         )
-        for p in profiles
-    ) or "<tr><td colspan='3' class='muted'>暂无用户画像样本</td></tr>"
+        or "<tr><td colspan='3' class='muted'>暂无用户画像样本</td></tr>"
+    )
 
     return (
         ui.card(
@@ -147,7 +166,9 @@ def continuity_page(data: dict[str, Any]) -> str:
             + field("近期情绪", state.get("recent_emotion", ""), "分钟级 TTL")
             + field("上一句说过", state.get("last_response_context", ""))
             + field("当前情感", affect_bits, "事件驱动 + 衰减，独立于整体心情")
-            + field("最近小事", "；".join(state.get("recent_events", [])[-3:]), "来自生活沙盒的小事"),
+            + field(
+                "最近小事", "；".join(state.get("recent_events", [])[-3:]), "来自生活沙盒的小事"
+            ),
         )
         + ui.card(
             "未完成的事（Open Loops）",

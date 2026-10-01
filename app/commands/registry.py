@@ -51,8 +51,8 @@ def command(
 ) -> Callable[[CommandHandler], CommandHandler]:
     """Mark a coroutine as a CatooBot command::
 
-        @command("ping", description="Test connectivity")
-        async def ping(ctx): ...
+    @command("ping", description="Test connectivity")
+    async def ping(ctx): ...
     """
 
     def decorator(func: CommandHandler) -> CommandHandler:
@@ -123,9 +123,7 @@ class CommandRegistry:
         registered: list[Command] = []
         for func, spec in iter_command_functions(module_dict):
             extra = {k: v for k, v in spec.items() if k != "name"}
-            registered.append(
-                self.register(str(spec["name"]), func, plugin=plugin, **extra)
-            )
+            registered.append(self.register(str(spec["name"]), func, plugin=plugin, **extra))
         return registered
 
     def unregister_plugin(self, plugin: str) -> int:

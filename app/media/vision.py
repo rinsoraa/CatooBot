@@ -145,7 +145,9 @@ class ImageUnderstandingRuntime:
         except (TypeError, ValueError):
             return None
 
-    async def _cache_put(self, sha256_hash: str, result: VisionResult, *, failed: bool = False) -> None:
+    async def _cache_put(
+        self, sha256_hash: str, result: VisionResult, *, failed: bool = False
+    ) -> None:
         if self._db is None or not sha256_hash:
             return
         try:

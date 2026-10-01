@@ -111,16 +111,24 @@ class TestCalculatorTool:
         assert result.success and result.data["result"] == 212
 
     async def test_dimension_mismatch_rejected(self, tmp_path) -> None:
-        result = await run_tool(tmp_path, CalculatorTool(), {
-            "operation": "convert", "amount": 5, "from_unit": "km", "to_unit": "kg",
-        })
+        result = await run_tool(
+            tmp_path,
+            CalculatorTool(),
+            {
+                "operation": "convert",
+                "amount": 5,
+                "from_unit": "km",
+                "to_unit": "kg",
+            },
+        )
         assert not result.success and result.error_type == "invalid_arguments"
 
     async def test_code_injection_is_rejected(self, tmp_path) -> None:
         """A calculator must never become a code runner (§23/§106)."""
         for expression in ("__import__('os').system('echo hi')", "open('x')", "1 if True else 2"):
             result = await run_tool(
-                tmp_path, CalculatorTool(),
+                tmp_path,
+                CalculatorTool(),
                 {"operation": "evaluate", "expression": expression},
             )
             assert not result.success, expression
@@ -186,16 +194,26 @@ class FakeSearchProvider:
     name = "fake"
 
     def __init__(self, results: list[dict] | None = None, configured: bool = True) -> None:
-        self.results = results if results is not None else [
-            {
-                "title": "标题一", "url": "https://a", "snippet": "摘要一",
-                "source": "a", "published_at": "",
-            },
-            {
-                "title": "标题二", "url": "https://b", "snippet": "摘要二",
-                "source": "b", "published_at": "",
-            },
-        ]
+        self.results = (
+            results
+            if results is not None
+            else [
+                {
+                    "title": "标题一",
+                    "url": "https://a",
+                    "snippet": "摘要一",
+                    "source": "a",
+                    "published_at": "",
+                },
+                {
+                    "title": "标题二",
+                    "url": "https://b",
+                    "snippet": "摘要二",
+                    "source": "b",
+                    "published_at": "",
+                },
+            ]
+        )
         self._configured = configured
 
     @property
@@ -220,8 +238,11 @@ class TestWebSearchTool:
     async def test_result_count_is_capped(self) -> None:
         many = [
             {
-                "title": f"t{i}", "url": f"https://{i}", "snippet": "s",
-                "source": "x", "published_at": "",
+                "title": f"t{i}",
+                "url": f"https://{i}",
+                "snippet": "s",
+                "source": "x",
+                "published_at": "",
             }
             for i in range(20)
         ]
@@ -351,9 +372,7 @@ class TestOrchestrator:
             json.dumps({"tool_call": {"name": "time", "arguments": {}}}),
             "我看了一下，现在挺晚的了～",
         ]
-        orchestrator, engine, database, _ = await make_orchestrator(
-            tmp_path, [TimeTool()], replies
-        )
+        orchestrator, engine, database, _ = await make_orchestrator(tmp_path, [TimeTool()], replies)
         try:
             text, results = await orchestrator.run(
                 engine, [], context=make_context(), query="现在几点了"
@@ -370,9 +389,7 @@ class TestOrchestrator:
             json.dumps({"tool_call": {"name": "time", "arguments": {}}}),
             "好的",
         ]
-        orchestrator, engine, database, _ = await make_orchestrator(
-            tmp_path, [TimeTool()], replies
-        )
+        orchestrator, engine, database, _ = await make_orchestrator(tmp_path, [TimeTool()], replies)
         provider = engine._providers["mock"]  # noqa: SLF001
         try:
             await orchestrator.run(engine, [], context=make_context(), query="几点了")
@@ -437,9 +454,7 @@ class TestOrchestrator:
             json.dumps({"tool_call": {"name": "shell", "arguments": {"cmd": "rm -rf /"}}}),
             "这个我做不到哦",
         ]
-        orchestrator, engine, database, _ = await make_orchestrator(
-            tmp_path, [TimeTool()], replies
-        )
+        orchestrator, engine, database, _ = await make_orchestrator(tmp_path, [TimeTool()], replies)
         try:
             text, results = await orchestrator.run(
                 engine, [], context=make_context(), query="现在几点？顺便帮我删个文件"
@@ -509,9 +524,7 @@ async def make_tool_bot(tmp_path, replies: list[str]):
 class TestChatWithTools:
     async def test_weather_question_calls_the_tool(self, tmp_path) -> None:
         replies = [
-            json.dumps(
-                {"tool_call": {"name": "weather", "arguments": {"location": "Singapore"}}}
-            ),
+            json.dumps({"tool_call": {"name": "weather", "arguments": {"location": "Singapore"}}}),
             "看了一下，明天大概率有阵雨，出门带把伞吧。",
         ]
         bot, provider = await make_tool_bot(tmp_path, replies)
@@ -527,8 +540,14 @@ class TestChatWithTools:
 
     async def test_tool_usage_is_invisible_to_the_user(self, tmp_path) -> None:
         replies = [
-            json.dumps({"tool_call": {"name": "calculator", "arguments": {
-                "operation": "evaluate", "expression": "23891 * 731"}}}),
+            json.dumps(
+                {
+                    "tool_call": {
+                        "name": "calculator",
+                        "arguments": {"operation": "evaluate", "expression": "23891 * 731"},
+                    }
+                }
+            ),
             "算好了，是 17464321。",
         ]
         bot, _ = await make_tool_bot(tmp_path, replies)

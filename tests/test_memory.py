@@ -188,7 +188,7 @@ class TestExtraction:
                     '"importance": 0.8},'
                     '{"category": "fact", "content": "用户在写小说",'
                     '"importance": 0.6}'
-                    ']}'
+                    "]}"
                 ]
             }
         )
