@@ -106,7 +106,7 @@ class TestHub:
 
 class TestWebSocket:
     async def _serve(self, tmp_path, monkeypatch, *, status_interval: float = 0.05):  # type: ignore[no-untyped-def]
-        monkeypatch.setattr("app.web.server.STATUS_INTERVAL", status_interval)
+        monkeypatch.setattr("app.web.routes.ops.STATUS_INTERVAL", status_interval)
         import socket
 
         from app.web.server import WebServer
