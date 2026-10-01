@@ -1,7 +1,7 @@
 """Conversation turn data models (v1.2).
 
 Everything here is structured state with a reason code — never hidden chain
-of thought (spec §113). A turn is the unit of conversation: one user burst,
+of thought (spec v1.2 §113). A turn is the unit of conversation: one user burst,
 one classification, one decision, at most one response generation.
 """
 
@@ -15,7 +15,7 @@ from pydantic import BaseModel, Field
 
 
 class TurnClassification(str, Enum):  # noqa: UP042 - pydantic serializes .value via str
-    """What kind of exchange this turn is (spec §14)."""
+    """What kind of exchange this turn is (spec v1.2 §14)."""
 
     single = "single"  # one ordinary message
     multi_message = "multi_message"  # one user burst merged into one turn
@@ -52,7 +52,7 @@ class TurnMessage(BaseModel):
 
 
 class ConversationTurn(BaseModel):
-    """One conversational exchange unit (spec §20/§21)."""
+    """One conversational exchange unit (spec v1.2 §20/§21)."""
 
     turn_id: str
     generation_id: int = 0
@@ -90,9 +90,9 @@ class ConversationTurn(BaseModel):
 
 
 class ConversationDecision(BaseModel):
-    """Structured answer to "should I respond, and how?" (spec §60).
+    """Structured answer to "should I respond, and how?" (spec v1.2 §60).
 
-    Produced by rules + state + social context (§61) — never a dice roll.
+    Produced by rules + state + social context (v1.2 §61) — never a dice roll.
     """
 
     respond: bool = True
@@ -103,12 +103,12 @@ class ConversationDecision(BaseModel):
     should_ask: bool = False  # may attach one natural follow-up question
     should_continue: bool = False  # topic has momentum worth carrying
     expression_opportunity: bool = False
-    silence_reason: str = ""  # §81 structured reasons when respond=False
+    silence_reason: str = ""  # v1.2 §81 structured reasons when respond=False
     reasons: list[str] = Field(default_factory=list)
 
 
 class ResponseStep(BaseModel):
-    """One step of an outgoing sequence (spec §72/§73): text / sticker / pause."""
+    """One step of an outgoing sequence (spec v1.2 §72/§73): text / sticker / pause."""
 
     type: str  # text | sticker | pause
     text: str = ""

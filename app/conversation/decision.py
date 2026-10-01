@@ -1,8 +1,8 @@
-"""ConversationDecisionEngine: rules + state + context, never a dice (§61).
+"""ConversationDecisionEngine: rules + state + context, never a dice (v1.2 §61).
 
 Answers, before any language generation: respond? intent? how much? may I
 ask one question back? is there an expression opening? Silence carries a
-structured reason (§81) — never `random() < p` (§80).
+structured reason (v1.2 §81) — never `random() < p` (v1.2 §80).
 """
 
 from __future__ import annotations
@@ -12,8 +12,8 @@ from typing import Any
 
 from app.conversation.models import ConversationDecision, ConversationTurn, TurnClassification
 
-# Low-information messages (§62): allowed as *input signal*, and the reply may
-# mirror the register — but the choice is contextual, not a fixed ratio (§122).
+# Low-information messages (v1.2 §62): allowed as *input signal*, and the reply may
+# mirror the register — but the choice is contextual, not a fixed ratio (v1.2 §122).
 _LOW_INFO = re.compile(r"^(?:[哈呃嗯哦噢喔额]{1,6}|草+|笑死|确实|行|好[的吧]?|啊\?|6+|……+|\?+)$")
 _QUESTION_CUE = re.compile(r"[?？]$|[?？][?？]|吗[?？]?$|怎么|为什么|啥|什么|哪")
 _MAX_CONSECUTIVE_QUESTIONS = 2
@@ -77,7 +77,7 @@ class ConversationDecisionEngine:
             reasons.append("direct_address")
 
         # One natural follow-up question is allowed only when the user's side
-        # invites it and the bot has not been interrogating (§64/§65).
+        # invites it and the bot has not been interrogating (v1.2 §64/§65).
         invites_question = bool(_QUESTION_CUE.search(text)) and not low_info
         decision.should_ask = (
             invites_question and consecutive_questions < _MAX_CONSECUTIVE_QUESTIONS

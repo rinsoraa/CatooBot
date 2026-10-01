@@ -3,7 +3,7 @@
 Migration 12 adds ``open_loops`` / ``shared_experiences`` /
 ``interaction_profiles`` / ``micro_events`` / ``affective_events`` /
 ``conversation_turns``. The assembled :class:`CharacterContinuityState` rides
-the existing settings JSON table (spec §108: reuse equivalent tables).
+the existing settings JSON table (spec v1.2 §108: reuse equivalent tables).
 """
 
 from __future__ import annotations
@@ -59,7 +59,7 @@ class ContinuityStore:
             except (TypeError, ValueError):
                 self._log.warning("[Continuity] stored state invalid; starting fresh")
 
-        # TTL decay on read (§105/§106) — stale fields fall back to empty.
+        # TTL decay on read (v1.2 §105/§106) — stale fields fall back to empty.
         ttl = {
             ("current_interest", "interest_updated_at"): cfg.current_interest_ttl_hours * 3600,
             ("current_focus", "focus_updated_at"): cfg.current_interest_ttl_hours * 3600,

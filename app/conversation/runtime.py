@@ -37,7 +37,7 @@ _CANCEL_FLUSH_SECONDS = 0.15
 
 @dataclass
 class Generation:
-    """One response generation attempt (§16)."""
+    """One response generation attempt (v1.2 §16)."""
 
     id: int
     turn: ConversationTurn
@@ -61,7 +61,7 @@ class _Session:
     last_turn_text: str = ""
     last_generation_id: int = 0
     consecutive_questions: int = 0  # bot asked; user replied without new question
-    momentum: float = 0.5  # structured input, never a dice (§66/§67)
+    momentum: float = 0.5  # structured input, never a dice (v1.2 §66/§67)
     last_activity: float = 0.0
 
 
@@ -155,7 +155,7 @@ class ConversationTurnRuntime:
         )
 
     def session_snapshot(self) -> list[dict[str, Any]]:
-        """WebUI dashboard facts (§132) — structured, no internals leaked."""
+        """WebUI dashboard facts (v1.2 §132) — structured, no internals leaked."""
         out = []
         for session in self._sessions.values():
             gen = session.active_generation
@@ -233,7 +233,7 @@ class ConversationTurnRuntime:
     # -------------------------------------------------------------- buffer
 
     def _debounce_seconds(self, session: _Session) -> float:
-        """Dynamic window (§12): never a fixed wait for its own sake."""
+        """Dynamic window (v1.2 §12): never a fixed wait for its own sake."""
         cfg = self.config.debounce
         base_ms = cfg.group_message_ms if session.is_group else cfg.direct_message_ms
         delay = base_ms / 1000.0
@@ -302,7 +302,7 @@ class ConversationTurnRuntime:
 
     async def _process_turn(self, session: _Session, turn: ConversationTurn) -> None:
         # Group participation is decided once per turn, on the merged burst
-        # (§82/§83) — by the v0.9 Social Cognition via the injected provider.
+        # (v1.2 §82/§83) — by the v0.9 Social Cognition via the injected provider.
         social_decision = None
         if self._social_provider is not None:
             try:
@@ -377,7 +377,7 @@ class ConversationTurnRuntime:
         generation.delivered = True
         session.active_generation = None
 
-        # Momentum is a structured signal (§66): bursts and questions raise it,
+        # Momentum is a structured signal (v1.2 §66): bursts and questions raise it,
         # low-info replies drain it. It feeds decisions — it never rolls dice.
         burst = len(turn.messages)
         low_info = len(turn.text) <= 4
@@ -409,7 +409,7 @@ class ConversationTurnRuntime:
 
     @staticmethod
     def _cancels_in_flight(session: _Session, message: TurnMessage) -> bool:
-        """True when this message alone is a correction / interruption (§15)."""
+        """True when this message alone is a correction / interruption (v1.2 §15)."""
         if session.active_generation is None:
             return False
         probe = ConversationTurn(

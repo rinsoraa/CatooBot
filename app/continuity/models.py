@@ -1,7 +1,7 @@
 """Continuity data models (v1.2 §25/§30/§34/§41/§45).
 
 Every fact carries value + confidence + updated_at + reason_code so the
-WebUI inspector can show where it came from and when it decays (§134).
+WebUI inspector can show where it came from and when it decays (v1.2 §134).
 Nothing here stores model reasoning.
 """
 
@@ -31,7 +31,7 @@ class OpenLoopStatus(str, Enum):  # noqa: UP042
 
 
 class OpenLoop(BaseModel):
-    """Something unfinished in her life (§29): "木屋屋顶还没建完"."""
+    """Something unfinished in her life (v1.2 §29): "木屋屋顶还没建完"."""
 
     id: str = ""
     type: OpenLoopType = OpenLoopType.plan
@@ -40,7 +40,7 @@ class OpenLoop(BaseModel):
     status: OpenLoopStatus = OpenLoopStatus.open
     scope_key: str = ""  # "" = hers alone; user:<id> = shared with user
     progress: float = Field(default=0.0, ge=0.0, le=1.0)
-    source: str = ""  # reason_code of creation (§46)
+    source: str = ""  # reason_code of creation (v1.2 §46)
     confidence: float = Field(default=0.5, ge=0.0, le=1.0)
     created_at: float = 0.0
     updated_at: float = 0.0
@@ -60,8 +60,8 @@ class SharedExperienceType(str, Enum):  # noqa: UP042
 
 
 class SharedExperience(BaseModel):
-    """What she and a user have been through *together* (§33) — not what the
-    user said. Retrieved by relevance, never dumped wholesale (§37)."""
+    """What she and a user have been through *together* (v1.2 §33) — not what the
+    user said. Retrieved by relevance, never dumped wholesale (v1.2 §37)."""
 
     id: str = ""
     user_id: str
@@ -77,8 +77,8 @@ class SharedExperience(BaseModel):
 
 
 class InteractionPattern(BaseModel):
-    """One observed user habit: value + confidence + samples (§41) — never a
-    permanent label; it decays and may reverse (§42/§43)."""
+    """One observed user habit: value + confidence + samples (v1.2 §41) — never a
+    permanent label; it decays and may reverse (v1.2 §42/§43)."""
 
     value: float = 0.0
     confidence: float = Field(default=0.0, ge=0.0, le=1.0)
@@ -87,8 +87,8 @@ class InteractionPattern(BaseModel):
 
 
 class InteractionProfile(BaseModel):
-    """How *this user* usually chats (§38-§40) — user-specific context, never
-    a mutation of the global persona (§115)."""
+    """How *this user* usually chats (v1.2 §38-§40) — user-specific context, never
+    a mutation of the global persona (v1.2 §115)."""
 
     user_id: str
     patterns: dict[str, InteractionPattern] = Field(default_factory=dict)
@@ -109,7 +109,7 @@ class InteractionProfile(BaseModel):
         self.updated_at = now
 
     def decay(self, now: float, half_life_days: float = 7.0) -> None:
-        """Patterns fade without fresh evidence (§42): confidence halves."""
+        """Patterns fade without fresh evidence (v1.2 §42): confidence halves."""
         import math
 
         for key, pattern in list(self.patterns.items()):
@@ -135,7 +135,7 @@ class AffectDimension(str, Enum):  # noqa: UP042
 
 
 class AffectiveContext(BaseModel):
-    """Light, event-driven conversational affect (§44-§49). Separate from the
+    """Light, event-driven conversational affect (v1.2 §44-§49). Separate from the
     global mood: a joke lifts turn-level amusement without rewriting her day."""
 
     dimensions: dict[str, float] = Field(default_factory=dict)
@@ -143,7 +143,7 @@ class AffectiveContext(BaseModel):
     updated_at: float = 0.0
 
     def bump(self, dimension: str, delta: float, *, reason: str, now: float) -> str:
-        """Event-driven change with a reason (§46/§47); returns the reason."""
+        """Event-driven change with a reason (v1.2 §46/§47); returns the reason."""
         current = self.dimensions.get(dimension, 0.0)
         self.dimensions[dimension] = round(max(0.0, min(1.0, current + delta)), 4)
         self.reason_code = reason
@@ -151,7 +151,7 @@ class AffectiveContext(BaseModel):
         return reason
 
     def decay(self, now: float, half_life_minutes: float = 45.0) -> None:
-        """Turn-level affect drains back toward neutral (§48/§51)."""
+        """Turn-level affect drains back toward neutral (v1.2 §48/§51)."""
         import math
 
         for key, value in list(self.dimensions.items()):
@@ -168,8 +168,8 @@ class AffectiveContext(BaseModel):
 
 
 class MicroEvent(BaseModel):
-    """A tiny world event (§98): "发现了一个新 Mod" — internal continuity only,
-    never spam (§99); it only surfaces when conversationally relevant."""
+    """A tiny world event (v1.2 §98): "发现了一个新 Mod" — internal continuity only,
+    never spam (v1.2 §99); it only surfaces when conversationally relevant."""
 
     id: str = ""
     summary: str
@@ -180,8 +180,8 @@ class MicroEvent(BaseModel):
 
 
 class CharacterContinuityState(BaseModel):
-    """The assembled short-timescale self (§25). Persisted with per-field TTLs
-    (§106); loaded through the store which applies decay on read (§105)."""
+    """The assembled short-timescale self (v1.2 §25). Persisted with per-field TTLs
+    (v1.2 §106); loaded through the store which applies decay on read (v1.2 §105)."""
 
     user_id: str = ""  # "" = character-global parts
     current_interest: str = ""  # "Minecraft 木屋屋顶"
@@ -193,7 +193,7 @@ class CharacterContinuityState(BaseModel):
     thought_updated_at: float = 0.0
     emotion_updated_at: float = 0.0
     affect: AffectiveContext = Field(default_factory=AffectiveContext)
-    recent_events: list[str] = Field(default_factory=list)  # capped, compressed (§172)
+    recent_events: list[str] = Field(default_factory=list)  # capped, compressed (v1.2 §172)
     open_loops: list[OpenLoop] = Field(default_factory=list)
     last_response_context: str = ""
     next_natural_direction: str = ""

@@ -11,7 +11,7 @@ import re
 
 from app.conversation.models import ConversationTurn, TurnClassification
 
-# Word-level cues (§14). Ordered: correction beats interruption beats shift.
+# Word-level cues (v1.2 §14). Ordered: correction beats interruption beats shift.
 _CORRECTION_CUES = re.compile(r"不是[,，。！!？?\s]|我说的是|不对[,，]|搞错了|理解错了|另一个|重说")
 _INTERRUPTION_CUES = re.compile(r"^等等|^等下|^停|^先别|^打断|等一下[,，。]")
 _TOPIC_SHIFT_CUES = re.compile(r"^对了|还有个事|另外|换个话题|说起来|突然想到|对了还有")

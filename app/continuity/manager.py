@@ -1,9 +1,9 @@
 """ContinuityManager: the single API surface for character continuity.
 
-Everything that enters continuity passes a relevance gate first (§111/§112);
-everything updates in the background after a reply (§110); everything decays
-by its own TTL (§105). Only structured summaries with reason codes are kept
-(§113) — never hidden chain-of-thought.
+Everything that enters continuity passes a relevance gate first (v1.2 §111/§112);
+everything updates in the background after a reply (v1.2 §110); everything decays
+by its own TTL (v1.2 §105). Only structured summaries with reason codes are kept
+(v1.2 §113) — never hidden chain-of-thought.
 """
 
 from __future__ import annotations
@@ -28,7 +28,7 @@ from app.continuity.models import (
 )
 from app.continuity.store import ContinuityStore
 
-# Trivial exchanges never reach continuity (§111).
+# Trivial exchanges never reach continuity (v1.2 §111).
 _TRIVIAL = re.compile(r"^(?:[哈呃嗯哦噢喔额]{1,6}|草+|笑死|确实|行|好[的吧]?|6+|……+|[?？]+)$")
 # Cues that something is worth keeping as an unfinished thread / shared story.
 _OPEN_LOOP_CUES = re.compile(r"还没|还没好|下次|打算|准备|想试|想做|想看|还没看完|还没建完|一直想")
@@ -87,7 +87,7 @@ class ContinuityManager:
     async def reload(self) -> None:
         self._state = await self.store.load_state()
 
-    # ------------------------------------------------------- micro events (§98)
+    # ------------------------------------------------------- micro events (v1.2 §98)
 
     async def add_micro_event(
         self,
@@ -112,7 +112,7 @@ class ContinuityManager:
         self.state.recent_events = capped
         await self.store.save_state(self.state)
 
-    # -------------------------------------------------- incoming message gate (§112)
+    # -------------------------------------------------- incoming message gate (v1.2 §112)
 
     async def observe_message(self, user_id: str, text: str, *, session_id: str) -> None:
         """Cheap gate after a user message; may create open loops / candidates.
@@ -137,16 +137,16 @@ class ContinuityManager:
         if _SHARED_CUES.search(text) and len(text) >= 8:
             await self._candidate_shared_experience(user_id, text, now)
 
-        # interests: user talks about something → curiosity/interest bump (§47)
+        # interests: user talks about something → curiosity/interest bump (v1.2 §47)
         if _QUESTION_CUE.search(text):
             self.state.affect.bump(
                 AffectDimension.curiosity.value, 0.05, reason="user_question", now=now
             )
 
-    # ------------------------------------------------------ after a reply (§50)
+    # ------------------------------------------------------ after a reply (v1.2 §50)
 
     def schedule_update_after_reply(self, turn: Any, decision: Any, reply: str) -> None:
-        """Background continuity update — never blocks the reply (§110)."""
+        """Background continuity update — never blocks the reply (v1.2 §110)."""
 
         async def update() -> None:
             try:
@@ -162,7 +162,7 @@ class ContinuityManager:
         state.last_response_context = reply[:200]
         state.emotion_updated_at = now
 
-        # Interaction profile learning (§114): statistics + decay, never labels.
+        # Interaction profile learning (v1.2 §114): statistics + decay, never labels.
         profile = await self._profile(turn.user_id)
         profile.observe("burst_length", min(1.0, len(turn.messages) / 4.0), now=now)
         profile.observe("message_length", min(1.0, len(turn.text) / 60.0), now=now)
@@ -232,7 +232,7 @@ class ContinuityManager:
     # ------------------------------------------------------ shared experiences
 
     async def _candidate_shared_experience(self, user_id: str, text: str, now: float) -> None:
-        """First mention is a *candidate*; repeated overlap confirms it (§35)."""
+        """First mention is a *candidate*; repeated overlap confirms it (v1.2 §35)."""
         words = set(_keywords(text))
         candidates = await self.store.shared_experiences(user_id, limit=30)
         best: tuple[int, SharedExperience] | None = None
@@ -261,7 +261,7 @@ class ContinuityManager:
     async def recall_shared(
         self, user_id: str, text: str, *, limit: int = 2
     ) -> list[SharedExperience]:
-        """Relevance-gated recall (§37): only topic/entity related entries."""
+        """Relevance-gated recall (v1.2 §37): only topic/entity related entries."""
         experiences = await self.store.shared_experiences(user_id, limit=50)
         threshold = self.store._config.shared_experience_min_confidence
         scored: list[tuple[float, SharedExperience]] = []
@@ -286,7 +286,7 @@ class ContinuityManager:
             self._profiles[user_id] = await self.store.load_profile(user_id)
         return self._profiles[user_id]
 
-    # --------------------------------------------------------- world hooks (§100)
+    # --------------------------------------------------------- world hooks (v1.2 §100)
 
     async def note_world_micro_event(
         self, summary: str, *, activity: str = "", interest_hint: str = ""
