@@ -47,7 +47,6 @@ REASON_TEXT = {
     "addressed_to_someone_else": "这句是在叫别人",
     "group_disabled": "这个群被关了参与",
     "participation_disabled": "群聊参与关着（非 @ 不插话）",
-    "mention_replies_disabled": "被叫到也不回（配置）",
     "behavior_disabled": "行为引擎关着",
     # v0.9 social cognition reasons
     "direct_mention": "@ 了她，高优先级",
@@ -134,14 +133,24 @@ class CharacterPlugin(Plugin):
             self.bot.log.warning("[Behavior] group reply skipped (character/AI not ready)")
             narrate().quiet("群里这条先不回", detail="角色或 AI 还没就绪")
             return
-        mentioned = event.message.is_mentioned(self.bot.self_id or 0)
+        mentioned = event.message.is_mentioned(event.self_id)
         prompt_view = Message(event.message.segments)
         if mentioned:
-            prompt_view.strip_prefix_at(self.bot.self_id or 0)
+            prompt_view.strip_prefix_at(event.self_id)
         text = prompt_view.text.strip()
+        reply_to_bot = self._replies_to_bot(event, str(event.group_id))
+        # One line per group message — a silent mention-drop must never hide again.
+        self.bot.log.info(
+            "[Group] mentioned=%s reply_to_bot=%s self_id=%s user=%s group=%s text=%r",
+            mentioned,
+            reply_to_bot,
+            event.self_id,
+            event.user_id,
+            event.group_id,
+            text[:40],
+        )
         if not text and not self._has_media(event):
             return
-        reply_to_bot = self._replies_to_bot(event, str(event.group_id))
         await self._sandbox_external(event, text, mentioned=mentioned, reply_to_bot=reply_to_bot)
 
         # every raw message is observed; the burst is decided later (v1.2).

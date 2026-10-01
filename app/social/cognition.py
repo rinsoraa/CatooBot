@@ -347,7 +347,10 @@ class SocialCognitionEngine:
         if presence is None:
             return None
         try:
-            return presence.hard_block_reason(for_initiative=True)
+            # This is a *reply* decision, not a proactive message — sleep must
+            # not block it (she answers, just sleepily); only DND, when
+            # configured to block replies, does.
+            return presence.hard_block_reason(for_initiative=False)
         except Exception:  # noqa: BLE001 - presence is advisory
             return None
 

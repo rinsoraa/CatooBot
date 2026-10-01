@@ -283,6 +283,35 @@ class TestCognitionEngine:
         assert decision.reason_code == "direct_mention"
         await bot.database.close()
 
+    async def test_direct_mention_not_blocked_by_sleeping(self, tmp_path) -> None:
+        """P0：@ 她时，即使时钟窗口判她睡着，决策也必须是 direct_mention。
+
+        The mention check runs before the presence gate, so 'sleeping' must
+        never swallow an @-mention (a missing self_id once made every mention
+        look like a non-mention, and the sleep gate ate it).
+        """
+        from app.web.services.behavior import BehaviorService
+
+        bot, social = self._engine(tmp_path)
+        await bot.database.connect()
+        await BehaviorService(bot).apply_overrides(
+            {"schedule": {"sleep_enabled": True, "sleep_start": "00:00", "sleep_end": "23:59"}}
+        )
+        assert bot.presence.is_sleeping() is True
+        decision = await social.decide(
+            group_id="g1",
+            message_id="1",
+            user_id="u1",
+            nickname="A",
+            text="在干嘛",
+            mentioned=True,
+            reply_to_bot=False,
+            group_enabled=False,
+        )
+        assert decision.should_reply is True
+        assert decision.reason_code == "direct_mention"
+        await bot.shutdown()
+
     async def test_reply_to_bot_is_high_priority(self, tmp_path) -> None:
         bot, social = self._engine(tmp_path)
         await bot.database.connect()

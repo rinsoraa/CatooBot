@@ -33,7 +33,15 @@ CSRF_EXEMPT_PATHS = frozenset({"/login", "/api/login"})
 CSRF_FIELD = "csrf_token"
 CSRF_HEADER = "X-CSRF-Token"
 
-_FORM_RE = re.compile(r'(<form\b[^>]*\bmethod="post"[^>]*>)', re.IGNORECASE)
+#: single- OR double-quoted ``method='post'`` / ``method="post"`` (and unquoted
+#: ``method=post``), with optional whitespace around ``=``. The single-quote
+#: variant once slipped through the old double-quote-only pattern and every
+#: submit 403'd silently.
+_FORM_RE = re.compile(r'(<form\b[^>]*?\bmethod\s*=\s*["\']?post["\']?[^>]*>)', re.IGNORECASE)
+
+#: for the post-injection self-check: any <form> opening tag, and a POST method
+_FORM_OPEN_RE = re.compile(r"<form\b[^>]*>", re.IGNORECASE)
+_METHOD_POST_RE = re.compile(r'\bmethod\s*=\s*["\']?post["\']?', re.IGNORECASE)
 
 _current_token: ContextVar[str] = ContextVar("catoobot_csrf_token", default="")
 
@@ -62,7 +70,29 @@ def inject_csrf(html: str) -> str:
     if not token or "<form" not in html.lower():
         return html
     field = f'<input type="hidden" name="{CSRF_FIELD}" value="{token}">'
-    return _FORM_RE.sub(rf"\1{field}", html)
+    injected = _FORM_RE.sub(rf"\1{field}", html)
+    _warn_unprotected_forms(injected)
+    return injected
+
+
+def _warn_unprotected_forms(html: str) -> None:
+    """Turn a silent auth failure into a visible bug.
+
+    If a POST form survives injection without a token field, every submit is a
+    403 — log it loudly instead of letting the operator chase a phantom "refresh
+    the page" hint.
+    """
+    for match in _FORM_OPEN_RE.finditer(html):
+        if not _METHOD_POST_RE.search(match.group(0)):
+            continue
+        end = html.find("</form>", match.end())
+        tail = html[match.end() : end] if end != -1 else html[match.end() : match.end() + 512]
+        if CSRF_FIELD not in tail:
+            _log.warning(
+                "[Web.Security] POST 表单缺少 %s 隐藏字段（提交会被 403）：%r",
+                CSRF_FIELD,
+                match.group(0)[:140],
+            )
 
 
 class LoginThrottle:

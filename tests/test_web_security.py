@@ -95,6 +95,20 @@ class TestCsrfTokens:
         html = '<form method="post" action="/y"></form>'
         assert inject_csrf(html) == html
 
+    def test_injection_handles_single_quoted_and_unquoted_method(self) -> None:
+        """P0：method='post'（单引号）曾不被注入器识别，提交必 403。"""
+        set_csrf_token("session-a")
+        try:
+            html = (
+                "<form method='post' action='/a'><input></form>"
+                "<form method=post action='/b'><input></form>"
+                "<form method='POST' action='/c'><input></form>"
+            )
+            injected = inject_csrf(html)
+        finally:
+            set_csrf_token(None)
+        assert injected.count('name="csrf_token"') == 3
+
 
 class TestHttpGate:
     async def _serve(self, tmp_path):  # type: ignore[no-untyped-def]
@@ -248,6 +262,44 @@ class TestHttpGate:
                 ) as resp,
             ):
                 assert resp.status == 302
+        finally:
+            await server.stop()
+            await bot.shutdown()
+
+    async def test_every_post_form_has_a_csrf_field(self, tmp_path) -> None:
+        """P0 回归：遍历所有返回 HTML 的页面处理器，每个 POST 表单都要有
+        csrf_token 隐藏字段——单引号 method='post' 曾绕过注入器，提交必 403。"""
+        bot, server, base = await self._serve(tmp_path)
+        jar = aiohttp.CookieJar(unsafe=True)
+        try:
+            async with aiohttp.ClientSession(cookie_jar=jar) as session:
+                await self._login(session, base)
+                from tests.test_web_routes import ROUTES
+
+                checked = 0
+                missing: list[str] = []
+                for entry in ROUTES:
+                    if not entry.startswith("GET "):
+                        continue
+                    path = entry[4:]
+                    if "{" in path or path.startswith("/ws/") or path == "/login":
+                        continue
+                    async with session.get(base + path) as resp:
+                        if resp.status != 200:
+                            continue
+                        if "text/html" not in (resp.headers.get("Content-Type") or ""):
+                            continue
+                        body = await resp.text()
+                    for match in re.finditer(r"<form\b[^>]*>", body, re.IGNORECASE):
+                        if not re.search(r'method\s*=\s*["\']?post', match.group(0), re.IGNORECASE):
+                            continue
+                        end = body.find("</form>", match.end())
+                        form = body[match.start() : end if end != -1 else match.end()]
+                        checked += 1
+                        if "csrf_token" not in form:
+                            missing.append(path)
+                assert not missing, f"这些页面的 POST 表单缺 csrf_token：{missing}"
+                assert checked >= 10, f"只覆盖到 {checked} 个 POST 表单，测试强度不足"
         finally:
             await server.stop()
             await bot.shutdown()

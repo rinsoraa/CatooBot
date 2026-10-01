@@ -224,6 +224,9 @@ class Bot:
                 self.sandbox.narrate_ticks = config.logging.narrate_world_ticks
                 self.sandbox.continuity = self.continuity
                 self.sandbox.state_sync = self._sync_sandbox_state
+                # The sandbox is the truth for "is she asleep" (v2.0 §76/§77);
+                # the clock window is only the sandbox-off fallback.
+                self.presence.set_sleep_state_provider(self._sandbox_asleep)
             except Exception:  # noqa: BLE001 - sandbox failure must not stop startup
                 self.log.exception("Sandbox initialization failed; continuing without it")
                 self.sandbox = None
@@ -291,6 +294,13 @@ class Bot:
         await self.character.states.update(
             activity=activity, location=location, energy=energy, reason="sandbox"
         )
+
+    def _sandbox_asleep(self) -> bool | None:
+        """Presence's source of truth for sleep: sandbox state, or None (off)."""
+        sandbox = getattr(self, "sandbox", None)
+        if sandbox is None or not getattr(sandbox, "enabled", False):
+            return None
+        return bool(sandbox.is_asleep())
 
     async def _boot_sandbox(self) -> None:
         """Start (or reset-and-seed) the character life sandbox (v2.0 §120)."""

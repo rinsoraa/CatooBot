@@ -2,6 +2,9 @@
 
 These describe *decisions* (may the character speak? how soon? in how many
 bubbles?) rather than language — the AI never decides hard rules (spec v0.8 §47).
+
+This file cites both v0.8 §N (behaviour era) and v1.2 §N (reply shape); a bare
+§N would mean v2.0 — see docs/README.md for the convention.
 """
 
 from __future__ import annotations

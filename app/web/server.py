@@ -160,7 +160,9 @@ class WebServer(
             if supplied != csrf_token(token):
                 self._bot.metrics.inc("csrf_rejected")
                 log.warning("[Web.Security] CSRF 校验失败：%s %s", request.method, request.path)
-                raise web.HTTPForbidden(text="CSRF token 无效或缺失，请刷新页面重试")
+                raise web.HTTPForbidden(
+                    text="CSRF 校验失败：token 无效或缺失（表单未注入安全令牌字段）"
+                )
         return await handler(request)
 
     async def _login_page(self, request: web.Request) -> web.Response:

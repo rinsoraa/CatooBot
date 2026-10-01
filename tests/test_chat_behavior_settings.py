@@ -100,6 +100,36 @@ class TestPrivateReplies:
         assert FrozenPresence(NIGHT, schedule).time_context().is_sleeping is True
         assert FrozenPresence(DAY, schedule).time_context().is_sleeping is False
 
+    def test_sandbox_awake_overrides_the_clock_window(self) -> None:
+        """沙盒开启时 '是否睡着' 以沙盒为准（v2.0 §76/§77）：时钟窗口说睡着、
+        沙盒说醒着 → 必须判醒着，不得返回 'sleeping'。"""
+        schedule = BehaviorScheduleConfig(
+            sleep_enabled=True, sleep_start="00:00", sleep_end="23:59"
+        )
+        presence = FrozenPresence(NIGHT, schedule)
+        presence.set_sleep_state_provider(lambda: False)  # sandbox: awake
+        assert presence.is_sleeping() is False
+        assert presence.hard_block_reason(for_initiative=True) is None
+
+    def test_sandbox_asleep_overrides_an_awake_clock(self) -> None:
+        schedule = BehaviorScheduleConfig(
+            sleep_enabled=True, sleep_start="01:00", sleep_end="02:00"
+        )
+        presence = FrozenPresence(DAY, schedule)  # 15:00 → clock says awake
+        presence.set_sleep_state_provider(lambda: True)  # sandbox: asleep
+        assert presence.is_sleeping() is True
+        assert presence.hard_block_reason(for_initiative=True) == "sleeping"
+
+    def test_clock_window_is_the_sandbox_off_fallback(self) -> None:
+        """沙盒关闭（provider 返回 None）时仍回退到时钟窗口。"""
+        schedule = BehaviorScheduleConfig(
+            sleep_enabled=True, sleep_start="00:00", sleep_end="23:59"
+        )
+        presence = FrozenPresence(NIGHT, schedule)
+        presence.set_sleep_state_provider(lambda: None)  # sandbox off
+        assert presence.is_sleeping() is True
+        assert presence.hard_block_reason(for_initiative=True) == "sleeping"
+
     async def test_hot_applied_schedule_reaches_the_gate(self, tmp_path) -> None:
         """WebUI 改作息必须立刻生效。
 
@@ -125,10 +155,13 @@ class TestPrivateReplies:
                 }
             )
             assert bot.presence.is_sleeping() is True
-            assert bot.presence.hard_block_reason(for_initiative=False) == "sleeping"
+            # sleep blocks proactive messages, never replies (answered sleepily)
+            assert bot.presence.hard_block_reason(for_initiative=True) == "sleeping"
+            assert bot.presence.hard_block_reason(for_initiative=False) is None
 
             await service.apply_overrides({"schedule": {"sleep_enabled": False}})
             assert bot.presence.is_sleeping() is False
+            assert bot.presence.hard_block_reason(for_initiative=True) is None
             assert bot.presence.hard_block_reason(for_initiative=False) is None
         finally:
             await bot.shutdown()
@@ -541,5 +574,36 @@ class TestGroupParticipationEndToEnd:
             await bot.event_bus.emit(group_event("你们说这个游戏好玩吗", user_id=888))
             await bot.conversation.wait_idle()
             assert bot.adapter.sent_texts() == []  # type: ignore[attr-defined]
+        finally:
+            await bot.shutdown()
+
+    async def test_self_id_none_still_detects_mention(self, tmp_path, caplog) -> None:
+        """P0：bot.self_id 为 None 时不得静默降级成 is_mentioned(0)。
+
+        The mention flag must come from ``event.self_id`` (always in the OneBot
+        payload), not ``bot.self_id`` — which is None until get_login_info
+        returns, and whose ``or 0`` fallback made every @ look like a non-@.
+        """
+        import logging
+
+        from tests.ai_mocks import MockAIProvider
+        from tests.conftest import FakeAdapter, group_event, make_bot
+        from tests.test_chat_integration import attach_ai
+
+        bot = make_bot(tmp_path, FakeAdapter(self_id=None))
+        attach_ai(bot, MockAIProvider(behaviors={"A": ["在呢"]}), ["A"])
+        await bot.database.connect()
+        bot.event_bus.on("message", bot.core_router.on_message)
+        await bot.plugins.load_all()
+        bot.config.conversation.debounce.direct_message_ms = 20
+        bot.config.conversation.debounce.group_message_ms = 30
+        try:
+            with caplog.at_level(logging.INFO, logger="CatooBot"):
+                await bot.event_bus.emit(
+                    group_event("在干嘛", user_id=888, self_id=10001, at_bot=True)
+                )
+                await bot.conversation.wait_idle()
+            lines = [r.getMessage() for r in caplog.records]
+            assert any("[Group] mentioned=True" in line for line in lines), lines[-6:]
         finally:
             await bot.shutdown()

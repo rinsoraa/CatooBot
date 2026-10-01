@@ -1036,6 +1036,10 @@ class SandboxRuntime:
         definition = self.actions.definition(self.current_action)
         return definition is not None and "rest" in definition.tags
 
+    def is_asleep(self) -> bool:
+        """Public answer for the presence layer: is her current life 'rest'?"""
+        return self._is_asleep()
+
     def _rest_coefficient(self) -> float:
         if self.current_action is None:
             return 0.0

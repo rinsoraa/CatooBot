@@ -8,6 +8,7 @@ they never take the bot offline; they only modulate behaviour.
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from datetime import datetime
 from datetime import time as dtime
 from typing import Any
@@ -58,6 +59,10 @@ class PresenceResolver:
     ) -> None:
         self._log = logger or logging.getLogger("CatooBot.Behavior")
         self._schedule = schedule or BehaviorScheduleConfig()
+        #: sandbox truth for "is she asleep" — returns True/False/None (None =
+        #: fall back to the clock window). The clock is only the sandbox-off
+        #: fallback (v2.0 §76/§77: the sandbox is the only writer of her life).
+        self._sleep_state_provider: Callable[[], bool | None] | None = None
         self.timezone_name = timezone
         self._tz: Any = None
         try:
@@ -114,9 +119,22 @@ class PresenceResolver:
             schedule.dnd_end,
         )
 
+    def set_sleep_state_provider(self, provider: Callable[[], bool | None] | None) -> None:
+        """Wire the sandbox as the source of truth for sleep.
+
+        When it returns True/False the clock window is ignored for sleep; when
+        it returns None (sandbox off, or no info) the clock window is the
+        fallback.
+        """
+        self._sleep_state_provider = provider
+
     # ------------------------------------------------------------- windows
 
     def is_sleeping(self, moment: datetime | None = None) -> bool:
+        if self._sleep_state_provider is not None:
+            state = self._sleep_state_provider()
+            if state is not None:
+                return bool(state)
         if not self._schedule.sleep_enabled:
             return False
         start = _parse_hhmm(self._schedule.sleep_start)
@@ -147,9 +165,14 @@ class PresenceResolver:
     # -------------------------------------------------------- availability
 
     def hard_block_reason(self, *, for_initiative: bool) -> str | None:
-        """Hard gates that must never be overridden by probability (spec v0.8 §56)."""
+        """Hard gates that must never be overridden by probability (spec v0.8 §56).
+
+        Sleep no longer blocks *replies* — being spoken to directly is answered,
+        only more slowly (``ReplyTiming.sleeping_factor``). It still blocks
+        proactive messages (she won't start a conversation in her sleep).
+        """
         ctx = self.time_context()
-        if ctx.is_sleeping:
+        if ctx.is_sleeping and for_initiative:
             return "sleeping"
         if ctx.in_dnd and (for_initiative or self._schedule.dnd_blocks_replies):
             return "dnd"
