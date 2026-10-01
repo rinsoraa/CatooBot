@@ -31,18 +31,11 @@ class CoreRouter:
 
         channel = "群聊" if event.is_group else "私聊"
         where = f"群 {event.group_id}" if event.is_group else "私聊"
-        doing = ""
-        world = getattr(self._bot, "world", None)
-        if world is not None and getattr(world, "enabled", False):
-            try:
-                doing = f"她正在{world.status_line()}"
-            except Exception:  # noqa: BLE001 - cosmetic only
-                doing = ""
         narrate().sense(
             f"{console.paint(channel, 'bright_cyan')} "
             f"{console.paint(event.sender.display_name or event.user_id, 'bold')} "
             f"{console.paint('›', 'bright_black')} {text}",
-            detail=f"{where} · user {event.user_id}" + (f" · {doing}" if doing else ""),
+            detail=f"{where} · user {event.user_id}",
         )
         if self._bot.config.bot.debug:
             self._log.debug("MessageEvent raw: %s", event.raw_event)

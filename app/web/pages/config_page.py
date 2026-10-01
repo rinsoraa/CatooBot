@@ -128,7 +128,7 @@ def _basic(service: Any, snapshot: dict[str, Any]) -> str:
             "log_narrate",
             logging_cfg["narrate"],
             "内心播报",
-            tip_text="在控制台打印她的心理历程 / 思考 / 心流 / 碎碎念 / 世界状态（只给运营者看，不进 QQ）",
+            tip_text="在控制台打印她的心理历程 / 思考 / 心流 / 碎碎念 / 沙盒状态（只给运营者看，不进 QQ）",
         )
     }
     {

@@ -800,6 +800,22 @@ CREATE TABLE IF NOT EXISTS character_bible (
 );
 """,
     ),
+    (
+        14,
+        "drop v1.x world tables",
+        """
+-- The persistent world (v0.8) was deleted wholesale in v2.0; the character
+-- life sandbox replaced it. These tables lost their only writer back then and
+-- nothing has read them since, so they are dropped instead of lingering as
+-- empty schema. Fresh databases still create them in migration 10 and drop
+-- them here — historical migrations are never rewritten.
+DROP TABLE IF EXISTS world_events;
+DROP TABLE IF EXISTS persistent_goals;
+DROP TABLE IF EXISTS character_projects;
+DROP TABLE IF EXISTS world_snapshots;
+DROP TABLE IF EXISTS activity_episodes;
+""",
+    ),
 ]
 
 

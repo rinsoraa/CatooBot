@@ -21,7 +21,7 @@ logger = logging.getLogger("CatooBot.Sandbox.Lifecycle")
 #: character-scoped tables: wiped on reset (§6/§163-§165)
 CHARACTER_TABLES: tuple[str, ...] = (
     "memories",
-    "memory_vectors",
+    "memory_embeddings",
     "relationships",
     "interaction_profiles",
     "shared_experiences",
@@ -30,11 +30,6 @@ CHARACTER_TABLES: tuple[str, ...] = (
     "affective_events",
     "conversation_turns",
     "conversations",
-    "world_events",
-    "persistent_goals",
-    "character_projects",
-    "world_snapshots",
-    "activity_episodes",
     "agent_goals",
     "agent_tasks",
     "agent_plans",
@@ -58,15 +53,10 @@ CHARACTER_TABLES: tuple[str, ...] = (
 #: character-scoped settings keys (§6)
 CHARACTER_SETTINGS: tuple[str, ...] = (
     "active_persona",
-    "character_state",
     "character_continuity",
-    "world_overrides",
     "behavior_overrides",
     "prompt_overrides",
     "model_overrides",
-    "pending_initiatives",
-    "world_state",
-    "world_pending",
 )
 
 #: tables that MUST survive the reset (§4/§7 + §7 users/QQ data)
