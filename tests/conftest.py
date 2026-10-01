@@ -77,6 +77,12 @@ def make_bot(tmp_path, adapter: FakeAdapter | None = None) -> Bot:
         database={"url": f"sqlite:///{tmp_path / 'test.db'}"},
         logging={"log_dir": str(tmp_path / "logs")},
         behavior={"reply": {"enabled": False}},
+        # Media acquisition writes real files — a test must never touch the
+        # live data/stickers (that is how junk PNGs once reached production).
+        media={
+            "sticker_dir": str(tmp_path / "stickers"),
+            "media_dir": str(tmp_path / "media"),
+        },
         # v2.0: the sandbox has its own dedicated tests; generic tests run the
         # legacy wiring unchanged.
         sandbox={"enabled": False},
