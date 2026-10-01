@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools>=68"]
+requires = ["setuptools>=77"]  # PEP 639: SPDX license field
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
@@ -10,6 +10,9 @@ name = "catoobot"
 version = "2.0.0"
 description = "CatooBot - A self-developed QQ Bot core runtime (OneBot 11 / NapCat) with AI chat"
 requires-python = ">=3.12"
+license = "Apache-2.0"
+license-files = ["LICENSE", "NOTICE"]
+authors = [{ name = "Rinsora", email = "132744587+rinsoraa@users.noreply.github.com" }]
 dependencies = [
     "websockets>=13.0",
     "pydantic>=2.0",
