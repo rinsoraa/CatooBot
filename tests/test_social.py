@@ -8,8 +8,6 @@ and the decision path never rolls a die.
 
 from __future__ import annotations
 
-import asyncio
-
 from app.config.settings import SocialConfig
 from app.social.attention import SocialAttention
 from app.social.continuation import ContinuationDetector
@@ -187,20 +185,6 @@ class TestPolicy:
         policy = self._policy(clock)
         assert policy.block_reason("g", group_enabled=True, text="你好", min_length=1,
                                    addressed_other=False, hard_block="sleeping") == "sleeping"
-
-    def test_final_gate_cancels_stale_follow_up(self) -> None:
-        clock = FakeTime()
-        policy = self._policy(clock)
-        decision = ParticipationDecision(
-            decision="reply", reason_code="direct_follow_up", confidence=0.9
-        )
-        gated = asyncio.run(
-            policy.final_gate(
-                decision, group_id="g", group_enabled=True,
-                thread_alive=False, hard_block=None,
-            )
-        )
-        assert gated.decision == "defer"
 
 
 class TestAttention:

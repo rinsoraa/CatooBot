@@ -13,7 +13,6 @@ import time
 from typing import Any
 
 from app.config.settings import SocialConfig
-from app.social.models import ParticipationDecision
 
 _DATE_FMT = "%Y-%m-%d"
 
@@ -34,6 +33,8 @@ class ParticipationPolicy:
         # per-group counters (in-memory; the daily budget is generous by design)
         self._last_sent: dict[str, float] = {}
         self._daily: dict[str, tuple[str, int]] = {}  # group -> (day_key, count)
+        #: deterministic participation credit (rate → chime-in, never a dice)
+        self._credit: dict[str, float] = {}
 
     # ------------------------------------------------------------- hard gate
 
@@ -71,11 +72,24 @@ class ParticipationPolicy:
             return "daily_limit"
         return ""
 
-    def _within_cooldown(self, group_id: str) -> bool:
-        last = self._last_sent.get(str(group_id))
-        if last is None:
+    # ------------------------------------------------------------ credit
+
+    def credit_participation(self, group_id: str, rate: float) -> bool:
+        """Accumulate participation credit; True when a chime-in is earned.
+
+        ``rate`` is the configured participation probability (expected
+        participations per eligible message). Deterministic: no ``random()``.
+        Credit is capped at 1.0 so a burst of messages can't stack up replies.
+        """
+        if rate <= 0.0:
             return False
-        return self._clock() - last < self._config.participation.cooldown_seconds
+        key = str(group_id)
+        credit = min(1.0, self._credit.get(key, 0.0) + rate)
+        if credit >= 1.0:
+            self._credit[key] = credit - 1.0
+            return True
+        self._credit[key] = credit
+        return False
 
     # --------------------------------------------------------------- records
 
@@ -88,38 +102,6 @@ class ParticipationPolicy:
             day, count = day_key, 0
         self._daily[str(group_id)] = (day_key, count + 1)
 
-    # ------------------------------------------------------------- final gate
-
-    async def final_gate(
-        self,
-        decision: ParticipationDecision,
-        *,
-        group_id: str,
-        group_enabled: bool,
-        thread_alive: bool,
-        hard_block: str | None,
-    ) -> ParticipationDecision:
-        """Re-check a ``reply`` decision immediately before sending (§121).
-
-        Returns a possibly-demoted decision: if the situation changed while the
-        model was thinking (topic moved on, group disabled, cooldown hit), the
-        reply is cancelled instead of firing into a stale conversation.
-        """
-        if decision.decision != "reply":
-            return decision
-        if not self._config.enabled:
-            return ParticipationDecision(decision="observe", reason_code="social_disabled")
-        if not group_enabled:
-            return ParticipationDecision(decision="ignore", reason_code="group_disabled")
-        if hard_block:
-            return ParticipationDecision(decision="observe", reason_code=hard_block)
-        if self._within_cooldown(group_id):
-            return ParticipationDecision(decision="ignore", reason_code="cooldown")
-        if not thread_alive and decision.reason_code in ("direct_follow_up", "topic_continuation"):
-            # The exchange the reply was answering has expired / moved on.
-            return ParticipationDecision(decision="defer", reason_code="poor_timing")
-        return decision
-
     # ------------------------------------------------------------------ view
 
     def snapshot(self, group_id: str) -> dict[str, Any]:
@@ -131,4 +113,5 @@ class ParticipationPolicy:
             "daily_limit": self._config.participation.daily_limit,
             "daily_count": count,
             "last_sent": self._last_sent.get(str(group_id)),
+            "credit": round(self._credit.get(str(group_id), 0.0), 4),
         }

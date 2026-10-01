@@ -89,65 +89,6 @@ class CharacterBehaviorEngine:
             return BehaviorDecision(False, "dnd", detail={"text": text[:40]})
         return BehaviorDecision(True, "private_direct")
 
-    async def consider_group(
-        self,
-        event,
-        text: str,
-        *,
-        mentioned: bool,
-        group_enabled: bool = True,
-    ) -> BehaviorDecision:
-        """Group chat: @ always (if configured), otherwise a participation gate."""
-        cfg = self.config.group
-        if not self.enabled:
-            return BehaviorDecision(True, "behavior_disabled")
-        if mentioned:
-            if cfg.mention_always_replies:
-                return BehaviorDecision(True, "mentioned")
-            return BehaviorDecision(False, "mention_replies_disabled")
-
-        if not cfg.participation_enabled:
-            return BehaviorDecision(False, "participation_disabled")
-        if not group_enabled:
-            return BehaviorDecision(False, "group_disabled")
-        block = self.presence.hard_block_reason(for_initiative=True)
-        if block:
-            return BehaviorDecision(False, block)
-        if len(text.strip()) < cfg.min_message_length:
-            return BehaviorDecision(False, "too_short")
-        if cfg.ignore_when_other_mentioned and self._mentions_other(event):
-            return BehaviorDecision(False, "addressed_to_someone_else")
-
-        group_id = event.group_id
-        scope = f"group:{group_id}"
-        state = await self.initiative.load_state(scope)
-        now = int(self._clock())
-        self.initiative._roll_clock_buckets(state, now)  # noqa: SLF001 - shared counters
-
-        if state.last_sent_at and now - state.last_sent_at < cfg.cooldown_seconds:
-            return BehaviorDecision(False, "cooldown")
-        if cfg.hourly_limit and state.hourly_count >= cfg.hourly_limit:
-            return BehaviorDecision(False, "hourly_limit")
-
-        probability = cfg.participation_probability
-        relates = await self._relates_to_character(scope, text)
-        if relates:
-            probability = min(1.0, probability + cfg.topic_bonus)
-        roll = self._rng.random()
-        detail = {"probability": round(probability, 3), "roll": round(roll, 3), "related": relates}
-        if roll >= probability:
-            return BehaviorDecision(False, "low_probability", probability, detail)
-        return BehaviorDecision(True, "participation", probability, detail)
-
-    def _mentions_other(self, event) -> bool:
-        self_id = getattr(event, "self_id", None)
-        for segment in event.message:
-            if segment.type != "at":
-                continue
-            target = segment.data.get("qq")
-            if str(target) != str(self_id):
-                return True
-        return False
 
     async def _relates_to_character(self, scope_key: str, text: str) -> bool:
         """Loose relevance check: does the message touch a known topic/memory?"""

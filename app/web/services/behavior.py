@@ -126,6 +126,7 @@ class BehaviorService:
             "group": {
                 "participation_enabled": as_bool(form.get("participation_enabled")),
                 "participation_probability": as_float("participation_probability", 0.04),
+                "min_message_length": as_int("min_message_length", 3),
                 "cooldown_seconds": as_int("group_cooldown", 300),
             },
             "initiative": {

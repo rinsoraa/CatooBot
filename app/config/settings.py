@@ -303,16 +303,16 @@ class BehaviorScheduleConfig(BaseModel):
 
 
 class BehaviorGroupConfig(BaseModel):
-    """Group participation (spec §34-§37). Off by default: @ only."""
+    """Non-@ group participation — the *live* knobs (v0.9 social path).
 
-    participation_enabled: bool = False
+    ``participation_probability`` is a deterministic **rate**: each eligible
+    message earns that much participation credit; one credit = one chime-in.
+    1.0 therefore means "every eligible message"（仍受社交认知的冷却/每日额度约束）.
+    """
+
+    participation_enabled: bool = True
     participation_probability: float = Field(default=0.04, ge=0.0, le=1.0)
-    cooldown_seconds: int = Field(default=300, ge=0)
-    hourly_limit: int = Field(default=3, ge=0)
     min_message_length: int = Field(default=3, ge=1)
-    topic_bonus: float = Field(default=0.15, ge=0.0)
-    ignore_when_other_mentioned: bool = True
-    mention_always_replies: bool = True
 
 
 class BehaviorInitiativeConfig(BaseModel):
@@ -546,7 +546,6 @@ class ConversationDebounceConfig(BaseModel):
 class ConversationConfig(BaseModel):
     """Conversation Turn Runtime (v1.2): bursts become one turn, one reply."""
 
-    enabled: bool = True
     debounce: ConversationDebounceConfig = Field(
         default_factory=ConversationDebounceConfig
     )

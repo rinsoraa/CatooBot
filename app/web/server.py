@@ -815,19 +815,21 @@ class WebServer:
 
         group_card = ui.card(
             "群聊参与",
-            "<p class='hint'>群里没 @ 她时是否可能接话。开启社交认知后由结构化判断主导，"
-            "下方概率/冷却只作低权重兜底；@ 与回复她的消息永远必回。</p>"
+            "<p class='hint'>@ 她 / 回复她 → 必回；下面只管“没 @ 她”的自主插话。"
+            "先由社交认知做结构化判断（话题相关、能补充、时机合适就参与）。</p>"
             "<div class='grid'>"
             + ui.switch("participation_enabled", cfg.group.participation_enabled, "允许非 @ 插话",
                         tip_text="关掉后群里只有 @ / 回复她才会说话")
-            + ui.field("参与概率", "participation_probability", cfg.group.participation_probability,
-                       tip_text="仅当社交认知关闭时生效；开启时此项只作低权重兜底")
-            + ui.field("冷却（秒）", "group_cooldown", cfg.group.cooldown_seconds,
-                       tip_text="群里两次插话至少隔多久")
+            + ui.field("参与频率", "participation_probability", cfg.group.participation_probability,
+                       tip_text="确定性的额度累积：每条合格消息攒这么多额度，攒满 1 参与一次。"
+                                "1.0 ≈ 每条都参与（仍受冷却/每日额度约束）；0 = 完全交给社交认知")
+            + ui.field("最短消息长度", "min_message_length", cfg.group.min_message_length,
+                       tip_text="短于此长度的群消息不参与判断（“哈哈哈”这种）")
             + "</div>"
-            "<p class='hint'>更细的观察批次、阈值、疲劳与注意在 "
-            "<a href='/social/policy'>社交策略</a> 页。</p>",
-            tip_text="群聊参与 = 结构化社交判断（v0.9）+ 这里的兜底开关",
+            "<p class='hint'>冷却、每日上限、观察批次与阈值在 "
+            "<a href='/social/policy'>社交策略</a> 页；单个群的参与开关在 "
+            "<a href='/groups'>群组</a> 页。</p>",
+            tip_text="群聊参与 = 社交认知判断 + 这里的频率/长度控制",
         )
 
         initiative_card = ui.card(

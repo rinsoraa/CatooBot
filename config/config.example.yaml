@@ -214,17 +214,14 @@ behavior:
     night_end: "06:00"
 
   # ---------- 群聊参与 ----------
-  # @ 她 / 回复她 → 必回；以下只在“没 @ 她”时生效。
-  # 社交认知（social:）开启时由结构化判断主导，概率/加成只作低权重兜底。
+  # @ 她 / 回复她 → 必回；以下只在“没 @ 她”时生效（直接进社交认知决策）。
+  # 参与频率是确定性的“额度累积”：每条合格消息攒一点额度，攒满 1 就参与一次。
+  #   1.0 ≈ 每条都参与（仍受社交认知的冷却/每日额度约束）；0 = 完全交给社交认知。
+  # 冷却与每日上限在 social.participation（WebUI 社交策略页）。
   group:
-    participation_enabled: false
+    participation_enabled: true
     participation_probability: 0.04
-    cooldown_seconds: 300
-    hourly_limit: 3
     min_message_length: 3
-    topic_bonus: 0.15
-    ignore_when_other_mentioned: true
-    mention_always_replies: true
 
   # ---------- 主动回复 ----------
   # 没人找她时的主动消息；开启后仍受多重硬限制，额度见 sandbox.max_background_messages_per_day
@@ -382,7 +379,6 @@ sandbox:
 # 一次 Turn 只产生一次自然回复；用户改口/打断时旧回复作废，绝不发出。
 # ============================================================
 conversation:
-  enabled: true
   debounce:
     enabled: true
     direct_message_ms: 1200   # 私聊：连续消息的合并窗口（动态调整的基础值）

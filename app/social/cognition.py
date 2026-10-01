@@ -216,18 +216,62 @@ class SocialCognitionEngine:
         if block:
             return ParticipationDecision(decision="ignore", reason_code=block)
 
+        # ---- the operator's non-@ switch (live) ----
+        group_cfg = getattr(self.bot.config.behavior, "group", None)
+        if group_cfg is not None and not getattr(group_cfg, "participation_enabled", True):
+            return ParticipationDecision(
+                decision="ignore", reason_code="participation_disabled"
+            )
+
         # ---- 5-message observer (spec §24/§25) ----
         unobserved = self.monitor.unobserved(group_id)
         if len(unobserved) < self.config.observer.batch_size:
+            fallback = self._participation_rate(
+                group_id, target_ids=[m.message_id for m in unobserved]
+            )
+            if fallback is not None:
+                return fallback
             return ParticipationDecision(decision="observe", reason_code="no_relevance")
 
         async with self._lock(group_id):
             batch = self.monitor.unobserved(group_id)
             if len(batch) < self.config.observer.batch_size:
+                fallback = self._participation_rate(
+                    group_id, target_ids=[m.message_id for m in batch]
+                )
+                if fallback is not None:
+                    return fallback
                 return ParticipationDecision(decision="observe", reason_code="no_relevance")
             decision = await self._observe(group_id, batch)
             self.monitor.mark_observed(group_id)
+            # The structured judgment had "nothing to say": the operator's
+            # configured participation rate decides whether she still chimes in.
+            if decision.decision in ("observe", "ignore"):
+                fallback = self._participation_rate(
+                    group_id, target_ids=[m.message_id for m in batch]
+                )
+                if fallback is not None:
+                    return fallback
             return decision
+
+    def _participation_rate(
+        self, group_id: str, *, target_ids: list[str]
+    ) -> ParticipationDecision | None:
+        """Deterministic rate fallback: credit accumulates toward one chime-in."""
+        cfg = getattr(self.bot.config.behavior, "group", None)
+        if cfg is None:
+            return None
+        rate = float(getattr(cfg, "participation_probability", 0.0) or 0.0)
+        if rate <= 0.0:
+            return None
+        if not self.policy.credit_participation(str(group_id), rate):
+            return None
+        return ParticipationDecision(
+            decision="reply",
+            reason_code="participation_rate",
+            confidence=min(1.0, rate),
+            target_message_ids=list(target_ids),
+        )
 
     # --------------------------------------------------------------- observe
 

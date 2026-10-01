@@ -321,7 +321,10 @@ class ConversationTurnRuntime:
         if not decision.respond:
             turn.status = TurnStatus.silent
             turn.silence_reason = decision.silence_reason or "low_conversational_value"
-            narrate().quiet("这轮先不接", detail=turn.silence_reason)
+            narrate().quiet(
+                "这轮先不接",
+                detail=str(turn.meta.get("silence_text") or turn.silence_reason),
+            )
             self._log.info(
                 "[Conversation] turn silent (%s) session=%s",
                 turn.silence_reason,

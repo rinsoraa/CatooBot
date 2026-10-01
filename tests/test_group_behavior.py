@@ -12,7 +12,6 @@ import pytest
 from app.behavior.engine import CharacterBehaviorEngine
 from app.behavior.presence import PresenceResolver
 from app.behavior.scheduler import BehaviorScheduler
-from app.behavior.topics import TopicManager
 from app.character.relationship import RelationshipManager
 from app.character.state import StateManager
 from app.config.settings import (
@@ -89,100 +88,6 @@ async def make_engine(tmp_path, group_overrides: dict | None = None):
         rng=random.Random(1),
     )
     return engine, database
-
-
-class TestGroupGate:
-    async def test_mention_always_responds(self, tmp_path) -> None:
-        engine, database = await make_engine(tmp_path, {"participation_enabled": False})
-        event = FakeEvent("你好呀", at_self_id=10001)
-        decision = await engine.consider_group(event, "你好呀", mentioned=True)
-        assert decision.respond and decision.reason == "mentioned"
-        await database.close()
-
-    async def test_non_mention_ignored_by_default(self, tmp_path) -> None:
-        engine, database = await make_engine(tmp_path, {"participation_enabled": False})
-        event = FakeEvent("今天吃什么")
-        decision = await engine.consider_group(event, "今天吃什么", mentioned=False)
-        assert not decision.respond and decision.reason == "participation_disabled"
-        await database.close()
-
-    async def test_disabled_group_never_participates(self, tmp_path) -> None:
-        engine, database = await make_engine(tmp_path)
-        event = FakeEvent("这个游戏挺好玩")
-        decision = await engine.consider_group(
-            event, "这个游戏挺好玩", mentioned=False, group_enabled=False
-        )
-        assert not decision.respond and decision.reason == "group_disabled"
-        await database.close()
-
-    async def test_zero_probability_stays_silent(self, tmp_path) -> None:
-        engine, database = await make_engine(tmp_path, {"participation_probability": 0.0})
-        event = FakeEvent("今天吃什么")
-        for _ in range(5):
-            decision = await engine.consider_group(event, "今天吃什么", mentioned=False)
-            assert not decision.respond
-        await database.close()
-
-    async def test_high_probability_participates(self, tmp_path) -> None:
-        engine, database = await make_engine(tmp_path, {"participation_probability": 1.0})
-        event = FakeEvent("大家在聊什么游戏")
-        decision = await engine.consider_group(event, "大家在聊什么游戏", mentioned=False)
-        assert decision.respond and decision.reason == "participation"
-        await database.close()
-
-    async def test_group_cooldown_limits_frequency(self, tmp_path) -> None:
-        clock = Clock()
-        engine, database = await make_engine(
-            tmp_path, {"participation_probability": 1.0, "cooldown_seconds": 300}
-        )
-        engine._clock = clock  # noqa: SLF001
-        engine.initiative._clock = clock  # noqa: SLF001
-
-        event = FakeEvent("聊聊游戏吧")
-        first = await engine.consider_group(event, "聊聊游戏吧", mentioned=False)
-        assert first.respond
-        await engine.note_group_participation(555)
-
-        second = await engine.consider_group(event, "聊聊游戏吧", mentioned=False)
-        assert not second.respond and second.reason == "cooldown"
-
-        clock.advance(301)
-        third = await engine.consider_group(event, "另一个话题在这里", mentioned=False)
-        assert third.respond
-        await database.close()
-
-    async def test_message_addressed_to_someone_else_ignored(self, tmp_path) -> None:
-        engine, database = await make_engine(tmp_path, {"participation_probability": 1.0})
-        event = FakeEvent("你觉得呢", at_others=True)
-        decision = await engine.consider_group(event, "你觉得呢", mentioned=False)
-        assert not decision.respond and decision.reason == "addressed_to_someone_else"
-        await database.close()
-
-    async def test_too_short_message_ignored(self, tmp_path) -> None:
-        engine, database = await make_engine(tmp_path, {"participation_probability": 1.0})
-        decision = await engine.consider_group(FakeEvent("嗯"), "嗯", mentioned=False)
-        assert not decision.respond and decision.reason == "too_short"
-        await database.close()
-
-    async def test_sleeping_blocks_group_participation(self, tmp_path) -> None:
-        engine, database = await make_engine(tmp_path, {"participation_probability": 1.0})
-        engine.presence = FrozenPresence(datetime(2026, 9, 29, 3, 0, tzinfo=TZ))
-        decision = await engine.consider_group(FakeEvent("半夜聊天"), "半夜聊天", mentioned=False)
-        assert not decision.respond and decision.reason == "sleeping"
-        await database.close()
-
-    async def test_topic_relevance_raises_probability(self, tmp_path) -> None:
-        engine, database = await make_engine(tmp_path, {"participation_probability": 0.0})
-        topics = TopicManager(database)
-        await topics.create("group:555", "Minecraft 服务器的建筑计划", importance=0.8)
-        engine.topics = topics
-        event = FakeEvent("Minecraft 服务器什么时候开")
-        decision = await engine.consider_group(
-            event, "Minecraft 服务器什么时候开", mentioned=False
-        )
-        assert decision.detail["related"] is True
-        assert decision.probability > 0.0
-        await database.close()
 
 
 class TestPrivateGate:
