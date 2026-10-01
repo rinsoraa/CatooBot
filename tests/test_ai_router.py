@@ -242,6 +242,22 @@ class TestSelection:
         with pytest.raises(ModelNotFoundError):
             await router.chat(request(model="ghost"))
 
+    async def test_pinned_disabled_model_is_not_used(self) -> None:
+        """A pin is explicit config, but a disabled model must never run.
+
+        Before: ``_candidates`` short-circuited to ``[pinned]`` without the
+        enabled filter, so pinning a disabled model still called it.
+        """
+        provider = MockAIProvider(behaviors={"A": ["should not run"], "B": ["b"]})
+        specs = [
+            ModelSpec(name="A", provider="mock", model="A", enabled=False),
+            ModelSpec(name="B", provider="mock", model="B"),
+        ]
+        router = ModelRouter(specs, {"mock": provider}, clock=FakeClock())
+        with pytest.raises(ModelNotFoundError):
+            await router.chat(request(model="A"))
+        assert provider.call_count("A") == 0  # the disabled model was never called
+
 
 class TestConcurrency:
     async def test_concurrent_requests_share_failover_safely(self) -> None:

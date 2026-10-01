@@ -213,13 +213,24 @@ class ModelRouter:
         raise AllModelsFailedError([f"{a.model_name}: {a.error}" for a in attempts])
 
     def _resolve_pinned(self, model_name: str | None) -> ModelState | None:
-        """``request.model`` may pin a specific configured model by its name."""
+        """``request.model`` may pin a specific configured model by its name.
+
+        A pin is explicit configuration, so a disabled model fails the request
+        with a clear reason instead of being called (or silently swapped for
+        another model, which would hide the mistake).
+        """
         if model_name is None:
             return None
         state = self.states.get(model_name)
         if state is None:
             raise ModelNotFoundError(
                 "<router>", model=model_name, detail="no such configured model"
+            )
+        if not state.enabled:
+            raise ModelNotFoundError(
+                "<router>",
+                model=model_name,
+                detail="model is disabled — enable it or clear the pinned model",
             )
         return state
 
