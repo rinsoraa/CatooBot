@@ -449,10 +449,11 @@ class Bot:
         if self.media.enabled and self.config.media.indexer_enabled:
             asyncio.create_task(self._run_sticker_indexer())
 
-        # Task 12: the FTS keyword index backfills rows written before it
-        # existed — in the background, so the first message never pays for it.
+        # Task 12: derived memory indices (FTS keyword tokens + vector blobs)
+        # backfill rows written before them — in the background, so the first
+        # message never pays for it.
         if self.memory is not None:
-            asyncio.create_task(self.memory.keyword_index.ensure_ready())
+            asyncio.create_task(self.memory.warm_indices())
 
         # One scheduler for the whole process: behaviour, world, memory upkeep.
         if self.behavior.enabled or self.sandbox is not None:

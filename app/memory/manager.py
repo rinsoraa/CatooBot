@@ -306,6 +306,17 @@ class MemoryManager:
 
     # ----------------------------------------------------------------- read
 
+    async def warm_indices(self) -> None:
+        """Background index upkeep after a migration (never blocks chat).
+
+        Both indices are derived data: the FTS keyword index needs legacy rows
+        tokenized, the vector store needs legacy vectors packed into blobs.
+        """
+        await self.keyword_index.ensure_ready()
+        ensure = getattr(self.vectors, "ensure_ready", None)
+        if ensure is not None:
+            await ensure()
+
     async def _candidates_for(self, query: str, scope_keys: list[str], limit: int) -> list[Memory]:
         """Candidate pool = importance-ranked rows + keyword-index matches.
 

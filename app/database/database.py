@@ -853,6 +853,20 @@ AFTER UPDATE OF content, summary, search_text ON memories BEGIN
 END;
 """,
     ),
+    (
+        16,
+        "vector blobs + precomputed norms",
+        """
+-- Vectors lived as JSON text and every search parsed them and recomputed two
+-- norms in Python. The blob holds the same float64 values (bit-identical to
+-- json.loads) and `norm` makes scoring a single dot product.
+-- Additive on purpose: the read path prefers the blob and falls back to the
+-- JSON column, which is only dropped in a follow-up migration once the
+-- backfill has run on real data.
+ALTER TABLE memory_embeddings ADD COLUMN vector_blob BLOB;
+ALTER TABLE memory_embeddings ADD COLUMN norm REAL;
+""",
+    ),
 ]
 
 
