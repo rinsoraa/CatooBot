@@ -45,6 +45,7 @@ from app.response.delivery import MessageDelivery
 from app.response.planner import CharacterResponsePlanner
 from app.response.timing import ReplyTiming
 from app.social.cognition import SocialCognitionEngine
+from app.social.feedback import ReplyFeedbackStore
 from app.tools.runtime import ToolRuntime
 from app.utils import console
 from app.utils.logger import get_logger
@@ -109,6 +110,10 @@ class Bot:
             )
             if config.memory.enabled
             else None
+        )
+        # Task 20: reply-outcome observations (settled by the scheduler later).
+        self.reply_feedback = ReplyFeedbackStore(
+            self.database, outbox=self.outbox, metrics=self.metrics
         )
         self.consolidator = (
             MemoryConsolidator(config.memory, self.memory, engine=self.ai) if self.memory else None

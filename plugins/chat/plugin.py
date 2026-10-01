@@ -492,6 +492,7 @@ class CharacterPlugin(Plugin):
                 "群聊 → 按参与频率接一句",
                 detail=REASON_TEXT.get("participation_rate", "participation_rate"),
             )
+        turn.meta["social_reason_code"] = decision.reason_code
         self._collect_recognized(turn)
         return decision
 
@@ -657,6 +658,18 @@ class CharacterPlugin(Plugin):
         bot = self.bot
         session_id = turn.session_id
         is_group = turn.group_id is not None
+        # Task 20: one observation row per answered turn (settled later).
+        feedback = getattr(bot, "reply_feedback", None)
+        if feedback is not None:
+            try:
+                await feedback.record_turn(
+                    turn_id=str(turn.turn_id),
+                    scope_key=session_id,
+                    reason_code=str(turn.meta.get("social_reason_code", "") or ""),
+                    is_group=is_group,
+                )
+            except Exception:  # noqa: BLE001 - feedback never breaks a reply
+                bot.log.exception("[Social.Feedback] record_turn failed")
         if is_group:
             group_id = str(turn.group_id)
             sent_id = str(bot.response_delivery.last_sent_ids.get(f"group:{group_id}", "") or "")

@@ -893,6 +893,40 @@ CREATE INDEX IF NOT EXISTS idx_ai_usage_ts ON ai_usage(ts DESC);
 CREATE INDEX IF NOT EXISTS idx_ai_usage_model ON ai_usage(model, ts DESC);
 """,
     ),
+    (
+        18,
+        "reply outcomes (task 20)",
+        """
+-- What happened *after* she spoke: one row per turn (not per bubble; a turn is
+-- 2-3 bubbles and MessageDelivery keeps only the last id per scope), settled by
+-- a scheduled sweep once the observation window has passed. verdict stays
+-- 'pending' until then; 'unknown' is a first-class answer (restart, private
+-- chat, too few samples) so silence is never assumed.
+CREATE TABLE IF NOT EXISTS reply_outcomes (
+    id                INTEGER PRIMARY KEY AUTOINCREMENT,
+    turn_id           TEXT NOT NULL,
+    scope_key         TEXT NOT NULL,
+    is_group          INTEGER NOT NULL DEFAULT 1,
+    reason_code       TEXT NOT NULL DEFAULT '',
+    self_initiated    INTEGER NOT NULL DEFAULT 0,
+    sent_at           REAL NOT NULL,
+    window_seconds    REAL NOT NULL DEFAULT 90,
+    replies           INTEGER NOT NULL DEFAULT 0,
+    first_reply_after REAL,
+    addressed_back    INTEGER,
+    polarity          INTEGER,
+    baseline          INTEGER,
+    verdict           TEXT NOT NULL DEFAULT 'pending',
+    settled_at        REAL,
+    note              TEXT NOT NULL DEFAULT '',
+    created_at        REAL NOT NULL
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_reply_outcomes_turn ON reply_outcomes(turn_id);
+CREATE INDEX IF NOT EXISTS idx_reply_outcomes_scope ON reply_outcomes(scope_key, sent_at DESC);
+CREATE INDEX IF NOT EXISTS idx_reply_outcomes_verdict ON reply_outcomes(verdict, sent_at DESC);
+""",
+    ),
 ]
 
 
