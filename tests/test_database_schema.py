@@ -13,6 +13,8 @@ These tests keep both failure modes from coming back:
 
 from __future__ import annotations
 
+from array import array
+
 from app.config.settings import DatabaseConfig
 from app.database.database import Database
 from app.sandbox.lifecycle import CHARACTER_TABLES, CharacterLifecycleManager
@@ -84,7 +86,9 @@ class TestResetScope:
             )
             await db.execute(
                 "INSERT INTO memory_embeddings (memory_id, model, dimensions, version,"
-                " vector, created_at, updated_at) VALUES (1, 'm', 3, 1, '[0.1,0.2,0.3]', 0, 0)"
+                " vector_blob, norm, created_at, updated_at)"
+                " VALUES (1, 'm', 3, 1, ?, 1.0, 0, 0)",
+                (array("d", [0.1, 0.2, 0.3]).tobytes(),),
             )
             manager = CharacterLifecycleManager(db, backup_dir=tmp_path / "backup")
             result = await manager.reset_character(confirm=True)

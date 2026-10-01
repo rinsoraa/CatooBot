@@ -2,30 +2,17 @@
 
 Swappable by design (spec v0.5 §16): the interface is what the memory system uses,
 so a future pgvector/Qdrant backend only has to implement ``VectorStore``.
-The SQLite implementation stores each vector twice during the transition —
-as JSON (the original form) and as a float64 blob plus a precomputed norm —
-and computes cosine similarity in Python, but **only over an already-filtered
-candidate set** (spec v0.5 §18/§19), never over the whole table.
+The SQLite implementation stores each vector as a float64 blob plus a
+precomputed norm, and computes cosine similarity in Python, but **only over an
+already-filtered candidate set** (spec v0.5 §18/§19), never over the whole table.
 
 Scoring is one ``math.sumprod`` over the blob (the norm is stored, the query
-norm is computed once per search); the JSON path is only for rows written
-before migration 16 and is backfilled at startup.
-
-Dropping the JSON column (a later migration 19) stays **frozen** until all
-three hold on the real database:
-
-* every ``memory_embeddings`` row carries a blob and **no read falls back** to
-  the JSON column any more (the fallback is the only way to notice),
-* the blob path has been live for **at least a week** without a retrieval
-  regression,
-* retrieval p95 is stable on real data.
-
-Until then the duplicated column is cheap insurance: it is the only way back if
-a blob were ever written wrong.
+norm is computed once per search). The JSON column that predated migration 16
+was dropped in migration 20 once the blob path had proven itself on real data —
+the blob is now the single source of truth.
 
 Re-evaluate numpy / sqlite-vec when *any* of these becomes true — until then
-the pool is ≤ ~200 rows of dim 1024 and this path costs ~18 ms per search
-(JSON parsing + repeated norms were 159 ms):
+the pool is ≤ ~200 rows of dim 1024 and this path costs ~18 ms per search:
 
 * candidate-pool search p95 > 50 ms on real data,
 * the candidate cap grows to ≥ 1000 rows,
@@ -34,7 +21,6 @@ the pool is ≤ ~200 rows of dim 1024 and this path costs ~18 ms per search
 
 from __future__ import annotations
 
-import json
 import logging
 import math
 import time
@@ -47,9 +33,6 @@ if TYPE_CHECKING:
     from app.database.database import Database
 
 CURRENT_VERSION = 1
-
-#: rows written before migration 16 have no blob and are backfilled in batches
-_BACKFILL_BATCH = 500
 
 
 def encode_vector(vector: list[float]) -> tuple[bytes, float]:
@@ -117,7 +100,6 @@ class SqliteVectorStore(VectorStore):
         self._db = database
         self._log = logger or logging.getLogger("CatooBot.Memory.Semantic")
         self._clock = clock
-        self._ready = False
 
     async def upsert(
         self, memory_id: int, vector: list[float], model: str, version: int = CURRENT_VERSION
@@ -126,12 +108,12 @@ class SqliteVectorStore(VectorStore):
         blob, norm = encode_vector(vector)
         await self._db.execute(
             """INSERT INTO memory_embeddings
-                   (memory_id, model, dimensions, version, vector, vector_blob, norm,
+                   (memory_id, model, dimensions, version, vector_blob, norm,
                     created_at, updated_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                ON CONFLICT(memory_id) DO UPDATE SET
                    model=excluded.model, dimensions=excluded.dimensions,
-                   version=excluded.version, vector=excluded.vector,
+                   version=excluded.version,
                    vector_blob=excluded.vector_blob, norm=excluded.norm,
                    updated_at=excluded.updated_at""",
             (
@@ -139,7 +121,6 @@ class SqliteVectorStore(VectorStore):
                 model,
                 len(vector),
                 version,
-                json.dumps(vector),
                 blob,
                 norm,
                 now,
@@ -185,47 +166,9 @@ class SqliteVectorStore(VectorStore):
         scored.sort(key=lambda pair: pair[1], reverse=True)
         return scored[:limit]
 
-    async def ensure_ready(self) -> int:
-        """Backfill blob+norm for rows written before migration 16 (once)."""
-        if self._ready:
-            return 0
-        self._ready = True
-        total = 0
-        while True:
-            filled = await self.backfill()
-            total += filled
-            if filled < _BACKFILL_BATCH:
-                break
-        return total
-
-    async def backfill(self, batch: int = _BACKFILL_BATCH) -> int:
-        """One batch of legacy rows: JSON → blob + norm (no re-embedding)."""
-        try:
-            rows = await self._db.fetchall(
-                "SELECT memory_id, vector FROM memory_embeddings WHERE vector_blob IS NULL LIMIT ?",
-                (batch,),
-            )
-        except Exception:  # noqa: BLE001 - pre-migration databases have no blob column
-            return 0
-        filled = 0
-        for row in rows:
-            try:
-                vector = [float(x) for x in json.loads(row["vector"])]
-            except (TypeError, ValueError):
-                continue  # unreadable row: leave it for a rebuild
-            blob, norm = encode_vector(vector)
-            await self._db.execute(
-                "UPDATE memory_embeddings SET vector_blob = ?, norm = ? WHERE memory_id = ?",
-                (blob, norm, int(row["memory_id"])),
-            )
-            filled += 1
-        if filled:
-            self._log.info("[Memory.Vector] backfilled %d row(s) into the blob format", filled)
-        return filled
-
     @staticmethod
     def _decode_vector(data: dict[str, Any]) -> tuple[list[float], float]:
-        """(vector, norm) — blob first, JSON for rows the backfill has not reached."""
+        """(vector, norm) from the float64 blob — the single source of truth."""
         dimensions = int(data.get("dimensions") or 0)
         blob = data.get("vector_blob")
         if blob:
@@ -235,13 +178,8 @@ class SqliteVectorStore(VectorStore):
                 if not dimensions or len(values) == dimensions:
                     return list(values), float(data.get("norm") or 0.0)
             except (TypeError, ValueError):
-                pass  # corrupt blob → fall back to the JSON column below
-        try:
-            raw = json.loads(data["vector"])
-            vector = [float(x) for x in raw] if isinstance(raw, list) else []
-        except (KeyError, TypeError, ValueError):
-            vector = []
-        return vector, 0.0
+                pass  # corrupt blob → empty vector below
+        return [], 0.0
 
     async def stats(self) -> dict[str, Any]:
         row = await self._db.fetchone(

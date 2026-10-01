@@ -59,9 +59,9 @@ async def seed_character(database) -> None:
         ("private:7", "7", "event", "上周我们聊过杭州出差", "h2", 0.4, 0.7, 11, 11, "episodic"),
     )
     await database.execute(
-        "INSERT INTO memory_embeddings (memory_id, model, dimensions, vector,"
+        "INSERT INTO memory_embeddings (memory_id, model, dimensions,"
         " created_at, updated_at, vector_blob, norm)"
-        " VALUES (1, 'm', 2, '[0.1,0.2]', 10, 10, ?, 0.5)",
+        " VALUES (1, 'm', 2, 10, 10, ?, 0.5)",
         (b"\x00\x01\x02",),
     )
     await database.execute(

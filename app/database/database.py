@@ -980,6 +980,18 @@ CREATE TABLE IF NOT EXISTS expression_vectors (
 );
 """,
     ),
+    (
+        20,
+        "drop the memory_embeddings JSON column (task 12 unfreeze)",
+        """
+-- The float64 blob + precomputed norm have been the read path since migration
+-- 16, with the JSON column kept only as a fallback until the backfill ran on
+-- real data. It has: every row now carries a blob (zero fallback reads), and
+-- the blob path has been live without a retrieval regression. Drop the JSON
+-- column — the blob is the single source of truth for vectors now.
+ALTER TABLE memory_embeddings DROP COLUMN vector;
+""",
+    ),
 ]
 
 
