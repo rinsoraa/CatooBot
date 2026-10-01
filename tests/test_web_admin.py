@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import re
 from typing import Any
 
 import aiohttp
@@ -200,7 +201,12 @@ async def test_webui_http_gate(tmp_path, unused_tcp_port) -> None:
             for path in other_pages:
                 async with session.get(base + path) as resp:
                     assert resp.status == 200, path
-            # persona is editable through the WebUI form
+            # persona is editable through the WebUI form — with the CSRF token
+            # the page injects (a real browser submits it back verbatim)
+            async with session.get(base + "/character") as resp:
+                page = await resp.text()
+            csrf = re.search(r'name="csrf_token" value="([^"]+)"', page)
+            assert csrf is not None, "the page must ship a CSRF token"
             async with session.post(
                 base + "/character",
                 data={
@@ -210,6 +216,7 @@ async def test_webui_http_gate(tmp_path, unused_tcp_port) -> None:
                     "rules": "不说教",
                     "emoji": "1",
                     "kaomoji": "0",
+                    "csrf_token": csrf.group(1),
                 },
             ) as resp:
                 assert resp.status == 200

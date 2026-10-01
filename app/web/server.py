@@ -33,6 +33,16 @@ from app.web.realtime import (
     attach_narration_feed,
     detach_narration_feed,
 )
+from app.web.security import (
+    CSRF_EXEMPT_PATHS,
+    CSRF_FIELD,
+    CSRF_HEADER,
+    MUTATING_METHODS,
+    LoginThrottle,
+    csrf_token,
+    inject_csrf,
+    set_csrf_token,
+)
 from app.web.services.admin import AdminService
 from app.web.services.agent import AgentAdminService
 from app.web.services.behavior import BehaviorService
@@ -103,8 +113,12 @@ def esc(value: Any) -> str:
 
 
 def layout(title: str, active: str, body: str, *, subtitle: str = "", actions: str = "") -> str:
-    """Render the shared themed shell (see :mod:`app.web.ui`)."""
-    return ui.page(title, active, body, subtitle=subtitle, actions=actions)
+    """Render the shared themed shell (see :mod:`app.web.ui`).
+
+    POST forms get the session's CSRF token injected here, in one place, so a
+    new form cannot forget it (Task 18).
+    """
+    return inject_csrf(ui.page(title, active, body, subtitle=subtitle, actions=actions))
 
 
 class WebServer:
@@ -121,6 +135,7 @@ class WebServer:
         self._social_admin = SocialAdminService(bot)
         self._sticker_admin = StickerAdminService(bot)
         self._auth = getattr(bot, "web_auth", None) or AuthService(config, bot.database)
+        self._throttle = LoginThrottle(metrics=getattr(bot, "metrics", None))
         self._runner: web.AppRunner | None = None
         self._hub = RealtimeHub(metrics=getattr(bot, "metrics", None))
         self._narration_feed: NarrationFeed | None = None
@@ -258,6 +273,17 @@ class WebServer:
             if request.path.startswith("/ws/"):
                 raise web.HTTPUnauthorized()  # an upgrade cannot follow a redirect
             raise web.HTTPFound("/login")
+        set_csrf_token(token)
+        if request.method in MUTATING_METHODS and request.path not in CSRF_EXEMPT_PATHS:
+            supplied = request.headers.get(CSRF_HEADER, "")
+            if not supplied and request.content_type.startswith(
+                "application/x-www-form-urlencoded"
+            ):
+                supplied = str((await request.post()).get(CSRF_FIELD, ""))
+            if supplied != csrf_token(token):
+                self._bot.metrics.inc("csrf_rejected")
+                log.warning("[Web.Security] CSRF 校验失败：%s %s", request.method, request.path)
+                raise web.HTTPForbidden(text="CSRF token 无效或缺失，请刷新页面重试")
         return await handler(request)
 
     async def _login_page(self, request: web.Request) -> web.Response:
@@ -280,9 +306,17 @@ class WebServer:
 
     async def _login_submit(self, request: web.Request) -> web.Response:
         form = await request.post()
-        token = await self._auth.login(str(form.get("username", "")), str(form.get("password", "")))
+        username = str(form.get("username", ""))
+        key = f"{request.remote or 'unknown'}|{username}"
+        if not self._throttle.allowed(key):
+            wait = self._throttle.retry_after(key)
+            log.warning("[Web.Security] 登录被限速：%s（%.0f 秒后重试）", key, wait)
+            raise web.HTTPTooManyRequests(text=f"尝试过于频繁，请 {int(wait) + 1} 秒后再试")
+        token = await self._auth.login(username, str(form.get("password", "")))
         if token is None:
+            self._throttle.record_failure(key)
             raise web.HTTPFound("/login")
+        self._throttle.reset(key)
         response = web.HTTPFound("/")
         response.set_cookie(SESSION_COOKIE, token, httponly=True, samesite="Lax")
         return response
