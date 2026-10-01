@@ -10,7 +10,8 @@ Since v0.4 the plugin is deliberately thin — it contains no behaviour rules:
 The plugin only *submits* messages to the ConversationTurnRuntime and binds
 the respond/deliver/post-reply callbacks; every message goes through the turn
 runtime — there is no direct path.
-"""
+
+本文件同时引用 v1.1 / v1.2 / v2.0 §n（媒体/回合/沙盒）；裸 §N 才指 v2.0。"""
 
 from __future__ import annotations
 
@@ -162,7 +163,7 @@ class CharacterPlugin(Plugin):
     async def _sandbox_external(
         self, event: MessageEvent, text: str, *, mentioned: bool, reply_to_bot: bool
     ) -> None:
-        """QQ is the outside world: the message enters her sandbox (§49-§53)."""
+        """QQ is the outside world: the message enters her sandbox (v2.0 §49-§53)."""
         sandbox = getattr(self.bot, "sandbox", None)
         if sandbox is None or not getattr(sandbox, "enabled", False):
             return
@@ -454,7 +455,7 @@ class CharacterPlugin(Plugin):
         task.add_done_callback(self._background_tasks.discard)
 
     async def _social_for_turn(self, turn: Any) -> Any:
-        """Group participation decided once per merged burst (§82/§83).
+        """Group participation decided once per merged burst (v1.2 §82/§83).
 
         Sticker recognition runs *before* the decision so 静默/要回 is based on
         what the sticker actually says (识别 → 判断 → 收藏).
@@ -629,7 +630,7 @@ class CharacterPlugin(Plugin):
                 state=await bot.character.states.load(),
                 force_single_message=True,
             )
-        # §17: the answer may be obsolete by the time the model returns.
+        # v1.2 §17: the answer may be obsolete by the time the model returns.
         if not generation.is_current():
             return None
 
@@ -793,7 +794,7 @@ class CharacterPlugin(Plugin):
     def _schedule_collection(
         self, event: MessageEvent | None, items: list[Any], *, vision: Any = None
     ) -> None:
-        """Background sticker recognition + acquisition — never blocks (§18).
+        """Background sticker recognition + acquisition — never blocks (v1.1 §18).
 
         Runs whether or not the character replies to this message (option A):
         QQ-marked stickers get recognized and possibly kept, with a per-scope
@@ -848,7 +849,7 @@ class CharacterPlugin(Plugin):
     async def _attach_expression(
         self, plan: Any, turn: Any, text: str, media_items: list[Any], is_group: bool
     ) -> None:
-        """Decide whether to attach a sticker to the outgoing reply (§23-§29)."""
+        """Decide whether to attach a sticker to the outgoing reply (v1.1 §23-§29)."""
         media = getattr(self.bot, "media", None)
         if media is None or not media.enabled or not media.config.expression_enabled:
             return

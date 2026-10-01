@@ -126,7 +126,7 @@ class IdentityRoutes(WebContext):
             await self._admin.save_persona(data)
             note = "已保存并热加载"
         except ValueError as exc:
-            note = f"保存失败：{exc}"  # old persona stays active (spec §53)
+            note = f"保存失败：{exc}"  # old persona stays active (spec v0.3 §53)
         return web.Response(
             text=layout(
                 "角色",

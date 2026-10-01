@@ -2,7 +2,7 @@
 
 Server-rendered from :mod:`app.web.ui`. Read-only observation surfaces for
 v1.2 — the operator can see turns, decisions, sequences and continuity, but
-QQ never sees any of it (§131-§138).
+QQ never sees any of it (v1.2 §131-§138).
 """
 
 from __future__ import annotations
@@ -178,6 +178,6 @@ def continuity_page(data: dict[str, Any]) -> str:
             "用户聊天习惯（Interaction Profile）",
             f"<table class='data'><tr><th>用户</th><th>观察到的模式（值/置信度/样本）</th>"
             f"<th>更新时间</th></tr>{profile_rows}</table>"
-            + "<div class='muted small'>模式是统计+衰减+置信度，不是永久标签（spec §41-§43）。</div>",
+            + "<div class='muted small'>模式是统计+衰减+置信度，不是永久标签（spec v1.2 §41-§43）。</div>",
         )
     )

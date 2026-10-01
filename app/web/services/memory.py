@@ -1,6 +1,6 @@
 """Memory admin service: semantic search, timeline, health, debugger, upkeep.
 
-Everything here is WebUI-only (spec §56): the retrieval debugger explains *why*
+Everything here is WebUI-only (spec v0.5 §56): the retrieval debugger explains *why*
 a memory was recalled, but nothing in this module is reachable from QQ.
 """
 
@@ -48,7 +48,7 @@ class MemoryAdminService:
     async def search(
         self, query: str, *, mode: str = "hybrid", scope_key: str = "", limit: int = 10
     ) -> dict[str, Any]:
-        """Search modes: keyword | semantic | hybrid (spec §87)."""
+        """Search modes: keyword | semantic | hybrid (spec v0.5 §87)."""
         if self.bot.memory is None:
             return {"mode": mode, "results": [], "error": "memory disabled"}
         scopes = [scope_key] if scope_key else await self.bot.memory.repository.all_scopes()
@@ -100,7 +100,7 @@ class MemoryAdminService:
         return [m.model_dump() for m in memories]
 
     async def detail(self, memory_id: int) -> dict[str, Any]:
-        """One memory plus its relations — 'where did this come from?' (§52)."""
+        """One memory plus its relations — 'where did this come from?' (v0.5 §52)."""
         if self.bot.memory is None:
             return {}
         memory = await self.bot.memory.repository.get(memory_id)
@@ -152,7 +152,7 @@ class MemoryAdminService:
     # --------------------------------------------------------- debug + ops
 
     async def retrieval_debug(self, query: str, scope_key: str) -> dict[str, Any]:
-        """Show the full retrieval pipeline for one query (spec §88)."""
+        """Show the full retrieval pipeline for one query (spec v0.5 §88)."""
         if self.bot.memory is None:
             return {"error": "memory disabled"}
         scopes = [scope_key] if scope_key else await self.bot.memory.repository.all_scopes()
@@ -235,14 +235,14 @@ class MemoryAdminService:
         }
 
     async def run_consolidation(self, scope_key: str = "") -> dict[str, Any]:
-        """Manual trigger (spec §89). Runs in the background, never in chat."""
+        """Manual trigger (spec v0.5 §89). Runs in the background, never in chat."""
         if self.bot.consolidator is None:
             return {"error": "memory disabled"}
         report = await self.bot.consolidator.run(scope_key)
         return report.to_dict()
 
     async def rebuild_embeddings(self, limit: int = 200) -> dict[str, Any]:
-        """Backfill missing vectors in the background (spec §57/§90)."""
+        """Backfill missing vectors in the background (spec v0.5 §57/§90)."""
         if self.bot.memory is None or self.bot.embeddings is None:
             return {"error": "semantic memory disabled"}
         if not self.bot.embeddings.available:

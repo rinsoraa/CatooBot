@@ -1,7 +1,7 @@
 """Tool admin service: registry view, tests, logs, metrics, policy, credentials.
 
 Everything the WebUI shows about tools comes through here — never through the
-QQ pipeline (spec §28/§100). Credentials are write-only and always masked.
+QQ pipeline (spec v0.6 §28/§100). Credentials are write-only and always masked.
 """
 
 from __future__ import annotations
@@ -75,7 +75,7 @@ class ToolAdminService:
     async def executions(self, limit: int = 100, tool_name: str = "") -> list[dict[str, Any]]:
         rows = await self.runtime.executor.recent_executions(limit=limit, tool_name=tool_name)
         for row in rows:
-            # never surface raw arguments or secrets (§42/§101)
+            # never surface raw arguments or secrets (v0.6 §42/§101)
             row.pop("arguments_preview", None)
         return rows
 
@@ -83,7 +83,7 @@ class ToolAdminService:
         return await self.runtime.executor.metrics()
 
     async def reasoning_modes(self) -> list[str]:
-        """Documented argument sources, shown in the trace view (§56)."""
+        """Documented argument sources, shown in the trace view (v0.6 §56)."""
         from app.tools.models import ARGUMENT_SOURCES
 
         return list(ARGUMENT_SOURCES)
@@ -109,7 +109,7 @@ class ToolAdminService:
         settings: dict[str, Any] = {}
         if provider:
             settings["provider"] = provider
-            # remember the other known providers as fallbacks (§108)
+            # remember the other known providers as fallbacks (v0.6 §108)
             settings["fallback_providers"] = [
                 name for name in KNOWN_PROVIDERS.get(name, []) if name != provider
             ]
@@ -131,7 +131,7 @@ class ToolAdminService:
         }
 
     async def test_tool(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
-        """Admin dry run (spec §41): executes but never sends anything to QQ."""
+        """Admin dry run (spec v0.6 §41): executes but never sends anything to QQ."""
         tool = self.runtime.registry.maybe_get(name)
         if tool is None:
             return {"ok": False, "error": f"unknown tool: {name}"}
@@ -169,7 +169,7 @@ class ToolAdminService:
     async def decision_debug(
         self, query: str, *, mode: str = "candidates", relationship_stage: str = "familiar"
     ) -> dict[str, Any]:
-        """Explain tool selection (spec §75/§103) — WebUI only."""
+        """Explain tool selection (spec v0.6 §75/§103) — WebUI only."""
         candidates = self.runtime.router.candidates(query)
         blocked: list[dict[str, Any]] = []
         if mode == "candidates":

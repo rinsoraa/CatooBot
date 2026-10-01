@@ -3,7 +3,7 @@
 Read-only inspection surfaces: overview (what she is doing *now*), entities,
 spaces, objects & inventory, needs, actions, modes, social world, the bible
 with coverage, simulation trace + replay, and a dry-run simulator. QQ never
-sees any of this (§153-§154).
+sees any of this (v2.0 §153-§154).
 """
 
 from __future__ import annotations

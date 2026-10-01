@@ -2,7 +2,7 @@
 
 Everything the operator needs to understand *why* the agent did something —
 structured plans, steps, observations and traces. Never hidden reasoning, and
-never exposed to QQ (spec §54/§82/§152).
+never exposed to QQ (spec v0.7 §54/§82/§152).
 """
 
 from __future__ import annotations
@@ -37,7 +37,7 @@ class AgentAdminService:
         }
 
     async def health(self) -> dict[str, Any]:
-        """Component check (spec §92)."""
+        """Component check (spec v0.7 §92)."""
         runtime = self.runtime
         planner_ok = runtime.planner is not None and runtime.engine is not None
         executor_ok = runtime.executor is not None and self.bot.tools is not None
@@ -124,7 +124,7 @@ class AgentAdminService:
         return payload
 
     async def dry_run(self, text: str) -> dict[str, Any]:
-        """Planner = real, tool executor = mocked (spec §89/§141)."""
+        """Planner = real, tool executor = mocked (spec v0.7 §89/§141)."""
         payload = await self.runtime.simulate(text)
         plan = payload.get("plan") or {}
         steps = plan.get("steps") or []

@@ -1,7 +1,7 @@
 """The ``/social`` pages: dashboard, observations, group context, simulator.
 
 Server-rendered from :mod:`app.web.ui`. "Analyze Now" and "Replay" are read-only
-simulations — they never send a QQ message (§88/§90).
+simulations — they never send a QQ message (v0.9 §88/§90).
 """
 
 from __future__ import annotations

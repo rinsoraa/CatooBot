@@ -1,8 +1,8 @@
 """Behaviour admin service: dashboard data, live settings, tests, preview.
 
 Settings are stored as a JSON override in the ``settings`` table and applied
-to the running engine (hot reload, spec §53/§90). Manual triggers and the
-simulator only ever run here in the WebUI — never exposed to QQ (spec §54/§55).
+to the running engine (hot reload, spec v0.8 §53/§90). Manual triggers and the
+simulator only ever run here in the WebUI — never exposed to QQ (spec v0.8 §54/§55).
 """
 
 from __future__ import annotations
@@ -202,7 +202,7 @@ class BehaviorService:
         }
 
     async def preview(self, form: dict[str, Any]) -> dict[str, Any]:
-        """Behaviour simulator (spec §55/§86) — never sends a QQ message."""
+        """Behaviour simulator (spec v0.8 §55/§86) — never sends a QQ message."""
         behavior = self.behavior
         rng = random.Random(7)
 

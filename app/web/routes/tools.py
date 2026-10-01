@@ -15,7 +15,7 @@ from app.web.routes.base import WebContext, _as_float, _as_int, esc, format_ts, 
 
 
 def _sample_arguments(name: str) -> dict[str, Any]:
-    """Prefilled test payloads for the WebUI test box (spec §41)."""
+    """Prefilled test payloads for the WebUI test box (spec v0.6 §41)."""
     samples: dict[str, dict[str, Any]] = {
         "time": {"timezone": "Asia/Singapore"},
         "calculator": {"operation": "evaluate", "expression": "12893 * 473"},
