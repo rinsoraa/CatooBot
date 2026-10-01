@@ -1,4 +1,4 @@
-"""Builtin tool: current time / date in the character's timezone (v1.x 规格，原文缺失)."""
+"""Builtin tool: current time / date in the character's timezone (v0.6 §24.1)."""
 
 from __future__ import annotations
 

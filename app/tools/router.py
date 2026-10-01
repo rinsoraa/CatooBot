@@ -1,6 +1,6 @@
-"""Tool routing and the AI tool-decision loop (spec §10/§11/§46/§47/§50-§52).
+"""Tool routing and the AI tool-decision loop (spec v0.6 §10/§11/§46/§47/§50-§52).
 
-Two independent routers, never to be confused (§46):
+Two independent routers, never to be confused (v0.6 §46):
 ``ModelRouter`` picks *which model answers*, ``ToolRouter`` picks *which tools
 are relevant*. This module owns the latter plus the decision loop:
 
@@ -70,7 +70,7 @@ class ToolRouter:
         return self.registry.candidates(query, limit=self.config.candidate_tools, allowed=allowed)
 
     def build_instruction(self, candidates: list[tuple[ToolBase, float]]) -> str:
-        """Render only the candidate schemas — never the whole registry (§12)."""
+        """Render only the candidate schemas — never the whole registry (v0.6 §12)."""
         blocks = []
         for tool, score in candidates:
             payload = tool.metadata.to_prompt_dict()
@@ -227,7 +227,7 @@ class ToolOrchestrator:
             )
 
     def _extract_call(self, response: AIResponse) -> ToolCall | None:
-        """Native function calls first, then the JSON decision fallback (§47)."""
+        """Native function calls first, then the JSON decision fallback (v0.6 §47)."""
         for native in getattr(response, "tool_calls", None) or []:
             call = ToolCall.from_model_output(native, reason="native_tool_call")
             if call is not None:

@@ -1,8 +1,8 @@
-"""Builtin tool: arithmetic, percentages and unit conversion (v1.x 规格，原文缺失).
+"""Builtin tool: arithmetic, percentages and unit conversion (v0.6 §24.2).
 
 Deliberately **not** an eval: expressions are parsed with :mod:`ast` and only
 arithmetic node types are allowed, so a model cannot smuggle code in through
-the calculator (安全边界, spec §23/§106).
+the calculator (安全边界, spec v0.6 §23/§106).
 """
 
 from __future__ import annotations

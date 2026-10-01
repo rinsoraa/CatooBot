@@ -1,4 +1,4 @@
-"""JSON-Schema argument validation without extra dependencies (spec §14/§15).
+"""JSON-Schema argument validation without extra dependencies (spec v0.6 §14/§15).
 
 Only the subset our tools actually use is implemented — object/array/string/
 number/integer/boolean, ``required``, ``enum``, ``minLength``/``maxLength``,

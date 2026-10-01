@@ -2,7 +2,7 @@
 
 Both follow the same shape: the *tool* owns schema/limits/normalization, the
 *provider* owns the vendor. Providers are tried in configured order so one
-outage never reaches the user (spec §108/§109).
+outage never reaches the user (spec v0.6 §108/§109).
 """
 
 from __future__ import annotations

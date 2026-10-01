@@ -1,4 +1,4 @@
-"""Minimal credential manager (spec §81/§82).
+"""Minimal credential manager (spec v0.6 §81/§82).
 
 Design goals: secrets must never end up in the SQLite database, in logs, in
 tool results or on a WebUI page in full.
@@ -60,7 +60,7 @@ class CredentialManager:
 
     @staticmethod
     def mask(value: str) -> str:
-        """Never render a secret in full (spec §40/§82)."""
+        """Never render a secret in full (spec v0.6 §40/§82)."""
         if not value:
             return ""
         if len(value) <= 8:

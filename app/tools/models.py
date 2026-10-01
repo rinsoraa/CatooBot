@@ -7,7 +7,7 @@ Vocabulary shared by registry, router, executor and the WebUI:
 * :class:`ToolCall`      — a normalized request for one tool execution;
 * :class:`ToolResult`    — a normalized, *untrusted* outcome.
 
-Tool results are reference data, never instructions (§59/§60/§105): the flag
+Tool results are reference data, never instructions (v0.6 §59/§60/§105): the flag
 ``source_type="external"`` travels with every result so the prompt layer can
 label it as such.
 """
@@ -24,7 +24,7 @@ RISK_LEVELS = ("low", "medium", "high")
 
 TOOL_CATEGORIES = ("information", "utility", "communication", "system")
 
-# Where a tool argument came from — surfaced in the WebUI trace (§56).
+# Where a tool argument came from — surfaced in the WebUI trace (v0.6 §56).
 ARGUMENT_SOURCES = ("explicit_user", "memory", "context", "model_inferred", "default")
 
 
@@ -58,7 +58,7 @@ class ToolMetadata(BaseModel):
 
     @property
     def search_text(self) -> str:
-        """Text used by capability retrieval (§12/§13)."""
+        """Text used by capability retrieval (v0.6 §12/§13)."""
         parts = [
             self.name,
             self.display_name,
@@ -197,7 +197,7 @@ class ToolResult(BaseModel):
 
 @dataclass
 class ToolTrace:
-    """Audit record for one execution (§36/§101)."""
+    """Audit record for one execution (v0.6 §36/§101)."""
 
     trace_id: str
     tool_name: str

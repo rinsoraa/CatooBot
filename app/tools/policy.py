@@ -2,7 +2,7 @@
 
     Tool call → Policy → allowed?
 
-Covers (spec §21/§22/§32/§33/§34/§35):
+Covers (spec v0.6 §21/§22/§32/§33/§34/§35):
 * global enable + risk-level allowlist,
 * per-user / per-group allow & deny lists (WebUI managed),
 * rate limits (per user, per group, global) with asyncio-safe windows,
@@ -35,7 +35,7 @@ LOOP_MIN_REPEATS = 2  # third identical call in one turn is blocked
 
 @dataclass
 class TurnBudget:
-    """Per-message counters (spec §34/§52)."""
+    """Per-message counters (spec v0.6 §34/§52)."""
 
     max_calls: int = 3
     max_execution_time: float = 30.0

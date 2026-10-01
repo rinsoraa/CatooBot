@@ -1,11 +1,11 @@
-"""Tool executor: the only place a tool actually runs (spec §15/§19/§20/§68).
+"""Tool executor: the only place a tool actually runs (spec v0.6 §15/§19/§20/§68).
 
     ToolCall → schema validation → policy → cache → execute (timeout,
     single retry for transient failures) → result processing → audit
 
 Failures are normalized into :class:`ToolResult` with ``success=False`` so the
 chat pipeline can always continue and the model is told "the tool failed"
-instead of inventing an answer (§66).
+instead of inventing an answer (v0.6 §66).
 """
 
 from __future__ import annotations
@@ -113,7 +113,7 @@ class ToolExecutor:
 
         metadata = tool.metadata
 
-        # 1) argument validation — bad arguments never reach the tool (§15)
+        # 1) argument validation — bad arguments never reach the tool (v0.6 §15)
         arguments = apply_defaults(metadata.input_schema or {}, dict(call.arguments))
         problems = validate_arguments(metadata.input_schema or {}, arguments)
         if problems:
@@ -130,7 +130,7 @@ class ToolExecutor:
                 ),
             )
 
-        # 2) hard rules: permissions, budget, loops, rate limits (§21/§32/§34/§35)
+        # 2) hard rules: permissions, budget, loops, rate limits (v0.6 §21/§32/§34/§35)
         try:
             self.policy.authorize(
                 metadata,
@@ -150,7 +150,7 @@ class ToolExecutor:
                 metadata={"source_type": "internal", "confidence": 0.0},
             )
 
-        # 3) cache (§68/§69) — TTL is declared by the tool itself
+        # 3) cache (v0.6 §68/§69) — TTL is declared by the tool itself
         cache_key = self._cache_key(call, arguments)
         if self.config.cache_enabled and metadata.cache_ttl_seconds > 0:
             cached = await self._cache_get(cache_key)
@@ -227,7 +227,7 @@ class ToolExecutor:
         context: ToolContext,
         budget: TurnBudget,
     ) -> list[ToolResult]:
-        """Run independent calls concurrently (order preserved, §70)."""
+        """Run independent calls concurrently (order preserved, v0.6 §70)."""
         if len(calls) <= 1:
             return [await self.execute(call, context, budget) for call in calls]
         return list(await asyncio.gather(*(self.execute(call, context, budget) for call in calls)))
@@ -281,7 +281,7 @@ class ToolExecutor:
         error_type: str,
         started: float,
     ) -> None:
-        """Audit log (§36/§101) — never the full arguments, never secrets."""
+        """Audit log (v0.6 §36/§101) — never the full arguments, never secrets."""
         if self._db is None:
             return
         try:
@@ -371,7 +371,7 @@ class ToolExecutor:
     # ------------------------------------------------------------- metrics
 
     async def metrics(self) -> dict[str, Any]:
-        """Calls / success / failure / timeout / latency percentiles (§43/§79)."""
+        """Calls / success / failure / timeout / latency percentiles (v0.6 §43/§79)."""
         empty = {
             "calls": 0,
             "success": 0,

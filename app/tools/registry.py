@@ -1,4 +1,4 @@
-"""Tool registry + capability index (spec §9/§12/§13).
+"""Tool registry + capability index (spec v0.6 §9/§12/§13).
 
 The registry knows *which* tools exist and what they can do; it never executes
 anything. Capability retrieval scores tools against the current message so
@@ -85,7 +85,7 @@ class ToolRegistry:
         ]
 
     def describe(self) -> list[dict[str, Any]]:
-        """Registry view for the WebUI (spec §37)."""
+        """Registry view for the WebUI (spec v0.6 §37)."""
         return [
             {
                 **tool.metadata.model_dump(),

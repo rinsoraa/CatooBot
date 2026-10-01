@@ -1,8 +1,8 @@
-"""The tool interface (spec §7/§112).
+"""The tool interface (spec v0.6 §7/§112).
 
 Tools are pure capability: they never decide *whether* they run, never talk to
-the database directly (§31) and never return raw third-party payloads to the
-model (§17). The failures they may raise live in :mod:`app.tools.errors`.
+the database directly (v0.6 §31) and never return raw third-party payloads to the
+model (v0.6 §17). The failures they may raise live in :mod:`app.tools.errors`.
 """
 
 from __future__ import annotations
@@ -15,7 +15,7 @@ from app.tools.models import ToolContext, ToolMetadata, ToolResult
 
 
 class Tool(ABC):
-    """Interface every tool implements (spec §7/§112)."""
+    """Interface every tool implements (spec v0.6 §7/§112)."""
 
     metadata: ToolMetadata
 

@@ -1,4 +1,4 @@
-"""Weather provider abstraction + a keyless default implementation (spec §44/§108).
+"""Weather provider abstraction + a keyless default implementation (spec v0.6 §44/§108).
 
 The *tool* knows nothing about vendors: it asks a :class:`WeatherProvider` for
 normalized data. Swapping to another service means registering another

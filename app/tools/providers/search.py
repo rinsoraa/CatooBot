@@ -1,10 +1,10 @@
-"""Search provider abstraction (spec §45) + a null provider.
+"""Search provider abstraction (spec v0.6 §45) + a null provider.
 
 Real search needs a vendor key, so the shipped implementations are:
 
 * ``null``     — always "not configured"; the tool then reports unavailability
                  and the model must answer honestly instead of inventing news
-                 (§26/§95/§96);
+                 (v0.6 §26/§95/§96);
 * ``tavily``   — Tavily-style JSON API (``api_key_env``);
 * ``brave``    — Brave Search API style (``X-Subscription-Token`` header).
 

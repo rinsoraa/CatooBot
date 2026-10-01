@@ -1,4 +1,4 @@
-"""Standardized tool errors (spec §18).
+"""Standardized tool errors (spec v0.6 §18).
 
 The tool interface itself lives in :mod:`app.tools.base`.
 """

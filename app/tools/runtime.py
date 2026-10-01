@@ -2,10 +2,10 @@
 
 Startup: load config → register builtins → apply DB overrides → load permissions.
 A single broken tool/provider is isolated: it is disabled with a log line and
-everything else keeps working (spec §72).
+everything else keeps working (spec v0.6 §72).
 
 WebUI edits (enable/disable, timeout, provider settings, permissions) hot-apply
-through :meth:`apply_settings` / :meth:`set_tool_enabled` — no restart (§73).
+through :meth:`apply_settings` / :meth:`set_tool_enabled` — no restart (v0.6 §73).
 """
 
 from __future__ import annotations
@@ -160,7 +160,7 @@ class ToolRuntime:
         return self.registry.is_enabled(name)
 
     async def set_tool_enabled(self, name: str, enabled: bool) -> bool:
-        """Enable/disable a tool and persist the choice (hot reload, §39)."""
+        """Enable/disable a tool and persist the choice (hot reload, v0.6 §39)."""
         if not self.registry.enable(name, enabled):
             return False
         await self._persist_config(name, enabled=enabled)
