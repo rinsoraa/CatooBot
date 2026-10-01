@@ -4,7 +4,7 @@ A narrative-modelling layer for how engaged the character currently is with one
 group. It has *momentum* (a topic keeps her engaged for a while) and *decay*
 (engagement fades), and a *fatigue* term that slowly recovers. All three only
 soften the decision — a direct @ still wins, and a truly relevant topic still
-gets through (§101/§102).
+gets through (v0.9 §101/§102).
 """
 
 from __future__ import annotations
@@ -83,7 +83,7 @@ class SocialAttention:
         )
 
     def note_reply_outcome(self, group_id: str, score: float) -> None:
-        """Fold an engagement score into momentum (Task 20 §6).
+        """Fold an engagement score into momentum (Task 20 v0.9 §6).
 
         The step is deliberately small (``score × 0.1``): momentum lives in
         [0, 1] and every other ``note_*`` adds 0.2-0.3, so feeding ±1 would
@@ -95,7 +95,7 @@ class SocialAttention:
         self._commit(state, momentum=max(0.0, min(1.0, state.momentum + delta)))
 
     def note_reply(self, group_id: str) -> None:
-        """Each reply tires her a little; it recovers on its own (§66)."""
+        """Each reply tires her a little; it recovers on its own (v0.9 §66)."""
         state = self.get(str(group_id))
         self._commit(state, fatigue=min(1.0, state.fatigue + _FATIGUE_PER_REPLY))
 

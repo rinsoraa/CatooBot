@@ -3,7 +3,7 @@
 These describe *structured social judgment* — never hidden reasoning. Every
 decision carries a ``reason_code`` so the WebUI and tests can audit exactly why
 the character spoke or stayed silent. Scores are rule inputs, not probabilities
-(spec §19/§34/§95): a confidence is compared to a threshold, never fed to
+(spec v0.9 §19/§34/§95): a confidence is compared to a threshold, never fed to
 ``random()``.
 """
 
@@ -14,10 +14,10 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
-#: Thread lifecycle (spec §12)
+#: Thread lifecycle (spec v0.9 §12)
 ThreadStatus = Literal["active", "waiting", "idle", "closed"]
 
-#: Continuation decision reason codes (spec §18)
+#: Continuation decision reason codes (spec v0.9 §18)
 CONTINUATION_REASONS: tuple[str, ...] = (
     "direct_follow_up",
     "reply_to_bot",
@@ -27,7 +27,7 @@ CONTINUATION_REASONS: tuple[str, ...] = (
     "unrelated",
 )
 
-#: Participation decision reason codes (spec §38)
+#: Participation decision reason codes (spec v0.9 §38)
 PARTICIPATION_REASONS: tuple[str, ...] = (
     # positive
     "direct_mention",
@@ -63,7 +63,7 @@ Decision = Literal["reply", "observe", "ignore", "defer"]
 
 @dataclass
 class GroupMessage:
-    """One recorded group message (spec §9)."""
+    """One recorded group message (spec v0.9 §9)."""
 
     message_id: str
     group_id: str
@@ -82,7 +82,7 @@ class GroupMessage:
 
 @dataclass
 class ConversationThread:
-    """A live exchange the character is part of (spec §12/§50)."""
+    """A live exchange the character is part of (spec v0.9 §12/§50)."""
 
     thread_id: str
     group_id: str
@@ -125,7 +125,7 @@ class ContinuationDecision(BaseModel):
 
 
 class RelevanceScores(BaseModel):
-    """Structured evaluation of how worth-joining the current talk is (§33/§34)."""
+    """Structured evaluation of how worth-joining the current talk is (v0.9 §33/§34)."""
 
     topic_relevance: float = Field(default=0.0, ge=0.0, le=1.0)
     character_relevance: float = Field(default=0.0, ge=0.0, le=1.0)
@@ -144,7 +144,7 @@ class RelevanceScores(BaseModel):
 
 
 class ParticipationDecision(BaseModel):
-    """The outcome of social cognition for one message / batch (§35/§78)."""
+    """The outcome of social cognition for one message / batch (v0.9 §35/§78)."""
 
     decision: Decision = "ignore"
     reason_code: str = "no_relevance"
@@ -171,7 +171,7 @@ class ParticipationDecision(BaseModel):
 
 
 class SocialObservation(BaseModel):
-    """Audit row for one observer pass (spec §85) — WebUI debug, not Memory."""
+    """Audit row for one observer pass (spec v0.9 §85) — WebUI debug, not Memory."""
 
     observation_id: str = ""
     group_id: str = ""
@@ -186,11 +186,11 @@ class SocialObservation(BaseModel):
 
 @dataclass
 class SocialAttentionState:
-    """The character's current *attention* to one group (spec §62/§65).
+    """The character's current *attention* to one group (spec v0.9 §62/§65).
 
     These are narrative-modelling numbers for the character's engagement, not
     psychological claims about any user. ``fatigue`` only softens the decision,
-    it never forbids a reply (spec §101/§102).
+    it never forbids a reply (spec v0.9 §101/§102).
     """
 
     attention_level: float = 0.5

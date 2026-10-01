@@ -3,7 +3,7 @@
 Keeps a bounded, per-group ring buffer of recent messages and tracks how many
 *external* (non-bot) messages are waiting to be observed. The buffer is memory
 only — deeper history always comes from Topic / Memory, never from here
-(spec §10).
+(spec v0.9 §10).
 """
 
 from __future__ import annotations
@@ -96,7 +96,7 @@ class GroupConversationMonitor:
     # ------------------------------------------------------------ observation
 
     def unobserved(self, group_id: str) -> list[GroupMessage]:
-        """External messages the observer has not yet consumed (spec §82)."""
+        """External messages the observer has not yet consumed (spec v0.9 §82)."""
         seen = self._observed_until.get(str(group_id))
         result: list[GroupMessage] = []
         for message in self.recent(str(group_id)):

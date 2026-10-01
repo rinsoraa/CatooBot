@@ -3,7 +3,7 @@
 Computes *structured* scores, never a roll. Semantic similarity (when the
 embedding service is available) is blended with a keyword/bigram overlap so the
 engine still works with embeddings off — and so a single dimension can never
-"make the character speak" on its own (spec §34/§96).
+"make the character speak" on its own (spec v0.9 §34/§96).
 """
 
 from __future__ import annotations

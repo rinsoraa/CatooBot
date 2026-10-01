@@ -2,7 +2,7 @@
 
 Per group, an exponential moving average of the engagement scores from turns
 **she opened herself** (being @-ed nearly always ends in an answer and would
-push the average above 1 — see the design §6). Two deliberate properties:
+push the average above 1 — see the design v0.9 §6). Two deliberate properties:
 
 * **time-based decay** — ``0.5 ** (Δt / half_life)``. Decaying per sample would
   make the half-life depend on how often she speaks, and that is exactly the
@@ -27,7 +27,7 @@ HALF_LIFE_SECONDS = 7 * 86400.0
 #: below this many settled self-initiated turns the factor stays exactly 1.0
 MIN_SAMPLES = 8
 
-#: the soft multiplier applied to the participation credit *rate* (design §6)
+#: the soft multiplier applied to the participation credit *rate* (design v0.9 §6)
 FACTOR_MIN = 0.9
 FACTOR_MAX = 1.1
 

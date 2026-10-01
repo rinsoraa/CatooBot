@@ -3,7 +3,7 @@
 A thread is a short-lived "the character is mid-conversation here" marker. It
 opens when she replies, tracks the last bot message (so a follow-up like
 "看的什么剧?" can be recognized without @), and expires after a configurable
-window so it never grows unbounded (§109).
+window so it never grows unbounded (v0.9 §109).
 """
 
 from __future__ import annotations

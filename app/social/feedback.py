@@ -113,7 +113,7 @@ class ReplyFeedbackStore:
         if queued:
             self._count("reply_outcome_enqueued")
 
-    #: bot_state key holding the engagement snapshot (Task 20 §6)
+    #: bot_state key holding the engagement snapshot (Task 20 v0.9 §6)
     ENGAGEMENT_KEY = "social_engagement"
 
     async def load_engagement(self) -> dict[str, Any] | None:
@@ -290,7 +290,7 @@ class Verdict:
 
     @property
     def score(self) -> float:
-        """Engagement score fed to the EMA (milestone 3); see the design §6."""
+        """Engagement score fed to the EMA (milestone 3); see the design v0.9 §6."""
         if self.verdict == "engaged":
             return 1.0
         if self.verdict == "negative":
@@ -301,7 +301,7 @@ class Verdict:
 
 
 def judge(observation: Observation, *, is_group: bool = True, stale: bool = False) -> Verdict:
-    """Turn one window observation into a verdict (design §4).
+    """Turn one window observation into a verdict (design v0.9 §4).
 
     Order matters: a negative reaction wins over ``addressed_back`` — otherwise
     "有人 @ 她说别刷屏" would be recorded as engagement, which is exactly

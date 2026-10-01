@@ -3,7 +3,7 @@
 Hard rules are evaluated in code, never by the model. Soft cognition decides
 *if it wants to speak*; this layer decides *if it is allowed to*. The final
 gate re-checks cooldown / daily budget / group state right before sending, so a
-decision that went stale while the model was thinking gets cancelled (§121).
+decision that went stale while the model was thinking gets cancelled (v0.9 §121).
 """
 
 from __future__ import annotations

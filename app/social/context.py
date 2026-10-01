@@ -3,7 +3,7 @@
 Assembles the *smallest useful* character picture for social judgment: current
 state, activity, focus, mood, interests, active topics, and only the memory /
 relationship facts relevant to the current talk. It never dumps the whole
-Memory store into the observer prompt (§31).
+Memory store into the observer prompt (v0.9 §31).
 """
 
 from __future__ import annotations
@@ -56,7 +56,7 @@ class SocialContextBuilder:
             lines.append("当前状态：" + "；".join(state_bits))
 
         # v1.0: the world's episode gives the *richest* activity picture — detail,
-        # elapsed time and any interaction overlay (spec §47/§86/§92).
+        # elapsed time and any interaction overlay (spec v0.9 §47/§86/§92).
         if activity_context:
             detail = str(activity_context.get("activity_detail") or "").strip()
             elapsed = activity_context.get("elapsed_minutes", 0)
@@ -89,7 +89,7 @@ class SocialContextBuilder:
         title: str = "最近群聊",
         limit: int = 20,
     ) -> str:
-        """Grouped, speaker-attributed transcript for the observer (§54/§56)."""
+        """Grouped, speaker-attributed transcript for the observer (v0.9 §54/§56)."""
         lines: list[str] = [f"{title}："]
         for message in list(messages)[-limit:]:
             speaker = message.nickname or f"用户{message.user_id}"

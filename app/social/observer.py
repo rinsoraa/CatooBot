@@ -3,8 +3,8 @@
 Every ``batch_size`` external messages, the observer takes one *structured*
 pass over the group: it decides whether the character has a natural reason to
 join — ``reply`` / ``observe`` / ``ignore`` / ``defer``. It never generates the
-final reply (that is the main chat model's job, §40/§80) and it never emits a
-hidden chain of thought (§39).
+final reply (that is the main chat model's job, v0.9 §40/§80) and it never emits a
+hidden chain of thought (v0.9 §39).
 
 When the AI engine is unavailable the observer falls back to the rule-based
 :class:`~app.social.relevance.RelevanceEvaluator` + thresholds, so the feature

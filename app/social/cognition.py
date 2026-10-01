@@ -10,8 +10,8 @@ structured :class:`ParticipationDecision`. Pipeline:
     -> final gate (re-checked by the caller right before send)
 
 It reuses the existing Behavior / Topic / Memory / State / World subsystems —
-there is no second engine here (§7), and no ``random() < probability`` anywhere
-in the decision path (§93).
+there is no second engine here (v0.9 §7), and no ``random() < probability`` anywhere
+in the decision path (v0.9 §93).
 """
 
 from __future__ import annotations
@@ -98,7 +98,7 @@ class SocialCognitionEngine:
         text: str,
         reply_to_bot: bool,
     ) -> None:
-        """v1.2: record one raw group message WITHOUT deciding (§82/§83).
+        """v1.2: record one raw group message WITHOUT deciding (v0.9 §82/§83).
 
         The Conversation Runtime feeds bursts here so the monitor keeps a
         faithful transcript; the participation decision happens once per turn
@@ -131,7 +131,7 @@ class SocialCognitionEngine:
         """v1.2 adapter: run the social decision on a merged turn burst.
 
         The raw messages were already observed via :meth:`observe_only`, so
-        this records nothing (spec §83: one burst = one decision).
+        this records nothing (spec v0.9 §83: one burst = one decision).
         """
         return await self.decide(
             group_id=group_id,
@@ -174,7 +174,7 @@ class SocialCognitionEngine:
                 reply_to=str(message_id) if reply_to_bot else None,
             )
 
-        # ---- hard priority: direct address / reply-to-bot (spec §20/§21) ----
+        # ---- hard priority: direct address / reply-to-bot (spec v0.9 §20/§21) ----
         if mentioned:
             self.attention.note_mention(group_id, topic="")
             return ParticipationDecision(
@@ -192,9 +192,9 @@ class SocialCognitionEngine:
                 target_message_ids=[str(message_id)],
             )
 
-        # ---- active thread: immediate follow-up detection (spec §47) ----
+        # ---- active thread: immediate follow-up detection (spec v0.9 §47) ----
         # A follow-up is a *continuation* of a live exchange, so it outranks
-        # the participation cooldown/daily budget (spec §68: direct_follow_up
+        # the participation cooldown/daily budget (spec v0.9 §68: direct_follow_up
         # comes before cooldown_block). It still respects the group switch.
         thread = self.threads.get(group_id)
         if thread is not None:
@@ -235,7 +235,7 @@ class SocialCognitionEngine:
         if group_cfg is not None and not getattr(group_cfg, "participation_enabled", True):
             return ParticipationDecision(decision="ignore", reason_code="participation_disabled")
 
-        # ---- 5-message observer (spec §24/§25) ----
+        # ---- 5-message observer (spec v0.9 §24/§25) ----
         unobserved = self.monitor.unobserved(group_id)
         if len(unobserved) < self.config.observer.batch_size:
             fallback = self._participation_rate(

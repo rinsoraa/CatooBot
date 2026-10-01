@@ -6,7 +6,7 @@ Recognises the "user keeps talking to the character *without @*" case:
     User:  看的什么剧？       <- no @, but a direct follow-up
 
 The decision is **structured and rule-driven** (semantic similarity + dialogue
-structure + time + speaker), never ``random() < confidence`` (§19). A confidence
+structure + time + speaker), never ``random() < confidence`` (v0.9 §19). A confidence
 above the threshold means *this is a follow-up*, not a lottery ticket.
 """
 
