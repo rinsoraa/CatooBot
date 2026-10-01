@@ -96,6 +96,24 @@ class PresenceResolver:
                 return name
         return "evening"
 
+    def apply_schedule(self, schedule: BehaviorScheduleConfig) -> None:
+        """Swap the sleep / DND / night windows (config hot reload).
+
+        Every component holds *this* resolver, so one call moves the gate for
+        replies, timing and initiative at once — a WebUI change to 作息 must not
+        wait for a restart.
+        """
+        self._schedule = schedule
+        self._log.info(
+            "[Behavior] schedule applied: sleep=%s %s-%s, dnd=%s %s-%s",
+            schedule.sleep_enabled,
+            schedule.sleep_start,
+            schedule.sleep_end,
+            schedule.dnd_enabled,
+            schedule.dnd_start,
+            schedule.dnd_end,
+        )
+
     # ------------------------------------------------------------- windows
 
     def is_sleeping(self, moment: datetime | None = None) -> bool:

@@ -71,6 +71,10 @@ class BehaviorService:
         engine.config = config
         engine.initiative.config = config.initiative
         engine.initiative.presence = engine.presence
+        # The sleep/DND/night windows live in PresenceResolver, which captures
+        # the schedule at construction — without this push, a WebUI change to
+        # 作息 only takes effect after a restart (the gate keeps the old window).
+        self.bot.presence.apply_schedule(config.schedule)
         self.bot.reply_timing._config = config.reply  # noqa: SLF001
         self.bot.response_planner._chunk_cfg = config.chunking  # noqa: SLF001
         self.bot.response_planner._chunker._config = config.chunking  # noqa: SLF001

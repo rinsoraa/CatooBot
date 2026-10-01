@@ -72,7 +72,6 @@ class PromptRoutes(WebContext):
         except Exception:  # noqa: BLE001 - table may not exist pre-migration
             self._bot.log.debug("[Web] conversation tables unavailable", exc_info=True)
         data = {
-            "enabled": runtime.enabled,
             "sessions": sessions,
             "session_count": len(sessions),
             "buffered": sum(s["buffered_messages"] for s in sessions),

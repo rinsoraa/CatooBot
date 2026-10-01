@@ -122,10 +122,6 @@ class ConversationTurnRuntime:
         if social_provider is not None:
             self._social_provider = social_provider
 
-    @property
-    def enabled(self) -> bool:
-        return bool(getattr(self.config, "enabled", True))
-
     async def wait_idle(self, timeout: float = 10.0) -> None:
         """Wait until no session is buffering, queued or generating (tests/WebUI)."""
 

@@ -34,12 +34,6 @@ def _tabs(active: str) -> str:
 
 
 def dashboard(data: dict[str, Any], turns: list[dict[str, Any]]) -> str:
-    if not data.get("enabled"):
-        return ui.card(
-            "对话轮次运行时未启用",
-            "<p class='muted'>在 config 打开 <code>conversation.enabled</code> 后，"
-            "连续消息会合并为一个 Turn，只产生一次自然回复。</p>",
-        )
     sessions = data.get("sessions", [])
     session_rows = (
         "".join(

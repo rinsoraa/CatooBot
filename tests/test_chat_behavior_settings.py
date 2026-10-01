@@ -100,6 +100,39 @@ class TestPrivateReplies:
         assert FrozenPresence(NIGHT, schedule).time_context().is_sleeping is True
         assert FrozenPresence(DAY, schedule).time_context().is_sleeping is False
 
+    async def test_hot_applied_schedule_reaches_the_gate(self, tmp_path) -> None:
+        """WebUI 改作息必须立刻生效。
+
+        PresenceResolver captures the schedule at construction and everything
+        (replies, timing, initiative) shares that one instance — so a WebUI save
+        that only replaced ``bot.config`` left the gate on the old window until
+        a restart. The window below covers the whole day, which makes the
+        assertion independent of when the suite runs.
+        """
+        from app.web.services.behavior import BehaviorService
+
+        bot = make_bot(tmp_path)
+        await bot.database.connect()
+        try:
+            service = BehaviorService(bot)
+            await service.apply_overrides(
+                {
+                    "schedule": {
+                        "sleep_enabled": True,
+                        "sleep_start": "00:00",
+                        "sleep_end": "23:59",
+                    }
+                }
+            )
+            assert bot.presence.is_sleeping() is True
+            assert bot.presence.hard_block_reason(for_initiative=False) == "sleeping"
+
+            await service.apply_overrides({"schedule": {"sleep_enabled": False}})
+            assert bot.presence.is_sleeping() is False
+            assert bot.presence.hard_block_reason(for_initiative=False) is None
+        finally:
+            await bot.shutdown()
+
     def test_chunking_off_is_single_message(self) -> None:
         from app.config.settings import BehaviorChunkingConfig
 
@@ -468,16 +501,23 @@ class TestChatPageRendersEveryField:
 
 class TestGroupParticipationEndToEnd:
     async def _bot(self, tmp_path, probability: float):  # type: ignore[no-untyped-def]
+        from app.web.services.behavior import BehaviorService
         from tests.ai_mocks import MockAIProvider
         from tests.test_chat_integration import make_character_bot
 
         provider = MockAIProvider(behaviors={"A": ["在呢在呢"]})
         bot = await make_character_bot(tmp_path, provider, models=["A"])
-        group_cfg = BehaviorGroupConfig(
-            participation_enabled=True, participation_probability=probability
-        )
-        bot.config = bot.config.model_copy(
-            update={"behavior": bot.config.behavior.model_copy(update={"group": group_cfg})}
+        # Apply through the WebUI path, and switch the sleep window off: the
+        # real default (00:30-08:00) would silently no-op this test at night —
+        # the preset here is what the operator would do (作息 → 关闭睡觉门控).
+        await BehaviorService(bot).apply_overrides(
+            {
+                "group": {
+                    "participation_enabled": True,
+                    "participation_probability": probability,
+                },
+                "schedule": {"sleep_enabled": False, "dnd_enabled": False},
+            }
         )
         return bot
 

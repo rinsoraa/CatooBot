@@ -47,9 +47,23 @@
 | `app/sandbox/` | v2.0（裸 §N） |
 | `plugins/`、`tests/` | 引用其调用方的版本 |
 
-**前缀迁移进度**：memory / social / conversation / media / tools 已完成第一批；
-其余模块（agent、behavior、sandbox 之外的 character/response/web/config）待下一批。
-未加前缀的旧模块引用仍按本表解读。
+**前缀迁移进度**（逐批提交，每批独立验证）：
+
+| 批次 | 模块 | 版本 | 引用数 | 状态 |
+|---|---|---|---|---|
+| 1 | `app/memory/` | v0.5 | 50 | 已完成 |
+| 2 | `app/social/` | v0.9 | 38 | 已完成 |
+| 3 | `app/conversation/`、`app/continuity/` | v1.2 | 57 | 已完成 |
+| 4 | `app/media/` | v1.1 | 17 | 已完成 |
+| 5 | `app/tools/` | v0.6 | 38 | 已完成 |
+| 6 | `app/agent/` | v0.7 | ~45 | 待做 |
+| 7 | `app/behavior/` | v0.8 + v1.0 | ~31 | 待做 |
+| 8 | `app/character/`、`app/response/`、`app/core/`、`app/config/`、`plugins/` | v0.3 | ~90 | 待做 |
+| 9 | `app/web/` | v0.3（页面里的沙盒/社交段是 v2.0/v0.9，需逐条看） | ~26 | 待做 |
+
+`app/sandbox/` 的裸 `§N` 是正确的（它就是 v2.0），不需要前缀。
+未加前缀的旧模块引用仍按本表解读。批次 8、9 里混版的模块（`app/web/`、`plugins/`、
+`app/character/` 的沙盒/社交钩子）必须逐条对照小节标题判断，不能按模块表一把梭。
 
 ## 设计文档
 
