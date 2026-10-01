@@ -167,7 +167,7 @@ memory:
     conflict_threshold: 0.75    # 聚类/关联判定
     schedule: daily             # daily | hourly | manual
     compression_min_cluster: 5  # 多少条相关 episodic 压缩成 1 条 semantic
-    compression_use_llm: false  # 预留：用 LLM 生成摘要
+    compression_use_llm: false  # 用模型把事件簇压成一条长期记忆（失败自动回退规则拼接）
     max_scan: 500
 
   retention:

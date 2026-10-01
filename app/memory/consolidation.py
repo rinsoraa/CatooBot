@@ -7,7 +7,11 @@ chat. Everything it does is reversible bookkeeping:
 * conflicts   → not touched here; they are resolved at write time (§33)
 * retention   → old *episodic* memories are archived, not deleted (§74)
 * compression → a cluster of related episodes becomes one semantic memory,
-                the episodes are archived and linked (§37/§38)
+                the episodes are archived and linked (§37/§38). The summary is
+                rule-based by default; with ``memory.consolidation.
+                compression_use_llm`` the model writes it as structured JSON
+                (entities kept in the sentence, time/causality as fields) and
+                any trouble falls back to the rules with a WARNING
 * quota       → over-quota scopes shed their least valuable rows (§72)
 
 Health checks (spec §75) report counts; failures are logged and swallowed.
@@ -16,11 +20,15 @@ Health checks (spec §75) report counts; failures are logged and swallowed.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
+import re
 import time
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
+from app.ai.errors import AIError
+from app.ai.models import AIRequest, ChatMessage
 from app.memory.model import Memory
 from app.memory.retrieval import bigrams
 from app.memory.vector_store import cosine_similarity
@@ -31,6 +39,24 @@ if TYPE_CHECKING:
 
 _SCHEDULE_INTERVALS = {"hourly": 3600.0, "daily": 86400.0, "manual": 0.0}
 
+#: one model call per cluster — bounded so a slow provider cannot stall upkeep
+_LLM_TIMEOUT = 30.0
+
+_FENCE = re.compile(r"```(?:json)?\s*(?P<body>.*?)```", re.DOTALL)
+
+COMPRESSION_PROMPT = """你在把角色的一段记忆压缩成一条长期记忆。只输出 JSON，不要解释：
+{{"summary": "一句话", "time": "时间线索或空", "causality": "因果或空"}}
+
+要求：
+- summary 用第三人称，把"发生过什么"说清楚，关键人物/物品/地点都要出现在这句话里；
+- 原文有时间线索（先后、某天）就填进 time；有因果就说清"因为…所以…"放进 causality；
+- 不要添加原文没有的信息，不要写成清单。
+
+记忆（按时间先后，共 {count} 条）：
+{episodes}
+
+只输出 JSON。"""
+
 
 @dataclass
 class ConsolidationReport:
@@ -39,6 +65,7 @@ class ConsolidationReport:
     archived: int = 0
     compressed_clusters: int = 0
     compressed_sources: int = 0
+    llm_compressions: int = 0
     conflicts: int = 0
     quota_archived: int = 0
     errors: int = 0
@@ -48,7 +75,8 @@ class ConsolidationReport:
     def summary(self) -> str:
         return (
             f"merged={self.duplicates_merged} compressed={self.compressed_clusters}"
-            f"({self.compressed_sources} sources) archived={self.archived}"
+            f"({self.compressed_sources} sources, {self.llm_compressions} by model)"
+            f" archived={self.archived}"
             f" conflicts={self.conflicts} quota={self.quota_archived}"
             f" scanned={self.scanned}"
         )
@@ -60,6 +88,7 @@ class ConsolidationReport:
             "archived": self.archived,
             "compressed_clusters": self.compressed_clusters,
             "compressed_sources": self.compressed_sources,
+            "llm_compressions": self.llm_compressions,
             "conflicts": self.conflicts,
             "quota_archived": self.quota_archived,
             "errors": self.errors,
@@ -69,6 +98,38 @@ class ConsolidationReport:
         }
 
 
+def parse_compression(content: str) -> dict[str, Any] | None:
+    """Tolerant JSON object from the model reply; ``None`` = no usable summary."""
+    text = (content or "").strip()
+    candidates = [match.group("body").strip() for match in _FENCE.finditer(text)]
+    start, end = text.find("{"), text.rfind("}")
+    if start != -1 and end > start:
+        candidates.append(text[start : end + 1])
+    for candidate in candidates:
+        try:
+            payload = json.loads(candidate)
+        except (TypeError, ValueError):
+            continue
+        if isinstance(payload, dict) and str(payload.get("summary", "")).strip():
+            return payload
+    return None
+
+
+def compose_summary(payload: dict[str, Any]) -> str:
+    """``summary`` plus time/causality when the model gave them and they add news."""
+    summary = str(payload.get("summary", "") or "").strip()
+    if not summary:
+        return ""
+    extra = []
+    for key in ("time", "causality"):
+        value = str(payload.get(key, "") or "").strip()
+        if value and value not in summary:
+            extra.append(value)
+    if not extra:
+        return summary
+    return f"{summary}（{'；'.join(extra)}）"
+
+
 class MemoryConsolidator:
     def __init__(
         self,
@@ -76,11 +137,13 @@ class MemoryConsolidator:
         manager: MemoryManager,
         logger: logging.Logger | None = None,
         clock: Any = time.time,
+        engine: Any = None,
     ) -> None:
         self._config = config
         self._manager = manager
         self._log = logger or logging.getLogger("CatooBot.Memory.Consolidation")
         self._clock = clock
+        self._engine = engine  # optional: LLM compression (config-gated)
         self.last_report: ConsolidationReport | None = None
 
     # ------------------------------------------------------------------ api
@@ -216,7 +279,7 @@ class MemoryConsolidator:
         for cluster in clusters:
             if len(cluster) < cfg.compression_min_cluster:
                 continue
-            summary = self._summarize(cluster)
+            summary, by_model = await self._summarize_cluster(cluster)
             if not summary:
                 continue
             primary = max(cluster, key=lambda m: m.importance)
@@ -241,12 +304,15 @@ class MemoryConsolidator:
                 )
             report.compressed_clusters += 1
             report.compressed_sources += len(cluster)
+            if by_model:
+                report.llm_compressions += 1
             report.archived += len(cluster)
             await self._manager._ensure_embedding(compressed)  # noqa: SLF001
             self._log.info(
-                "[Memory.Consolidation] compressed %d episodes -> #%d",
+                "[Memory.Consolidation] compressed %d episodes -> #%d (%s)",
                 len(cluster),
                 compressed.id,
+                "model" if by_model else "rules",
             )
 
     def _cluster(
@@ -268,6 +334,53 @@ class MemoryConsolidator:
             if not placed:
                 clusters.append([episode])
         return clusters
+
+    async def _summarize_cluster(self, cluster: list[Memory]) -> tuple[str, bool]:
+        """(summary, written_by_model) — LLM when enabled, rules otherwise."""
+        rule_summary = self._summarize(cluster)
+        if not self._config.consolidation.compression_use_llm or self._engine is None:
+            return rule_summary, False
+        summary = await self._summarize_llm(cluster)
+        if summary:
+            return summary, True
+        return rule_summary, False
+
+    async def _summarize_llm(self, cluster: list[Memory]) -> str:
+        """Structured compression via the model; "" means "keep the rules"."""
+        ordered = sorted(cluster, key=lambda m: m.event_at or m.created_at)
+        episodes = "\n".join(
+            f"- {self._stamp(memory)} {memory.display_text}".strip() for memory in ordered
+        )
+        request = AIRequest(
+            messages=[
+                ChatMessage.user(COMPRESSION_PROMPT.format(episodes=episodes, count=len(ordered)))
+            ],
+            temperature=0.1,
+            max_tokens=400,
+        )
+        try:
+            response = await asyncio.wait_for(self._engine.chat(request), timeout=_LLM_TIMEOUT)
+        except AIError as exc:
+            self._log.warning(
+                "[Memory.Consolidation] model compression failed (%s) — keeping rules", exc
+            )
+            return ""
+        except Exception as exc:  # noqa: BLE001 - timeout / provider bug
+            self._log.warning(
+                "[Memory.Consolidation] model compression unavailable (%s) — keeping rules", exc
+            )
+            return ""
+        payload = parse_compression(response.content)
+        if payload is None:
+            self._log.warning(
+                "[Memory.Consolidation] model compression returned no usable JSON — keeping rules"
+            )
+            return ""
+        return compose_summary(payload)
+
+    def _stamp(self, memory: Memory) -> str:
+        moment = memory.event_at or memory.created_at
+        return f"[{time.strftime('%Y-%m-%d', time.localtime(moment))}]" if moment else "[无日期]"
 
     @staticmethod
     def _summarize(cluster: list[Memory]) -> str:

@@ -85,7 +85,9 @@ class Bot:
             if config.memory.enabled
             else None
         )
-        self.consolidator = MemoryConsolidator(config.memory, self.memory) if self.memory else None
+        self.consolidator = (
+            MemoryConsolidator(config.memory, self.memory, engine=self.ai) if self.memory else None
+        )
         self.consolidation_scheduler = (
             ConsolidationScheduler(self.consolidator, config.memory.consolidation.schedule)
             if self.consolidator is not None
