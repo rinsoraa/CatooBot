@@ -288,6 +288,15 @@ class ConfigAdminService:
         extractor = getattr(self.bot, "extractor", None)
         if extractor is not None:
             extractor.config = after.memory
+        # The consolidator and its scheduler captured ``config.memory`` /
+        # ``consolidation.schedule`` at construction; push the new values so a
+        # WebUI edit to 巩固 cadence/thresholds takes effect without a restart.
+        consolidator = getattr(self.bot, "consolidator", None)
+        if consolidator is not None:
+            consolidator._config = after.memory  # noqa: SLF001 - documented hot swap
+        scheduler = getattr(self.bot, "consolidation_scheduler", None)
+        if scheduler is not None:
+            scheduler.apply_schedule(after.memory.consolidation.schedule)
 
     def _apply_behavior_settings(self, before: AppConfig, after: AppConfig) -> None:
         try:

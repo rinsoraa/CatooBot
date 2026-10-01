@@ -56,14 +56,44 @@
 | 3 | `app/conversation/`、`app/continuity/` | v1.2 | 57 | 已完成 |
 | 4 | `app/media/` | v1.1 | 17 | 已完成 |
 | 5 | `app/tools/` | v0.6 | 38 | 已完成 |
-| 6 | `app/agent/` | v0.7 | ~45 | 待做 |
-| 7 | `app/behavior/` | v0.8 + v1.0 | ~31 | 待做 |
-| 8 | `app/character/`、`app/response/`、`app/core/`、`app/config/`、`plugins/` | v0.3 | ~90 | 待做 |
-| 9 | `app/web/` | v0.3（页面里的沙盒/社交段是 v2.0/v0.9，需逐条看） | ~26 | 待做 |
+| 6 | `app/agent/` | v0.7 | 45 | 已完成 |
+| 7 | `app/behavior/` | v0.8 + v1.0 | 31 | 已完成 |
+| 8 | `app/character/`、`app/response/`、`app/core/`、`app/config/`、`plugins/` | 混版（v0.3/v0.5/v0.6/v0.7/v0.8/v0.9/v1.1/v1.2/v2.0） | ~64 | 已完成（逐条判定） |
+| 9 | `app/web/` | 按域（conversation v1.2 / sandbox v2.0 / social v0.9 / identity v0.3 / tools v0.6 / agent v0.7 / behaviour v0.8 / memory v0.5） | ~26 | 已完成 |
+| 10 | `tests/` | 按被测模块 | 66 | 已完成 |
 
-`app/sandbox/` 的裸 `§N` 是正确的（它就是 v2.0），不需要前缀。
-未加前缀的旧模块引用仍按本表解读。批次 8、9 里混版的模块（`app/web/`、`plugins/`、
-`app/character/` 的沙盒/社交钩子）必须逐条对照小节标题判断，不能按模块表一把梭。
+`app/sandbox/` 的裸 `§N` 是正确的（它就是 v2.0），不需要前缀。三处无法定位的：
+v0.4 行为引擎（回复延迟/分段/作息，规格不在 docs/specs/）标 `v0.4 规格，原文缺失`；
+`test_plugin_capabilities` 的「Task 11」与 `test_reply_feedback` 的「§4 of the design」分别指向
+任务清单与 V3 设计文档，非版本规格，保持原样。混版文件已在 docstring 注明引用来源。
+
+## 配置段 → 热生效 / 需重启
+
+热加载覆盖审计的结论（「构造时捕获配置、`_apply` 从不下发」是一类 bug，已逐段核查）：
+**热生效**的都配了与时刻无关的测试（`test_webui_config.py` / `test_chat_behavior_settings.py`）。
+
+| 配置段 | 生效方式 | 备注 |
+|---|---|---|
+| `logging` | 热生效 ✓ | level / log_dir / color / narrate / narrate_thinking / narrate_world_ticks |
+| `permissions` | 热生效 ✓ | superusers / admins |
+| `ai` | 热生效 ✓ | providers / models / cooldown / concurrency / **context（已补推）** |
+| `memory` | 热生效 ✓ | retrieval / extraction / **consolidation + schedule（已补推）** / policy / retention |
+| `behavior` | 热生效 ✓ | reply / chunking / group / initiative / **schedule 作息（已补推）** |
+| `character` | 热生效 ✓ | 时区（重建 presence）；人设走 `/character` 页单独热加载 |
+| `social` | 热生效 ✓ | 全段（policy / continuation / observer / monitor） |
+| `tools`（单工具） | 热生效 ✓ | provider / timeout / cache / api key |
+| `onebot` | 需重启 | host / port / path / access_token（WebUI 保存后已标注） |
+| `web` | host/port 需重启 | 账号密码即时（AuthService）；地址端口已标注 |
+| `database.url` | 需重启 | WebUI 已标注 |
+| `memory.semantic.embedding` | 需重启 | 向量服务启动时构建，暂不热切换 |
+| `ai.usage.retention_days` | 需重启 | 注册在调度器闭包里 |
+| `media` / `agent` / `sandbox` / `conversation` / `continuity` / `bot` | 需重启 | 无 WebUI 表单，config.yaml 编辑后重启生效 |
+
+**本轮修复的三个同类 bug**（都配了回归测试）：
+1. `behavior.schedule`（作息睡眠/DND/夜间）：`BehaviorService._apply` 原来不推给 `PresenceResolver`。
+2. `ai.context`（上下文窗口）：`AIEngine.reconfigure` 原来不推给 `ConversationManager`。
+3. `memory.consolidation`（巩固节奏/阈值）：`_apply_memory` 原来不推给 `MemoryConsolidator` 与
+   `ConsolidationScheduler`。
 
 ## 设计文档
 
@@ -72,6 +102,7 @@
 | [V1.2_DESIGN.md](V1.2_DESIGN.md) | v1.2 会话运行期与角色延续的设计、对旧代码的审计 | 已实现 |
 | [V2.0_SANDBOX_PLAN.md](V2.0_SANDBOX_PLAN.md) | v2.0 迁移方案：旧架构审计、Bible→Seed 映射、旧数据清理范围、模块处置 | 已实现 |
 | [V3_REPLY_FEEDBACK.md](V3_REPLY_FEEDBACK.md) | 回复效果回流：观察 → 结算 → 参与度 EMA 的设计与约束 | 已实现（任务 20） |
+| [V3_EXPRESSION_LEARNING.md](V3_EXPRESSION_LEARNING.md) | Task 22 口癖学习：学用词/句式、按群限额注入、可停用可删除可追溯（附录 A 原文置顶） | 设计待确认 |
 | [V3_IMAGE_MEMORY.md](V3_IMAGE_MEMORY.md) | 图片记忆：哪些图值得记、记成什么、里程碑 ③ 的触发条件与硬约束 | ①② 已实现 |
 | [V3_DATA_EXPORT.md](V3_DATA_EXPORT.md) | 角色数据导出/导入：范围、格式、导入安全流程、验收 | 里程碑 1 已实现 |
 | [bible_source_罐头.txt](bible_source_罐头.txt) | 内置角色的人物档案源文件（Bible 编译器输入） | 内容资产 |

@@ -164,6 +164,10 @@ class AIEngine:
         dropped = [name for name in previous if name not in new_providers]
         self._providers = new_providers
         self.enabled = bool(config.enabled and self.router.model_count > 0)
+        # The context window (max history, system prompt length) is read off the
+        # ConversationManager, which captured ``config.context`` at construction —
+        # push the new value so a WebUI edit takes effect without a restart.
+        self.conversations._config = config.context  # noqa: SLF001 - same object held by everyone
 
         if self._owned_providers:
             for name in dropped:

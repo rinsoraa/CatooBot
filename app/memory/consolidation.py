@@ -462,6 +462,16 @@ class ConsolidationScheduler:
     def interval_seconds(self) -> float:
         return self._interval
 
+    def apply_schedule(self, schedule: str) -> None:
+        """Swap the run cadence (config hot reload) without a restart.
+
+        ``schedule`` was captured at construction; the WebUI edit otherwise had
+        no effect on this object until the process restarted.
+        """
+        self._schedule = schedule if schedule in _SCHEDULE_INTERVALS else "daily"
+        self._interval = _SCHEDULE_INTERVALS[self._schedule]
+        self._log.info("[Memory.Consolidation] schedule applied: %s", self._schedule)
+
     @property
     def running(self) -> bool:
         if self.external_driver:

@@ -118,6 +118,27 @@ class TestConfigAdminService:
             await service.web_form({"web_password": "abc"})
         await bot.database.close()
 
+    async def test_memory_consolidation_schedule_hot_applies(self, tmp_path) -> None:
+        """The consolidator and its scheduler captured ``config.memory`` at
+        construction; a WebUI edit to 巩固 cadence used to do nothing until a
+        restart. Changing daily → hourly must move the live interval."""
+        from app.web.services.config_admin import ConfigAdminService
+        from tests.conftest import FakeAdapter, make_bot
+
+        bot = make_bot(tmp_path, FakeAdapter())
+        await bot.database.connect()
+        try:
+            service = ConfigAdminService(bot, overrides_path=tmp_path / "ov.yaml")
+            assert bot.consolidation_scheduler.interval_seconds == 86400.0  # daily
+            after = bot.config.model_copy(deep=True)
+            after.memory.consolidation.schedule = "hourly"
+            notes = await service.apply(after)
+            assert bot.consolidator._config.consolidation.schedule == "hourly"  # noqa: SLF001
+            assert bot.consolidation_scheduler.interval_seconds == 3600.0
+            assert not any("重启" in note for note in notes)
+        finally:
+            await bot.shutdown()
+
 
 class TestAIReconfigure:
     async def test_reconfigure_swaps_the_router(self, tmp_path) -> None:
@@ -151,6 +172,33 @@ class TestAIReconfigure:
         assert report["enabled"] is True
         assert "b" in report["models_added"]
         assert engine.router.model_count == 2
+        await bot.database.close()
+
+    async def test_reconfigure_pushes_context_config(self, tmp_path) -> None:
+        """ai.context was captured at construction and never re-pushed — a WebUI
+        edit to the context window silently did nothing until a restart."""
+        from app.ai.engine import AIEngine
+        from app.config.settings import AIConfig, AIContextConfig
+        from tests.ai_mocks import MockAIProvider
+        from tests.conftest import FakeAdapter, make_bot
+
+        bot = make_bot(tmp_path, FakeAdapter())
+        await bot.database.connect()
+        engine = AIEngine(
+            AIConfig(enabled=True, models=[{"name": "a", "provider": "mock", "model": "a"}]),
+            bot.database,
+            providers={"mock": MockAIProvider()},
+        )
+        assert engine.conversations._config.max_messages == 20  # noqa: SLF001
+
+        await engine.reconfigure(
+            AIConfig(
+                enabled=True,
+                models=[{"name": "a", "provider": "mock", "model": "a"}],
+                context=AIContextConfig(enabled=True, max_messages=5),
+            )
+        )
+        assert engine.conversations._config.max_messages == 5  # noqa: SLF001
         await bot.database.close()
 
     async def test_reconfigure_dropping_model(self, tmp_path) -> None:
