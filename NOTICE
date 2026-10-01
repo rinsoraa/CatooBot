@@ -1,0 +1,38 @@
+CatooBot
+Copyright 2026 Rinsora <132744587+rinsoraa@users.noreply.github.com>
+
+Licensing scope
+===============
+
+The Apache License 2.0 in LICENSE covers the **source code** of CatooBot:
+the Python packages under `app/` and `plugins/`, the tests, the build and
+deployment files, and the WebUI code.
+
+It does **not** cover the **character content** that ships with, or is
+produced by, this repository. That content remains all rights reserved by its
+author and is excluded from the license grant:
+
+  * character persona / bible / prompt text, the character-bible source
+    (`docs/bible_source_*.txt`) and compiled character data (including the
+    backups written under `data/character_reset_backup/`);
+  * the built-in character's name, voice, backstory, and dialogue examples;
+  * sticker and image assets, and character-generated memories exported under
+    `data/exports/`;
+  * the versioned design specifications under `docs/specs/` — they are the
+    character's engineering *and persona* history (v0.3–v2.0, including the
+    bible-derived behaviour rules and dialogue examples), so they are treated
+    as character content here rather than as source code.
+
+You may use that content as part of running CatooBot, and you may replace it
+with your own character. You may not redistribute it as content, as a dataset,
+or as part of another character product. See `EULA.md` for the terms that apply
+to running the software.
+
+Third-party components
+======================
+
+No third-party bot framework (NoneBot / NcatBot / MaiBot / AstrBot / Koishi)
+code is included or vendored. CatooBot talks to QQ through an external NapCat
+deployment speaking OneBot 11, which you install and operate yourself. NapCat,
+QQ, and every Python dependency listed in `pyproject.toml` keep their own
+licenses and terms.
