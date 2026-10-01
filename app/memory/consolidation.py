@@ -356,6 +356,7 @@ class MemoryConsolidator:
                 ChatMessage.user(COMPRESSION_PROMPT.format(episodes=episodes, count=len(ordered)))
             ],
             temperature=0.1,
+            metadata={"purpose": "consolidation"},
             max_tokens=400,
         )
         try:

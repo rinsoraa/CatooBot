@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import random
 import time
 from dataclasses import dataclass
 from typing import Any
@@ -105,17 +106,29 @@ class ModelRouter:
         *,
         rate_limit_cooldown: float = 30.0,
         server_error_cooldown: float = 10.0,
+        retry_backoff_seconds: float = 0.5,
+        retry_backoff_max_seconds: float = 4.0,
         clock: Any = time.monotonic,
         logger: logging.Logger | None = None,
         event_listener: Any = None,
+        usage: Any = None,
+        sleep: Any = None,
+        monotonic: Any = None,
+        rng: Any = None,
     ) -> None:
         self._log = logger or logging.getLogger("CatooBot.AI.Router")
         self._providers = providers
         self._rate_limit_cooldown = rate_limit_cooldown
         self._server_error_cooldown = server_error_cooldown
+        self._backoff_base = max(0.0, retry_backoff_seconds)
+        self._backoff_max = max(0.0, retry_backoff_max_seconds)
         self._clock = clock  # injectable for deterministic cooldown tests
         self._lock = asyncio.Lock()
         self._event_listener = event_listener  # optional (event, model_name) sink
+        self._usage = usage  # optional UsageRecorder (per-call tokens/latency)
+        self._sleep = sleep or asyncio.sleep  # injectable: tests assert the delays
+        self._monotonic = monotonic or time.perf_counter  # latency measurement
+        self._rng = rng  # injectable jitter source; None = module random
         self.states: dict[str, ModelState] = {}
         for spec in specs:
             if spec.provider not in providers:
@@ -249,25 +262,35 @@ class ModelRouter:
         spec = state.spec
         provider = self._providers[spec.provider]
         retried_transient = False
+        attempt = 0
 
         while True:
+            attempt += 1
             self._log.info("Requesting model=%s (%s)", spec.name, spec.model)
             self._notify("request", spec.name)
             model_request = request.with_model(spec.model)
+            started = self._monotonic()
             try:
                 response = await provider.chat(model_request)
             except SwitchableError as exc:
                 state.last_error = str(exc)
                 state.failure_count += 1
+                await self._record_usage(spec, request, attempt, started, ok=False, error=exc)
 
                 transient = (AITimeoutError, AIConnectionError, EmptyResponseError)
                 if isinstance(exc, transient) and not retried_transient:
                     # One retry for transient trouble (network blips, a
-                    # reasoning-only empty stop), then move to the next model.
+                    # reasoning-only empty stop), spaced out so a struggling
+                    # endpoint is not hammered — then move to the next model.
                     retried_transient = True
+                    delay = self._backoff_delay(attempt)
                     self._log.warning(
-                        "Transient error on model=%s: %s — retrying once", spec.name, exc
+                        "Transient error on model=%s: %s — retrying in %.2fs",
+                        spec.name,
+                        exc,
+                        delay,
                     )
+                    await self._sleep(delay)
                     continue
 
                 if isinstance(exc, RateLimitError):
@@ -282,6 +305,7 @@ class ModelRouter:
                 # Key/permission is broken: other models on this provider will fail too.
                 state.last_error = str(exc)
                 state.failure_count += 1
+                await self._record_usage(spec, request, attempt, started, ok=False, error=exc)
                 self._log.error("Aborting AI request: %s", exc)
                 return exc
 
@@ -289,20 +313,59 @@ class ModelRouter:
                 # The request itself is malformed: switching models will not fix it.
                 state.last_error = str(exc)
                 state.failure_count += 1
+                await self._record_usage(spec, request, attempt, started, ok=False, error=exc)
                 self._log.error("Aborting AI request: %s", exc)
                 return exc
 
             except AIError as exc:  # pragma: no cover - defensive
                 state.last_error = str(exc)
                 state.failure_count += 1
+                await self._record_usage(spec, request, attempt, started, ok=False, error=exc)
                 self._log.warning("Model %s failed: %s", spec.name, exc)
                 return exc
 
+            await self._record_usage(spec, request, attempt, started, ok=True, response=response)
             state.last_success = self._clock()
             state.last_error = None
             self._log.info("Success model=%s", spec.name)
             self._notify("success", spec.name)
             return response
+
+    def _backoff_delay(self, attempt: int) -> float:
+        """Exponential backoff with equal jitter, capped (transport-level only).
+
+        Half the window is fixed so the pause never collapses to zero; the
+        jitter keeps several concurrent retries from waking up together.
+        """
+        if self._backoff_base <= 0:
+            return 0.0
+        ceiling = min(self._backoff_max, self._backoff_base * (2 ** (attempt - 1)))
+        jitter = (self._rng or random).uniform(0.0, ceiling / 2)
+        return ceiling / 2 + jitter
+
+    async def _record_usage(
+        self,
+        spec: ModelSpec,
+        request: AIRequest,
+        attempt: int,
+        started: float,
+        *,
+        ok: bool,
+        response: AIResponse | None = None,
+        error: AIError | None = None,
+    ) -> None:
+        if self._usage is None:
+            return
+        await self._usage.record(
+            provider=spec.provider,
+            model=spec.model,
+            latency_ms=(self._monotonic() - started) * 1000,
+            ok=ok,
+            usage=response.usage if response is not None else {},
+            error_type=error.__class__.__name__ if error is not None else "",
+            attempt=attempt,
+            purpose=str(request.metadata.get("purpose", "") or ""),
+        )
 
     async def _apply_cooldown(self, state: ModelState, exc: AIError) -> None:
         if isinstance(exc, RateLimitError):

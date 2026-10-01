@@ -185,6 +185,7 @@ class Evaluator:
         request = AIRequest(
             messages=[ChatMessage.user(prompt)],
             temperature=0.1,
+            metadata={"purpose": "evaluator"},
             model=self.config.evaluator.model or None,
         )
         try:

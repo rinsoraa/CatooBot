@@ -10,6 +10,7 @@ here in later versions).
 
 from __future__ import annotations
 
+import asyncio
 import os
 from typing import TYPE_CHECKING, Any
 
@@ -33,12 +34,14 @@ class AIEngine:
         database: Database | None = None,
         providers: dict[str, AIProvider] | None = None,
         router_event_listener: Any = None,
+        usage: Any = None,
     ) -> None:
         """``providers`` overrides config-driven construction (used by tests
         to inject mocks without touching the network)."""
         self.config = config
         self.log = get_logger("AI")
         self._router_event_listener = router_event_listener
+        self._usage = usage  # optional UsageRecorder (per-call tokens/latency)
         self._providers: dict[str, AIProvider] = {}
         self._owned_providers = providers is None  # close only what we built
 
@@ -60,7 +63,10 @@ class AIEngine:
             providers=self._providers,
             rate_limit_cooldown=config.cooldown.rate_limit_seconds,
             server_error_cooldown=config.cooldown.server_error_seconds,
+            retry_backoff_seconds=config.cooldown.retry_backoff_seconds,
+            retry_backoff_max_seconds=config.cooldown.retry_backoff_max_seconds,
             event_listener=router_event_listener,
+            usage=usage,
         )
         self.conversations = ConversationManager(
             config.context, database, logger=get_logger("AI.Context")
@@ -81,9 +87,15 @@ class AIEngine:
 
     @staticmethod
     def _build_providers(config: AIConfig) -> dict[str, AIProvider]:
-        """Instantiate providers from config; keys come from the environment."""
+        """Instantiate providers from config; keys come from the environment.
+
+        Providers that share a ``base_url`` share one concurrency limit, so a
+        burst of chat + vision + planner calls cannot flood the same endpoint.
+        """
         log = get_logger("AI")
         providers: dict[str, AIProvider] = {}
+        gates: dict[str, asyncio.Semaphore] = {}
+        limit = config.concurrency.max_parallel_per_provider
         for name, pcfg in config.providers.items():
             api_key = os.environ.get(pcfg.api_key_env, "") if pcfg.api_key_env else ""
             if not api_key:
@@ -93,6 +105,7 @@ class AIEngine:
                     pcfg.api_key_env or "<none configured>",
                 )
                 continue
+            gate = gates.setdefault(pcfg.base_url, asyncio.Semaphore(limit))
             try:
                 providers[name] = create_provider(
                     pcfg.type,
@@ -100,6 +113,7 @@ class AIEngine:
                     base_url=pcfg.base_url,
                     api_key=api_key,
                     timeout=config.timeout,
+                    semaphore=gate,
                 )
             except ValueError as exc:
                 log.error("Provider '%s' skipped: %s", name, exc)
@@ -136,7 +150,10 @@ class AIEngine:
             providers=new_providers,
             rate_limit_cooldown=config.cooldown.rate_limit_seconds,
             server_error_cooldown=config.cooldown.server_error_seconds,
+            retry_backoff_seconds=config.cooldown.retry_backoff_seconds,
+            retry_backoff_max_seconds=config.cooldown.retry_backoff_max_seconds,
             event_listener=self._router_event_listener,
+            usage=self._usage,
         )
         dropped = [name for name in previous if name not in new_providers]
         self._providers = new_providers

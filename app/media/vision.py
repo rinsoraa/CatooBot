@@ -65,6 +65,7 @@ class ImageUnderstandingRuntime:
         request = AIRequest(
             messages=[ChatMessage.user_with_images(VISION_PROMPT, [image])],
             temperature=0.1,
+            metadata={"purpose": "vision"},
             # reasoning-style vision models spend tokens thinking first; a tight
             # cap truncates the JSON before it ever closes (seen in logs as
             # finish=length). 800 leaves room for thought + the small payload.

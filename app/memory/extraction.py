@@ -109,6 +109,7 @@ class MemoryExtractor:
         request = AIRequest(
             messages=[ChatMessage.user(prompt)],
             temperature=0.1,
+            metadata={"purpose": "extraction"},
             model=self.config.extraction.model or None,
         )
         try:

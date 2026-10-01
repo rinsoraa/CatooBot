@@ -49,6 +49,7 @@ class SandboxAIDecider:
         request = AIRequest(
             messages=[ChatMessage.user(f"{PROMPT}\n\n{prompt}")],
             temperature=0.2,
+            metadata={"purpose": "sandbox"},
             max_tokens=500,
         )
         try:

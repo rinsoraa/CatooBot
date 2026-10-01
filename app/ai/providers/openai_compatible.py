@@ -11,6 +11,7 @@ text (which contains no credentials).
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import Any
 
@@ -53,8 +54,11 @@ class OpenAICompatibleProvider(AIProvider):
         connect_timeout: float = 10.0,
         transport: httpx.AsyncBaseTransport | None = None,
         logger: logging.Logger | None = None,
+        semaphore: asyncio.Semaphore | None = None,
     ) -> None:
         self.name = name
+        #: shared by every model on this endpoint (see AIConcurrencyConfig)
+        self._semaphore = semaphore
         self._log = logger or logging.getLogger("CatooBot.AI.Provider")
         self._client = httpx.AsyncClient(
             base_url=base_url.rstrip("/"),
@@ -94,7 +98,13 @@ class OpenAICompatibleProvider(AIProvider):
             len(request.messages),
         )
         try:
-            response = await self._client.post("/chat/completions", json=payload)
+            if self._semaphore is None:
+                response = await self._client.post("/chat/completions", json=payload)
+            else:
+                # One endpoint, one limit: a burst of vision + chat + planner
+                # calls must not hammer the same base_url all at once.
+                async with self._semaphore:
+                    response = await self._client.post("/chat/completions", json=payload)
         except httpx.TimeoutException as exc:
             raise AITimeoutError(self.name, model=request.model, detail=str(exc)) from exc
         except httpx.TransportError as exc:

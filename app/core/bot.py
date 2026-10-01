@@ -16,6 +16,7 @@ from app.adapters import Adapter
 from app.adapters.onebot_v11.api import BotApi
 from app.agent.runtime import AgentRuntime
 from app.ai.engine import AIEngine
+from app.ai.usage import UsageRecorder
 from app.behavior.engine import CharacterBehaviorEngine
 from app.behavior.models import ScheduledJob
 from app.behavior.presence import PresenceResolver
@@ -66,10 +67,15 @@ class Bot:
         self.permissions = PermissionManager(config.permissions)
         self.database = Database(config.database)
         self.metrics = Metrics()
+        # Task 15: per-call usage rows (tokens, latency, outcome) for the model page.
+        self.ai_usage = (
+            UsageRecorder(self.database, metrics=self.metrics) if config.ai.usage.enabled else None
+        )
         self.ai = AIEngine(
             config.ai,
             self.database,
             router_event_listener=self._on_router_event,
+            usage=self.ai_usage,
         )
         # v0.5: semantic memory (embeddings) is opt-in and independent from chat models.
         self.embeddings = (
@@ -420,6 +426,19 @@ class Bot:
                 )
             else:
                 asyncio.create_task(self.memory.replay_outbox())
+
+        # Task 15: model usage rows are pruned daily on the same loop.
+        if self.ai_usage is not None and shared_loop:
+            retention_days = self.config.ai.usage.retention_days
+            self.scheduler.register_job(
+                ScheduledJob(
+                    name="ai_usage_prune",
+                    handler=lambda: self.ai_usage.prune(retention_days),
+                    interval_seconds=86400.0,
+                    run_immediately=False,
+                    misfire_policy="skip",
+                )
+            )
 
         if self.config.tools.enabled:
             await self.tools.start()

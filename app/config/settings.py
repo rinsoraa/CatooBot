@@ -125,6 +125,22 @@ class AIContextConfig(BaseModel):
 class AICooldownConfig(BaseModel):
     rate_limit_seconds: float = Field(default=30.0, ge=0)
     server_error_seconds: float = Field(default=10.0, ge=0)
+    #: a transient failure retries with exponential backoff + jitter (seconds)
+    retry_backoff_seconds: float = Field(default=0.5, ge=0)
+    retry_backoff_max_seconds: float = Field(default=4.0, ge=0)
+
+
+class AIConcurrencyConfig(BaseModel):
+    """One in-flight limit per provider endpoint, shared by every model on it."""
+
+    max_parallel_per_provider: int = Field(default=4, ge=1)
+
+
+class AIUsageConfig(BaseModel):
+    """Per-call usage rows (tokens, latency, outcome) and their retention."""
+
+    enabled: bool = True
+    retention_days: int = Field(default=30, ge=1)
 
 
 class AIProviderConfig(BaseModel):
@@ -152,6 +168,8 @@ class AIConfig(BaseModel):
     timeout: float = Field(default=60.0, gt=0)
     context: AIContextConfig = Field(default_factory=AIContextConfig)
     cooldown: AICooldownConfig = Field(default_factory=AICooldownConfig)
+    concurrency: AIConcurrencyConfig = Field(default_factory=AIConcurrencyConfig)
+    usage: AIUsageConfig = Field(default_factory=AIUsageConfig)
     providers: dict[str, AIProviderConfig] = Field(default_factory=dict)
     models: list[AIModelConfig] = Field(default_factory=list)
 

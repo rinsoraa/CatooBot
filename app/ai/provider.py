@@ -40,6 +40,13 @@ def register_provider_type(type_name: str, factory: ProviderFactory) -> None:
 
 
 def create_provider(type_name: str, **kwargs: object) -> AIProvider:
+    """Build one provider by type name.
+
+    Factories receive every keyword the engine resolved for them — today
+    ``name`` / ``base_url`` / ``api_key`` / ``timeout`` / ``semaphore`` (the
+    per-``base_url`` concurrency gate); a factory that does not need one simply
+    accepts ``**kwargs``.
+    """
     try:
         factory = _PROVIDER_FACTORIES[type_name]
     except KeyError:

@@ -867,6 +867,32 @@ ALTER TABLE memory_embeddings ADD COLUMN vector_blob BLOB;
 ALTER TABLE memory_embeddings ADD COLUMN norm REAL;
 """,
     ),
+    (
+        17,
+        "model usage log",
+        """
+-- One row per provider attempt (the router records failures too), so the model
+-- page can show where tokens go, which model got slower and what is failing.
+-- Pruned by ai.usage.retention_days on the shared scheduler.
+CREATE TABLE IF NOT EXISTS ai_usage (
+    id                INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts                INTEGER NOT NULL,
+    provider          TEXT NOT NULL DEFAULT '',
+    model             TEXT NOT NULL DEFAULT '',
+    purpose           TEXT NOT NULL DEFAULT '',
+    prompt_tokens     INTEGER NOT NULL DEFAULT 0,
+    completion_tokens INTEGER NOT NULL DEFAULT 0,
+    total_tokens      INTEGER NOT NULL DEFAULT 0,
+    latency_ms        REAL NOT NULL DEFAULT 0,
+    attempt           INTEGER NOT NULL DEFAULT 1,
+    ok                INTEGER NOT NULL DEFAULT 1,
+    error_type        TEXT NOT NULL DEFAULT ''
+);
+
+CREATE INDEX IF NOT EXISTS idx_ai_usage_ts ON ai_usage(ts DESC);
+CREATE INDEX IF NOT EXISTS idx_ai_usage_model ON ai_usage(model, ts DESC);
+""",
+    ),
 ]
 
 

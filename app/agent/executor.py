@@ -242,7 +242,11 @@ class ExecutionEngine:
         from app.ai.models import AIRequest, ChatMessage
 
         response = await self.engine.chat(
-            AIRequest(messages=[ChatMessage.user(prompt)], temperature=0.3)
+            AIRequest(
+                messages=[ChatMessage.user(prompt)],
+                temperature=0.3,
+                metadata={"purpose": "agent"},
+            )
         )
         summary = (response.content or "").strip()
         if not summary:
@@ -288,7 +292,11 @@ class ExecutionEngine:
 
         try:
             response = await self.engine.chat(
-                AIRequest(messages=[ChatMessage.user(prompt)], temperature=0.1)
+                AIRequest(
+                    messages=[ChatMessage.user(prompt)],
+                    temperature=0.1,
+                    metadata={"purpose": "agent"},
+                )
             )
         except Exception:  # noqa: BLE001 - fall back to the planned arguments
             self._log.debug("[Agent] argument resolution failed; using plan arguments")

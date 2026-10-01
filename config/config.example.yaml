@@ -62,6 +62,13 @@ ai:
   cooldown:
     rate_limit_seconds: 30
     server_error_seconds: 10
+    retry_backoff_seconds: 0.5        # 瞬态失败重试的指数退避基数（另加等量抖动）
+    retry_backoff_max_seconds: 4.0    # 单次退避上限
+  concurrency:
+    max_parallel_per_provider: 4      # 同一 base_url 的并发上限（同一端点的所有模型共享）
+  usage:
+    enabled: true                     # 每次模型调用记一行（token/耗时/成败），模型页可看
+    retention_days: 30                # 用量记录保留天数，过期由调度器清理
 
   # ↓ 模型与 provider 已统一放到下面的「models:」总表里配置。
 

@@ -255,6 +255,7 @@ class Planner:
         request = AIRequest(
             messages=[ChatMessage.user(prompt)],
             temperature=0.2,
+            metadata={"purpose": "planner"},
             model=self.config.planner.model or None,
         )
         try:
