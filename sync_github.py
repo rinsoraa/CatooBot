@@ -10,9 +10,10 @@ Workflow (single source of truth):
 The mirror (``E:\\WorkSpace ZCode\\CatooBot_github``) is a git repo pointing at
 the private GitHub project. It never receives secrets or runtime data:
 
-    synced:     app/  plugins/  tests/  pyproject.toml  run.py  README.md
-                .env.example  .gitignore  .gitattributes  sync_github.py
-                config/config.example.yaml
+    synced:     app/  plugins/  tests/  docs/  .github/  pyproject.toml  run.py
+                README.md  .env.example  .gitignore  .gitattributes
+                sync_github.py  config/config.example.yaml
+                config/character_bible.md
     never:      .env  config/config.yaml  config/overrides.yaml
                 data/  logs/  .venv/  caches  *.egg-info
 """
@@ -29,7 +30,7 @@ from pathlib import Path
 SOURCE = Path(__file__).resolve().parent
 TARGET = SOURCE.parent / "CatooBot_github"
 
-MIRRORED_DIRS = ("app", "plugins", "tests", "docs")
+MIRRORED_DIRS = ("app", "plugins", "tests", "docs", ".github")
 ROOT_FILES = (
     "pyproject.toml",
     "run.py",
