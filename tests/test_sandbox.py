@@ -17,8 +17,7 @@ from app.sandbox.models import (
 )
 from app.sandbox.runtime import SandboxRuntime
 from app.sandbox.store import SandboxStore
-
-BIBLE_PATH = "config/character_bible.md"
+from tests.conftest import BIBLE_PATH
 
 
 class FakeClock:

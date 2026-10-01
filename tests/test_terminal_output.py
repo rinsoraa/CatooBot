@@ -211,8 +211,9 @@ class TestNarrationInChat:
         """v2.0: the sandbox narrates her tick when narrate ticks is on."""
         from app.config.settings import SandboxConfig
         from app.sandbox import BibleCompiler, SandboxRuntime, SandboxStore
+        from tests.conftest import BIBLE_PATH
 
-        bible = BibleCompiler("config/character_bible.md").compile()
+        bible = BibleCompiler(BIBLE_PATH).compile()
         runtime = SandboxRuntime(SandboxConfig(simulation_seed=3), SandboxStore(None), bible=bible)
         await runtime.start()
         runtime.narrate_ticks = False

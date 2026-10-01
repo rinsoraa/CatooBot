@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import sqlite3
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -9,6 +11,62 @@ import pytest
 from app.config.settings import AppConfig
 from app.core.bot import Bot
 from app.message.event import GroupMessageEvent, PrivateMessageEvent
+
+#: Repository root — tests must never depend on the current working directory.
+REPO_ROOT = Path(__file__).resolve().parents[1]
+
+#: The canonical character bible (also mirrored to GitHub).
+BIBLE_PATH = REPO_ROOT / "config" / "character_bible.md"
+
+
+# ---------------------------------------------------------------------------
+# Live-data guard: the suite must never open the operator's real database.
+# Tests once reached production data through default paths (junk files in the
+# live sticker library); opening data/*.db from a test now fails loudly instead
+# of silently reading or writing the live world.
+# ---------------------------------------------------------------------------
+_LIVE_DATA_DIR = (REPO_ROOT / "data").resolve()
+_STDLIB_SQLITE_CONNECT = sqlite3.connect
+
+
+def _live_db_target(database: Any) -> Path | None:
+    """Best-effort live-path detection for a sqlite3.connect() argument."""
+    try:
+        raw = str(database)
+    except Exception:  # noqa: BLE001 - the guard itself must never explode
+        return None
+    if raw.startswith("file:"):
+        raw = raw[5:].split("?", 1)[0]
+    candidates: set[Path] = set()
+    for base in (Path(), REPO_ROOT):
+        try:
+            candidates.add((base / raw).resolve())
+        except (OSError, ValueError):
+            continue
+    for candidate in candidates:
+        if candidate == _LIVE_DATA_DIR or _LIVE_DATA_DIR in candidate.parents:
+            return candidate
+    return None
+
+
+def is_live_db_path(database: Any) -> bool:
+    """True when *database* points into the project's own data/ directory."""
+    return _live_db_target(database) is not None
+
+
+def _guarded_sqlite_connect(database: Any, *args: Any, **kwargs: Any) -> Any:
+    target = _live_db_target(database)
+    if target is not None:
+        raise RuntimeError(
+            f"refusing to open the live database in tests: {database!r} -> {target}; "
+            "point DatabaseConfig at tmp_path instead"
+        )
+    return _STDLIB_SQLITE_CONNECT(database, *args, **kwargs)
+
+
+# Installed at import time (before test modules are collected) so no test can
+# slip past it.
+sqlite3.connect = _guarded_sqlite_connect  # type: ignore[assignment]
 
 
 class FakeAdapter:

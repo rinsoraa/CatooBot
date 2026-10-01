@@ -17,8 +17,9 @@ from app.sandbox.facts import FACTS_HEADER
 from app.sandbox.models import EventLevel, EventSource
 from app.utils.logger import _PlainFilter
 from app.utils.narrator import narrate
+from tests.conftest import BIBLE_PATH
 
-BIBLE = "config/character_bible.md"
+BIBLE = BIBLE_PATH
 
 
 async def make_sandbox() -> SandboxRuntime:
