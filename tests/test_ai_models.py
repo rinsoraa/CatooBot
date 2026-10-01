@@ -33,8 +33,15 @@ class TestAIRequest:
         assert request.model is None
         assert request.temperature is None
         assert request.max_tokens is None
-        assert request.stream is False
         assert request.metadata == {}
+
+    def test_streaming_option_is_rejected_not_ignored(self) -> None:
+        """``stream`` used to exist while the provider parsed JSON — a request
+        option that could never be honoured. It is gone, and passing it fails
+        loudly instead of being silently dropped."""
+        assert "stream" not in AIRequest.model_fields
+        with pytest.raises(ValidationError):
+            AIRequest(messages=[ChatMessage.user("hi")], stream=True)
 
     def test_full(self) -> None:
         request = AIRequest(

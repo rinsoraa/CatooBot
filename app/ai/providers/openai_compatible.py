@@ -68,10 +68,14 @@ class OpenAICompatibleProvider(AIProvider):
 
     async def chat(self, request: AIRequest) -> AIResponse:
         assert request.model, "AIRequest.model must be resolved before calling a provider"
+        # Streaming is not supported: responses are parsed from JSON, so a
+        # "stream": true request could never be read, and every caller wants
+        # the complete answer anyway. To add it, send "stream": true and
+        # consume the SSE "data:" lines via httpx aiter_lines (reasoning and
+        # tool-call deltas included) before changing this payload.
         payload: dict[str, Any] = {
             "model": request.model,
             "messages": [m.to_openai() for m in request.messages],
-            "stream": request.stream,
         }
         if request.temperature is not None:
             payload["temperature"] = request.temperature

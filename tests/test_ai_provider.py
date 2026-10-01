@@ -91,7 +91,9 @@ class TestSuccess:
             {"role": "user", "content": "你好"},
         ]
         assert body["temperature"] == 0.8
-        assert body["stream"] is False
+        # Streaming is not implemented: the payload must never ask the endpoint
+        # for an SSE response the response parser cannot read.
+        assert "stream" not in body
 
 
 class TestErrorMapping:

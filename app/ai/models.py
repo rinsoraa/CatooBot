@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 VALID_ROLES = {"system", "user", "assistant"}
 
@@ -66,13 +66,17 @@ class AIRequest(BaseModel):
     """A chat completion request.
 
     ``model`` may be empty — the ModelRouter then decides which model to use.
+    Streaming is deliberately absent: every caller consumes the complete
+    response (see the provider payload comment before adding it). Unknown
+    options are rejected so a stale ``stream=True`` cannot be silently dropped.
     """
+
+    model_config = ConfigDict(extra="forbid")
 
     messages: list[ChatMessage]
     model: str | None = None
     temperature: float | None = None
     max_tokens: int | None = None
-    stream: bool = False
     metadata: dict[str, Any] = Field(default_factory=dict)
     # Optional tool schemas (native function calling). Providers that do not
     # support the parameter simply never receive it (see the tool runtime).
