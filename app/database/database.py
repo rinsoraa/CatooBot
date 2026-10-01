@@ -816,6 +816,43 @@ DROP TABLE IF EXISTS world_snapshots;
 DROP TABLE IF EXISTS activity_episodes;
 """,
     ),
+    (
+        15,
+        "memory keyword index (fts5)",
+        """
+-- Keyword candidates used to be picked by scanning the (importance-capped)
+-- candidate list in Python, so a perfect match could be invisible. The index
+-- searches the whole scope. search_text holds the same tokens
+-- app.memory.keyword_index.bigrams() produces (CJK chars + CJK bigrams + ascii
+-- words), which is what makes short Chinese queries match; legacy rows are
+-- backfilled by KeywordIndex.ensure_ready() at startup.
+ALTER TABLE memories ADD COLUMN search_text TEXT NOT NULL DEFAULT '';
+
+CREATE VIRTUAL TABLE IF NOT EXISTS memories_fts USING fts5(
+    search_text,
+    content='memories',
+    content_rowid='id',
+    tokenize='unicode61'
+);
+
+CREATE TRIGGER IF NOT EXISTS memories_fts_ai AFTER INSERT ON memories BEGIN
+    INSERT INTO memories_fts(rowid, search_text) VALUES (new.id, new.search_text);
+END;
+
+CREATE TRIGGER IF NOT EXISTS memories_fts_ad AFTER DELETE ON memories BEGIN
+    INSERT INTO memories_fts(memories_fts, rowid, search_text)
+    VALUES ('delete', old.id, old.search_text);
+END;
+
+-- Only reindex when the indexed text changes (use_count/status writes are hot).
+CREATE TRIGGER IF NOT EXISTS memories_fts_au
+AFTER UPDATE OF content, summary, search_text ON memories BEGIN
+    INSERT INTO memories_fts(memories_fts, rowid, search_text)
+    VALUES ('delete', old.id, old.search_text);
+    INSERT INTO memories_fts(rowid, search_text) VALUES (new.id, new.search_text);
+END;
+""",
+    ),
 ]
 
 

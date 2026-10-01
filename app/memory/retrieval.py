@@ -24,6 +24,7 @@ from typing import TYPE_CHECKING, Any
 
 from app.character.relationship import STAGES
 from app.config.settings import MemoryRetrievalConfig
+from app.memory.keyword_index import bigrams
 from app.memory.model import Memory
 from app.memory.vector_store import VectorStore, cosine_similarity
 
@@ -42,31 +43,6 @@ if TYPE_CHECKING:
     from app.memory.embedding import EmbeddingService
 
 _RECENCY_HALF_LIFE_DAYS = 30.0
-
-
-def bigrams(text: str) -> set[str]:
-    """Character bigrams (ASCII words kept whole). Good enough for zh/en mix."""
-    tokens = set[str]()
-    current_ascii: list[str] = []
-    for char in text.lower():
-        if "\u4e00" <= char <= "\u9fff":
-            tokens.add(char)
-            if current_ascii:
-                tokens.add("".join(current_ascii))
-                current_ascii = []
-        elif char.isalnum():
-            current_ascii.append(char)
-        else:
-            if current_ascii:
-                tokens.add("".join(current_ascii))
-                current_ascii = []
-    if current_ascii:
-        tokens.add("".join(current_ascii))
-    for index in range(len(text) - 1):
-        a, b = text[index], text[index + 1]
-        if "\u4e00" <= a <= "\u9fff" and "\u4e00" <= b <= "\u9fff":
-            tokens.add(a + b)
-    return tokens
 
 
 def recency_factor(updated_at: int, now: float) -> float:

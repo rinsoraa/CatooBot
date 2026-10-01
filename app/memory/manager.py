@@ -18,6 +18,7 @@ import time
 from typing import TYPE_CHECKING, Any
 
 from app.memory.embedding import EmbeddingService
+from app.memory.keyword_index import KeywordIndex
 from app.memory.model import SOURCES, Memory
 from app.memory.model import scope_key as make_scope_key
 from app.memory.repository import MemoryRepository
@@ -53,6 +54,7 @@ class MemoryManager:
         self._log = logger or logging.getLogger("CatooBot.Memory")
         self._clock = clock
         self.repository = MemoryRepository(database, logger=self._log, clock=clock)
+        self.keyword_index = KeywordIndex(database, self._log)
         self.embeddings = embeddings
         self.vectors = vector_store or SqliteVectorStore(database, logger=self._log, clock=clock)
         self.retriever = HybridRetriever(
@@ -304,6 +306,29 @@ class MemoryManager:
 
     # ----------------------------------------------------------------- read
 
+    async def _candidates_for(self, query: str, scope_keys: list[str], limit: int) -> list[Memory]:
+        """Candidate pool = importance-ranked rows + keyword-index matches.
+
+        The repository's query is capped, so a perfect keyword match could sit
+        below the cut; the FTS index searches the whole scope and its hits are
+        fetched and merged in. Keyword *scoring* stays in the retriever, so the
+        ranking formula and its tests are untouched.
+        """
+        candidates = await self.repository.candidates(scope_keys, limit=limit)
+        if not query.strip() or not scope_keys:
+            return candidates
+        await self.keyword_index.ensure_ready()
+        hits = await self.keyword_index.search(
+            query,
+            scope_keys=scope_keys,
+            limit=max(20, self._config.retrieval.keyword_candidates * 2),
+        )
+        known = {memory.id for memory in candidates}
+        missing = [memory_id for memory_id in hits if memory_id not in known]
+        if missing:
+            candidates.extend(await self.repository.by_ids(missing))
+        return candidates
+
     async def retrieve_for_session(
         self,
         session_id: str,
@@ -317,8 +342,8 @@ class MemoryManager:
         scope_keys = [session_id.replace("private:", "user:")]
         if extra_scopes:
             scope_keys.extend(extra_scopes)
-        candidates = await self.repository.candidates(
-            scope_keys, limit=max(200, self._config.retrieval.keyword_candidates * 10)
+        candidates = await self._candidates_for(
+            query, scope_keys, limit=max(200, self._config.retrieval.keyword_candidates * 10)
         )
         scored = await self.retriever.retrieve(
             query,
@@ -338,7 +363,7 @@ class MemoryManager:
         relationship_stage: str = "",
         topic_titles: list[str] | None = None,
     ) -> list[ScoredMemory]:
-        candidates = await self.repository.candidates(scope_keys)
+        candidates = await self._candidates_for(query, scope_keys, limit=200)
         return await self.retriever.retrieve(
             query,
             candidates,
@@ -356,7 +381,7 @@ class MemoryManager:
         topic_titles: list[str] | None = None,
     ) -> tuple[list[ScoredMemory], Any]:
         """Debugger entry point: full component scores (spec §88)."""
-        candidates = await self.repository.candidates(scope_keys)
+        candidates = await self._candidates_for(query, scope_keys, limit=200)
         return await self.retriever.retrieve_with_trace(
             query,
             candidates,

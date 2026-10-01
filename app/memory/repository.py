@@ -13,6 +13,7 @@ import logging
 import time
 from typing import TYPE_CHECKING, Any
 
+from app.memory.keyword_index import index_text
 from app.memory.model import Memory
 
 if TYPE_CHECKING:
@@ -22,7 +23,7 @@ _INSERT_COLUMNS = (
     "scope_key, user_id, group_id, category, content, content_hash, importance,"
     " confidence, use_count, created_at, updated_at, last_used_at,"
     " layer, summary, source, status, supersedes_id, conflicts_with_id,"
-    " valid_from, valid_until, event_at"
+    " valid_from, valid_until, event_at, search_text"
 )
 
 
@@ -76,6 +77,7 @@ class MemoryRepository:
                 memory.valid_from,
                 memory.valid_until,
                 memory.event_at,
+                index_text(memory.content, memory.summary),
             ),
         )
         row = await self._db.fetchone(
@@ -90,7 +92,7 @@ class MemoryRepository:
             """UPDATE memories SET category=?, content=?, content_hash=?, importance=?,
                    confidence=?, updated_at=?, layer=?, summary=?, source=?, status=?,
                    supersedes_id=?, conflicts_with_id=?, valid_from=?, valid_until=?,
-                   event_at=?
+                   event_at=?, search_text=?
                WHERE id=?""",
             (
                 memory.category,
@@ -108,6 +110,7 @@ class MemoryRepository:
                 memory.valid_from,
                 memory.valid_until,
                 memory.event_at,
+                index_text(memory.content, memory.summary),
                 memory.id,
             ),
         )
@@ -166,6 +169,16 @@ class MemoryRepository:
     async def get(self, memory_id: int) -> Memory | None:
         row = await self._db.fetchone("SELECT * FROM memories WHERE id = ?", (memory_id,))
         return Memory.model_validate(dict(row)) if row else None
+
+    async def by_ids(self, memory_ids: list[int]) -> list[Memory]:
+        """Fetch specific rows (pulls keyword-index hits into the candidate pool)."""
+        if not memory_ids:
+            return []
+        placeholders = ",".join("?" for _ in memory_ids)
+        rows = await self._db.fetchall(
+            f"SELECT * FROM memories WHERE id IN ({placeholders})", tuple(memory_ids)
+        )
+        return [Memory.model_validate(dict(row)) for row in rows]
 
     async def find_same(self, scope_key: str, text: str) -> Memory | None:
         """Exact-duplicate lookup within a scope (normalized content hash)."""

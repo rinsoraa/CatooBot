@@ -54,9 +54,12 @@ class TestMigrationChain:
             applied = await db.fetchall(
                 "SELECT version, name FROM schema_migrations ORDER BY version"
             )
-            assert [row["version"] for row in applied] == sorted(row["version"] for row in applied)
-            assert applied[-1]["version"] == 14
-            assert applied[-1]["name"] == "drop v1.x world tables"
+            versions = [row["version"] for row in applied]
+            assert versions == sorted(versions)
+            # the drop migration is present (newer migrations may follow it)
+            assert (14, "drop v1.x world tables") in [
+                (row["version"], row["name"]) for row in applied
+            ]
         finally:
             await db.close()
 
