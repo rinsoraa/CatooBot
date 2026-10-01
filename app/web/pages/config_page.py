@@ -90,7 +90,7 @@ def _basic(service: Any, snapshot: dict[str, Any]) -> str:
                tip_text="管道/重定向到文件时自动变纯文本；NO_COLOR 环境变量优先级最高")}
     {ui.switch("log_narrate", logging_cfg["narrate"], "内心播报",
                tip_text="在控制台打印她的心理历程 / 思考 / 心流 / 碎碎念 / 世界状态（只给运营者看，不进 QQ）")}
-    {ui.switch("log_narrate_ticks", logging_cfg["narrate_world_ticks"], "每次世界心跳都播报",
+    {ui.switch("log_narrate_ticks", logging_cfg["narrate_world_ticks"], "每次沙盒心跳都播报",
                tip_text="默认只在状态变化时播报；打开后每 tick 都会打印一行（信息较密）")}
   </div>
   <div class="section-title">权限</div>
@@ -110,8 +110,8 @@ def _basic(service: Any, snapshot: dict[str, Any]) -> str:
   <p><button class="btn btn-primary" type="submit"
       data-tip="保存这一页的改动并立即生效">保存基础设置</button></p>
 </form>
-<p class="hint">行为/主动性与世界（作息、目标、事件）分别有独立页面：
-<a href="/behavior">行为</a> · <a href="/world/routine">世界作息</a></p>
+<p class="hint">回复节奏 / 作息 / 主动性在 <a href="/behavior">行为</a> 页，
+她此刻的生活在 <a href="/sandbox">沙盒</a> 页</p>
 """
     return ui.card("基础设置", content, tip_text="这些开关都会立刻作用到运行中的进程")
 

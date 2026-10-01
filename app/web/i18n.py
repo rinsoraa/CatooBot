@@ -21,7 +21,6 @@ TRANSLATIONS: dict[str, str] = {
     "仪表盘": "Dashboard",
     "角色": "Character",
     "行为": "Behavior",
-    "世界": "World",
     "话题": "Topics",
     "记忆": "Memory",
     "用户": "Users",

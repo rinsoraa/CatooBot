@@ -38,7 +38,6 @@ RESTART_FIELDS: dict[str, str] = {
     "database.url": "数据库地址（重启后生效）",
     "web.host": "WebUI 监听地址（重启后生效）",
     "web.port": "WebUI 监听端口（重启后生效）",
-    "world.timezone": "世界时区（重启后生效）",
 }
 
 ENV_LINE = re.compile(r"^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=")

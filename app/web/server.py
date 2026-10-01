@@ -330,7 +330,8 @@ class WebServer:
                              tip_text="不用再手工编辑 YAML")
             + ui.link_button("/memory/correction", "修正一条记忆",
                              tip_text="用一句人话让她记住新的说法")
-            + ui.link_button("/world", "看看她现在在干嘛", tip_text="v0.8 持久世界仪表盘")
+            + ui.link_button("/sandbox", "看看她现在在干嘛",
+                             tip_text="生活沙盒：她在哪个房间、正在做什么、小喵在干嘛")
             + ui.link_button("/behavior", "调回复节奏与主动性", tip_text="延迟、分段、作息、群聊参与")
             + ui.link_button("/tools", "管理工具", tip_text="启用/限流/权限与执行记录")
             + ui.link_button("/runtime", "运行时与插件", tip_text="重载插件、健康检查")
@@ -392,12 +393,16 @@ class WebServer:
 {area('风格备注', 'style_notes', persona.speaking_style.notes, 2)}
 {area('行为规则（每行一条）', 'rules', chr(10).join(persona.behavior_rules.rules), 4)}
 {area('System Prompt（角色自由补充）', 'system_prompt', persona.system_prompt, 6)}
-<p><button class="btn btn-primary">保存并热加载</button></p></form></div>
+<p><button class="btn btn-primary">保存并热加载</button></p>
+<p class="hint">人设由人物档案 <code>config/character_bible.md</code> 编译；
+档案变化（或人设为空）时启动会自动同步到这里，手工修改后以页面为准。</p></form></div>
 
 <div class="card"><h3>当前状态（narrative）</h3><form method="post" action="/character/state">
 {field('心情 mood', 'mood', state['mood'])}{field('能量 energy (0-1)', 'energy', str(state['energy']))}
 {field('正在做 activity', 'activity', state['activity'])}{field('关注 current_focus', 'current_focus', state['current_focus'])}
-<p><button class="btn btn-primary">更新状态</button></p></form></div>"""
+<p><button class="btn btn-primary">更新状态</button></p>
+<p class="hint">「正在做 / 位置 / 精力」由生活沙盒自动同步（她切换动作时会覆盖手工值）；
+想看细节去 <a href="/sandbox">沙盒</a> 页。</p></form></div>"""
         return web.Response(text=layout("角色", "/character", body, subtitle="人设、身份、状态与说话风格（QQ 端看不到这些设置）"), content_type="text/html")
 
     async def _character_save(self, request: web.Request) -> web.Response:
@@ -699,6 +704,8 @@ class WebServer:
         body = f"""<div class="card"><h3>Prompts</h3><form method="post" action="/prompts">
 <label>Persona System Prompt（角色自由补充段）</label>
 <textarea name="persona_system_prompt" rows="8">{esc(prompts['persona_system_prompt'])}</textarea>
+<p class="hint">角色的身份/性格/规则来自人物档案（<code>config/character_bible.md</code>）并同步在
+<a href="/character">角色</a>页；这里只放自由补充段，长期设定请改档案。</p>
 <label>Memory Extraction Prompt（留空使用内置默认）</label>
 <textarea name="memory_extraction_prompt" rows="8">{esc(prompts['memory_extraction_prompt'])}</textarea>
 <p><button class="btn btn-primary">保存并热加载</button></p></form></div>"""
@@ -743,7 +750,7 @@ class WebServer:
 <div class="grid">"""
         for action, label in (
             ("reload_persona", "重载人设"),
-            ("restore_model_overrides", "Apply Model Overrides"),
+            ("restore_model_overrides", "重新应用模型覆盖"),
             ("reload_plugins", "重载插件"),
         ):
             body += f"""<form class="inline" method="post" action="/api/runtime/{action}">
@@ -771,7 +778,7 @@ class WebServer:
 
         stats = ui.stats_grid(
             [
-                ("活动", state.get("activity") or "-", "她当前正在做的事（来自持久世界）"),
+                ("活动", state.get("activity") or "-", "她当前正在做的事（生活沙盒同步到这里）"),
                 ("心情", state.get("mood") or "-", ""),
                 ("精力", f"{state.get('energy', 0):.0%}", "随活动与睡眠变化"),
                 ("关注", state.get("current_focus") or "-", ""),
@@ -813,8 +820,8 @@ class WebServer:
             + ui.field("分段概率", "chunk_probability", cfg.chunking.chunk_probability, tip_text="0~1，越大越常拆")
             + ui.field("最多段数", "max_chunks", cfg.chunking.max_chunks, tip_text="一条回复最多拆成几段")
             + '</div><div class="section-title">角色活动</div>'
-            + ui.switch("activity_enabled", cfg.activity.enabled, "启用活动状态",
-                        tip_text="世界启用时由持久世界接管活动；关闭世界时这里才生效")
+            + ui.switch("activity_enabled", cfg.activity.enabled, "启用基础活动状态（兜底）",
+                        tip_text="生活沙盒接管活动时此项无效；只有关闭沙盒才会用回这层简单活动池")
             + '<div class="section-title">作息 · 睡眠 / 免打扰</div><div class="grid">'
             + ui.switch("sleep_enabled", cfg.schedule.sleep_enabled, "启用睡眠时段",
                         tip_text="这个时段角色在睡觉，回复更短更困，不主动说话")
@@ -829,7 +836,8 @@ class WebServer:
             + '</div><div class="section-title">群聊参与</div><div class="grid">'
             + ui.switch("participation_enabled", cfg.group.participation_enabled, "允许非 @ 插话",
                         tip_text="群里没点名她，也可能按概率接一句")
-            + ui.field("参与概率", "participation_probability", cfg.group.participation_probability, tip_text="0~1")
+            + ui.field("参与概率", "participation_probability", cfg.group.participation_probability,
+                       tip_text="仅当社交认知关闭时生效；开启时由结构化判断主导，此项只作低权重兜底")
             + ui.field("冷却（秒）", "group_cooldown", cfg.group.cooldown_seconds, tip_text="群里两次插话至少隔多久")
             + '</div><div class="section-title">主动聊天</div><div class="grid">'
             + ui.switch("initiative_enabled", cfg.initiative.enabled, "启用主动聊天",
@@ -859,9 +867,6 @@ class WebServer:
             '<button class="btn btn-secondary btn-sm" type="submit">心情 -1</button></form>'
             '<form class="inline" method="post" action="/behavior/trigger/reset_state">'
             '<button class="btn btn-danger btn-sm" type="submit">重置状态</button></form>'
-            '<form class="inline" method="post" action="/behavior/trigger/activity">'
-            '<input name="activity" placeholder="如 gaming / reading" style="width:140px;display:inline-block">'
-            '<button class="btn btn-secondary btn-sm" type="submit">设置活动</button></form>'
             '<form class="inline" method="post" action="/behavior/trigger/test_initiative">'
             '<button class="btn btn-secondary btn-sm" type="submit">测试主动性（评估不发送）</button></form>'
             "</div>"
@@ -944,15 +949,13 @@ class WebServer:
 
     async def _behavior_trigger(self, request: web.Request) -> web.Response:
         action = request.match_info["action"]
-        form = await request.post()
+        await request.post()
         if action == "mood_up":
             result = await self._behavior.test_state_transition(+1)
         elif action == "mood_down":
             result = await self._behavior.test_state_transition(-1)
         elif action == "reset_state":
             result = await self._behavior.reset_state()
-        elif action == "activity":
-            result = await self._behavior.force_activity(str(form.get("activity", "idle")))
         elif action == "test_initiative":
             preview = await self._behavior.preview(
                 {"topic": "未完成的项目", "relationship": "familiar"}
@@ -1011,8 +1014,6 @@ class WebServer:
         topic_id = int(request.match_info["topic_id"])
         ok = await self._behavior.topic_action(action, topic_id)
         raise web.HTTPFound(f"/topics?updated={1 if ok else 0}")
-
-    # ---------------------------------------------------------- world (v0.8)
 
     # -------------------------------------------------------- memory (v0.5)
 

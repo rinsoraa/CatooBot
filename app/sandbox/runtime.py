@@ -65,6 +65,30 @@ from app.utils.narrator import narrate
 
 logger = logging.getLogger("CatooBot.Sandbox")
 
+#: action id → the canonical activity written into CharacterState
+#: ("gaming/reading/eating/working" are the ids ReplyTiming treats as busy)
+ACTIVITY_IDS: dict[str, str] = {
+    "play_minecraft": "gaming",
+    "play_singleplayer": "gaming",
+    "watch_animation": "reading",
+    "work_commission": "working",
+    "eat_pudding": "eating",
+    "eat_cake": "eating",
+    "eat_fruit": "eating",
+    "drink_cola": "eating",
+    "sleep": "sleeping",
+    "nap": "napping",
+    "browse_social": "online",
+    "chat_group": "online",
+    "browse_forum": "online",
+    "film_cat": "online",
+    "go_shopping_cola": "out",
+    "go_shopping_sweets": "out",
+    "take_out_trash": "out",
+    "pick_up_package": "out",
+    "walk": "out",
+}
+
 TickListener = Callable[[dict[str, Any]], None]
 
 
@@ -107,6 +131,9 @@ class SandboxRuntime:
         self.narrate_ticks = False
         #: optional ContinuityManager — meaningful events feed recent_events
         self.continuity: Any = None
+        #: optional async (activity, location, energy) -> None projection into
+        #: CharacterState so WebUI/prompts/timing all read the same life.
+        self.state_sync: Any = None
 
         # ------------------------------------------------------------ systems
         self.spaces = SpaceSystem(build_spaces())
@@ -158,6 +185,7 @@ class SandboxRuntime:
         self.phase = SandboxPhase.running
         await self.store.state_set("phase", self.phase.value)
         self._derive_modes()
+        await self._sync_state()
 
     async def shutdown(self) -> None:
         self.phase = SandboxPhase.stopped
@@ -224,6 +252,7 @@ class SandboxRuntime:
             report["decided"] = True
 
         self._derive_modes()
+        self.character.energy = max(0.0, min(1.0, 1.0 - self.needs.level("energy")))
         await self._process_pending_events()
         if self._should_snapshot():
             await self._snapshot()
@@ -303,6 +332,7 @@ class SandboxRuntime:
         self._notes.append(f"{definition.name}做完了")
         self.current_action = None
         await self.store.save_action(action)
+        await self._sync_state()
 
     async def _decide_and_apply(self, *, space_id: str) -> SandboxDecision:
         decision, trace = await self.engine.decide_next(
@@ -367,6 +397,7 @@ class SandboxRuntime:
         self.character.location = target_space
         self.character.current_action_id = instance.id
         await self.store.save_action(instance)
+        await self._sync_state()
         if definition.typical_minutes >= 20:
             await self._append_event(
                 "action_started", f"开始{definition.name}"
@@ -897,6 +928,21 @@ class SandboxRuntime:
     def _should_snapshot(self) -> bool:
         stride = max(1, int(60.0 / max(1.0, float(self.config.tick_seconds) / 60.0)))
         return int(self._rng.random() * stride) == 0
+
+    async def _sync_state(self) -> None:
+        """Project her life onto CharacterState (WebUI/prompt/timing agree)."""
+        if self.state_sync is None:
+            return
+        definition = self.actions.definition(self.current_action)
+        activity = (
+            ACTIVITY_IDS.get(definition.id, definition.id) if definition else "idle"
+        )
+        location = self.spaces.name(self.character.location)
+        energy = max(0.0, min(1.0, 1.0 - self.needs.level("energy")))
+        try:
+            await self.state_sync(activity, location, energy)
+        except Exception:  # noqa: BLE001 - projection must never break the world
+            self._log.debug("[Sandbox] state sync failed", exc_info=True)
 
     def _derive_modes(self) -> list[str]:
         definition = self.actions.definition(self.current_action)

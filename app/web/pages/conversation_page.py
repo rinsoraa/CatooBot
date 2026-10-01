@@ -147,7 +147,7 @@ def continuity_page(data: dict[str, Any]) -> str:
             + field("近期情绪", state.get("recent_emotion", ""), "分钟级 TTL")
             + field("上一句说过", state.get("last_response_context", ""))
             + field("当前情感", affect_bits, "事件驱动 + 衰减，独立于整体心情")
-            + field("最近小事", "；".join(state.get("recent_events", [])[-3:]), "世界 micro events"),
+            + field("最近小事", "；".join(state.get("recent_events", [])[-3:]), "来自生活沙盒的小事"),
         )
         + ui.card(
             "未完成的事（Open Loops）",

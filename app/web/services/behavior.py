@@ -303,10 +303,6 @@ class BehaviorService:
         state = await self.bot.character.states.reset()
         return {"ok": True, "state": state.model_dump()}
 
-    async def force_activity(self, activity: str) -> dict[str, Any]:
-        state = await self.bot.character.states.set_activity(activity)
-        return {"ok": True, "state": state.model_dump()}
-
     # --------------------------------------------------------------- topics
 
     async def list_topics(self, scope_key: str = "", status: str = "") -> list[dict[str, Any]]:

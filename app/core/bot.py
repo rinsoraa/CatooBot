@@ -200,6 +200,7 @@ class Bot:
                 self.behavior.activity_external = True
                 self.sandbox.narrate_ticks = config.logging.narrate_world_ticks
                 self.sandbox.continuity = self.continuity
+                self.sandbox.state_sync = self._sync_sandbox_state
             except Exception:  # noqa: BLE001 - sandbox failure must not stop startup
                 self.log.exception("Sandbox initialization failed; continuing without it")
                 self.sandbox = None
@@ -252,6 +253,14 @@ class Bot:
 
     # ------------------------------------------------------------ lifecycle
 
+    async def _sync_sandbox_state(
+        self, activity: str, location: str, energy: float
+    ) -> None:
+        """The sandbox is the only writer of her life: mirror it onto state."""
+        await self.character.states.update(
+            activity=activity, location=location, energy=energy, reason="sandbox"
+        )
+
     async def _boot_sandbox(self) -> None:
         """Start (or reset-and-seed) the character life sandbox (v2.0 §120)."""
         assert self.sandbox is not None
@@ -288,10 +297,19 @@ class Bot:
                 from app.character.persona import Persona
                 from app.sandbox.persona import build_persona_payload
 
-                payload = build_persona_payload(sandbox.bible)
-                persona = Persona.model_validate(payload)
-                await self.personas.save(persona)
-                await self.character.personas.load()
+                synced_version = await sandbox.store.state_get("persona_synced_version")
+                needs_sync = (
+                    not self.personas.persona.is_configured()
+                    or synced_version != sandbox.bible.version
+                )
+                if needs_sync:
+                    payload = build_persona_payload(sandbox.bible)
+                    await self.personas.save(Persona.model_validate(payload))
+                    await self.character.personas.load()
+                    await sandbox.store.state_set(
+                        "persona_synced_version", sandbox.bible.version
+                    )
+                    self.log.info("[Sandbox] persona synced from bible %s", sandbox.bible.version)
             except Exception:  # noqa: BLE001 - persona sync must not stop boot
                 self.log.exception("[Sandbox] persona sync from bible failed")
         narrate().world(
