@@ -22,6 +22,10 @@ Thumbs.db
 .idea/
 .vscode/
 
+# Editor / tooling artifacts (ZCode)
+.zcode/
+.zcodeignore
+
 # WebUI-managed overrides (machine-written, operator-local)
 config/overrides.yaml
 
