@@ -56,7 +56,10 @@ def _enable_windows_vt() -> bool:
     try:
         import ctypes
 
-        kernel32 = ctypes.windll.kernel32
+        # ``ctypes.windll`` exists only on Windows; typeshed gates it on
+        # sys.platform, so a direct attribute access fails mypy on Linux CI.
+        # getattr() stays dynamic (Any) and reads the same at runtime.
+        kernel32 = getattr(ctypes, "windll").kernel32  # noqa: B009 - windows-only loader
         handle = kernel32.GetStdHandle(-11)  # STD_OUTPUT_HANDLE
         mode = ctypes.c_uint32()
         if not kernel32.GetConsoleMode(handle, ctypes.byref(mode)):
