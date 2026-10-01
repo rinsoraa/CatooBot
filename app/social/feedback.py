@@ -113,6 +113,73 @@ class ReplyFeedbackStore:
         if queued:
             self._count("reply_outcome_enqueued")
 
+    #: bot_state key holding the engagement snapshot (Task 20 §6)
+    ENGAGEMENT_KEY = "social_engagement"
+
+    async def load_engagement(self) -> dict[str, Any] | None:
+        """Read the persisted engagement memory (None when never written)."""
+        try:
+            data = await self._db.get_setting_json(self.ENGAGEMENT_KEY)
+        except Exception as exc:  # noqa: BLE001 - a missing snapshot is not an error
+            self._log.warning("[Social.Feedback] engagement load failed (%s)", exc)
+            return None
+        return data if isinstance(data, dict) else None
+
+    async def save_engagement(self, snapshot: dict[str, Any]) -> bool:
+        try:
+            await self._db.set_setting_json(self.ENGAGEMENT_KEY, snapshot, int(self._clock()))
+        except Exception as exc:  # noqa: BLE001 - persisting must never break a sweep
+            self._count("reply_feedback_failed")
+            self._log.warning("[Social.Feedback] engagement save failed (%s)", exc)
+            return False
+        return True
+
+    async def prune(self, retention_days: int) -> int:
+        """Drop settled rows older than the retention window (daily job)."""
+        cutoff = float(self._clock()) - max(1, retention_days) * 86400
+        try:
+            row = await self._db.fetchone(
+                "SELECT COUNT(*) AS n FROM reply_outcomes"
+                " WHERE verdict != 'pending' AND sent_at < ?",
+                (cutoff,),
+            )
+            count = int(row["n"]) if row else 0
+            if count:
+                await self._db.execute(
+                    "DELETE FROM reply_outcomes WHERE verdict != 'pending' AND sent_at < ?",
+                    (cutoff,),
+                )
+            return count
+        except Exception as exc:  # noqa: BLE001 - upkeep must not raise
+            self._log.warning("[Social.Feedback] prune failed (%s)", exc)
+            return 0
+
+    async def replay_entry(self, entry: Any) -> None:
+        """Outbox handler for kind='reply_outcome' (Task 14 integration)."""
+        if entry.kind != "reply_outcome":
+            raise ValueError(f"unexpected outbox kind for the feedback store: {entry.kind!r}")
+        payload = dict(entry.payload or {})
+        await self._db.execute(
+            """INSERT INTO reply_outcomes
+                   (turn_id, scope_key, is_group, reason_code, self_initiated,
+                    sent_at, window_seconds, created_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+               ON CONFLICT(turn_id) DO NOTHING""",
+            (
+                str(payload.get("turn_id", "")),
+                str(payload.get("scope_key", "")),
+                1 if payload.get("is_group") else 0,
+                str(payload.get("reason_code", "")),
+                1 if payload.get("self_initiated") else 0,
+                float(payload.get("sent_at", 0.0) or 0.0),
+                float(
+                    payload.get("window_seconds", DEFAULT_WINDOW_SECONDS) or DEFAULT_WINDOW_SECONDS
+                ),
+                float(payload.get("sent_at", 0.0) or 0.0),
+            ),
+        )
+        self._count("outbox_replayed")
+
     async def pending_before(self, cutoff: float, *, limit: int = 200) -> list[dict[str, Any]]:
         """Rows whose observation window has passed (oldest first)."""
         rows = await self._db.fetchall(

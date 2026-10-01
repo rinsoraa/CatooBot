@@ -428,6 +428,8 @@ class SocialConfig(BaseModel):
     fatigue: SocialFeatureConfig = Field(default_factory=SocialFeatureConfig)
     topic: SocialFeatureConfig = Field(default_factory=SocialFeatureConfig)
     observation_retention_days: int = Field(default=30, ge=1)
+    #: Task 20: settled reply-outcome rows older than this are pruned
+    feedback_retention_days: int = Field(default=30, ge=1)
 
 
 class ToolRateLimitConfig(BaseModel):

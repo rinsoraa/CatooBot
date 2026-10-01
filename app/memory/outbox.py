@@ -101,6 +101,8 @@ class Outbox:
         self._metrics = metrics
         self._clock = clock
         self._lock = asyncio.Lock()
+        #: kind -> handler; let each subsystem own its own entry type
+        self._handlers: dict[str, Any] = {}
 
     # ---------------------------------------------------------------- write
 
@@ -169,8 +171,13 @@ class Outbox:
 
     # --------------------------------------------------------------- replay
 
-    async def replay(self, handler: Any, *, limit: int = 200) -> ReplayReport:
-        """Hand every pending entry to *handler*; keep the ones that fail."""
+    def register(self, kind: str, handler: Any) -> None:
+        """Route one entry kind to its owner (memory, social, ...)."""
+        self._handlers[str(kind)] = handler
+
+    async def replay(self, handler: Any = None, *, limit: int = 200) -> ReplayReport:
+        """Hand every pending entry to *handler* (or the registered one); keep failures."""
+        handler = handler or self._dispatch
         async with self._lock:
             entries, dropped = await self._load()
             report = ReplayReport(dropped=dropped)
@@ -210,6 +217,12 @@ class Outbox:
                     report.remaining,
                 )
             return report
+
+    async def _dispatch(self, entry: OutboxEntry) -> None:
+        handler = self._handlers.get(entry.kind)
+        if handler is None:
+            raise ValueError(f"no handler registered for outbox kind {entry.kind!r}")
+        await handler(entry)
 
     def _rewrite(self, entries: list[OutboxEntry]) -> None:
         """Atomically replace the file with what is still pending."""

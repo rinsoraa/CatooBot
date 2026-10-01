@@ -115,6 +115,8 @@ class Bot:
         self.reply_feedback = ReplyFeedbackStore(
             self.database, outbox=self.outbox, metrics=self.metrics
         )
+        if self.outbox is not None:
+            self.outbox.register("reply_outcome", self.reply_feedback.replay_entry)
         self.consolidator = (
             MemoryConsolidator(config.memory, self.memory, engine=self.ai) if self.memory else None
         )
@@ -461,12 +463,34 @@ class Bot:
                 metrics=self.metrics,
                 on_settled=_apply_outcome,
             )
+
+            async def _settle_and_persist() -> None:
+                await settler.settle()
+                if social_engine is not None:
+                    await self.reply_feedback.save_engagement(social_engine.engagement.snapshot())
+
+            if social_engine is not None:
+                snapshot = await self.reply_feedback.load_engagement()
+                if snapshot is not None:
+                    social_engine.engagement.load(snapshot)
+
             self.scheduler.register_job(
                 ScheduledJob(
                     name="reply_feedback",
-                    handler=settler.settle,
+                    handler=_settle_and_persist,
                     interval_seconds=30.0,
                     run_immediately=True,
+                    misfire_policy="skip",
+                )
+            )
+            self.scheduler.register_job(
+                ScheduledJob(
+                    name="reply_feedback_prune",
+                    handler=lambda: self.reply_feedback.prune(
+                        self.config.social.feedback_retention_days
+                    ),
+                    interval_seconds=86400.0,
+                    run_immediately=False,
                     misfire_policy="skip",
                 )
             )

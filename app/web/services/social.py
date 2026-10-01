@@ -27,6 +27,50 @@ class SocialAdminService:
     def social(self):
         return getattr(self.bot, "social", None)
 
+    async def reply_feedback(self, *, days: int = 7) -> dict[str, Any]:
+        """“她最近说得怎么样” (Task 20 §7) — read-only rollup for the social page."""
+        store = getattr(self.bot, "reply_feedback", None)
+        if store is None:
+            return {"available": False}
+        rows = await store.recent(days=days)
+        settled = [row for row in rows if row.get("verdict") != "unknown"]
+        engaged = [row for row in settled if row["verdict"] == "engaged"]
+        by_reason: dict[str, list[int]] = {}
+        for row in settled:
+            bucket = by_reason.setdefault(str(row.get("reason_code") or "-"), [0, 0])
+            bucket[0] += 1
+            if row["verdict"] == "engaged":
+                bucket[1] += 1
+        latencies = sorted(
+            float(row["first_reply_after"])
+            for row in engaged
+            if row.get("first_reply_after") is not None
+        )
+        engagement = getattr(self.social, "engagement", None)
+        return {
+            "available": True,
+            "days": days,
+            "total": len(rows),
+            "settled": len(settled),
+            "unknown": len(rows) - len(settled),
+            "engaged": len(engaged),
+            "engaged_rate": round(len(engaged) / len(settled), 3) if settled else None,
+            "ambient": sum(1 for row in settled if row["verdict"] == "ambient"),
+            "silence": sum(1 for row in settled if row["verdict"] == "silence"),
+            "quiet_group": sum(
+                1
+                for row in settled
+                if row["verdict"] == "silence" and row.get("note") == "quiet_group"
+            ),
+            "negative": sum(1 for row in settled if row["verdict"] == "negative"),
+            "median_first_reply": (latencies[len(latencies) // 2] if latencies else None),
+            "by_reason": {
+                reason: {"total": counts[0], "engaged": counts[1]}
+                for reason, counts in sorted(by_reason.items())
+            },
+            "engagement": engagement.stats() if engagement is not None else {},
+        }
+
     @property
     def available(self) -> bool:
         social = self.social

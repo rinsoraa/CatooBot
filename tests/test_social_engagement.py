@@ -148,3 +148,111 @@ class TestAttentionFeed:
         for _ in range(50):
             attention.note_reply_outcome("g", 1.0)
         assert attention.get("g").momentum <= 1.0
+
+
+class TestPersistenceWiring:
+    async def test_store_round_trips_the_engagement_snapshot(self, tmp_path) -> None:
+        from app.config.settings import DatabaseConfig
+        from app.database.database import Database
+        from app.social.feedback import ReplyFeedbackStore
+
+        db = Database(DatabaseConfig(url=f"sqlite:///{tmp_path / 'eng.db'}"))
+        await db.connect()
+        try:
+            store = ReplyFeedbackStore(db, clock=lambda: 1_700_000_000.0)
+            local, _clock = engagement()
+            for _ in range(MIN_SAMPLES):
+                local.note("g", -1.0)
+            assert await store.save_engagement(local.snapshot())
+            restored, _c = engagement()
+            restored.load(await store.load_engagement())
+            assert restored.samples("g") == MIN_SAMPLES
+            assert restored.factor("g") == pytest.approx(FACTOR_MIN, abs=1e-6)
+        finally:
+            await db.close()
+
+    async def test_prune_drops_old_settled_rows_only(self, tmp_path) -> None:
+        from app.config.settings import DatabaseConfig
+        from app.database.database import Database
+        from app.social.feedback import ReplyFeedbackStore
+
+        db = Database(DatabaseConfig(url=f"sqlite:///{tmp_path / 'prune.db'}"))
+        await db.connect()
+        try:
+            store = ReplyFeedbackStore(db, clock=lambda: 1_700_000_000.0)
+            await store.record_turn(turn_id="old", scope_key="group:9", reason_code="x")
+            await store.record_turn(turn_id="fresh", scope_key="group:9", reason_code="x")
+            await db.execute(
+                "UPDATE reply_outcomes SET verdict = 'silence', sent_at = sent_at - 40 * 86400"
+                " WHERE turn_id = 'old'"
+            )
+            await db.execute(
+                "UPDATE reply_outcomes SET verdict = 'engaged' WHERE turn_id = 'fresh'"
+            )
+            assert await store.prune(30) == 1
+            remaining = [row["turn_id"] for row in await store.recent(days=90)]
+            assert remaining == ["fresh"]
+        finally:
+            await db.close()
+
+    async def test_outbox_replay_routes_reply_outcomes(self, tmp_path) -> None:
+        from app.config.settings import DatabaseConfig
+        from app.database.database import Database
+        from app.memory.outbox import Outbox
+        from app.social.feedback import ReplyFeedbackStore
+
+        db = Database(DatabaseConfig(url=f"sqlite:///{tmp_path / 'replay.db'}"))
+        await db.connect()
+        try:
+            box = Outbox(tmp_path / "outbox.jsonl", clock=lambda: 1_700_000_000.0)
+            store = ReplyFeedbackStore(db, outbox=box, clock=lambda: 1_700_000_000.0)
+            box.register("reply_outcome", store.replay_entry)
+            await box.enqueue(
+                "reply_outcome",
+                {
+                    "turn_id": "t-replay",
+                    "scope_key": "group:9",
+                    "reason_code": "participation_rate",
+                    "self_initiated": True,
+                    "sent_at": 1_699_999_000.0,
+                    "window_seconds": 90.0,
+                },
+            )
+            report = await box.replay()
+            assert report.replayed == 1 and report.remaining == 0
+            row = await db.fetchone("SELECT * FROM reply_outcomes WHERE turn_id = 't-replay'")
+            assert row is not None and row["verdict"] == "pending" and row["self_initiated"] == 1
+        finally:
+            await db.close()
+
+
+class TestWebuiCard:
+    def _card(self, feedback: dict) -> str:  # type: ignore[type-arg]
+        from app.web.routes.social import SocialRoutes
+
+        return SocialRoutes._reply_feedback_card(feedback)
+
+    def test_unavailable_and_empty_states(self) -> None:
+        assert "暂无" in self._card({"available": False})
+        assert "还没有可结算" in self._card({"available": True, "total": 0})
+
+    def test_renders_the_rollup(self) -> None:
+        html = self._card(
+            {
+                "available": True,
+                "total": 10,
+                "engaged_rate": 0.4,
+                "median_first_reply": 12.0,
+                "quiet_group": 3,
+                "silence": 5,
+                "negative": 1,
+                "ambient": 2,
+                "unknown": 2,
+                "by_reason": {"participation_rate": {"total": 6, "engaged": 3}},
+                "engagement": {"min_samples": 8, "per_group": {"9": {"ema": 0.2}}},
+            }
+        )
+        assert "她最近说得怎么样" in html
+        assert "40%" in html and "12s" in html
+        assert "participation_rate" in html
+        assert "不参与参与度系数" in html  # the addressed-turn note
