@@ -8,10 +8,36 @@ readers know what a domain may touch.
 from __future__ import annotations
 
 import html
+import time
 from typing import Any
 
 from app.web import ui
 from app.web.security import inject_csrf
+
+SESSION_COOKIE = "catoobot_session"
+
+
+def _as_float(value: Any) -> float | None:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _as_int(value: Any) -> int | None:
+    try:
+        return int(float(value))
+    except (TypeError, ValueError):
+        return None
+
+
+def format_ts(timestamp: Any) -> str:
+    try:
+        return time.strftime("%m-%d %H:%M", time.localtime(int(timestamp)))
+    except (TypeError, ValueError):
+        return "-"
+
+    # ------------------------------------------------------------- behavior
 
 
 class WebContext:

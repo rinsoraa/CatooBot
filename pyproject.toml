@@ -45,6 +45,7 @@ ignore = ["SIM105", "SIM108"]
 [tool.ruff.lint.per-file-ignores]
 # Server-rendered HTML templates have naturally long string lines.
 "app/web/server.py" = ["E501"]
+"app/web/routes/*.py" = ["E501"]
 "app/web/ui.py" = ["E501"]
 "app/web/pages/*.py" = ["E501"]
 "app/media/*.py" = ["E501"]

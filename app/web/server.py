@@ -30,7 +30,16 @@ from app.web.realtime import (
     attach_narration_feed,
     detach_narration_feed,
 )
-from app.web.routes.base import esc, layout
+from app.web.routes.base import (  # noqa: F401 - re-exported for compatibility
+    SESSION_COOKIE,
+    _as_float,
+    _as_int,
+    esc,
+    format_ts,
+    layout,
+)
+from app.web.routes.media import MediaRoutes
+from app.web.routes.models import ModelRoutes
 from app.web.routes.ops import OpsRoutes
 from app.web.security import (
     CSRF_EXEMPT_PATHS,
@@ -55,13 +64,11 @@ if TYPE_CHECKING:
     from app.config.settings import WebConfig
     from app.core.bot import Bot
 
-SESSION_COOKIE = "catoobot_session"
-
 
 log = logging.getLogger("CatooBot.Web")
 
 
-class WebServer(OpsRoutes):
+class WebServer(OpsRoutes, ModelRoutes, MediaRoutes):
     def __init__(self, config: WebConfig, bot: Bot) -> None:
         self._config = config
         self._bot = bot
@@ -113,8 +120,6 @@ class WebServer(OpsRoutes):
         app.router.add_post("/groups/toggle", self._groups_toggle)
         app.router.add_get("/sessions", self._sessions_page)
         app.router.add_post("/api/sessions/clear", self._api_session_clear)
-        app.router.add_get("/models", self._models_page)
-        app.router.add_post("/api/models/override", self._api_model_override)
         app.router.add_get("/prompts", self._prompts_page)
         app.router.add_post("/prompts", self._prompts_save)
         app.router.add_get("/agent", self._agent_page)
@@ -138,9 +143,6 @@ class WebServer(OpsRoutes):
         app.router.add_post("/api/tools/cache/clear", self._api_tool_cache_clear)
         app.router.add_post("/api/tools/permission", self._api_tool_permission)
         app.router.add_post("/api/tools/permission/clear", self._api_tool_permission_clear)
-        app.router.add_get("/credentials", self._credentials_page)
-        app.router.add_post("/api/credentials", self._api_credential_set)
-        app.router.add_post("/api/credentials/delete", self._api_credential_delete)
         app.router.add_get("/behavior", self._behavior_legacy_redirect)
         app.router.add_get("/sandbox/chat", self._sandbox_chat_page)
         app.router.add_post("/behavior/settings", self._behavior_settings_save)
@@ -158,9 +160,6 @@ class WebServer(OpsRoutes):
         app.router.add_post("/config/raw", self._config_raw_save)
         app.router.add_post("/config/reset", self._config_reset)
         app.router.add_post("/config/test-provider", self._config_test_provider)
-        app.router.add_get("/stickers", self._stickers_page)
-        app.router.add_post("/api/stickers/{action}/{sticker_id}", self._api_sticker_action)
-        app.router.add_post("/api/stickers/reindex", self._api_sticker_reindex)
         app.router.add_get("/social", self._social_page)
         app.router.add_get("/social/observations", self._social_observations_page)
         app.router.add_get("/social/group", self._social_group_page)
@@ -179,6 +178,8 @@ class WebServer(OpsRoutes):
         app.router.add_post("/sandbox/simulate", self._sandbox_simulate)
         app.router.add_post("/api/sandbox/control", self._api_sandbox_control)
         self.register_ops(app)
+        self.register_models(app)
+        self.register_media(app)
         app.router.add_get("/memory/correction", self._memory_correction_page)
         app.router.add_post("/memory/correction", self._memory_correction_page)
         app.router.add_post("/memory/correction/apply", self._memory_correction_apply)
@@ -755,67 +756,6 @@ class WebServer(OpsRoutes):
         raise web.HTTPFound("/sessions")
 
     # ---------------------------------------------------------------- models
-
-    async def _models_page(self, request: web.Request) -> web.Response:
-        models = self._bot.ai.router.snapshot()
-        providers = list(self._bot.ai._providers)
-        rows = "".join(
-            f"""<tr><td>{esc(m["name"])}</td>
-<td><details><summary class="muted">修改</summary>
-<form method="post" action="/api/models/override">
-<input type="hidden" name="name" value="{esc(m["name"])}">
-<label>Provider</label><select name="provider">{"".join(f"<option>{esc(p)}</option>" for p in providers)}</select>
-<label>Model ID</label><input name="model" value="{esc(m["model"])}">
-<label>Priority</label><input name="priority" value="{i}">
-<label>Enabled</label><select name="enabled"><option value="1">启用</option><option value="0">禁用</option></select>
-<p><button class="btn btn-secondary btn-sm">应用（热更新）</button></p></form></details></td>
-<td>{esc(m["provider"])}</td><td>{esc(m["model"])}</td><td>{"✓" if m["enabled"] else "✗"}</td>
-<td>{"❄" if m["in_cooldown"] else ""}</td><td>{m["failure_count"]}</td><td class="muted">{esc(m["last_error"] or "")}</td></tr>"""
-            for i, m in enumerate(models)
-        )
-        usage_rows = ""
-        usage_recorder = getattr(self._bot, "ai_usage", None)
-        if usage_recorder is not None:
-            days = int(self._bot.config.ai.usage.retention_days)
-            usage = await usage_recorder.summary(days=min(days, 7))
-            usage_rows = (
-                "".join(
-                    f"""<tr><td>{esc(u["model"])}</td><td>{u["calls"]}</td>
-<td>{u["failures"]}</td><td>{u["prompt_tokens"]:,}</td>
-<td>{u["completion_tokens"]:,}</td><td>{u["avg_latency_ms"]:.0f} ms</td>
-<td>{u["max_latency_ms"]:.0f} ms</td></tr>"""
-                    for u in usage
-                )
-                or '<tr><td colspan="7" class="muted">还没有调用记录。</td></tr>'
-            )
-        body = f"""<div class="card"><h3>Model Router（修改立即生效，无需重启）</h3>
-<table><tr><th>Name</th><th>Edit</th><th>Provider</th><th>Model</th><th>Enabled</th><th>Cooldown</th><th>Fails</th><th>Last Error</th></tr>
-{rows or '<tr><td colspan="8" class="muted">No models.</td></tr>'}</table></div>
-<div class="card"><h3>用量（近 7 天，按模型）</h3>
-<table><tr><th>模型</th><th>调用</th><th>失败</th><th>Prompt tokens</th><th>Completion tokens</th><th>平均耗时</th><th>最慢</th></tr>
-{usage_rows}</table>
-<p class="muted">每次模型调用一行（含失败与重试）；保留 {esc(self._bot.config.ai.usage.retention_days)} 天后自动清理。</p></div>"""
-        return web.Response(
-            text=layout("模型", "/models", body, subtitle="模型优先级、启用状态与故障转移情况"),
-            content_type="text/html",
-        )
-
-    async def _api_model_override(self, request: web.Request) -> web.Response:
-        form = await request.post()
-        changes: dict[str, Any] = {}
-        if form.get("model"):
-            changes["model"] = str(form["model"]).strip()
-        if form.get("provider"):
-            changes["provider"] = str(form["provider"]).strip()
-        if form.get("enabled") is not None:
-            changes["enabled"] = str(form["enabled"]) == "1"
-        if form.get("priority"):
-            try:
-                changes["priority"] = int(str(form["priority"]))
-            except ValueError:
-                pass
-        await self._admin.apply_model_override(str(form.get("name", "")), **changes)
-        raise web.HTTPFound("/models")
 
     # --------------------------------------------------------------- prompts
 
@@ -1774,28 +1714,6 @@ class WebServer(OpsRoutes):
 {rows or '<tr><td colspan="5" class="muted">暂无规则（默认允许）</td></tr>'}</table></div>"""
         return web.Response(text=layout("工具 · 权限", "/tools", body), content_type="text/html")
 
-    async def _credentials_page(self, request: web.Request) -> web.Response:
-        credentials = await self._tool_admin.credentials()
-        rows = "".join(
-            f"<tr><td>{esc(c['name'])}</td><td>{esc(c['masked'] or '—')}</td>"
-            f"<td>{esc(c['source'])}</td>"
-            f"<td><form class='inline' method='post' action='/api/credentials/delete'>"
-            f"<input type='hidden' name='name' value='{esc(c['name'])}'>"
-            f"<button class='btn btn-danger btn-sm'>删除</button></form></td></tr>"
-            for c in credentials
-        )
-        body = f"""<div class="card"><h3>凭据（只写不读）</h3>
-<form method="post" action="/api/credentials">
-<label>变量名（与工具配置中的 api_key_env 一致）</label><input name="name" placeholder="TAVILY_API_KEY">
-<label>值</label><input name="value" type="password">
-<p><button class="btn btn-primary">保存</button></p></form>
-<p class="muted">值写入 data/secrets.json（不在数据库中，也不会回显）；环境变量优先级更高。
-删除仅影响本地凭据库，不影响 .env。</p></div>
-<div class="card"><h3>已知凭据 ({len(credentials)})</h3>
-<table><tr><th>名称</th><th>值</th><th>来源</th><th></th></tr>
-{rows or '<tr><td colspan="4" class="muted">暂无</td></tr>'}</table></div>"""
-        return web.Response(text=layout("凭据", "/tools", body), content_type="text/html")
-
     # ------------------------------------------------------ tool api routes
 
     async def _api_tool_toggle(self, request: web.Request) -> web.Response:
@@ -1869,18 +1787,6 @@ class WebServer(OpsRoutes):
             str(form.get("tool", "")),
         )
         raise web.HTTPFound("/tools/permissions")
-
-    async def _api_credential_set(self, request: web.Request) -> web.Response:
-        form = await request.post()
-        await self._tool_admin.set_credential(
-            str(form.get("name", "")).strip(), str(form.get("value", ""))
-        )
-        raise web.HTTPFound("/credentials")
-
-    async def _api_credential_delete(self, request: web.Request) -> web.Response:
-        form = await request.post()
-        await self._tool_admin.delete_credential(str(form.get("name", "")))
-        raise web.HTTPFound("/credentials")
 
     # ---------------------------------------------------------- agent (v0.7)
 
@@ -2563,119 +2469,6 @@ class WebServer(OpsRoutes):
 
     # ------------------------------------------------------ stickers (v1.1)
 
-    async def _stickers_page(self, request: web.Request) -> web.Response:
-        query = request.query.get("q", "")
-        emotion = request.query.get("emotion", "")
-        intent = request.query.get("intent", "")
-        msg = request.query.get("msg", "")
-        stickers = await self._sticker_admin.list_stickers(
-            query=query, emotion=emotion, intent=intent
-        )
-        stats = await self._sticker_admin.stats()
-
-        if not stats.get("enabled"):
-            body = ui.card(
-                "表情包库未启用",
-                "<p class='muted'>在 config 打开 <code>media.enabled</code>。</p>",
-            )
-            return web.Response(
-                text=layout("表情", "/stickers", body, subtitle="角色的表情资产库"),
-                content_type="text/html",
-            )
-
-        def tag_badges(tags: list[str]) -> str:
-            return (
-                " ".join(ui.badge(tag, "info") for tag in (tags or [])[:6])
-                or '<span class="muted">-</span>'
-            )
-
-        rows = "".join(
-            f"<tr><td>{esc(s['file_name'] or s['id'])}</td>"
-            f"<td>{tag_badges(s['emotion_tags'])}</td>"
-            f"<td>{tag_badges(s['intent_tags'])}</td>"
-            f"<td>{esc((s['visual_summary'] or '')[:40])}</td>"
-            f"<td>{s['usage_count']}</td>"
-            f"<td>{ui.badge('正常', 'success') if s['status'] == 'active' else ui.badge(s['status'], 'default')}</td>"
-            f"<td>"
-            f"<form class='inline' method='post' action='/api/stickers/disable/{s['id']}'>"
-            f"<button class='btn btn-secondary btn-sm'>禁用</button></form> "
-            f"<form class='inline' method='post' action='/api/stickers/enable/{s['id']}'>"
-            f"<button class='btn btn-secondary btn-sm'>启用</button></form> "
-            f"<form class='inline' method='post' action='/api/stickers/delete/{s['id']}' data-confirm='确定删除这个表情吗？'>"
-            f"<button class='btn btn-danger btn-sm'>删除</button></form>"
-            f"</td></tr>"
-            for s in stickers
-        )
-        tiles = ui.stats_grid(
-            [
-                ("表情总数", stats["total"], "已收藏、可用的表情"),
-                ("已禁用", stats["disabled"], ""),
-                ("原生表情", stats["native_faces"], "QQ 原生 face，可低成本复用"),
-                (
-                    "视觉识别",
-                    "可用" if stats["vision_enabled"] else "未配置",
-                    "是否配置了视觉模型（未配置时表情只靠文字摘要打标签）",
-                ),
-            ]
-        )
-        filters = (
-            "<form method='get' action='/stickers'><div class='grid'>"
-            + ui.field("搜索", "q", query, tip_text="按描述/标签模糊搜索")
-            + ui.field("情绪", "emotion", emotion, tip_text="如 开心 / 难过 / 生气 / 无语")
-            + ui.field("意图", "intent", intent, tip_text="如 吐槽 / 安慰 / 回应")
-            + "</div><p><button class='btn btn-secondary' type='submit'>筛选</button></p></form>"
-        )
-        table = ui.table(
-            ["名称", "情绪", "意图", "描述", "使用", "状态", ""],
-            rows
-            or '<tr><td colspan="7" class="muted">还没有表情包，把文件放进 data/stickers 或等她自动收藏</td></tr>',
-            tips=[
-                "文件名/emoji",
-                "情绪标签",
-                "意图标签",
-                "视觉摘要",
-                "被使用的次数",
-                "状态",
-                "禁用/启用/删除",
-            ],
-            empty="还没有表情包",
-            table_id="stickers",
-        )
-        controls = (
-            "<form class='inline' method='post' action='/api/stickers/reindex'>"
-            "<button class='btn btn-secondary btn-sm' type='submit' data-tip='重新扫描并分析 data/stickers 下的所有文件'>重建索引</button></form>"
-        )
-        body = (
-            ui.flash("ok", msg)
-            + tiles
-            + ui.card(
-                "表情包库",
-                controls + filters + table,
-                tip_text="表情是角色的表达资产（≠ 记忆）；普通图片永远不会进入这里",
-            )
-            + '<p class="hint">手动导入：把文件放进 <code>data/stickers/</code> 后点「重建索引」。'
-            "收到用户 mface/face 时她会后台自行判断是否收藏，不需要任何命令。</p>"
-        )
-        return web.Response(
-            text=layout("表情", "/stickers", body, subtitle="角色的表情资产库"),
-            content_type="text/html",
-        )
-
-    async def _api_sticker_action(self, request: web.Request) -> web.Response:
-        action = request.match_info["action"]
-        sticker_id = request.match_info["sticker_id"]
-        if action == "disable":
-            await self._sticker_admin.set_status(sticker_id, "disabled")
-        elif action == "enable":
-            await self._sticker_admin.set_status(sticker_id, "active")
-        elif action == "delete":
-            await self._sticker_admin.set_status(sticker_id, "archived")
-        raise web.HTTPFound("/stickers")
-
-    async def _api_sticker_reindex(self, request: web.Request) -> web.Response:
-        await self._sticker_admin.reindex()
-        raise web.HTTPFound("/stickers?msg=" + quote("已重新建立索引（后台完成）"))
-
 
 def _sample_arguments(name: str) -> dict[str, Any]:
     """Prefilled test payloads for the WebUI test box (spec §41)."""
@@ -2686,26 +2479,3 @@ def _sample_arguments(name: str) -> dict[str, Any]:
         "web_search": {"query": "今天的新闻", "max_results": 3},
     }
     return samples.get(name, {})
-
-
-def _as_float(value: Any) -> float | None:
-    try:
-        return float(value)
-    except (TypeError, ValueError):
-        return None
-
-
-def _as_int(value: Any) -> int | None:
-    try:
-        return int(float(value))
-    except (TypeError, ValueError):
-        return None
-
-
-def format_ts(timestamp: Any) -> str:
-    try:
-        return time.strftime("%m-%d %H:%M", time.localtime(int(timestamp)))
-    except (TypeError, ValueError):
-        return "-"
-
-    # ------------------------------------------------------------- behavior
