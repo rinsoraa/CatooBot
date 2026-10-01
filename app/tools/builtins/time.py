@@ -6,7 +6,7 @@ from datetime import datetime
 from typing import Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from app.tools.errors import Tool as ToolBase
+from app.tools.base import Tool as ToolBase
 from app.tools.models import ToolContext, ToolMetadata, ToolResult
 
 _WEEKDAYS = ("星期一", "星期二", "星期三", "星期四", "星期五", "星期六", "星期日")

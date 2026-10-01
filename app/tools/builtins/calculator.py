@@ -12,8 +12,8 @@ import operator
 from collections.abc import Callable
 from typing import Any
 
+from app.tools.base import Tool as ToolBase
 from app.tools.errors import InvalidArgumentsError
-from app.tools.errors import Tool as ToolBase
 from app.tools.models import ToolContext, ToolMetadata, ToolResult
 
 _BINARY_OPS: dict[type[ast.operator], Callable[[float, float], float]] = {

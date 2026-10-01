@@ -12,7 +12,7 @@ from collections.abc import Iterable, Sequence
 from typing import Any
 
 from app.memory.retrieval import bigrams, keyword_overlap
-from app.tools.errors import Tool as ToolBase
+from app.tools.base import Tool as ToolBase
 from app.tools.errors import ToolError, UnknownToolError
 from app.tools.models import ToolMetadata
 

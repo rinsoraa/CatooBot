@@ -20,7 +20,7 @@ from typing import Any
 
 from app.ai.models import AIRequest, AIResponse, ChatMessage
 from app.config.settings import ToolsConfig
-from app.tools.errors import Tool as ToolBase
+from app.tools.base import Tool as ToolBase
 from app.tools.executor import ToolExecutor
 from app.tools.models import ToolCall, ToolContext, ToolResult, ToolTrace
 from app.tools.policy import ToolPolicy, TurnBudget

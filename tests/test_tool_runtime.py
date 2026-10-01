@@ -11,14 +11,12 @@ import pytest
 
 from app.config.settings import DatabaseConfig, ToolOverrideConfig, ToolsConfig
 from app.database.database import Database
+from app.tools.base import Tool as ToolBase
 from app.tools.errors import (
     ExternalServiceError,
     ToolLoopError,
     ToolPermissionError,
     ToolRateLimitError,
-)
-from app.tools.errors import (
-    Tool as ToolBase,
 )
 from app.tools.executor import ToolExecutor
 from app.tools.models import ToolCall, ToolContext, ToolMetadata, ToolResult

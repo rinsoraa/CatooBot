@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from app.tools.errors import Tool as ToolBase
+from app.tools.base import Tool as ToolBase
 from app.tools.models import ToolContext, ToolMetadata, ToolResult
 from app.tools.providers.search import MAX_RESULTS, create_search_provider
 from app.tools.providers.weather import FORECAST_DAYS, create_weather_provider
