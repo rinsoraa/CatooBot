@@ -44,6 +44,7 @@ class FakeVisionEngine:
 
     def __init__(self, summary: str) -> None:
         self.summary = summary
+        self.ocr: list[str] = []
         self.calls = 0
 
     async def chat(self, request: object) -> object:
@@ -53,7 +54,9 @@ class FakeVisionEngine:
 
         self.calls += 1
         return AIResponse(
-            content=json.dumps({"summary": self.summary, "confidence": 0.9}),
+            content=json.dumps(
+                {"summary": self.summary, "ocr_text": self.ocr, "confidence": 0.9}
+            ),
             model="fake", provider="fake",
         )
 
@@ -333,12 +336,144 @@ class TestRecognitionOrdering:
             with caplog.at_level(logging.INFO, logger="CatooBot.Narration"):
                 await bot.event_bus.emit(self._event())
                 await bot.conversation.wait_idle()
-                assert "表情包还在识别" in "\n".join(self._beats(caplog))
+                assert "还在识别" in "\n".join(self._beats(caplog))
                 await asyncio.sleep(0.5)  # the shielded task finishes afterwards
                 await bot.plugins.loaded["character"].drain_background()
             joined = "\n".join(self._beats(caplog))
             assert "看懂了：一只猫在笑" in joined and "迟到的识别结果" in joined
             assets = await bot.media.library.all()
             assert len(assets) == 1
+        finally:
+            await bot.shutdown()
+
+
+class TestPlainImageRecognition:
+    """A plain photo (sub_type=0) must be recognized too — the 17:54 gap: only
+    stickers got the background pass, so a silent group photo was never seen."""
+
+    @staticmethod
+    def _event():  # type: ignore[no-untyped-def]
+        from app.message.event import GroupMessageEvent
+
+        return GroupMessageEvent.model_validate(
+            {
+                "post_type": "message", "self_id": 10001, "time": 1700000000,
+                "message_type": "group", "sub_type": "normal", "message_id": 92,
+                "user_id": 888, "group_id": 999,
+                "message": [
+                    {"type": "image", "data": {
+                        "file": "PHOTO.png", "sub_type": "0", "summary": "",
+                        "url": "https://x/photo.png",
+                    }}
+                ],
+                "raw_message": "[图片]",
+                "sender": {"user_id": 888, "nickname": "空凛", "role": "member"},
+            }
+        )
+
+    async def _make(self, tmp_path, *, summary: str, ocr: list[str] | None = None):  # type: ignore[no-untyped-def]
+        from tests.ai_mocks import MockAIProvider
+        from tests.test_chat_integration import make_character_bot
+
+        bot = await make_character_bot(tmp_path, MockAIProvider(), models=["A"])
+        engine = FakeVisionEngine(summary)
+        if ocr:
+            engine.ocr = ocr  # type: ignore[attr-defined]
+        bot.media.vision = make_vision(engine, bot.database)
+
+        async def fetcher(url: str) -> tuple[bytes, str]:
+            return PNG, "image/png"
+
+        bot.media._fetch_file = fetcher  # noqa: SLF001 - test injection
+        return bot
+
+    @staticmethod
+    def _beats(caplog) -> list[str]:  # type: ignore[no-untyped-def]
+        return [r.getMessage() for r in caplog.records if r.name == "CatooBot.Narration"]
+
+    async def test_silent_group_photo_is_still_recognized(self, tmp_path, caplog) -> None:
+        summary = "桌上摊着一份外卖和一杯可乐"
+        bot = await self._make(tmp_path, summary=summary)
+        seen: list[str] = []
+        original = bot.social.decide_for_turn
+
+        async def spy(**kwargs):  # type: ignore[no-untyped-def]
+            seen.append(str(kwargs.get("text", "")))
+            return await original(**kwargs)
+
+        bot.social.decide_for_turn = spy  # type: ignore[method-assign]
+        try:
+            with caplog.at_level(logging.INFO, logger="CatooBot.Narration"):
+                await bot.event_bus.emit(self._event())
+                await bot.conversation.wait_idle()
+                await bot.plugins.loaded["character"].drain_background()
+            beats = self._beats(caplog)
+            assert _beat_index(beats, "收到图片") < _beat_index(beats, f"看懂了：{summary}")
+            assert _beat_index(beats, f"看懂了：{summary}") < _beat_index(
+                beats, "不接", "要回"
+            )
+            assert seen and summary in seen[0]
+            # a plain photo is not a sticker — nothing enters the library
+            assert await bot.media.library.all() == []
+        finally:
+            await bot.shutdown()
+
+    async def test_captioned_meme_photo_is_kept_as_a_sticker(self, tmp_path, caplog) -> None:
+        """The v1.1 boundary: a photo only enters the library when vision
+        confirms it is a meme (caption text counts)."""
+        bot = await self._make(
+            tmp_path, summary="一只猫举着牌子", ocr=["在吗"]
+        )
+        try:
+            with caplog.at_level(logging.INFO, logger="CatooBot.Narration"):
+                await bot.event_bus.emit(self._event())
+                await bot.conversation.wait_idle()
+                await bot.plugins.loaded["character"].drain_background()
+            assets = await bot.media.library.all()
+            assert len(assets) == 1 and assets[0].visual_summary == "一只猫举着牌子"
+            assert "表情库" in "\n".join(self._beats(caplog))
+        finally:
+            await bot.shutdown()
+
+    async def test_caption_reaches_the_reply_prompt(self, tmp_path) -> None:
+        """A captioned image in private chat: the model must be told to answer
+        the caption, not describe the picture (the '你在干森么呢' rule)."""
+        from app.message.event import PrivateMessageEvent
+        from tests.ai_mocks import MockAIProvider
+        from tests.test_chat_integration import make_character_bot
+
+        provider = MockAIProvider(behaviors={"A": ["在摸鱼呢"]})
+        bot = await make_character_bot(tmp_path, provider, models=["A"])
+        engine = FakeVisionEngine("一只猫举着牌子")
+        engine.ocr = ["你在干森么呢"]
+        bot.media.vision = make_vision(engine, bot.database)
+
+        async def fetcher(url: str) -> tuple[bytes, str]:
+            return PNG, "image/png"
+
+        bot.media._fetch_file = fetcher  # noqa: SLF001 - test injection
+        try:
+            event = PrivateMessageEvent.model_validate(
+                {
+                    "post_type": "message", "self_id": 10001, "time": 1700000000,
+                    "message_type": "private", "sub_type": "friend", "message_id": 93,
+                    "user_id": 777,
+                    "message": [
+                        {"type": "image", "data": {
+                            "file": "MEME.jpg", "sub_type": "0", "summary": "",
+                            "url": "https://x/meme.jpg",
+                        }}
+                    ],
+                    "raw_message": "[图片]",
+                    "sender": {"user_id": 777, "nickname": "空凛猫"},
+                }
+            )
+            await bot.event_bus.emit(event)
+            await bot.conversation.wait_idle()
+            await bot.plugins.loaded["character"].drain_background()
+            assert provider.calls, "私聊图片应当触发回复"
+            user_text = "\n".join(m.content for m in provider.calls[0]["messages"])
+            assert "你在干森么呢" in user_text      # the caption is visible
+            assert "配字" in user_text              # …and framed as what she means
         finally:
             await bot.shutdown()

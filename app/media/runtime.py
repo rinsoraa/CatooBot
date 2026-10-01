@@ -180,7 +180,7 @@ class MediaRuntime:
     async def recognize(
         self, media: MediaContent, *, scope_key: str = ""
     ) -> RecognitionOutcome:
-        """Download + vision for a sticker-like image (no acquisition).
+        """Download + vision for an incoming image/sticker (no acquisition).
 
         Split out so the *decision* (reply or not) can wait for the result and
         use it, and the acquisition step happens afterwards.
@@ -266,6 +266,22 @@ class MediaRuntime:
         return item.model_copy(
             update={"media_type": "sticker", "source_type": "vision_meme"}
         )
+
+    async def collect_recognized(
+        self, item: MediaContent, vision: VisionResult | None
+    ) -> AcquisitionDecision | None:
+        """Acquire a *recognized* item, keeping the media-type boundary intact.
+
+        Stickers are collected directly; a plain image only when vision calls
+        it a meme (§ v1.1: a photo is never a sticker on its own).
+        """
+        if item.media_type == "sticker":
+            return await self.consider_collect(item, vision=vision)
+        if vision is not None and self.looks_like_sticker(vision):
+            return await self.consider_collect(
+                self.as_sticker_candidate(item), vision=vision
+            )
+        return None
 
     async def _persist_file(self, asset: StickerAsset, media: MediaContent) -> None:
         """Download the image so 'saved' is literally true (metadata-only before).

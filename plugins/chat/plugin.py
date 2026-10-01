@@ -18,6 +18,7 @@ from __future__ import annotations
 import asyncio
 import random
 import time
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 from app.ai.errors import AIError
@@ -78,6 +79,14 @@ _MEDIA_PLACEHOLDER = {
     "native_face": "一个表情",
     "sticker": "一个表情包",
 }
+
+
+@dataclass
+class _Recognition:
+    """A background recognition in flight for one incoming media item."""
+
+    item: Any
+    task: asyncio.Task
 
 
 class CharacterPlugin(Plugin):
@@ -230,15 +239,15 @@ class CharacterPlugin(Plugin):
                     "media_items": items,
                     "deferred_images": deferred,
                     "media_note": media_note,
-                    "recognition_task": recognition,
+                    "recognition": recognition,
                 },
             }
         )
 
     def _submit_media(
         self, event: MessageEvent
-    ) -> tuple[str, list[Any], list[Any], asyncio.Task | None]:
-        """Cheap classification now; sticker recognition starts as a task.
+    ) -> tuple[str, list[Any], list[Any], _Recognition | None]:
+        """Cheap classification now; sticker/image recognition starts as a task.
 
         The turn's *decision* waits for that task (bounded), so the order is
         识别 → 判断 → 收藏 instead of deciding first and recognizing later.
@@ -259,6 +268,11 @@ class CharacterPlugin(Plugin):
         for item in items:
             if item.media_type == "image":
                 deferred.append(item)
+                narrate().say(
+                    "vision",
+                    "收到图片",
+                    detail="识别中（结果用于判断是否接话）" if item.url else "",
+                )
             elif item.media_type == "native_face":
                 face = media.faces.get(item.face_id)
                 note = f"表情：{face.display_name or 'QQ 表情'}" if face else "表情：QQ 表情"
@@ -275,9 +289,14 @@ class CharacterPlugin(Plugin):
                 # The reply path also wants the real summary — the background
                 # pass caches the vision result by sha256, so it costs nothing.
                 deferred.append(item)
-        recognition: asyncio.Task | None = None
+        recognition: _Recognition | None = None
         first = next(
-            (item for item in items if item.media_type == "sticker" and item.url), None
+            (
+                item
+                for item in items
+                if item.media_type in ("sticker", "image") and item.url
+            ),
+            None,
         )
         if first is not None:
             scope = (
@@ -285,18 +304,17 @@ class CharacterPlugin(Plugin):
                 if first.source_group_id
                 else f"private:{first.source_user_id}"
             )
-            recognition = asyncio.create_task(
-                media.recognize(first, scope_key=scope)
-            )
-            self._track(recognition)
+            task = asyncio.create_task(media.recognize(first, scope_key=scope))
+            self._track(task)
+            recognition = _Recognition(item=first, task=task)
         return "；".join(notes), items, deferred, recognition
 
     # --------------------------------------------------- v1.2 turn callbacks
 
     async def _recognize_turn(self, turn: Any) -> str:
-        """Await the sticker recognition, narrate it, use it (识别 → 判断 → 收藏)."""
-        task = turn.meta.pop("recognition_task", None)
-        if task is None:
+        """Await the media recognition, narrate it, use it (识别 → 判断 → 收藏)."""
+        pending = turn.meta.pop("recognition", None)
+        if pending is None:
             return str(turn.meta.get("recognized_text", "") or "")
         media = getattr(self.bot, "media", None)
         if media is None:
@@ -305,26 +323,28 @@ class CharacterPlugin(Plugin):
             getattr(self.bot.config.media, "recognition_timeout_seconds", 12.0)
         )
         try:
-            outcome = await asyncio.wait_for(asyncio.shield(task), timeout=timeout)
+            outcome = await asyncio.wait_for(
+                asyncio.shield(pending.task), timeout=timeout
+            )
         except TimeoutError:
             narrate().quiet(
-                "表情包还在识别",
+                "还在识别",
                 detail=f"超过 {timeout:.0f}s，先继续判断；结果出来再收藏",
             )
             # shield: the real task keeps running, so a late result can still
             # be narrated and collected (the turn is no longer reachable).
-            task.add_done_callback(
-                lambda done, t=turn: self._track(
-                    asyncio.create_task(self._finish_late_recognition(done, t))
+            pending.task.add_done_callback(
+                lambda done, t=turn, it=pending.item: self._track(
+                    asyncio.create_task(self._finish_late_recognition(done, t, it))
                 )
             )
             return ""
         except Exception:  # noqa: BLE001 - recognition never breaks the turn
             self.bot.log.exception("[Media] recognition failed")
             return ""
-        return self._apply_recognition(turn, outcome)
+        return self._apply_recognition(turn, outcome, pending.item)
 
-    def _apply_recognition(self, turn: Any, outcome: Any) -> str:
+    def _apply_recognition(self, turn: Any, outcome: Any, item: Any) -> str:
         if outcome.status == "throttled":
             narrate().quiet(
                 "这张先不认了", detail="本会话每小时后台识别上限到了（可调配置）"
@@ -334,19 +354,30 @@ class CharacterPlugin(Plugin):
         if text:
             narrate().say("vision", f"看懂了：{text}")
             turn.meta["recognized_text"] = text
+        turn.meta["recognized_item"] = item
         turn.meta["recognition_outcome"] = outcome
         return text
 
     def _collect_recognized(self, turn: Any) -> None:
-        """Schedule acquisition after the turn's decision — narrates 识别→判断→收藏."""
+        """Schedule acquisition after the turn's decision — narrates 识别→判断→收藏.
+
+        Idempotent via a flag (not a pop): the reply callback still needs the
+        outcome's vision (e.g. the caption) after collection was scheduled.
+        """
         if turn is None:
             return
-        outcome = (getattr(turn, "meta", {}) or {}).pop("recognition_outcome", None)
+        meta = getattr(turn, "meta", {}) or {}
+        if meta.get("recognition_collected"):
+            return
+        outcome = meta.get("recognition_outcome")
         if outcome is None:
             return
+        meta["recognition_collected"] = True
         self._schedule_collect_recognized(turn, outcome)
 
-    async def _finish_late_recognition(self, task: asyncio.Task, turn: Any) -> None:
+    async def _finish_late_recognition(
+        self, task: asyncio.Task, turn: Any, item: Any
+    ) -> None:
         """A recognition that finished after the timeout: narrate + collect."""
         try:
             outcome = task.result()
@@ -359,27 +390,29 @@ class CharacterPlugin(Plugin):
         if outcome.vision_text:
             narrate().say("vision", f"看懂了：{outcome.vision_text}", detail="迟到的识别结果")
             turn.meta["recognized_text"] = outcome.vision_text
+        turn.meta["recognized_item"] = item
         turn.meta["recognition_outcome"] = outcome
         self._collect_recognized(turn)
 
     def _schedule_collect_recognized(self, turn: Any, outcome: Any) -> None:
         """Acquisition after recognition — background, never blocks the reply."""
         media = getattr(self.bot, "media", None)
-        items = list((getattr(turn, "meta", {}) or {}).get("media_items", []) or [])
-        sticker = next((i for i in items if i.media_type == "sticker"), None)
-        if media is None or sticker is None:
+        meta = getattr(turn, "meta", {}) or {}
+        item = meta.get("recognized_item")
+        if item is None:
+            items = list(meta.get("media_items", []) or [])
+            item = next((i for i in items if i.media_type == "sticker"), None)
+        if media is None or item is None or outcome.vision is None:
             return
 
         async def keep() -> None:
             try:
-                decision = await media.consider_collect(
-                    sticker, vision=outcome.vision
-                )
+                decision = await media.collect_recognized(item, outcome.vision)
             except Exception:  # noqa: BLE001 - collection must never break chat
                 self.bot.log.exception("[Media] sticker collection failed")
                 return
-            if decision.decision == "save":
-                summary = sticker.emoji_summary or outcome.vision_text or "表情包"
+            if decision is not None and decision.decision == "save":
+                summary = item.emoji_summary or outcome.vision_text or "表情包"
                 narrate().say("mind", f"这张收进表情库了：{summary}")
 
         self._track(asyncio.create_task(keep()))
@@ -444,14 +477,31 @@ class CharacterPlugin(Plugin):
 
         meta = turn.meta
         recognized = await self._recognize_turn(turn)
+        outcome = meta.get("recognition_outcome")
         self._collect_recognized(turn)
         media_context = str(meta.get("media_note", "") or "")
-        if recognized and "表情包" not in media_context:
-            media_context = f"{media_context}；表情包：{recognized}".lstrip("；")
+        recognized_item = meta.get("recognized_item")
+        label = (
+            "表情包"
+            if recognized_item is not None and recognized_item.media_type == "sticker"
+            else "图片"
+        )
+        if recognized and f"{label}：" not in media_context:
+            media_context = f"{media_context}；{label}：{recognized}".lstrip("；")
+            caption = "；".join(
+                getattr(getattr(outcome, "vision", None), "ocr_text", []) or []
+            ).strip()
+            if caption:
+                media_context += (
+                    f"；图上的配字「{caption}」就是对方想表达的话——"
+                    "直接回应配字内容就好，不要描述或评价表情包本身"
+                )
         media_items = list(meta.get("media_items", []) or [])
+        # The recognized item's summary is already in the context — don't run
+        # (and narrate) the reply-path vision for the very same image again.
         deferred = [
             item for item in (meta.get("deferred_images", []) or [])
-            if not (recognized and item.media_type == "sticker")
+            if not (recognized and item is recognized_item)
         ]
         if deferred:
             media = getattr(bot, "media", None)
