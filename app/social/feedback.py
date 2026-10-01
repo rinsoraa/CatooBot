@@ -290,9 +290,12 @@ class ReplyFeedbackSettler:
         logger: logging.Logger | None = None,
         clock: Any = time.time,
         metrics: Any = None,
+        on_settled: Any = None,
     ) -> None:
         self._store = store
         self._monitor = monitor
+        #: called with (group_id, score) for settled self-initiated turns only
+        self._on_settled = on_settled
         self._log = logger or logging.getLogger("CatooBot.Social.Feedback")
         self._clock = clock
         self._metrics = metrics
@@ -317,6 +320,10 @@ class ReplyFeedbackSettler:
                 )
                 counts[result.verdict] = counts.get(result.verdict, 0) + 1
                 self._count("reply_outcomes_settled")
+                if self._on_settled is not None and row.get("self_initiated"):
+                    group_key = str(row.get("scope_key", ""))
+                    if group_key.startswith("group:"):
+                        await self._on_settled(group_key, result.score)
             except Exception as exc:  # noqa: BLE001 - the sweep must keep going
                 self._count("reply_feedback_failed")
                 self._log.warning("[Social.Feedback] settle failed for #%s (%s)", row["id"], exc)

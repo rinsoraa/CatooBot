@@ -25,9 +25,13 @@ class ParticipationPolicy:
         presence: Any = None,
         logger: logging.Logger | None = None,
         clock: Any = time.time,
+        engagement: Any = None,
     ) -> None:
         self._config = config
         self._presence = presence
+        #: optional engagement memory (Task 20): a *soft* 0.9-1.1 multiplier on
+        #: the credit rate. The hard gate (cooldown/daily/enabled) never reads it.
+        self._engagement = engagement
         self._log = logger or logging.getLogger("CatooBot.Social")
         self._clock = clock
         # per-group counters (in-memory; the daily budget is generous by design)
@@ -84,7 +88,8 @@ class ParticipationPolicy:
         if rate <= 0.0:
             return False
         key = str(group_id)
-        credit = min(1.0, self._credit.get(key, 0.0) + rate)
+        factor = self._engagement.factor(key) if self._engagement is not None else 1.0
+        credit = min(1.0, self._credit.get(key, 0.0) + rate * factor)
         if credit >= 1.0:
             self._credit[key] = credit - 1.0
             return True

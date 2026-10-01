@@ -25,6 +25,7 @@ from typing import TYPE_CHECKING, Any
 from app.social.attention import SocialAttention
 from app.social.context import SocialContextBuilder
 from app.social.continuation import ContinuationDetector
+from app.social.engagement import SocialEngagement
 from app.social.models import ParticipationDecision, RelevanceScores, SocialObservation
 from app.social.monitor import GroupConversationMonitor
 from app.social.observer import GroupObserver
@@ -58,7 +59,10 @@ class SocialCognitionEngine:
         )
         self.threads = ThreadManager(config=config.continuation, logger=self._log, clock=clock)
         self.attention = SocialAttention(logger=self._log, clock=clock)
-        self.policy = ParticipationPolicy(config=config, logger=self._log, clock=clock)
+        self.engagement = SocialEngagement(clock=clock, logger=self._log)
+        self.policy = ParticipationPolicy(
+            config=config, logger=self._log, clock=clock, engagement=self.engagement
+        )
         self.context = SocialContextBuilder(logger=self._log)
 
         embeddings = getattr(getattr(bot, "memory", None), "embeddings", None)

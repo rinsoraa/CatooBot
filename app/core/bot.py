@@ -445,10 +445,21 @@ class Bot:
 
         # Task 20: settle reply outcomes once their observation window passed.
         if shared_loop and self.reply_feedback is not None:
+            social_engine = self.social
+
+            async def _apply_outcome(group_key: str, score: float) -> None:
+                """Fold a settled turn into the soft state (never the hard gate)."""
+                if social_engine is None:
+                    return
+                group_id = group_key.split(":", 1)[-1]
+                social_engine.attention.note_reply_outcome(group_id, score)
+                social_engine.engagement.note(group_id, score)
+
             settler = ReplyFeedbackSettler(
                 self.reply_feedback,
                 getattr(self.social, "monitor", None),
                 metrics=self.metrics,
+                on_settled=_apply_outcome,
             )
             self.scheduler.register_job(
                 ScheduledJob(

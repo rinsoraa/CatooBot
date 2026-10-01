@@ -82,6 +82,18 @@ class SocialAttention:
             momentum=min(1.0, state.momentum + 0.2),
         )
 
+    def note_reply_outcome(self, group_id: str, score: float) -> None:
+        """Fold an engagement score into momentum (Task 20 §6).
+
+        The step is deliberately small (``score × 0.1``): momentum lives in
+        [0, 1] and every other ``note_*`` adds 0.2-0.3, so feeding ±1 would
+        saturate it immediately. A negative score can only cancel existing
+        momentum — it never drives it below zero (unchanged semantics).
+        """
+        state = self.get(group_id)
+        delta = max(-1.0, min(1.0, float(score))) * 0.1
+        self._commit(state, momentum=max(0.0, min(1.0, state.momentum + delta)))
+
     def note_reply(self, group_id: str) -> None:
         """Each reply tires her a little; it recovers on its own (§66)."""
         state = self.get(str(group_id))
