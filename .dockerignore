@@ -1,0 +1,27 @@
+# 构建上下文必须排除的东西：密钥、运行期数据、本地环境与缓存。
+# 即使将来用 COPY . . 也不会把 .env / 数据库打进镜像。
+.env
+.env.*
+!.env.example
+
+config/config.yaml
+config/overrides.yaml
+
+data/
+logs/
+docs/
+
+.venv/
+.git/
+.github/
+.zcode/
+.zcodeignore
+
+__pycache__/
+*.py[cod]
+*.egg-info/
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+
+tests/

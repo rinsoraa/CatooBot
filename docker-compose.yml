@@ -1,0 +1,29 @@
+# CatooBot 容器编排：一个服务，两个端口，三份挂载。
+#
+#   docker compose up -d --build
+#
+# 前置：
+#   1) 复制 .env.example → .env 并填好密钥（WORKBUDDY_API_KEY / SILICONFLOW_API_KEY /
+#      CATOOBOT_ONEBOT_ACCESS_TOKEN / CATOOBOT_WEB_PASSWORD）；密钥只经环境变量注入。
+#   2) config/ 下要有 config.example.yaml 与 character_bible.md（仓库自带）；首次启动
+#      会自动从 example 复制出 config.yaml。
+#   3) 容器里连接是"从外部进来"，必须把 onebot.host 与 web.host 改成 0.0.0.0
+#      （默认 127.0.0.1 只允许容器内部连入）：
+#        onebot.host: 0.0.0.0     # NapCat（宿主机或另一容器）要连进来
+#        web.host:    0.0.0.0     # 浏览器要打开 WebUI
+#      改完重启容器生效。WebUI 的 8500 建议只在可信网络内暴露。
+services:
+  catoobot:
+    build: .
+    image: catoobot:2.0
+    container_name: catoobot
+    restart: unless-stopped
+    env_file:
+      - .env
+    ports:
+      - "8080:8080" # OneBot 11 反向 WebSocket（NapCat → CatooBot）
+      - "8500:8500" # WebUI
+    volumes:
+      - ./config:/app/config # config.yaml / overrides.yaml（机器生成，含密钥时注意权限）
+      - ./data:/app/data # SQLite、表情库、角色重置备份
+      - ./logs:/app/logs # 运行日志

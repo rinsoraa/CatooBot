@@ -106,6 +106,27 @@ copy config\config.example.yaml config\config.yaml
 > Windows 下建议确认 `tzdata` 已安装（`pip install tzdata`），否则时区相关的作息
 > 判断会退化为 UTC+8 并在日志里提示。
 
+### 依赖锁定与容器运行
+
+依赖版本由 `uv.lock` 锁定，本地与 CI 使用同一份（`--frozen`：锁文件与
+`pyproject.toml` 不一致时直接失败，不会静默重解析）：
+
+```bash
+uv sync --extra dev        # 运行时依赖 + 开发工具（ruff / mypy / pytest）
+```
+
+也可以整机进容器跑（密钥只经环境变量注入，绝不打进镜像）：
+
+```bash
+copy .env.example .env     # 先填好各项 Key
+docker compose up -d --build
+```
+
+- 端口：**8080** OneBot 反向 WS（NapCat 连入）、**8500** WebUI。
+- 挂载：`config/`、`data/`、`logs/` 都在宿主机上，容器可随时重建、升级。
+- **容器内必须把 `onebot.host` 与 `web.host` 改成 `0.0.0.0`**：默认 `127.0.0.1`
+  只允许容器内部连入，而 NapCat 与浏览器都在容器外（WebUI 配置页可改）。
+
 ### NapCat 侧配置
 
 在 NapCat 的「网络配置 → WebSocket 客户端」新建一个连接：

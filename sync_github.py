@@ -2,16 +2,19 @@
 
 Workflow (single source of truth):
 
-    1. All modifications happen in THIS folder (E:\\WorkSpace ZCode\\CatooBot).
+    1. All modifications happen in THIS folder.
     2. Tests / ruff / mypy are run and must pass here first.
-    3. ``python sync_github.py``          → mirror code into ..\\CatooBot_github
+    3. ``python sync_github.py``          → mirror code into the sibling folder
        ``python sync_github.py --push``   → mirror + git commit + git push
 
-The mirror (``E:\\WorkSpace ZCode\\CatooBot_github``) is a git repo pointing at
-the private GitHub project. It never receives secrets or runtime data:
+The mirror (this folder's sibling ``CatooBot_github``, derived from this
+script's own location — no machine-specific path is hard-coded here) is a git
+repo pointing at the private GitHub project. It never receives secrets or
+runtime data:
 
     synced:     app/  plugins/  tests/  docs/  .github/  pyproject.toml  run.py
                 README.md  .env.example  .gitignore  .gitattributes
+                .dockerignore  Dockerfile  docker-compose.yml  uv.lock
                 sync_github.py  config/config.example.yaml
                 config/character_bible.md
     never:      .env  config/config.yaml  config/overrides.yaml
@@ -33,11 +36,15 @@ TARGET = SOURCE.parent / "CatooBot_github"
 MIRRORED_DIRS = ("app", "plugins", "tests", "docs", ".github")
 ROOT_FILES = (
     "pyproject.toml",
+    "uv.lock",
     "run.py",
     "README.md",
     ".env.example",
     ".gitignore",
     ".gitattributes",
+    ".dockerignore",
+    "Dockerfile",
+    "docker-compose.yml",
     "sync_github.py",
 )
 CONFIG_DIR_FILES = ("config.example.yaml", "character_bible.md")

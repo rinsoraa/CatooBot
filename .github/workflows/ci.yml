@@ -23,24 +23,25 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-          cache: pip
-          cache-dependency-path: pyproject.toml
 
-      # Runtime dependencies + dev tools come from the existing extras —
-      # CI introduces no new dependency.
-      - name: Install
-        run: |
-          python -m pip install --upgrade pip
-          python -m pip install -e ".[dev]"
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      # The lockfile is the single source of dependency truth: --frozen fails
+      # the job instead of silently re-resolving when pyproject.toml drifts.
+      - name: Install (frozen lockfile + dev extra)
+        run: uv sync --frozen --extra dev
 
       - name: Lint (ruff check)
-        run: ruff check .
+        run: uv run --frozen ruff check .
 
       - name: Format check (ruff format --check)
-        run: ruff format --check .
+        run: uv run --frozen ruff format --check .
 
       - name: Types (mypy app)
-        run: mypy app
+        run: uv run --frozen mypy app
 
       - name: Tests (pytest tests)
-        run: pytest tests -q
+        run: uv run --frozen pytest tests -q
