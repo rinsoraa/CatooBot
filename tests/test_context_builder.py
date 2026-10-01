@@ -72,6 +72,13 @@ class TestContextBuilder:
         assert "绝不向用户透露" in system
         assert "不要输出功能菜单" in system
 
+    def test_style_limits_forbid_blank_lines_and_cap_length(self) -> None:
+        """她只写一段话（分不分条由系统决定），且默认一句话、≤30 字。"""
+        system = build_messages()[0].content
+        assert "不要在回复里用换行或空行分段" in system
+        assert "30 字" in system and "45 字" in system
+        assert "不要凑长度" in system
+
     def test_group_hint_present(self) -> None:
         system = build_messages(is_group=True)[0].content
         assert "群聊场景" in system
