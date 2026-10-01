@@ -147,3 +147,23 @@ class TestWritePath:
             assert all("看过" not in memory.content for memory in theirs)
         finally:
             await db.close()
+
+
+class TestWebuiFilter:
+    async def test_the_source_filter_returns_only_vision_memories(self, tmp_path) -> None:
+        manager, db = await make_manager(tmp_path)
+        try:
+            await manager.remember("user", "7", "用户喜欢喝冰可乐", source="conversation")
+            await record_image_memories(manager, scope="user", ref="7", entries=[(photo(), rich())])
+            vision = await manager.list_memories(source="vision")
+            assert [m.source for m in vision] == ["vision"]
+            spoken = await manager.list_memories(source="conversation")
+            assert [m.source for m in spoken] == ["conversation"]
+            assert len(await manager.list_memories()) == 2  # no filter = both
+        finally:
+            await db.close()
+
+    def test_vision_is_a_registered_source(self) -> None:
+        from app.memory.model import SOURCES
+
+        assert "vision" in SOURCES

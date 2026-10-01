@@ -24,8 +24,9 @@ class MemoryRoutes(WebContext):
         keyword = request.query.get("q", "")
         category = request.query.get("category", "")
         scope_key = request.query.get("scope", "")
+        source = request.query.get("source", "")
         memories = await self._admin.list_memories(
-            keyword=keyword, category=category, scope_key=scope_key, limit=200
+            keyword=keyword, category=category, scope_key=scope_key, source=source, limit=200
         )
         options = [
             ("", "全部类型"),
@@ -43,7 +44,8 @@ class MemoryRoutes(WebContext):
             f"<tr><td>{m['id']}</td>"
             f"<td><a href='/memory?scope={quote(str(m['scope_key']))}'>"
             f"{esc(m['scope_key'])}</a></td>"
-            f"<td>{ui.badge(m['category'], 'info')}</td>"
+            f"<td>{ui.badge(m['category'], 'info')}"
+            f"{' ' + ui.badge('vision', 'muted') if m.get('source') == 'vision' else ''}</td>"
             f"<td>{esc(m['content'])}</td>"
             f"<td>{m['importance']:.2f}</td><td>{m['confidence']:.2f}</td>"
             f"<td>{m['use_count']}</td>"
@@ -67,6 +69,19 @@ class MemoryRoutes(WebContext):
             )
             + ui.select(
                 "类型", "category", options, category, tip_text="记忆的语义分类，影响检索时的加权"
+            )
+            + ui.select(
+                "来源",
+                "source",
+                [
+                    ("", "全部来源"),
+                    ("conversation", "conversation · 从对话里记下的"),
+                    ("vision", "vision · 她看过的图片"),
+                    ("system", "system · 系统整理/压缩"),
+                    ("explicit", "explicit · 用户明确要求"),
+                ],
+                source,
+                tip_text="她是怎么知道这件事的：对话、看图、还是系统整理",
             )
             + ui.field(
                 "Scope",

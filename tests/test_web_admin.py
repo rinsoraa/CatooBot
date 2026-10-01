@@ -189,6 +189,8 @@ async def test_webui_http_gate(tmp_path, unused_tcp_port) -> None:
                 body = await resp.text()
                 assert resp.status == 200
                 assert "记忆" in body and "记忆修正" in body
+                # the source filter (Task 21) is on the page
+                assert "name='source'" in body and "她看过的图片" in body
             other_pages = (
                 "/users",
                 "/groups",

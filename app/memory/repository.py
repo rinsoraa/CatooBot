@@ -235,6 +235,7 @@ class MemoryRepository:
         category: str = "",
         layer: str = "",
         status: str = "",
+        source: str = "",
         limit: int = 100,
         offset: int = 0,
     ) -> list[Memory]:
@@ -256,6 +257,9 @@ class MemoryRepository:
         if status:
             sql += " AND status = ?"
             params.append(status)
+        if source:
+            sql += " AND source = ?"
+            params.append(source)
         sql += " ORDER BY id DESC LIMIT ? OFFSET ?"
         params.extend([limit, offset])
         rows = await self._db.fetchall(sql, tuple(params))
