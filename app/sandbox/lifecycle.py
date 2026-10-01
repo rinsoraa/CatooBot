@@ -137,6 +137,10 @@ class CharacterLifecycleManager:
         except Exception:  # noqa: BLE001 - missing table = nothing to wipe
             return 0
 
+    async def backup(self) -> Path | None:
+        """Archive the current character data (used by reset *and* import)."""
+        return await self._backup()
+
     async def _backup(self) -> Path | None:
         """Archive every row we are about to delete (reversibility)."""
         try:

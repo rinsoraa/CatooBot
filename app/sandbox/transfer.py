@@ -51,6 +51,7 @@ import base64
 import hashlib
 import json
 import logging
+import sqlite3
 import time
 from collections.abc import AsyncIterator
 from dataclasses import asdict, dataclass, field
@@ -75,6 +76,13 @@ _B64_MARKER = "$b64"
 def _encode(value: Any) -> Any:
     if isinstance(value, (bytes, bytearray, memoryview)):
         return {_B64_MARKER: base64.b64encode(bytes(value)).decode("ascii")}
+    return value
+
+
+def _decode(value: Any) -> Any:
+    """Reverse :func:`_encode` — ``{"$b64": "…"}`` becomes ``bytes`` again."""
+    if isinstance(value, dict) and set(value) == {_B64_MARKER}:
+        return base64.b64decode(value[_B64_MARKER])
     return value
 
 
@@ -133,12 +141,16 @@ class CharacterDataTransfer:
         bible_hash: str = "",
         tables: tuple[str, ...] = CHARACTER_TABLES,
         settings_keys: tuple[str, ...] = CHARACTER_SETTINGS,
+        backup_dir: str | Path | None = None,
     ) -> None:
         self._db = database
         self._clock = clock
         self._bible_hash = bible_hash
         self._tables = tuple(tables)
         self._settings_keys = tuple(settings_keys)
+        self._backup_dir = (
+            Path(backup_dir) if backup_dir else (PROJECT_ROOT / "data" / "character_reset_backup")
+        )
 
     # ------------------------------------------------------------ collecting
 
@@ -371,6 +383,125 @@ class CharacterDataTransfer:
             "file_sha256": hashlib.sha256(target.read_bytes()).hexdigest(),
         }
 
+    # ------------------------------------------------------------ importing
+
+    async def import_character(
+        self, path: str | Path, *, confirm: bool = False, dry_run: bool = True
+    ) -> dict[str, Any]:
+        """Import a character package: dry-run → backup → transaction → self-check.
+
+        ``dry_run=True`` (the default) reports what would be written without
+        touching the database. With ``confirm=True`` the current character data
+        is backed up first, then wiped and replaced in **one** SQLite
+        transaction — a failure rolls everything back, so no half-imported
+        character is left behind.
+        """
+        target = Path(path)
+        report = await self.inspect(target)
+        if not report.get("ok"):
+            return {"ok": False, "reason": "invalid_package", "inspect": report}
+        if report.get("schema_newer_than_code"):
+            return {"ok": False, "reason": "schema_too_new", "inspect": report}
+
+        document = await asyncio.to_thread(self._read, target)
+        tables = document.get("tables") or {}
+        settings = document.get("settings") or {}
+        counts = {name: len(rows) for name, rows in tables.items()}
+
+        if dry_run:
+            return {
+                "ok": True,
+                "dry_run": True,
+                "will_reset": True,
+                "counts": counts,
+                "settings": sorted(settings),
+                "rows": sum(counts.values()),
+            }
+
+        if not confirm:
+            return {"ok": False, "reason": "confirmation_required"}
+
+        # Reversibility: archive the current character data first.
+        from app.sandbox.lifecycle import CharacterLifecycleManager
+
+        lifecycle = CharacterLifecycleManager(
+            self._db, clock=self._clock, backup_dir=self._backup_dir
+        )
+        backup_path = await lifecycle.backup()
+
+        # One transaction: wipe + insert; a bad row rolls the whole thing back.
+        written = await self._db.run_in_transaction(
+            lambda conn: self._import_sync(conn, tables, settings)
+        )
+        verification = await self._verify_import(counts)
+        return {
+            "ok": True,
+            "dry_run": False,
+            "backup": str(backup_path) if backup_path else "",
+            "written": written,
+            "counts": counts,
+            "verified": verification,
+        }
+
+    def _import_sync(
+        self,
+        conn: Any,
+        tables: dict[str, list[dict[str, Any]]],
+        settings: dict[str, Any],
+    ) -> int:
+        """Wipe the character domain and insert the exported rows (in a tx)."""
+        for table in CHARACTER_TABLES:
+            try:
+                conn.execute(f"DELETE FROM {table}")  # noqa: S608 - fixed names
+            except sqlite3.OperationalError:
+                continue  # table absent in this schema — nothing to wipe
+        for key in CHARACTER_SETTINGS:
+            conn.execute("DELETE FROM settings WHERE key = ?", (key,))
+
+        written = 0
+        for name, rows in sorted(tables.items()):
+            if not rows:
+                continue
+            try:
+                columns = [c[1] for c in conn.execute(f'PRAGMA table_info("{name}")').fetchall()]
+            except sqlite3.OperationalError:
+                continue  # table absent in this schema — skip its rows
+            for row in rows:
+                decoded = {k: _decode(v) for k, v in row.items() if k in columns}
+                if not decoded:
+                    continue
+                cols = ", ".join(f'"{c}"' for c in decoded)
+                placeholders = ", ".join("?" * len(decoded))
+                conn.execute(
+                    f'INSERT INTO "{name}" ({cols}) VALUES ({placeholders})',  # noqa: S608
+                    tuple(decoded.values()),
+                )
+                written += 1
+
+        for key, value in settings.items():
+            if isinstance(value, dict) and set(value) == {"$raw"}:
+                raw = str(value["$raw"])
+            else:
+                raw = value if isinstance(value, str) else json.dumps(value, ensure_ascii=False)
+            conn.execute(
+                "INSERT INTO settings (key, value, updated_at) VALUES (?, ?, ?)",
+                (key, raw, int(self._clock())),
+            )
+        return written
+
+    async def _verify_import(self, counts: dict[str, int]) -> dict[str, Any]:
+        """Row counts match the package? A mismatch is reported, not fatal."""
+        mismatches: dict[str, tuple[int, int]] = {}
+        for name, expected in counts.items():
+            try:
+                row = await self._db.fetchone(f'SELECT COUNT(*) AS n FROM "{name}"')  # noqa: S608
+            except Exception:  # noqa: BLE001
+                continue
+            actual = int(row["n"]) if row else 0
+            if actual != expected:
+                mismatches[name] = (expected, actual)
+        return {"ok": not mismatches, "mismatches": mismatches}
+
     # ------------------------------------------------------------ CLI helpers
 
     async def _cli(self, args: argparse.Namespace) -> int:
@@ -383,6 +514,12 @@ class CharacterDataTransfer:
             result = await self.write_export(out)
             print(json.dumps(result.to_dict(), ensure_ascii=False, indent=2))
             return 0
+        if args.action == "import":
+            report = await self.import_character(
+                args.file, confirm=args.confirm, dry_run=not args.confirm
+            )
+            print(json.dumps(report, ensure_ascii=False, indent=2))
+            return 0 if report.get("ok") else 1
         report = await self.inspect(args.file)
         print(json.dumps(report, ensure_ascii=False, indent=2))
         return 0 if report.get("ok") else 1
@@ -391,13 +528,18 @@ class CharacterDataTransfer:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="python -m app.sandbox.transfer",
-        description="Export/inspect character data (milestone 1: no import yet)",
+        description="Export / inspect / import character data",
     )
     sub = parser.add_subparsers(dest="action", required=True)
     export = sub.add_parser("export", help="write a character-data package")
     export.add_argument("--out", default="", help="target file (default data/exports/…)")
     inspect = sub.add_parser("inspect", help="verify a package without touching any database")
     inspect.add_argument("file")
+    import_ = sub.add_parser(
+        "import", help="import a package (dry-run by default; --confirm writes)"
+    )
+    import_.add_argument("file")
+    import_.add_argument("--confirm", action="store_true", help="actually write")
     args = parser.parse_args(argv)
 
     if args.action == "inspect":

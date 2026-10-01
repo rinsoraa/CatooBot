@@ -25,6 +25,15 @@ async def make_db(tmp_path):
     return database
 
 
+async def make_db_at(tmp_path, name):
+    from app.config.settings import DatabaseConfig
+    from app.database.database import Database
+
+    database = Database(DatabaseConfig(url=f"sqlite:///{tmp_path / name}"))
+    await database.connect()
+    return database
+
+
 async def seed_character(database) -> None:
     await database.execute(
         "INSERT INTO memories (scope_key, user_id, category, content, content_hash,"
@@ -315,3 +324,118 @@ class TestStreaming:
         assert max(transfer.chunks) < 65_536, f"largest chunk {max(transfer.chunks)} characters"
         assert len(transfer.chunks) > 1500, "one write per row at least"
         assert report["ok"] is True, report
+
+
+class TestImport:
+    """Task 24 milestone 2: import_character (dry-run → backup → tx → self-check)."""
+
+    async def _package(self, tmp_path, source_name="src.db") -> Path:
+        source = await make_db_at(tmp_path, source_name)
+        try:
+            await seed_character(source)
+            transfer = CharacterDataTransfer(source)
+            pkg = tmp_path / "pkg.json"
+            await transfer.write_export(pkg)
+        finally:
+            await source.close()
+        return pkg
+
+    def _transfer(self, database, tmp_path):  # type: ignore[no-untyped-def]
+        return CharacterDataTransfer(database, backup_dir=tmp_path / "backups")
+
+    async def test_roundtrip_to_a_fresh_db(self, tmp_path) -> None:
+        pkg = await self._package(tmp_path)
+        target = await make_db_at(tmp_path, "target.db")
+        try:
+            report = await self._transfer(target, tmp_path).import_character(
+                pkg, confirm=True, dry_run=False
+            )
+            assert report["ok"] is True, report
+            assert report["verified"]["ok"] is True, report
+            rows = await target.fetchall("SELECT content FROM memories ORDER BY id")
+            assert len(rows) == 2
+            assert {r["content"] for r in rows} == {"她记得我喜欢草莓蛋糕", "上周我们聊过杭州出差"}
+        finally:
+            await target.close()
+
+    async def test_dry_run_writes_nothing(self, tmp_path) -> None:
+        pkg = await self._package(tmp_path)
+        target = await make_db_at(tmp_path, "target.db")
+        await seed_character(target)  # existing data
+        try:
+            before = await target.fetchone("SELECT COUNT(*) AS n FROM memories")
+            report = await self._transfer(target, tmp_path).import_character(
+                pkg, confirm=False, dry_run=True
+            )
+            after = await target.fetchone("SELECT COUNT(*) AS n FROM memories")
+            assert report["ok"] is True and report["dry_run"] is True
+            assert before == after, "干跑不得写库"
+        finally:
+            await target.close()
+
+    async def test_requires_confirmation(self, tmp_path) -> None:
+        pkg = await self._package(tmp_path)
+        target = await make_db_at(tmp_path, "target.db")
+        try:
+            report = await self._transfer(target, tmp_path).import_character(
+                pkg, confirm=False, dry_run=False
+            )
+            assert report["ok"] is False
+            assert report["reason"] == "confirmation_required"
+        finally:
+            await target.close()
+
+    async def test_overwrites_and_backs_up(self, tmp_path) -> None:
+        pkg = await self._package(tmp_path)
+        target = await make_db_at(tmp_path, "target.db")
+        await seed_character(target)
+        # put a marker the package does not contain, so overwrite is provable
+        await target.execute(
+            "INSERT INTO memories (scope_key, user_id, category, content, content_hash,"
+            " importance, confidence, created_at, updated_at, layer)"
+            " VALUES ('private:9', '9', 'fact', '旧数据该被清掉', 'h9', 0.5, 0.7, 1, 1, 'semantic')"
+        )
+        try:
+            report = await self._transfer(target, tmp_path).import_character(
+                pkg, confirm=True, dry_run=False
+            )
+            assert report["ok"] is True, report
+            assert report["backup"], "导入前必须留备份"
+            assert Path(report["backup"]).exists()
+            rows = await target.fetchall("SELECT content FROM memories")
+            assert {r["content"] for r in rows} == {"她记得我喜欢草莓蛋糕", "上周我们聊过杭州出差"}
+        finally:
+            await target.close()
+
+    async def test_rejects_a_tampered_package(self, tmp_path) -> None:
+        pkg = await self._package(tmp_path)
+        doc = json.loads(pkg.read_text(encoding="utf-8"))
+        doc["tables"]["memories"][0]["content"] = "被改过的内容"
+        pkg.write_text(json.dumps(doc, ensure_ascii=False), encoding="utf-8")
+        target = await make_db_at(tmp_path, "target.db")
+        try:
+            report = await self._transfer(target, tmp_path).import_character(
+                pkg, confirm=True, dry_run=False
+            )
+            assert report["ok"] is False
+            assert report["reason"] == "invalid_package"
+        finally:
+            await target.close()
+
+    async def test_run_in_transaction_rolls_back(self, tmp_path) -> None:
+        db = await make_db_at(tmp_path, "tx.db")
+        try:
+            await db.execute(
+                "INSERT INTO settings (key, value, updated_at) VALUES ('keep', '1', 1)"
+            )
+
+            def fail_midway(conn):  # type: ignore[no-untyped-def]
+                conn.execute("INSERT INTO settings (key, value, updated_at) VALUES ('a', '1', 1)")
+                raise RuntimeError("boom")
+
+            with pytest.raises(RuntimeError):
+                await db.run_in_transaction(fail_midway)
+            row = await db.fetchone("SELECT COUNT(*) AS n FROM settings")
+            assert row["n"] == 1, "失败事务内的写入必须回滚"
+        finally:
+            await db.close()

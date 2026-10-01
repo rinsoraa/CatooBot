@@ -1023,6 +1023,29 @@ class Database:
     def _fetchall_sync(self, sql: str, params: tuple[Any, ...]) -> list[sqlite3.Row]:
         return self._require_conn().execute(sql, params).fetchall()
 
+    async def run_in_transaction(self, fn: Any) -> Any:
+        """Run ``fn(conn)`` as one SQLite transaction (rollback on error).
+
+        ``fn`` receives the raw ``sqlite3.Connection`` and runs synchronously in
+        a worker thread; the whole body commits once, or rolls back entirely if
+        it raises. The lock is held for the duration so no other write can
+        interleave into the transaction.
+        """
+        async with self._lock:
+
+            def _run() -> Any:
+                conn = self._require_conn()
+                conn.execute("BEGIN")
+                try:
+                    result = fn(conn)
+                    conn.commit()
+                    return result
+                except BaseException:
+                    conn.rollback()
+                    raise
+
+            return await asyncio.to_thread(_run)
+
     # ------------------------------------------------------------ high level
 
     async def upsert_user(self, user_id: int | str, nickname: str | None, last_seen: int) -> None:
