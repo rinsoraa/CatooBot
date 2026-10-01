@@ -1,7 +1,7 @@
 """Presence: the character's sense of time, sleep and do-not-disturb.
 
 Everything here is derived from configuration (timezone + windows), never
-hardcoded clocks (spec §19). Sleeping/DND are *fictional* character states —
+hardcoded clocks (spec v0.8 §19). Sleeping/DND are *fictional* character states —
 they never take the bot offline; they only modulate behaviour.
 """
 
@@ -147,7 +147,7 @@ class PresenceResolver:
     # -------------------------------------------------------- availability
 
     def hard_block_reason(self, *, for_initiative: bool) -> str | None:
-        """Hard gates that must never be overridden by probability (spec §56)."""
+        """Hard gates that must never be overridden by probability (spec v0.8 §56)."""
         ctx = self.time_context()
         if ctx.is_sleeping:
             return "sleeping"

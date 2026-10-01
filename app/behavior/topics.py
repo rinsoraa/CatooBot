@@ -2,7 +2,7 @@
 
 TopicManager is deliberately scope-isolated (``user:<id>`` / ``group:<id>``),
 so a topic from one chat can never surface in another. Topics are what makes
-initiative feel motivated (spec §30) instead of random small talk.
+initiative feel motivated (spec v0.8 §30) instead of random small talk.
 """
 
 from __future__ import annotations

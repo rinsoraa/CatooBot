@@ -1,11 +1,11 @@
 """BehaviorScheduler: one long-running background tick for all behaviour.
 
 A single task wakes every ``tick_seconds`` and checks activity, state decay and
-initiative candidates — never one task per user (spec §48). Counters live in
-SQLite, so limits survive a restart (spec §49). Every step is isolated: one
-failing behaviour must not stop the scheduler (spec §74).
+initiative candidates — never one task per user (spec v0.8 §48). Counters live in
+SQLite, so limits survive a restart (spec v0.8 §49). Every step is isolated: one
+failing behaviour must not stop the scheduler (spec v0.8 §74).
 
-Since v0.8 this is also the **only** scheduler in the project (spec §34): the
+Since v0.8 this is also the **only** scheduler in the project (spec v0.8 §34): the
 persistent world, memory maintenance and agent housekeeping register
 :class:`ScheduledJob` entries here instead of spawning loops of their own.
 """
@@ -97,7 +97,7 @@ class BehaviorScheduler:
         await self._safe("activity", self._behavior.tick())
         if self._behavior.initiative.enabled:
             await self._safe("initiative", self._initiative_pass())
-        # Agent housekeeping rides the existing scheduler (spec §103/§104):
+        # Agent housekeeping rides the existing scheduler (spec v0.8 §103/§104):
         # timeouts and stale tasks only — no personality work here.
         agent = getattr(self._bot, "agent", None)
         if agent is not None and agent.enabled:
@@ -130,7 +130,7 @@ class BehaviorScheduler:
                 continue
             overdue = (now - job.last_run) if job.last_run else 0.0
             if job.misfire_policy == "skip" and overdue > job.interval_seconds * 2:
-                # Missed windows are dropped, never stacked (spec §33).
+                # Missed windows are dropped, never stacked (spec v0.8 §33).
                 job.last_run = now
                 job.detail = "skipped missed window"
                 self._log.info("[Scheduler] %s: missed window skipped", job.name)
@@ -146,7 +146,7 @@ class BehaviorScheduler:
             job.detail = "ok"
         except asyncio.CancelledError:
             raise
-        except Exception as exc:  # noqa: BLE001 - isolated per job (spec §74)
+        except Exception as exc:  # noqa: BLE001 - isolated per job (spec v0.8 §74)
             job.failures += 1
             job.detail = f"{type(exc).__name__}: {exc}"[:200]
             self.errors += 1
@@ -156,7 +156,7 @@ class BehaviorScheduler:
         return time.strftime("%Y-%m-%d")
 
     async def _background_budget_ok(self) -> bool:
-        """Global daily cap on *background* messages (spec §42/§105).
+        """Global daily cap on *background* messages (spec v0.8 §42/§105).
 
         Background life may happen all day; messaging someone about it is a
         separate, much smaller budget.

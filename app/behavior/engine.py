@@ -1,6 +1,6 @@
 """CharacterBehaviorEngine: the decision layer between QQ messages and speech.
 
-It answers three questions and nothing else (spec §3/§46):
+It answers three questions and nothing else (spec v0.8 §3/§46):
 
 * should the character take part in this message?  (:meth:`consider_*`)
 * what is she currently doing / how does she feel?  (:meth:`tick`)
@@ -28,7 +28,7 @@ if TYPE_CHECKING:
     from app.database.database import Database
     from app.memory.manager import MemoryManager
 
-# Lexical mood signals (spec §15: changes need a source; random is only a nudge).
+# Lexical mood signals (spec v0.8 §15: changes need a source; random is only a nudge).
 POSITIVE_SIGNALS = ("哈哈", "太好", "开心", "喜欢", "谢谢", "厉害", "好耶", "棒", "嘿嘿", "笑死")
 NEGATIVE_SIGNALS = ("累", "烦", "难过", "生气", "讨厌", "崩溃", "不想", "emo", "哭", "难受")
 
@@ -117,7 +117,7 @@ class CharacterBehaviorEngine:
     # ------------------------------------------------------------ perception
 
     async def observe_conversation(self, text: str, reply: str) -> None:
-        """Derive a *sourced* mood nudge from the conversation (spec §15)."""
+        """Derive a *sourced* mood nudge from the conversation (spec v0.8 §15)."""
         if not self.enabled:
             return
         user_side = text or ""
@@ -128,7 +128,7 @@ class CharacterBehaviorEngine:
         # Replies themselves never move the mood — only what the user said.
 
     async def tick(self) -> None:
-        """Periodic upkeep: mood/state decay (spec §48).
+        """Periodic upkeep: mood/state decay (spec v0.8 §48).
 
         Her *life* belongs to the v2.0 sandbox; this engine keeps the
         conversational layer (mood decay, presence, participation gates).

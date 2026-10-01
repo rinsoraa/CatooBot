@@ -1,9 +1,9 @@
 """Initiative engine: the character may open a conversation — under hard rules.
 
-Every trigger flows through a Candidate → Gate pipeline (spec §32). The Gate
+Every trigger flows through a Candidate → Gate pipeline (spec v0.8 §32). The Gate
 enforces *hard* limits in code (cooldown, hourly/daily budget, DND, sleeping,
 disabled user, awaiting-reply) and only then rolls a probability. The LLM
-never decides whether it is allowed to speak (spec §47).
+never decides whether it is allowed to speak (spec v0.8 §47).
 """
 
 from __future__ import annotations
@@ -142,11 +142,11 @@ class InitiativeEngine:
         relationship_stage: str,
         world_moment: str = "",
     ) -> list[InitiativeCandidate]:
-        """Candidate topics for one user, strongest first (spec §23/§27)."""
+        """Candidate topics for one user, strongest first (spec v0.8 §23/§27)."""
         candidates: list[InitiativeCandidate] = []
         if world_moment:
             # v0.8: something happened in her own life — a *reason*, never a
-            # reason by itself. The same hard gate below still applies (§42).
+            # reason by itself. The same hard gate below still applies (v0.8 §42).
             candidates.append(
                 InitiativeCandidate(
                     scope_key=scope_key,
@@ -249,7 +249,7 @@ class InitiativeEngine:
         return GateResult(True, candidate.reason, probability, detail)
 
     def _roll_clock_buckets(self, state: InitiativeState, now: int) -> None:
-        """Reset daily/hourly counters when their window changed (spec §49)."""
+        """Reset daily/hourly counters when their window changed (spec v0.8 §49)."""
         today = time.strftime(DATE_FORMAT, time.localtime(now))
         bucket = time.strftime(BUCKET_FORMAT, time.localtime(now))
         if state.daily_date != today:
@@ -260,7 +260,7 @@ class InitiativeEngine:
             state.hourly_count = 0
 
     def _is_duplicate(self, candidate: InitiativeCandidate, state: InitiativeState) -> bool:
-        """Reject near-identical repeats of the last proactive message (§57)."""
+        """Reject near-identical repeats of the last proactive message (v0.8 §57)."""
         if not state.last_message:
             return False
         wanted = bigrams(candidate.topic or candidate.prompt_hint)
@@ -332,7 +332,7 @@ class InitiativeEngine:
         )
 
     async def note_user_activity(self, scope_key: str) -> None:
-        """The user spoke: clear the awaiting-reply counter (spec §58/§59)."""
+        """The user spoke: clear the awaiting-reply counter (spec v0.8 §58/§59)."""
         if not self.enabled:
             return
         state = await self.load_state(scope_key)
@@ -380,7 +380,7 @@ class InitiativeEngine:
         return [dict(row) for row in rows]
 
     async def snapshot(self) -> dict[str, Any]:
-        """Dashboard view of the initiative subsystem (spec §52)."""
+        """Dashboard view of the initiative subsystem (spec v0.8 §52)."""
         if self._db is None:
             return {"enabled": False}
         rows = await self._db.fetchall(

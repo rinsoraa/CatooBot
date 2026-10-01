@@ -1,7 +1,7 @@
 """Behaviour-layer data models.
 
 These describe *decisions* (may the character speak? how soon? in how many
-bubbles?) rather than language — the AI never decides hard rules (spec §47).
+bubbles?) rather than language — the AI never decides hard rules (spec v0.8 §47).
 """
 
 from __future__ import annotations
@@ -34,7 +34,7 @@ GATE_REASONS = (
 
 @dataclass
 class TimeContext:
-    """Human-readable 'sense of time' handed to the character (spec §62)."""
+    """Human-readable 'sense of time' handed to the character (spec v0.8 §62)."""
 
     timezone: str
     local_time: str  # HH:MM
@@ -46,7 +46,7 @@ class TimeContext:
     in_dnd: bool
 
     def describe(self) -> str:
-        """Natural-language form — never a raw ISO timestamp (spec §62)."""
+        """Natural-language form — never a raw ISO timestamp (spec v0.8 §62)."""
         weekend = "，今天是周末" if self.is_weekend else ""
         return f"现在是{self._period_text()}（{self.local_time}），{self.weekday}{weekend}。"
 
@@ -63,7 +63,7 @@ class TimeContext:
 
 
 class TopicThread(BaseModel):
-    """An unfinished conversation topic (spec §28)."""
+    """An unfinished conversation topic (spec v0.8 §28)."""
 
     id: int = 0
     scope_key: str
@@ -77,7 +77,7 @@ class TopicThread(BaseModel):
 
 
 class BehaviorEvent(BaseModel):
-    """Audit row for every behaviour decision (spec §50)."""
+    """Audit row for every behaviour decision (spec v0.8 §50)."""
 
     id: int = 0
     type: str
@@ -92,7 +92,7 @@ class BehaviorEvent(BaseModel):
 
 
 class InitiativeState(BaseModel):
-    """Persisted rate-limit counters for proactive chat (spec §49)."""
+    """Persisted rate-limit counters for proactive chat (spec v0.8 §49)."""
 
     scope_key: str
     last_sent_at: int | None = None
@@ -118,10 +118,10 @@ class ResponseStep:
 
 @dataclass
 class ResponsePlan:
-    """What the delivery layer should do with one generated reply (spec §11).
+    """What the delivery layer should do with one generated reply (spec v0.8 §11).
 
     ``attachment`` is an optional sticker/face (v1.1) sent after the text — a
-    character expression, never a generic image (§33/§52). ``steps`` (v1.2) is
+    character expression, never a generic image (v0.8 §33/§52). ``steps`` (v1.2) is
     the full response sequence; when present, delivery walks it and the legacy
     chunks/delays/attachment fields stay as the fallback for older callers.
     """
