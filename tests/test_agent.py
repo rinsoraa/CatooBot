@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from typing import Any
 
 import pytest
 
@@ -463,6 +464,99 @@ class TestEvaluator:
     def test_failed_without_any_step(self) -> None:
         plan = Plan(plan_id="p", steps=[])
         assert Evaluator(AgentConfig()).evaluate(plan, [], []) == "failed"
+
+    # ------------------------------------------------ LLM verification (Task 7)
+
+    @staticmethod
+    def _completed() -> tuple[Plan, list[Observation], list[StepRecord]]:
+        plan = Plan(
+            plan_id="p",
+            summary="查一下周六会不会下雨",
+            criteria=["给出周六的降水情况"],
+            steps=[StepSpec(id="a", description="查天气", expected="周六降水概率")],
+        )
+        records = [StepRecord(step_id="a", status="completed", description="查天气")]
+        observations = [Observation(step_id="a", summary="周六多云，无降水")]
+        return plan, observations, records
+
+    @staticmethod
+    def _evaluator(reply: Any, *, use_llm: bool = True):  # type: ignore[no-untyped-def]
+        provider = MockAIProvider(behaviors={"E": [reply]})
+        engine = AIEngine(
+            AIConfig(enabled=True, models=[{"name": "E", "provider": "mock", "model": "E"}]),
+            None,
+            providers={"mock": provider},
+        )
+        config = AgentConfig(evaluator={"use_llm": use_llm, "model": "E"})
+        return Evaluator(config, engine), provider
+
+    async def test_disputed_completion_asks_for_replan(self) -> None:
+        """Every step said "ok" but the answer misses the point — the one case
+        the rules cannot see and the model call exists for."""
+        plan, observations, records = self._completed()
+        evaluator, provider = self._evaluator(
+            json.dumps(
+                {"goal_met": False, "confidence": 0.9, "reason": "没有回答周六"},
+                ensure_ascii=False,
+            )
+        )
+        verdict = await evaluator.evaluate_async(plan, observations, records)
+        assert verdict == "needs_replan"
+        assert provider.call_count("E") == 1
+
+    async def test_confirmed_completion_keeps_the_rule_verdict(self) -> None:
+        plan, observations, records = self._completed()
+        evaluator, _ = self._evaluator(
+            json.dumps({"goal_met": True, "confidence": 0.9, "reason": "答了"})
+        )
+        assert await evaluator.evaluate_async(plan, observations, records) == "complete"
+
+    async def test_low_confidence_dispute_is_ignored(self) -> None:
+        plan, observations, records = self._completed()
+        evaluator, _ = self._evaluator(
+            json.dumps({"goal_met": False, "confidence": 0.2, "reason": "可能没答全"})
+        )
+        assert await evaluator.evaluate_async(plan, observations, records) == "complete"
+
+    async def test_unparsable_reply_keeps_rules_and_warns(self, caplog) -> None:
+        import logging
+
+        plan, observations, records = self._completed()
+        evaluator, _ = self._evaluator("我觉得还行吧")
+        with caplog.at_level(logging.WARNING, logger="CatooBot.Agent.Evaluator"):
+            verdict = await evaluator.evaluate_async(plan, observations, records)
+        assert verdict == "complete"
+        assert any("keeping rule verdict" in r.getMessage() for r in caplog.records)
+
+    async def test_failure_never_consults_the_model(self) -> None:
+        """A failed step is a hard fact: no model opinion may flip it, and the
+        call is not even made."""
+        plan = Plan(plan_id="p", steps=[StepSpec(id="a", description="a")])
+        records = [StepRecord(step_id="a", status="failed", error_type="step_failed")]
+        evaluator, provider = self._evaluator(json.dumps({"goal_met": True, "confidence": 0.99}))
+        verdict = await evaluator.evaluate_async(plan, [], records)
+        assert verdict == "needs_replan"
+        assert provider.call_count("E") == 0
+
+    async def test_use_llm_off_never_calls_the_model(self) -> None:
+        plan, observations, records = self._completed()
+        evaluator, provider = self._evaluator(
+            json.dumps({"goal_met": False, "confidence": 0.99}), use_llm=False
+        )
+        assert await evaluator.evaluate_async(plan, observations, records) == "complete"
+        assert provider.call_count("E") == 0
+
+    async def test_provider_error_falls_back_to_rules(self, caplog) -> None:
+        import logging
+
+        from app.ai.errors import RateLimitError
+
+        plan, observations, records = self._completed()
+        evaluator, _ = self._evaluator(RateLimitError("mock", model="E"))
+        with caplog.at_level(logging.WARNING, logger="CatooBot.Agent.Evaluator"):
+            verdict = await evaluator.evaluate_async(plan, observations, records)
+        assert verdict == "complete"
+        assert any("keeping rules" in r.getMessage() for r in caplog.records)
 
     def test_result_fields(self) -> None:
         plan = Plan(plan_id="p", summary="概要")
