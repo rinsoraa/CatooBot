@@ -211,6 +211,9 @@ class SandboxRuntime:
         self.ai_engine = (
             ai_engine if ai_engine is not None else getattr(ai_decider, "_engine", None)
         )
+        #: Phase 14 §34-§36: the unified ordering point — a tick and an external
+        #: wakeup never interleave inside the world (no half-updated reads)
+        self._world_lock = asyncio.Lock()
         #: monotonic counter bumped by every *applied* mutation — a proposal
         #: built against an older revision is stale and must be re-validated (§20)
         self.world_revision = 0
@@ -681,7 +684,15 @@ class SandboxRuntime:
         return MutationResult(ok=True, mutations=[mutation])
 
     async def tick(self, *, minutes: float | None = None) -> dict[str, Any]:
-        """One sandbox tick (§68). Returns a small report for logs/tests."""
+        """One sandbox tick (§68). Returns a small report for logs/tests.
+
+        Serialized with :meth:`wakeup` (Phase 14 §34-§36): an external event and
+        a world step never mutate the same state at the same time.
+        """
+        async with self._world_lock:
+            return await self._tick_locked(minutes=minutes)
+
+    async def _tick_locked(self, *, minutes: float | None = None) -> dict[str, Any]:
         if self.phase not in (SandboxPhase.running, SandboxPhase.degraded):
             return {"skipped": self.phase.value}
         step = minutes if minutes is not None else self._tick_minutes()
@@ -1911,15 +1922,18 @@ class SandboxRuntime:
         influence pipeline. Never mutates state directly — every effect goes
         through the Phase 2 mutation/event spine.
         """
-        results: list[dict[str, Any]] = []
-        while True:
-            event = self.external_queue.pop()
-            if event is None:
-                break
-            results.append(await self._process_external(event))
-        if results:
-            await self._persist_external_state()
-        return results
+        # Phase 14 §35: the same serialization point as ``tick`` — the two
+        # entry points take turns, so no reader ever sees a half-updated world
+        async with self._world_lock:
+            results: list[dict[str, Any]] = []
+            while True:
+                event = self.external_queue.pop()
+                if event is None:
+                    break
+                results.append(await self._process_external(event))
+            if results:
+                await self._persist_external_state()
+            return results
 
     async def handle_external(self, event: ExternalEvent) -> dict[str, Any]:
         """Phase-2 compatibility entry: adapt → same pipeline as ``wakeup``."""

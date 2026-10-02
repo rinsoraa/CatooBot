@@ -3,6 +3,40 @@
 本文件记录 CatooBot 的版本演进。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号见 `pyproject.toml`；日期取自真实提交历史（本仓库 2026-09-30 起）。
 
+## [Unreleased] — v2.1 Phase 14 · Long-Lived Runtime & Autonomous Life Continuity
+
+- **审计优先（§84）**：世界时间锚点 `last_tick` 早已持久化（`sandbox_state`），
+  且沙箱 `_settle_gap` 已实现「有界恢复、不按秒重放」——两者直接复用，
+  **未新增迁移、未新建世界时间表、未新增第二套世界/生命系统**。
+- **薄调度器 `app/runtime/scheduler.py`（§9-§16/§64）**：唯一职责是"每隔 Δt 问一次
+  世界"——调用既有 `SandboxRuntime.tick()`；世界步长仍是 `sandbox.tick_seconds`，
+  调度间隔是新增的 `runtime.tick_interval_seconds`（默认 1s）。
+  **关键修正**：调度器把**真实经过时间**作为步长传入（而不是让沙箱的 1 分钟下限兜底），
+  否则 1 秒调度会让她的生活以 60 倍速前进；tick ≠ LLM（无决策不叫模型，测试断言
+  `llm_calls ≪ ticks`）、tick ≠ mutation（没有真实跃迁就不写世界）。
+- **追帧有界（§13-§15/§69-§71）**：停机的经过时间超过干扰线时只走**一次有界步进**
+  （`runtime.max_catchup_seconds`，默认 300s；测试：停机 30 分钟 → 1 次 tick、
+  processed_seconds=300、而非 1800 次），并发布 trace-only 的 `RUNTIME_CATCHUP`；
+  不会因此灌入大量 Experience。
+- **统一排序点（§34-§36/§49）**：`SandboxRuntime.tick()` 与 `wakeup()` 现在共享
+  同一把世界锁——tick 与外部消息绝不交错半个状态（测试用插桩证明两段各自原子完成）。
+- **生命周期（§31-§33/§53-§55/§74）**：`Bot` 按「恢复世界 → 启动调度器 → 启动 OneBot
+  网关」的顺序接线，关闭时反向停止；`start()` 幂等（两次调用仍只有一个循环），
+  `stop()` 后无 orphan；调度循环用单调 deadline（§67）并在落后时重锚（§68 无忙循环）。
+  新增 trace-only 事件 `RUNTIME_TICK` / `RUNTIME_CATCHUP`（不推进 revision，事件历史
+  沿用既有上限）。
+- **边界**：自主生活**绝不主动发 QQ**（无任何主动消息路径，§40/§41/§75）；不改
+  Relationship / Memory / Conversation / OneBot 语义（§59-§62）；两角色两个 runtime
+  的时钟与生活完全独立（§80/§81）。
+- 新增 `tests/test_runtime_scheduler.py`（19 个测试：tick 无跃迁不改状态、到期完成
+  动作并落经历、重复 tick 不产生第二个实例、tick 不做模型调用（40 tick ≤ 5 次）、
+  活跃动作跨重启保持同一实例、目标跨重启仍在、承诺跨重启同状态、停机跨过窗口后
+  被 settle、短停机一次有界步进、长停机 30 分钟≠1800 tick、追帧不灌经历、
+  Tick/Message 共享一个排序点且各自原子、Tick/Message/Tick 无半状态、幂等 start、
+  stop→start 仍一个循环、2000 次 tick 只有零星真实跃迁、8 小时空聊天窗口后收到
+  消息看到当前世界、10 小时长跑有界且无重复目标/实例、双 runtime 时钟与生活隔离），
+  总测试 1380。
+
 ## [Unreleased] — v2.1 Phase 13.1 Remediation · Lane Ordering & Lifecycle Integrity
 
 - **overflow 不再脱离 lane（§1-§10）**：lane 溢出不再把被降级的消息丢到 lane 外

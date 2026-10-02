@@ -742,6 +742,22 @@ class ExpressionConfig(BaseModel):
     groups: list[str] = Field(default_factory=list)  # empty = all groups
 
 
+class RuntimeConfig(BaseModel):
+    """Long-lived runtime scheduling (Phase 14 §63/§64).
+
+    The *world* step stays ``sandbox.tick_seconds``; this is only how often the
+    scheduler asks the world to advance.
+    """
+
+    enabled: bool = True
+    #: 调度间隔（秒）：多久问一次世界；不是世界步长，也不是 LLM 频率
+    tick_interval_seconds: float = Field(default=1.0, ge=0.05, le=60.0)
+    #: 追帧上限（秒）：停机后再久也只走一次有界步进（默认 5 分钟）
+    max_catchup_seconds: float = Field(default=300.0, ge=0.0)
+    #: 停机时等待调度器收尾的预算（秒）
+    shutdown_timeout_seconds: float = Field(default=5.0, gt=0)
+
+
 class AppConfig(BaseModel):
     bot: BotConfig = Field(default_factory=BotConfig)
     onebot: OneBotConfig = Field(default_factory=OneBotConfig)
@@ -757,6 +773,7 @@ class AppConfig(BaseModel):
     media: MediaConfig = Field(default_factory=MediaConfig)
     conversation: ConversationConfig = Field(default_factory=ConversationConfig)
     continuity: ContinuityConfig = Field(default_factory=ContinuityConfig)
+    runtime: RuntimeConfig = Field(default_factory=RuntimeConfig)
     sandbox: SandboxConfig = Field(default_factory=SandboxConfig)
     tools: ToolsConfig = Field(default_factory=ToolsConfig)
     agent: AgentConfig = Field(default_factory=AgentConfig)

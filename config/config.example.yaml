@@ -34,6 +34,20 @@ onebot:
   outbound_max_retries: 3
   # 断线重连的退避上限（秒，1/2/4/8/16 递增后封顶）
   reconnect_max_seconds: 30.0
+  # 优雅关闭的时间预算（秒）：先让已开始的工作收尾，再取消剩余
+  shutdown_timeout: 5.0
+
+# ============================================================
+# 长期在线运行时（Phase 14）：只负责"多久问一次世界"，不改变世界步长
+# sandbox.tick_seconds 仍是世界步长（10 分钟）；这里是调度间隔（默认 1 秒）。
+runtime:
+  enabled: true
+  # 调度间隔（秒）：多久调用一次沙箱 tick；不是每分钟都叫模型
+  tick_interval_seconds: 1.0
+  # 停机后的追帧上限（秒）：超过也只走一次有界步进，绝不按秒重放
+  max_catchup_seconds: 300.0
+  # 停机时等待调度器收尾的预算（秒）
+  shutdown_timeout_seconds: 5.0
 
 logging:
   level: INFO              # DEBUG / INFO / WARNING / ERROR

@@ -283,6 +283,20 @@ class Bot:
                 self.log.exception("OneBot gateway initialization failed; continuing without it")
                 self.onebot_gateway = None
 
+        # Phase 14: the long-lived runtime — one thin scheduler drives the
+        # sandbox's existing tick, so life continues without any chat message.
+        self.runtime_scheduler: Any = None
+        if self.sandbox is not None and bool(getattr(config.runtime, "enabled", True)):
+            try:
+                from app.runtime.scheduler import RuntimeScheduler
+
+                self.runtime_scheduler = RuntimeScheduler(
+                    self.sandbox, config=config.runtime, clock=self._clock, logger=self.log
+                )
+            except Exception:  # noqa: BLE001 - scheduling trouble must not stop startup
+                self.log.exception("Runtime scheduler initialization failed")
+                self.runtime_scheduler = None
+
         self.lifecycle = Lifecycle(self)
         self.router = CommandRouter(self, self.commands, prefix=config.bot.command_prefix)
         self.core_router = CoreRouter(self)
@@ -686,6 +700,9 @@ class Bot:
         except Exception:  # noqa: BLE001
             self.log.exception("Failed to restore behaviour overrides")
 
+        if self.runtime_scheduler is not None:
+            # §32: the world is loaded before anything may hand it a message
+            await self.runtime_scheduler.start()
         if self.onebot_gateway is not None:
             # registers the gateway as the message handler; the bot still owns
             # the socket below (server mode)
@@ -830,6 +847,10 @@ class Bot:
         try:
             if self.onebot_gateway is not None:
                 await self.onebot_gateway.stop()
+            if self.runtime_scheduler is not None:
+                await self.runtime_scheduler.stop(
+                    timeout=float(getattr(self.config.runtime, "shutdown_timeout_seconds", 5.0))
+                )
             await self.adapter.stop()
         except Exception:  # noqa: BLE001
             self.log.exception("Adapter stop raised (ignored during shutdown)")

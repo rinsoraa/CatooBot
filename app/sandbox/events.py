@@ -98,6 +98,9 @@ class SandboxEventType(str, Enum):  # noqa: UP042 - pydantic-friendly str enum
     OUTBOUND_RESPONSE_QUEUED = "outbound_response_queued"
     OUTBOUND_RESPONSE_SENT = "outbound_response_sent"
     OUTBOUND_RESPONSE_FAILED = "outbound_response_failed"
+    # long-lived runtime (Phase 14 §65) — trace only, never a world mutation
+    RUNTIME_TICK = "runtime_tick"
+    RUNTIME_CATCHUP = "runtime_catchup"
     # state authority closure (Phase 3.5)
     PROJECT_PROGRESS_CHANGED = "project_progress_changed"
     KNOWLEDGE_CHANGED = "knowledge_changed"
