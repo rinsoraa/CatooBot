@@ -487,7 +487,8 @@ class SandboxStore:
         try:
             rows = await self._db.fetchall(
                 "SELECT id, character_id, kind, summary, importance, location, actors,"
-                " source_event_ids, correlation_id, created_at FROM sandbox_experiences"
+                " source_event_ids, correlation_id, created_at, metadata, episode_key"
+                " FROM sandbox_experiences"
                 " WHERE character_id = ? AND importance >= ?"
                 " ORDER BY created_at DESC LIMIT ?",
                 (character_id, float(min_importance), int(limit)),
@@ -497,11 +498,13 @@ class SandboxStore:
         result: list[dict[str, Any]] = []
         for row in rows:
             data = dict(row)
-            for field in ("actors", "source_event_ids"):
+            for field in ("actors", "source_event_ids", "metadata"):
                 try:
-                    data[field] = _json_loads(data.get(field))
+                    data[field] = _json_loads(
+                        data.get(field), default={} if field == "metadata" else None
+                    )
                 except ValueError:
-                    data[field] = []
+                    data[field] = [] if field != "metadata" else {}
             result.append(data)
         return result
 

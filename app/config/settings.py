@@ -689,6 +689,9 @@ class SandboxConfig(BaseModel):
     memory_context_require_evidence: bool = True
     #: 最近经历注入条数上限
     experience_context_limit: int = Field(default=3, ge=0, le=20)
+    #: Phase 11 §23: “最近一起做过什么”的唯一时间窗（分钟，默认 48 小时；
+    #: 0 = 只用条数上限）——社交语境不另设第二份 recency 阈值
+    social_context_recent_window_minutes: float = Field(default=2880.0, ge=0)
 
     # ---------- 认知决策层（Phase 6） ----------
     #: 决策调用可选钉住的模型 name（ai.models 里已注册；留空 = 路由默认）

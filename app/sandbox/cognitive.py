@@ -50,6 +50,10 @@ class CognitiveContext(BaseModel):
     #: the resolved identity behind ``relationship_target`` (Phase 10 §17):
     #: platform handle → person_id (+ canonical name); memories always key on id
     person: dict[str, Any] = Field(default_factory=dict)
+    #: Phase 11 §5: this turn's social context as *one* small projection —
+    #: relationship / open promises / recent shared episodes / shared memories.
+    #: Deterministic, bounded, read-only, rebuilt every turn (never persisted).
+    social_situation: dict[str, Any] = Field(default_factory=dict)
 
     # ------------------------------------------------------------- prompt
 
@@ -119,15 +123,116 @@ class CognitiveContext(BaseModel):
                 for item in self.relevant_commitments
             ],
             "person": dict(self.person),
+            "social_situation": {}
+            if not self.social_situation
+            else {
+                "person_id": str(self.social_situation.get("person_id", "")),
+                "relationship": dict(self.social_situation.get("relationship", {}) or {}),
+                "open_commitments": list(self.social_situation.get("open_commitments", []) or []),
+                "recent_shared_experiences": list(
+                    self.social_situation.get("recent_shared_experiences", []) or []
+                ),
+                "relevant_shared_memories": list(
+                    self.social_situation.get("relevant_shared_memories", []) or []
+                ),
+                "continuity": dict(self.social_situation.get("continuity", {}) or {}),
+            },
         }
 
 
 class CognitiveContextBuilder:
     """Assembles a :class:`CognitiveContext` from read-only runtime data."""
 
+    #: §24: the situation never grows past these
+    SOCIAL_COMMITMENT_LIMIT = 3
+    SOCIAL_EXPERIENCE_LIMIT = 3
+    #: how many of the newest experiences the shared-episode scan looks at
+    SOCIAL_EXPERIENCE_SCAN = 12
+
     def __init__(self, runtime: Any, *, clock: Any) -> None:
         self._rt = runtime
         self._clock = clock
+
+    def _recent_shared_experiences(
+        self, person_id: str, experiences: list[dict[str, Any]]
+    ) -> list[dict[str, Any]]:
+        """§13/§23: *this* person's shared episodes inside the one recent window.
+
+        Bounded by the existing experience limit, filtered by person, then by the
+        single configured recency window; newest first, importance as tie-break.
+        """
+        rt = self._rt
+        window_minutes = float(
+            getattr(rt.config, "social_context_recent_window_minutes", 0.0) or 0.0
+        )
+        cutoff = float(self._clock()) - window_minutes * 60.0 if window_minutes else 0.0
+        rows = []
+        for row in experiences:
+            metadata = row.get("metadata") or {}
+            if str(metadata.get("person_id", "")) != person_id:
+                continue
+            if not str(row.get("episode_key", "") or ""):
+                continue  # only *shared episodes* — a relationship note is not an act
+            stamp = float(row.get("created_at", 0.0) or 0.0)
+            if cutoff and stamp and stamp < cutoff:
+                continue
+            rows.append(row)
+        rows.sort(
+            key=lambda item: (
+                -float(item.get("created_at", 0.0) or 0.0),
+                -float(item.get("importance", 0.0) or 0.0),
+                str(item.get("id", "")),
+            )
+        )
+        return [
+            {
+                "experience_id": str(row.get("id", "")),
+                "kind": str(row.get("kind", "")),
+                "summary": str(row.get("summary", "")),
+                "episode_key": str(row.get("episode_key", "") or ""),
+                "importance": float(row.get("importance", 0.0) or 0.0),
+                "at": float(row.get("created_at", 0.0) or 0.0),
+            }
+            for row in rows[: self.SOCIAL_EXPERIENCE_LIMIT]
+        ]
+
+    def _social_situation(
+        self,
+        *,
+        person: dict[str, Any],
+        relationship: dict[str, Any] | None,
+        commitments: list[dict[str, Any]],
+        memories: list[dict[str, Any]],
+        recent_shared: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        """§5/§8/§22: facts, states, sources — never a psychological conclusion."""
+        person_id = str(person.get("person_id", "") or "")
+        if not person_id:
+            return {}  # §21: an unresolved handle gets no person-specific context
+        shared_memories = [
+            {
+                "memory_id": int(row.get("memory_id", 0) or 0),
+                "text": str(row.get("text", "")),
+                "episode_key": str((row.get("provenance") or {}).get("episode_key", "")),
+                "activity": str((row.get("provenance") or {}).get("activity", "")),
+                "importance": float(row.get("importance", 0.0) or 0.0),
+            }
+            for row in memories
+            if str((row.get("provenance") or {}).get("person_id", "")) == person_id
+        ]
+        return {
+            "person_id": person_id,
+            "relationship": dict(relationship or {}),
+            "open_commitments": list(commitments[: self.SOCIAL_COMMITMENT_LIMIT]),
+            "recent_shared_experiences": recent_shared,
+            "relevant_shared_memories": shared_memories,
+            # §22: counts only — a summary of *facts*, never a feeling
+            "continuity": {
+                "has_open_commitments": bool(commitments),
+                "recent_shared_experience_count": len(recent_shared),
+                "relevant_shared_memory_count": len(shared_memories),
+            },
+        }
 
     def _entities(self, relationship_target: str) -> list[str]:
         """Query entities: what is true about the character's world now (§19)."""
@@ -234,12 +339,32 @@ class CognitiveContextBuilder:
                     )
             except Exception:  # noqa: BLE001 - social context is an aid
                 relationships = []
+        shared_pool = experiences
+        if person.get("person_id") and rt.store.available:
+            # the situation scans a bounded window of its own so the general
+            # experience limit never hides this person's latest shared episodes
+            shared_pool = await rt.store.recent_experiences(
+                character_id=rt.character_id,
+                limit=self.SOCIAL_EXPERIENCE_SCAN,
+                min_importance=0.0,
+            )
+        recent_shared = self._recent_shared_experiences(
+            str(person.get("person_id", "") or ""), shared_pool
+        )
+        situation = self._social_situation(
+            person=person,
+            relationship=relationships[0] if relationships else None,
+            commitments=commitments,
+            memories=memories,
+            recent_shared=recent_shared,
+        )
         world = rt.context()
         definition = rt.actions.definition(rt.current_action)
         return CognitiveContext(
             relevant_relationships=relationships,
             relevant_commitments=commitments,
             person=person,
+            social_situation=situation,
             character_id=rt.character_id,
             query=query,
             current_world=world,

@@ -399,6 +399,8 @@ sandbox:
   core_friend_ids: []
   core_friend_identities: {}  # 等价写法（优先级更高）：{"123456": "空凛"}
   social_space_map: {}       # 例：QQ 群号 → "game_group"/"cat_group"/"minecraft_server"
+  # Phase 11：社交语境里“最近和这个人一起做过什么”的唯一时间窗（分钟，0 = 不限时只用条数）
+  social_context_recent_window_minutes: 2880
 
 # ============================================================
 # 对话轮次运行时（v1.2）

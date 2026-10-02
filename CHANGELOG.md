@@ -3,6 +3,36 @@
 本文件记录 CatooBot 的版本演进。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号见 `pyproject.toml`；日期取自真实提交历史（本仓库 2026-09-30 起）。
 
+## [Unreleased] — v2.1 Phase 11 · Social Cognition & Conversational Continuity
+
+- **Social Situation 投影（§5/§26）**：`CognitiveContext` 新增唯一的小投影
+  `social_situation`（person_id / relationship / open_commitments /
+  recent_shared_experiences / relevant_shared_memories / continuity 计数），
+  实时从既有 Sandbox / Relationship / Commitment / Experience / Memory 组合而成，
+  **不建表、不新增系统、不删任何既有字段**（§3/§18/§27）。事实层次固定为
+  当前世界 > 关系 > 未完成约定 > 最近共同经历 > 长期共同记忆（§8）。
+- **确定性相关性（§11-§15/§23/§24）**：共同经历只取**当前对话者**、且有稳定
+  episode key 的 `shared_activity`，按「最近 → importance」排序，最多 3 条；
+  「最近」只有一个来源：新增配置 `social_context_recent_window_minutes`
+  （默认 2880 分钟 = 48 小时，0 = 不限时只用条数）。长期记忆沿用 Phase 10 的
+  加权检索（权重一字未改），并按 person 过滤出「属于这个人的」共同记忆。
+- **身份一致与失败安全（§20/§21）**：handle → person_id 在检索前解析，person /
+  关系 / 约定 / 记忆 / 情境共用同一个 id；无法解析时 person={}、
+  social_situation={}、person boost=0、关系与约定为空——绝不按名字或历史猜人。
+- **只读不变量（§17/§33/§37-§40）**：构建上下文前后 world_revision /
+  cognitive_revision / 关系状态 / 承诺（状态与 revision）/ 记忆条数 / 经历条数 /
+  mutation 审计长度全部不变；连续两次构建输出完全一致（§41）。
+- **提示词渲染（§26/§55）**：聊天侧新增【最近与当前对话者一起做过的事】一段
+  （仅来自已发生的共同经历，最多 3 条 + layer 标记），既有关系/约定/经历渲染不变。
+- 附带：`store.recent_experiences()` 现在一并返回 `metadata` 与 `episode_key`
+  （只增列，向后兼容），供情境按 person 过滤。
+- 新增 `tests/test_sandbox_social_cognition.py`（14 个测试：handle→person 全链一致、
+  无法解析时不猜、四类社会事实正确归位、记忆与经历角色不混、当前对话者的记忆获得
+  boost、他人不借光、跨角色情境隔离、当前世界优先（sleep 不被 gaming 记忆覆盖）、
+  构建只读（revision/关系/承诺/记忆/经历/审计不变）、两次构建完全一致、
+  上限（3 约定/3 经历/memory_context_limit）、超出时间窗的旧 episode 不进「最近」、
+  记忆 provenance.episode_key 与经历 episode_key 对齐、提示词渲染），总测试 1291。
+
 ## [Unreleased] — v2.1 Phase 10.2 Remediation · Memory Episode Identity Alignment
 
 - **记忆 episode identity 与经历层同源（§3/§16）**：`MemoryCandidateBuilder` 不再自己

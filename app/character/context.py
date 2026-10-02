@@ -386,6 +386,28 @@ class CharacterContextBuilder:
                 + "\n".join(commitment_lines)
             )
 
+        # Phase 11 §5/§13: the *shared* episodes with the current speaker come
+        # from the social situation — a reference line, never a narration.
+        situation = sandbox.get("social_situation") or {}
+        shared_lines = [
+            f"- {item.get('summary', '')}"
+            for item in (situation.get("recent_shared_experiences") or [])[:3]
+            if item.get("summary")
+        ]
+        if shared_lines:
+            parts.append(
+                "【最近与当前对话者一起做过的事】（仅作参考，来自已发生的共同经历）\n"
+                + "\n".join(shared_lines)
+            )
+        layers.append(
+            (
+                "shared_experience",
+                bool(shared_lines),
+                "shared episodes with this speaker" if shared_lines else "no recent shared episode",
+                {"count": len(shared_lines)},
+            )
+        )
+
         experiences = sandbox.get("experiences") or []
         experience_lines = [f"- {item.get('text', '')}" for item in experiences if item.get("text")]
         if experience_lines:
