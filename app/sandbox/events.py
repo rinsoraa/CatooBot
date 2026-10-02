@@ -89,6 +89,8 @@ class SandboxEventType(str, Enum):  # noqa: UP042 - pydantic-friendly str enum
     # conversational response runtime (Phase 12 §33) — trace only, no revisions
     CONVERSATION_RESPONSE_PROPOSED = "conversation_response_proposed"
     CONVERSATION_RESPONSE_EMITTED = "conversation_response_emitted"
+    #: the send-boundary re-check (Phase 12.1 §14) — trace only, no revisions
+    CONVERSATION_RESPONSE_COMMITTED = "conversation_response_committed"
     # state authority closure (Phase 3.5)
     PROJECT_PROGRESS_CHANGED = "project_progress_changed"
     KNOWLEDGE_CHANGED = "knowledge_changed"

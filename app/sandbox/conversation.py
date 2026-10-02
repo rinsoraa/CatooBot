@@ -21,6 +21,7 @@ Hard boundaries this module keeps (§2/§32/§59):
 from __future__ import annotations
 
 import json
+import math
 import uuid
 from enum import Enum
 from typing import Any
@@ -72,7 +73,8 @@ class ResponseProposal(BaseModel):
     experience_refs: list[str] = Field(default_factory=list)
     #: a *world-derived* candidate id, never a made-up action (§23)
     action_candidate_id: str = ""
-    confidence: float = 0.0
+    #: §17 (Phase 12.1): a finite probability — NaN/±Inf never validate
+    confidence: float = Field(default=0.0, allow_inf_nan=False)
 
 
 class ConversationResponse(BaseModel):
@@ -191,6 +193,65 @@ class ConversationRuntime:
         )
         return response
 
+    # ------------------------------------------------------- commit guard
+
+    def commit(self, response: ConversationResponse) -> ConversationResponse:
+        """The send boundary (Phase 12.1 §2-§8): re-check, then hand it over.
+
+        Validation happened while the model was thinking; this is the *second*
+        check, right before a transport may send the text. A reply whose world
+        or cognition moved in between is suppressed here — the adapter never
+        re-implements this rule (§3) and never sees the stale refs (§6).
+
+        Strictly read-only (§13): no revision, no mutation, no send.
+        """
+        rt = self._rt
+        if str(response.character_id) != str(rt.character_id):
+            # §7: another world's reply must never be spoken here
+            committed = self._suppress(response, "character_changed")
+        elif int(response.world_revision) != int(rt.world_revision):
+            committed = self._suppress(response, "world_changed")
+        elif int(response.cognitive_revision) != int(rt.cognitive_revision):
+            committed = self._suppress(response, "cognitive_changed")
+        else:
+            committed = response
+        self._publish_commit(committed)
+        return committed
+
+    @staticmethod
+    def _suppress(response: ConversationResponse, reason: str) -> ConversationResponse:
+        """A stale reply keeps nothing: no text, no refs, no candidate (§6)."""
+        return ConversationResponse(
+            turn_id=response.turn_id,
+            character_id=response.character_id,
+            person_id=response.person_id,
+            mode=ConversationMode.silent.value,
+            source="fallback",
+            reason=reason,
+            world_revision=response.world_revision,
+            cognitive_revision=response.cognitive_revision,
+        )
+
+    def _publish_commit(self, response: ConversationResponse) -> Any:
+        """Trace only (§14): whether the response may be sent, and why."""
+        status = "fresh" if response.mode != ConversationMode.silent.value else "suppressed"
+        return self._rt.events.publish(
+            ET.CONVERSATION_RESPONSE_COMMITTED,
+            source=response.source or "character",
+            target=response.turn_id,
+            payload={
+                "turn_id": response.turn_id,
+                "person_id": response.person_id,
+                "mode": response.mode,
+                "source": response.source,
+                "reason": response.reason,
+                "commit_status": status,
+                "memory_refs": list(response.memory_refs),
+                "experience_refs": list(response.experience_refs),
+                "action_candidate_id": response.action_candidate_id,
+            },
+        )
+
     # ------------------------------------------------------------- the model
 
     async def _ask_model(
@@ -277,21 +338,28 @@ class ConversationRuntime:
 
     @staticmethod
     def _parse(raw: str) -> ResponseProposal | None:
-        """Strict JSON only (§21/§54): a broken answer is not a response."""
-        text = str(raw or "")
-        start, end = text.find("{"), text.rfind("}")
-        if start < 0 or end <= start:
+        """The answer must *be* one JSON object — nothing before, nothing after.
+
+        §15/§16 (Phase 12.1): a chatty preamble or a trailing remark makes the
+        whole answer invalid, so does a list/string/null top level, and so do
+        NaN or Infinity (JSON's non-finite extensions are refused outright).
+        """
+        text = str(raw or "").strip()
+        if not text.startswith("{") or not text.endswith("}"):
             return None
         try:
-            data = json.loads(text[start : end + 1])
+            data = json.loads(text, parse_constant=_reject_constant)
         except (TypeError, ValueError):
             return None
         if not isinstance(data, dict):
             return None
         try:
-            return ResponseProposal.model_validate(data)
+            proposal = ResponseProposal.model_validate(data)
         except Exception:  # noqa: BLE001 - an unshaped dict is simply not a proposal
             return None
+        if not math.isfinite(float(proposal.confidence)):  # §17: defence in depth
+            return None
+        return proposal
 
     # ------------------------------------------------------------ validation
 
@@ -407,6 +475,11 @@ class ConversationRuntime:
 def rt_definition(runtime: Any) -> Any:
     """The character definition behind the prompt label (§39, never hardcoded)."""
     return getattr(runtime, "definition", None)
+
+
+def _reject_constant(name: str) -> Any:
+    """JSON's non-finite extensions (NaN / Infinity) are not valid here (§17)."""
+    raise ValueError(f"non-finite number: {name}")
 
 
 def _keep_known(refs: list[str], known: set[str]) -> tuple[list[str], list[str]]:

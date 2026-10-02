@@ -3,6 +3,30 @@
 本文件记录 CatooBot 的版本演进。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号见 `pyproject.toml`；日期取自真实提交历史（本仓库 2026-09-30 起）。
 
+## [Unreleased] — v2.1 Phase 12.1 Remediation · Response Commit Guard & Proposal Protocol
+
+- **响应提交守卫（§2-§8/§13）**：新增 `ConversationRuntime.commit(response)` 与
+  `SandboxRuntime.commit_conversation_response(response)`——这是回复交给 transport 的
+  **唯一**入口（adapter 不得自行判断 stale）。提交时重查 `character_id` 与
+  `world_revision` / `cognitive_revision`：任一不符即抑制为 silent/fallback
+  （reason = `character_changed` / `world_changed` / `cognitive_changed`），并把
+  text / memory_refs / experience_refs / action_candidate_id 全部清空；新鲜响应原样返回。
+  守卫严格只读：不推进 revision、不写任何状态、不发送网络请求。
+- **提交可观测（§14）**：新增 trace-only 事件 `CONVERSATION_RESPONSE_COMMITTED`
+  （payload 带 `commit_status = fresh|suppressed`、mode/source/reason/refs），
+  不推进任何 revision、不存聊天历史。
+- **严格 JSON 协议（§15-§17）**：`_parse()` 不再从输出里“抠” JSON——整段输出必须
+  **就是**一个 JSON object；前后有任何文字、多个对象、顶层非 object
+  （list/string/null）一律视为无效（silent + fallback，无 mutation）。NaN / Infinity /
+  -Infinity 通过 `parse_constant` 直接拒绝，并在 `ResponseProposal.confidence`
+  上加 `allow_inf_nan=False` 与有限性复核（§17 双层）。
+- 未改动：mode 集合、memory/experience 引用白名单、action candidate 语义、
+  置信度阈值（仍复用 `decision_min_confidence`）、Phase 8-11 语义、schema。
+- `tests/test_sandbox_conversation.py` 新增 11 个测试（fresh 提交原样返回、
+  TOCTOU 世界变化抑制发送、认知变化抑制发送、跨角色响应拒绝提交、
+  重复提交确定且只读、JSON-only 通过、前缀文字/后缀文字/双对象/非 object 顶层/
+  NaN 与 Infinity 全部拒绝），总测试 1324。
+
 ## [Unreleased] — v2.1 Phase 12 · Conversational Response Runtime & Fact-Safe Social Reply
 
 - **新模块 `app/sandbox/conversation.py`（§5-§59）**：`ConversationTurn`（本轮 turn：

@@ -623,3 +623,238 @@ class _StubEngine:
 
     async def chat(self, _request):  # type: ignore[no-untyped-def]
         return await self._answer(_request)
+
+
+# --------------------------------------- Phase 12.1 §9-§19: commit guard + protocol
+
+
+class TestResponseCommitGuard:
+    async def test_a_fresh_response_commits_unchanged(self, tmp_path) -> None:  # type: ignore[no-untyped-def]
+        db = await make_db(tmp_path)
+        clock = Clock()
+        engine, _provider = make_engine([proposal(text="在的，刚在打游戏。")])
+        runtime = await make_sandbox(db=db, clock=clock, engine=engine)
+        try:
+            response = await turn(runtime, message="在吗", actor_id="9701")
+            committed = runtime.commit_conversation_response(response)
+            assert committed is response  # §11: same object, same text, same refs
+            assert committed.text == response.text
+            assert committed.mode == "reply"
+            event = runtime.events.last(ET.CONVERSATION_RESPONSE_COMMITTED)
+            assert event is not None
+            assert event.payload["commit_status"] == "fresh"
+            assert event.payload["turn_id"] == response.turn_id
+        finally:
+            await runtime.shutdown()
+            await db.close()
+
+    async def test_a_world_change_after_validation_suppresses_the_send(self, tmp_path) -> None:  # type: ignore[no-untyped-def]
+        """§9 TOCTOU: validated, then the world moved — the text must not go out."""
+        db = await make_db(tmp_path)
+        clock = Clock()
+        engine, _provider = make_engine([proposal(text="马上就来。")])
+        runtime = await make_sandbox(db=db, clock=clock, engine=engine)
+        try:
+            response = await turn(runtime, message="在吗", actor_id="9702")
+            assert response.mode == "reply"  # validation passed while thinking
+            runtime.adjust_need("social_need", delta=-0.01, source="test", reason="world_moves")
+
+            committed = runtime.commit_conversation_response(response)
+            assert committed.mode == "silent"
+            assert committed.source == "fallback"
+            assert committed.reason == "world_changed"
+            assert committed.text == ""
+            assert committed.memory_refs == []
+            assert committed.experience_refs == []
+            assert committed.action_candidate_id == ""
+            assert (
+                runtime.events.last(ET.CONVERSATION_RESPONSE_COMMITTED).payload["commit_status"]
+                == "suppressed"
+            )
+        finally:
+            await runtime.shutdown()
+            await db.close()
+
+    async def test_a_cognitive_change_after_validation_suppresses_the_send(self, tmp_path) -> None:  # type: ignore[no-untyped-def]
+        """§10: a relationship/promise change alone invalidates the reply."""
+        db = await make_db(tmp_path)
+        clock = Clock()
+        engine, _provider = make_engine([proposal(text="好呀。")])
+        runtime = await make_sandbox(db=db, clock=clock, engine=engine)
+        try:
+            response = await turn(runtime, message="晚上一起玩", actor_id="9703")
+            assert response.mode == "reply"
+            await runtime.apply_social_interaction(
+                SocialInteractionFact.create(
+                    character_id=runtime.character_id,
+                    person_id=runtime.persons.for_qq("9703").person_id,
+                    interaction_type="message_received",
+                    source="test",
+                    timestamp=clock.now,
+                )
+            )
+            committed = runtime.commit_conversation_response(response)
+            assert committed.mode == "silent"
+            assert committed.reason == "cognitive_changed"
+            assert committed.text == ""
+            assert runtime.world_revision == response.world_revision  # only cognition moved
+        finally:
+            await runtime.shutdown()
+            await db.close()
+
+    async def test_another_characters_response_never_commits(self, tmp_path) -> None:  # type: ignore[no-untyped-def]
+        """§7: a reply produced in one world never speaks in another."""
+        db = await make_db(tmp_path)
+        clock = Clock()
+        first_engine, _first_provider = make_engine([proposal(text="我这边是小明。")])
+        second_engine, _second_provider = make_engine([proposal(text="我这边是另一个角色。")])
+        first = await make_sandbox(db=db, clock=clock, engine=first_engine)
+        second = await make_sandbox(
+            db=db, clock=clock, engine=second_engine, bible_path=OTHER_BIBLE_PATH
+        )
+        try:
+            foreign = await turn(first, message="在吗", actor_id="9704")
+            committed = second.commit_conversation_response(foreign)
+            assert committed.mode == "silent"
+            assert committed.reason == "character_changed"
+            assert committed.text == ""
+        finally:
+            await first.shutdown()
+            await second.shutdown()
+            await db.close()
+
+    async def test_committing_twice_is_deterministic_and_read_only(self, tmp_path) -> None:  # type: ignore[no-untyped-def]
+        """§12/§13: the guard only reads — repeating it changes nothing."""
+        db = await make_db(tmp_path)
+        clock = Clock()
+        engine, _provider = make_engine([proposal(text="嗯，在的。")])
+        runtime = await make_sandbox(db=db, clock=clock, engine=engine)
+        try:
+            await shared_session(runtime, "9705", instance_id="act_commit")
+            person = runtime.persons.for_qq("9705").person_id
+            before = {
+                "world": runtime.world_revision,
+                "cognitive": runtime.cognitive_revision,
+                "relationship": (await runtime.relationships_dyn.get(person)).model_dump(),  # type: ignore[union-attr]
+                "commitments": [
+                    (item.commitment_id, item.status.value, item.revision)
+                    for item in runtime.commitments.all()
+                ],
+                "goals": [(goal.goal_id, goal.status.value) for goal in runtime.goals.all()],
+                "memories": await runtime.memory.count(),
+                "experiences": len(runtime.experiences.emitted()),
+                "mutations": len(runtime.mutations.recent(limit=200)),
+                "action": runtime.current_action,
+            }
+            response = await turn(runtime, message="在吗", actor_id="9705")
+            first = runtime.commit_conversation_response(response)
+            second = runtime.commit_conversation_response(response)
+            assert first.text == second.text == response.text
+            assert first.mode == second.mode == "reply"
+            after = {
+                "world": runtime.world_revision,
+                "cognitive": runtime.cognitive_revision,
+                "relationship": (await runtime.relationships_dyn.get(person)).model_dump(),  # type: ignore[union-attr]
+                "commitments": [
+                    (item.commitment_id, item.status.value, item.revision)
+                    for item in runtime.commitments.all()
+                ],
+                "goals": [(goal.goal_id, goal.status.value) for goal in runtime.goals.all()],
+                "memories": await runtime.memory.count(),
+                "experiences": len(runtime.experiences.emitted()),
+                "mutations": len(runtime.mutations.recent(limit=200)),
+                "action": runtime.current_action,
+            }
+            assert before == after
+        finally:
+            await runtime.shutdown()
+            await db.close()
+
+
+class TestStrictProposalProtocol:
+    async def test_json_only_is_accepted(self, tmp_path) -> None:  # type: ignore[no-untyped-def]
+        db = await make_db(tmp_path)
+        clock = Clock()
+        engine, _provider = make_engine([proposal(text="在的。")])
+        runtime = await make_sandbox(db=db, clock=clock, engine=engine)
+        try:
+            response = await turn(runtime, message="在吗", actor_id="9706")
+            assert response.mode == "reply" and response.text == "在的。"
+        finally:
+            await runtime.shutdown()
+            await db.close()
+
+    async def test_a_chatty_preamble_is_invalid(self, tmp_path) -> None:  # type: ignore[no-untyped-def]
+        """§15: "Here is my answer: {...}" is not a protocol answer."""
+        db = await make_db(tmp_path)
+        clock = Clock()
+        engine, _provider = make_engine([f"好的，这是回复：{proposal(text='在的。')}"])
+        runtime = await make_sandbox(db=db, clock=clock, engine=engine)
+        try:
+            response = await turn(runtime, message="在吗", actor_id="9707")
+            assert response.mode == "silent"
+            assert response.source == "fallback"
+            assert response.reason == "llm_unavailable_or_invalid"
+        finally:
+            await runtime.shutdown()
+            await db.close()
+
+    async def test_a_trailing_remark_is_invalid(self, tmp_path) -> None:  # type: ignore[no-untyped-def]
+        db = await make_db(tmp_path)
+        clock = Clock()
+        engine, _provider = make_engine([f"{proposal(text='在的。')} 就这些。"])
+        runtime = await make_sandbox(db=db, clock=clock, engine=engine)
+        try:
+            response = await turn(runtime, message="在吗", actor_id="9708")
+            assert response.mode == "silent" and response.source == "fallback"
+        finally:
+            await runtime.shutdown()
+            await db.close()
+
+    async def test_two_objects_are_invalid(self, tmp_path) -> None:  # type: ignore[no-untyped-def]
+        db = await make_db(tmp_path)
+        clock = Clock()
+        engine, _provider = make_engine([f"{proposal()}{proposal()}"])
+        runtime = await make_sandbox(db=db, clock=clock, engine=engine)
+        try:
+            response = await turn(runtime, message="在吗", actor_id="9709")
+            assert response.mode == "silent" and response.source == "fallback"
+        finally:
+            await runtime.shutdown()
+            await db.close()
+
+    async def test_non_finite_confidence_is_invalid(self, tmp_path) -> None:  # type: ignore[no-untyped-def]
+        """§17: NaN / Infinity are not probabilities — the proposal is refused."""
+        db = await make_db(tmp_path)
+        clock = Clock()
+        engine, _provider = make_engine(
+            [
+                '{"mode": "reply", "text": "在的。", "confidence": NaN}',
+                '{"mode": "reply", "text": "在的。", "confidence": Infinity}',
+            ]
+        )
+        runtime = await make_sandbox(db=db, clock=clock, engine=engine)
+        try:
+            for qq in ("9710", "9711"):
+                response = await turn(runtime, message="在吗", actor_id=qq)
+                assert response.mode == "silent"
+                assert response.source == "fallback"
+                assert response.reason == "llm_unavailable_or_invalid"
+            assert runtime.events.last(ET.CONVERSATION_RESPONSE_PROPOSED) is None
+        finally:
+            await runtime.shutdown()
+            await db.close()
+
+    async def test_a_non_object_top_level_is_invalid(self, tmp_path) -> None:  # type: ignore[no-untyped-def]
+        """§16: a bare list or string is not a proposal."""
+        db = await make_db(tmp_path)
+        clock = Clock()
+        engine, _provider = make_engine(['["reply"]', '"reply"'])
+        runtime = await make_sandbox(db=db, clock=clock, engine=engine)
+        try:
+            for qq in ("9712", "9713"):
+                response = await turn(runtime, message="在吗", actor_id=qq)
+                assert response.mode == "silent" and response.source == "fallback"
+        finally:
+            await runtime.shutdown()
+            await db.close()

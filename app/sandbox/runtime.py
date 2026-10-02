@@ -2759,6 +2759,15 @@ class SandboxRuntime:
             action_candidates=action_candidates,
         )
 
+    def commit_conversation_response(self, response: ConversationResponse) -> ConversationResponse:
+        """The only way a produced reply reaches a transport (Phase 12.1 §4/§8).
+
+        Re-checks the character and both revisions; a stale reply comes back as
+        a silent one with everything cleared, so an adapter can never send text
+        that no longer matches the world.
+        """
+        return self.conversation.commit(response)
+
     async def relationship_for(self, actor_id: str) -> Any:
         """Relationship state of a QQ actor, or None when there is none yet.
 
