@@ -71,6 +71,8 @@ class GoalStep(BaseModel):
     kind: str = "action"
     status: StepStatus = StepStatus.pending
     action_id: str = ""
+    #: the concrete ActionInstance this step is waiting for (§4/§5)
+    action_instance_id: str = ""
     target: str = ""
     order: int = 0
     requirements: list[str] = Field(default_factory=list)
@@ -147,18 +149,40 @@ class GoalDetector:
 
     # --------------------------------------------------------------- sweeps
 
-    def sweep(self) -> None:
-        """Startup/restore scan: worlds that already have open business (§34)."""
+    def _restockable_targets(self) -> list[tuple[str, str]]:
+        """(inventory_key, item) pairs some owned action can replenish (§11).
+
+        Derived from ``ActionDefinition.effects``: an item whose count ran to
+        zero — and which therefore vanished from ``inventory.items`` — is
+        still discovered, because the *world's* own actions say it can be
+        replenished. No item names anywhere.
+        """
         runtime = self._manager.runtime
-        for key, inventory in runtime.inventories.all().items():
-            for item in list(inventory.items):
-                if inventory.count(item) <= 0:
-                    self._create_restock(
-                        item=item,
-                        inventory_key=key,
-                        source_event_id="",
-                        source=GoalSource.unfinished_task,
-                    )
+        seen: dict[tuple[str, str], None] = {}
+        for definition in runtime.actions.definitions.values():
+            for effect_key, gain in definition.effects.items():
+                if not effect_key.startswith("inventory:") or float(gain or 0.0) <= 0:
+                    continue
+                parts = effect_key.split(":", 2)
+                if len(parts) == 3:
+                    seen[(parts[1], parts[2])] = None
+        return list(seen)
+
+    def sweep(self) -> None:
+        """Startup/restore scan: worlds that already have open business (§34).
+
+        Depletion is judged per *restockable* item (world-derived), never by
+        whether a zero-count key happens to remain in the inventory mapping.
+        """
+        runtime = self._manager.runtime
+        for inventory_key, item in self._restockable_targets():
+            if runtime.inventories.get(inventory_key).count(item) <= 0:
+                self._create_restock(
+                    item=item,
+                    inventory_key=inventory_key,
+                    source_event_id="",
+                    source=GoalSource.unfinished_task,
+                )
         for project_id, project in runtime.projects.items():
             if float(project.get("progress", 0.0)) < 1.0:
                 self._create_project_goal(project_id, source_event_id="")
@@ -429,11 +453,17 @@ class GoalManager:
             goal_id=goal.goal_id,
             action_id=outcome.action_id,
             target=goal.target_item or goal.target_project or goal.target_entity,
-            order=len(goal.current_step.result) if goal.current_step else 0,
+            order=goal.current_step.order + 1 if goal.current_step else 0,
             requirements=[],
             result={"source": outcome.source},
         )
-        if goal.status is GoalStatus.pending:
+        if goal.status is GoalStatus.blocked:
+            # §1: a cooldown-expired goal that became legal again is *active*
+            # again — same goal id, same correlation, no clone
+            goal.status = GoalStatus.active
+            goal.next_eligible_at = 0.0
+            self._publish(ET.GOAL_ACTIVATED, goal, reason="resumed_after_cooldown")
+        elif goal.status is GoalStatus.pending:
             goal.status = GoalStatus.active
             self._publish(ET.GOAL_ACTIVATED, goal, reason="step_selected")
         goal.current_step = step
@@ -454,7 +484,7 @@ class GoalManager:
             self._block(goal, "action_not_started")
             return False
         step.status = StepStatus.active
-        step.result["action_instance"] = started.id
+        step.action_instance_id = started.id  # §5: first-class identity
         self.steps_started += 1
         # an errand destination step may itself complete the acquisition later
         await self._persist(goal)
@@ -462,20 +492,61 @@ class GoalManager:
 
     # -------------------------------------------------------------- progress
 
-    def on_action_completed(self, action_id: str) -> None:
-        """A step's action finished — record it; completion is judged by state."""
+    def on_action_completed(self, action_id: str, *, action_instance_id: str = "") -> None:
+        """A step's action finished (§6).
+
+        Matching prefers the *instance* identity. The action-id fallback only
+        applies when no instance id is available **and exactly one** pending
+        step could match — two goals sharing an action definition must never
+        both advance from a single completion.
+        """
+        matches: list[tuple[Goal, GoalStep]] = []
         for goal in self._goals.values():
             step = goal.current_step
-            if step is None or step.action_id != action_id or step.status is StepStatus.completed:
+            if step is None or step.status is StepStatus.completed:
                 continue
-            step.status = StepStatus.completed
-            self._publish(
-                ET.GOAL_STEP_COMPLETED,
-                goal,
-                reason=action_id,
-                extra={"step_id": step.step_id, "action_id": action_id},
-            )
-            self._evaluate(goal)
+            if (
+                action_instance_id
+                and step.action_instance_id == action_instance_id
+                or (
+                    not action_instance_id
+                    and not step.action_instance_id
+                    and step.action_id == action_id
+                )
+            ):
+                matches.append((goal, step))
+        if len(matches) != 1:
+            return  # nothing to advance — or ambiguous, in which case do nothing
+        goal, step = matches[0]
+        step.status = StepStatus.completed
+        self._publish(
+            ET.GOAL_STEP_COMPLETED,
+            goal,
+            reason=action_id,
+            extra={
+                "step_id": step.step_id,
+                "action_id": action_id,
+                "action_instance_id": step.action_instance_id,
+            },
+        )
+        self._evaluate(goal)
+
+    def rebind_instance(
+        self, action_id: str, *, old_instance_id: str, new_instance_id: str
+    ) -> bool:
+        """§7: an interrupted-then-resumed action gets a new instance id."""
+        for goal in self._goals.values():
+            step = goal.current_step
+            if step is None or step.status is StepStatus.completed:
+                continue
+            if step.action_id != action_id:
+                continue
+            if step.action_instance_id not in ("", old_instance_id):
+                continue
+            step.action_instance_id = new_instance_id
+            goal.updated_at = float(self._clock())
+            return True
+        return False
 
     def on_pet_fed(self, *, pet_id: str) -> None:
         for goal in self._goals.values():

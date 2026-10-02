@@ -3,6 +3,32 @@
 本文件记录 CatooBot 的版本演进。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号见 `pyproject.toml`；日期取自真实提交历史（本仓库 2026-09-30 起）。
 
+## [Unreleased] — v2.1 Phase 7 Remediation · Goal 状态恢复 + Action Instance 一致性
+
+- **blocked → active（§1）**：冷却期结束后重试成功的 blocked 目标会真正回到
+  `active`（同一 goal_id、同一 correlation，不克隆），并发布
+  GOAL_ACTIVATED(reason="resumed_after_cooldown")；GOAL_BLOCKED 历史保留。
+  消除了「状态是 blocked 却在执行 Action」的语义不一致（§17 审计确认
+  blocked 只在 `_block()` 设置、只在成功重试/取消时离开）。
+- **GoalStep 绑定 Action Instance（§4-§6）**：ACTION_STARTED / COMPLETED /
+  INTERRUPTED 的 payload 统一携带 `action_id` + `action_instance_id`；
+  `GoalStep.action_instance_id` 成为一等字段（不再依赖
+  `result["action_instance"]`）；`on_action_completed` 以 instance 精确匹配，
+  action_id 仅在没有 instance 且**唯一**候选步骤时作兼容回退——
+  两个目标共享同一 action 定义时，一次完成绝不会同时推进两者（核心回归测试）。
+- **Resume 重绑（§7）**：Phase 3 的 interrupt→resume 产生新 ActionInstance 后，
+  `GoalManager.rebind_instance()` 把正在等待该动作的步骤改绑到新实例
+  （同一 GoalStep，不新建步骤），随后该实例完成才推进目标。
+- **启动扫描按 Seed 发现耗尽资源（§10-§13）**：`GoalDetector.sweep()` 改为遍历
+  `ActionDefinition.effects` 推导出的「世界里真正可补货的 (inventory, item) 集合」
+  （`_restockable_targets()`），不再依赖 `inventory.items` 里是否残留 0 计数键；
+  去重仍按 character+kind+target。附带修正 `take_item` 的耗尽语义：
+  INVENTORY_DEPLETED 现在在**该物品**归零时发布（「最后一瓶」），payload 增加
+  `container_empty` 说明容器是否也空了——此前是容器整体为空才发。
+- 新增 `tests/test_sandbox_goals_remediation.py`（7 个测试：blocked 复活、
+  instance 精确匹配、歧义回退不动、STARTED/COMPLETED 同实例、resume 重绑、
+  无残留 0 键时启动恢复、非可补货物品永不成为目标），总测试 1171。
+
 ## [Unreleased] — v2.1 Phase 7 · Autonomous Life Loop & Goal Layer（她为什么会一直做下去）
 
 - **目标层（§4-§9/§27）**：新增 `app/sandbox/goals.py` ——

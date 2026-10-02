@@ -55,7 +55,11 @@ async def make_sandbox(*, db, clock, bible_path=None, engine=None):  # type: ign
 async def drink_last_cola(runtime, clock) -> None:  # type: ignore[no-untyped-def]
     """Consume the final staple drink through the canonical path."""
     key, item = runtime._fridge_key, runtime._drink_item  # noqa: SLF001
-    runtime.inventories.get(key).items = {item: 1}
+    inventory = runtime.inventories.get(key)
+    # "last bottle" means *this* item runs out — the rest of the fridge stays
+    remaining = dict(inventory.items)
+    remaining[item] = 1
+    inventory.items = remaining
     started = await runtime._start_action("drink_cola")  # noqa: SLF001
     assert started is not None
     runtime.current_action.planned_end_at = clock.now

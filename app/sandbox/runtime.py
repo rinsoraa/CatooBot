@@ -772,13 +772,14 @@ class SandboxRuntime:
         )
         event_ids = [consumed.event_id] if consumed else []
         depleted = None
-        if not inventory.items:
-            # depletion was *caused by* the consumption (§13)
+        if inventory.count(item) <= 0:
+            # *this item* ran out ("the last bottle" — Phase 7 Case A); the
+            # payload also says whether the container itself is now empty
             depleted = self.events.publish(
                 SandboxEventType.INVENTORY_DEPLETED,
                 source=source,
                 target=f"inventory:{inventory_key}",
-                payload={"was": item},
+                payload={"was": item, "container_empty": not inventory.items},
                 causation_id=causation_id or (consumed.event_id if consumed else ""),
                 correlation_id=correlation or (consumed.correlation_id if consumed else ""),
             )
@@ -1224,7 +1225,12 @@ class SandboxRuntime:
             SandboxEventType.ACTION_COMPLETED,
             source="character",
             target=definition.id,
-            payload={"detail": action.detail, "reason": "natural_completion"},
+            payload={
+                "action_id": definition.id,
+                "action_instance_id": action.id,
+                "detail": action.detail,
+                "reason": "natural_completion",
+            },
             correlation_id=correlation,
         )
         await self._persist_deltas()
@@ -1273,6 +1279,12 @@ class SandboxRuntime:
         )
         if instance is None:
             return ""
+        # §7: resume creates a new lifecycle — a waiting goal step must follow
+        self.goals.rebind_instance(
+            context.definition_id,
+            old_instance_id=context.action_id,
+            new_instance_id=instance.id,
+        )
         self.events.publish(
             SandboxEventType.ACTION_RESUMED,
             source="character",
@@ -1409,9 +1421,10 @@ class SandboxRuntime:
             source="character",
             target=action_id,
             payload={
+                "action_id": action_id,
+                "action_instance_id": instance.id,
                 "space": target_space,
                 "detail": instance.detail,
-                "correlation": instance.id,
             },
             correlation_id=correlation,
         )
@@ -1451,7 +1464,10 @@ class SandboxRuntime:
         """Bus handler: world facts advance/complete goals (sync; flushed later)."""
         payload = event.payload
         if event.event_type is SandboxEventType.ACTION_COMPLETED:
-            self.goals.on_action_completed(str(event.target_entity_id))
+            self.goals.on_action_completed(
+                str(event.target_entity_id),
+                action_instance_id=str(payload.get("action_instance_id", "") or ""),
+            )
         elif event.event_type is SandboxEventType.PET_FED:
             self.goals.on_pet_fed(pet_id=str(event.target_entity_id))
         elif event.event_type is SandboxEventType.ITEM_ACQUIRED:
@@ -1879,6 +1895,8 @@ class SandboxRuntime:
             source="external",
             target=action.definition_id,
             payload={
+                "action_id": action.definition_id,
+                "action_instance_id": action.id,
                 "reason": why,
                 "progress": round(progress, 3),
                 "resumable": bool(self._interrupted),
