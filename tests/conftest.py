@@ -15,8 +15,10 @@ from app.message.event import GroupMessageEvent, PrivateMessageEvent
 #: Repository root — tests must never depend on the current working directory.
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
-#: The canonical character bible (also mirrored to GitHub).
-BIBLE_PATH = REPO_ROOT / "config" / "character_bible.md"
+#: The character bible used by tests: a self-contained fixture under
+#: tests/fixtures (the operator's real config/character_bible.md is private
+#: and never required by the suite).
+BIBLE_PATH = REPO_ROOT / "tests" / "fixtures" / "character_bible.md"
 
 
 # ---------------------------------------------------------------------------

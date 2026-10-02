@@ -822,7 +822,7 @@ _SOCIAL_SPACE_RE = re.compile(
 )
 #: an enumeration's first member often reads "在游戏群、X服务器、…" — the
 #: leading 在 is grammar, not part of the name
-_SOCIAL_ENUM_RE = re.compile(r"^在([\w一-鿿]{2,9}(?:同好群|图群|游戏群|服务器|论坛|群))$")
+_SOCIAL_ENUM_RE = re.compile(r"^(?:在)?([\w一-鿿]{2,9}(?:同好群|图群|游戏群|服务器|论坛|群))$")
 #: candidates that carry narration verbs are sentences, not hangout names
 _SOCIAL_VERB_BLOCKLIST = ("拍照", "放下", "开会", "聊得", "一边", "去开", "遇到", "配文")
 
@@ -836,8 +836,8 @@ def _social_space_names(sections: dict[str, list[str]]) -> list[str]:
                 if name in names or any(verb in name for verb in _SOCIAL_VERB_BLOCKLIST):
                     continue
                 names.append(name)
-            # enumeration tokens: "在游戏群" → "游戏群"
-            for token in re.split(r"[、，,；;]", line):
+            # enumeration tokens: "- 行为：在游戏群、X服务器…" → 游戏群 / X服务器
+            for token in re.split(r"[、，,；;：]", line.strip().lstrip("- ")):
                 enum_match = _SOCIAL_ENUM_RE.match(token.strip())
                 if enum_match:
                     name = enum_match.group(1)

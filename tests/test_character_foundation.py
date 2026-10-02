@@ -19,7 +19,7 @@ from app.sandbox.runtime import SandboxRuntime
 from app.sandbox.store import SandboxStore
 from app.sandbox.world_seed import build_world_seed
 
-REPO_BIBLE = Path(__file__).resolve().parent.parent / "config" / "character_bible.md"
+REPO_BIBLE = Path(__file__).resolve().parent.parent / "tests" / "fixtures" / "character_bible.md"
 
 #: a *different* character: different names, no pet, one room, no Minecraft
 OTHER_BIBLE = """# 阿澈档案

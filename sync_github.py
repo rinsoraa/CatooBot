@@ -16,8 +16,9 @@ runtime data:
                 README.md  .env.example  .gitignore  .gitattributes
                 .dockerignore  Dockerfile  docker-compose.yml  uv.lock
                 sync_github.py  config/config.example.yaml
-                config/character_bible.md
+                config/character_bible.example.md
     never:      .env  config/config.yaml  config/overrides.yaml
+                config/character_bible.md (private character data)
                 data/  logs/  .venv/  caches  *.egg-info
 """
 
@@ -51,7 +52,7 @@ ROOT_FILES = (
     "docker-compose.yml",
     "sync_github.py",
 )
-CONFIG_DIR_FILES = ("config.example.yaml", "character_bible.md")
+CONFIG_DIR_FILES = ("config.example.yaml", "character_bible.example.md")
 
 EXCLUDED_DIR_PATTERNS = ("__pycache__", "*.egg-info", ".mypy_cache", ".pytest_cache", ".ruff_cache")
 

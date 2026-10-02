@@ -15,6 +15,7 @@ logs/*.log*
 # Local secrets / config
 .env
 config/config.yaml
+config/character_bible.md
 
 # OS / IDE
 .DS_Store
