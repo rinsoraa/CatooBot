@@ -3,6 +3,27 @@
 本文件记录 CatooBot 的版本演进。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号见 `pyproject.toml`；日期取自真实提交历史（本仓库 2026-09-30 起）。
 
+## [Unreleased] — v2.1 Phase 4 Remediation · Continuity 隔离 + Character-Neutral Memory 文案
+
+- **Continuity 按角色隔离（§remediation-1）**：快照持久化键从固定
+  `continuity_snapshot` 改为 `continuity_snapshot:<character_id>`，
+  persist/load 使用同一 scoped key；同一数据库上的两个角色互不覆盖。
+  兼容：仅当 scoped key 不存在时读旧固定键，且旧快照必须
+  `character_id` 与本角色一致才会被接受（无主的旧数据保持不可认领，
+  绝不错误归属）——旧键不删除。
+- **记忆文案改为 Character-Neutral（§8-§10）**：Phase 4 新代码里的
+  「她…」句式全部替换为中性事实句——
+  完成了{name} / {name}进行到一半被打断 / 继续进行{name} /
+  与{target}完成了一次互动 / {pet}饿了，已添{food} / 首次获知：… /
+  {actor}的邀请改变了当前安排 / 在{space}发生了社交活动；
+  MemoryCandidate.content 同步中性化（并删除未经证据的「她答应了」推断，
+  只陈述"外部事件改变了安排"）。角色口吻留给后续 Persona/NLG 层。
+- 新增 `tests/test_sandbox_memory_remediation.py`（6 个测试：
+  同库双角色快照互不覆盖且互不污染、旧键归属校验、第二角色文案零角色词、
+  第三 synthetic 角色 Lin（木工/阅读）产出「完成了木工」而非「她做完了木工」、
+  三份 foundation 源码的角色词/性别词扫描、模型无性别化默认值），
+  总测试 1102。
+
 ## [Unreleased] — v2.1 Phase 4 · Sandbox Experience → Memory → Continuity Foundation
 
 - **Experience 层（§5-§7）**：`app/sandbox/experience.py` ——

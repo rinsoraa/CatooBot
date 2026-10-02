@@ -158,7 +158,7 @@ class TestLastCola:
                 m
                 for m in await runtime.memory.active_memories()
                 if "empty" in str(m["provenance"])
-                or "发现" in m["content"]
+                or "首次获知" in m["content"]
                 or "stock" in m["content"]
             ]
             assert facts, "the first-time knowledge did not become a world fact"
@@ -193,7 +193,7 @@ class TestPetCare:
             assert len(pet_rows) == 1, f"expected one pet experience, got {len(pet_rows)}"
             assert runtime.events.last(ET.PET_FED) is not None
             memories = await runtime.memory.active_memories()
-            pet_memories = [m for m in memories if "饿" in m["content"]]
+            pet_memories = [m for m in memories if "添" in m["content"]]
             assert len(pet_memories) == 1
         finally:
             await runtime.shutdown()

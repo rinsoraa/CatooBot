@@ -119,7 +119,7 @@ class MemoryCandidateBuilder:
             return (
                 MemoryType.episodic,
                 MemoryScope.private,
-                f"她做完了{name}",
+                f"完成了{name}",
                 f"action:{name}:{chain}",
                 0.9,
             )
@@ -128,7 +128,7 @@ class MemoryCandidateBuilder:
             return (
                 MemoryType.episodic,
                 MemoryScope.private,
-                f"她{name}到一半被打断了（{meta.get('reason', '')}）",
+                f"{name}进行到一半被打断（{meta.get('reason', '')}）",
                 f"interrupt:{name}:{chain}",
                 0.85,
             )
@@ -137,7 +137,7 @@ class MemoryCandidateBuilder:
             return (
                 MemoryType.episodic,
                 MemoryScope.private,
-                f"她回来继续{name}",
+                f"继续进行{name}",
                 f"resume:{name}:{chain}",
                 0.8,
             )
@@ -147,7 +147,7 @@ class MemoryCandidateBuilder:
             return (
                 MemoryType.social,
                 MemoryScope.social,
-                f"{pet}饿了，她给它添了{food}".rstrip("了"),
+                f"给{pet}添了{food}".rstrip("了"),
                 f"pet_fed:{pet}:{chain}",
                 0.9,
             )
@@ -171,7 +171,7 @@ class MemoryCandidateBuilder:
             return (
                 MemoryType.world_fact,
                 MemoryScope.world,
-                f"她发现：{key.replace('_', ' ')}",
+                f"首次获知：{key.replace('_', ' ')}",
                 f"knowledge:{key}",
                 0.8,
             )
@@ -180,7 +180,7 @@ class MemoryCandidateBuilder:
             return (
                 MemoryType.social,
                 MemoryScope.social,
-                f"{actor}找她一起做别的事，她答应了" if actor else experience.summary,
+                f"{actor}发出的邀请改变了当前安排" if actor else experience.summary,
                 f"external:{actor}:{chain}",
                 0.75,
             )

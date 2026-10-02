@@ -171,7 +171,7 @@ class ExperienceBuilder:
             name = definition.name if definition else event.target_entity_id
             typical = definition.typical_minutes if definition else 0
             detail = str(payload.get("detail", "") or "")
-            summary = f"她{detail or name}（{name}结束）" if detail else f"她做完了{name}"
+            summary = f"完成了{name}（{detail}）" if detail else f"完成了{name}"
             importance: float = 0.55 if typical >= 20 else 0.4
             return (
                 ExperienceKind.action_completed,
@@ -185,7 +185,7 @@ class ExperienceBuilder:
             reason = str(payload.get("reason", ""))
             return (
                 ExperienceKind.action_interrupted,
-                f"她{name}到一半被打断了（{reason}）",
+                f"{name}进行到一半被打断（{reason}）",
                 0.6,
                 {"action_name": name, "reason": reason, "resumable": payload.get("resumable")},
             )
@@ -194,7 +194,7 @@ class ExperienceBuilder:
             name = definition.name if definition else event.target_entity_id
             return (
                 ExperienceKind.action_resumed,
-                f"她回来继续{name}",
+                f"继续进行{name}",
                 0.4,
                 {"action_name": name},
             )
@@ -203,7 +203,7 @@ class ExperienceBuilder:
             target = event.target_entity_id
             return (
                 ExperienceKind.interaction_completed,
-                f"她和{target}完成了一次{itype}互动",
+                f"与{target}完成了一次{itype}互动",
                 0.5,
                 {"interaction_type": itype, "target": target},
             )
@@ -212,7 +212,7 @@ class ExperienceBuilder:
             food = str(payload.get("food", ""))
             return (
                 ExperienceKind.pet_care,
-                f"{pet}饿了，她给它添了{food}".rstrip("了"),
+                f"{pet}饿了，已添{food}".rstrip("了"),
                 0.55,
                 {"pet": pet, "food": food},
             )
@@ -239,7 +239,7 @@ class ExperienceBuilder:
                 return None  # re-learning is normal state upkeep, not an episode
             return (
                 ExperienceKind.knowledge_learned,
-                f"她第一次知道了{self._knowledge_label(key)}",
+                f"首次获知：{self._knowledge_label(key)}",
                 0.6,
                 {"knowledge_key": key},
             )
@@ -247,7 +247,8 @@ class ExperienceBuilder:
             actor = str(payload.get("actor", ""))
             return (
                 ExperienceKind.external_influence,
-                f"{actor or '外面'}的邀请改变了她的安排（{payload.get('reason', '')}）",
+                f"{actor or '外部'}的邀请改变了当前安排"
+                + (f"（{payload.get('reason', '')}）" if payload.get("reason") else ""),
                 0.7,
                 {
                     "actor": actor,
@@ -259,7 +260,7 @@ class ExperienceBuilder:
             only_temperature = fields == ["social_temperature"]
             return (
                 ExperienceKind.social_contact,
-                f"她在{event.target_entity_id}露了个面",
+                f"在{event.target_entity_id}发生了社交活动",
                 0.2 if only_temperature else 0.25,
                 {"space": event.target_entity_id},
             )

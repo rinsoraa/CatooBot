@@ -131,20 +131,43 @@ class ContinuitySnapshotBuilder:
             context["active_social_spaces"] = active
         return context
 
+    #: legacy (pre-remediation) fixed key, kept readable for old databases
+    LEGACY_KEY = "continuity_snapshot"
+
+    def _key(self) -> str:
+        """Character-scoped state key — snapshots never overwrite each other."""
+        return f"{self.LEGACY_KEY}:{getattr(self._rt, 'character_id', '')}"
+
     async def persist(self, snapshot: ContinuitySnapshot | None = None) -> ContinuitySnapshot:
-        """Store the latest snapshot in ``sandbox_state`` (restart continuity)."""
+        """Store the latest snapshot, scoped to this character (§remediation-1)."""
         rt = self._rt
         snapshot = snapshot or await self.build()
         await rt.store.state_set(
-            "continuity_snapshot", json.dumps(snapshot.model_dump(mode="json"), ensure_ascii=False)
+            self._key(), json.dumps(snapshot.model_dump(mode="json"), ensure_ascii=False)
         )
         return snapshot
 
     async def load(self) -> dict[str, Any] | None:
-        raw = await self._rt.store.state_get("continuity_snapshot")
-        if not raw:
+        """Read this character's snapshot; fall back to the legacy key only
+        when it is unambiguously *this* character's (never mis-attributed)."""
+        raw = await self._rt.store.state_get(self._key())
+        if raw:
+            return self._parse(raw)
+        legacy = await self._rt.store.state_get(self.LEGACY_KEY)
+        if not legacy:
             return None
+        payload = self._parse(legacy)
+        if payload is None:
+            return None
+        # an old snapshot without a reliable owner stays unclaimed (§4)
+        if str(payload.get("character_id", "")) != str(getattr(self._rt, "character_id", "")):
+            return None
+        return payload
+
+    @staticmethod
+    def _parse(raw: str) -> dict[str, Any] | None:
         try:
-            return json.loads(raw)
+            payload = json.loads(raw)
         except ValueError:
             return None
+        return payload if isinstance(payload, dict) else None
