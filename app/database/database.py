@@ -992,6 +992,19 @@ CREATE TABLE IF NOT EXISTS expression_vectors (
 ALTER TABLE memory_embeddings DROP COLUMN vector;
 """,
     ),
+    (
+        21,
+        "sticker asset scope: character-acquired vs global (v2.1 §44-§46)",
+        """
+-- The data-boundary refactor needs to tell "a sticker the character acquired
+-- from chat" apart from platform-level assets, so a character reset can drop
+-- the former and keep the latter. Existing user-message acquisitions are
+-- character data; manual imports stay global.
+ALTER TABLE sticker_assets ADD COLUMN scope TEXT NOT NULL DEFAULT 'global';
+UPDATE sticker_assets SET scope = 'character' WHERE origin = 'user_message';
+CREATE INDEX IF NOT EXISTS idx_sticker_assets_scope ON sticker_assets(scope);
+""",
+    ),
 ]
 
 

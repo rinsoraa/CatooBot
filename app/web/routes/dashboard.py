@@ -64,7 +64,7 @@ class DashboardRoutes(WebContext):
                 state_bits.append(
                     ("模式", " + ".join(context.get("modes", [])) or "-", "可叠加的人格模式")
                 )
-                state_bits.append(("小喵", context.get("pet", "-"), "她的猫此刻的状态"))
+                state_bits.append(("宠物", context.get("pet", "-"), "她的宠物此刻的状态"))
             except Exception:  # noqa: BLE001 - dashboard must never fail
                 pass
         character_card = (
@@ -120,7 +120,7 @@ class DashboardRoutes(WebContext):
             + ui.link_button(
                 "/sandbox",
                 "看看她现在在干嘛",
-                tip_text="生活沙盒：她在哪个房间、正在做什么、小喵在干嘛",
+                tip_text="生活沙盒：她在哪个房间、正在做什么、宠物在干嘛",
             )
             + ui.link_button(
                 "/sandbox/chat",

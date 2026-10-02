@@ -16,13 +16,14 @@ from app.ai.models import AIRequest, ChatMessage
 
 logger = logging.getLogger("CatooBot.Sandbox.AI")
 
-PROMPT = """你在扮演角色「罐头」的生活决策助手。
+#: generic decision-prompt scaffold — the character line is injected from the
+#: CharacterDefinition (never hardcoded here)
+PROMPT_TEMPLATE = """你正在扮演角色「{name}」的生活决策助手。
 根据她当前的状态，从候选动作里挑一个最符合她性格的选择。
 只输出 JSON，不要解释：
-{"decision":"switch|continue","action":"候选id","reason_codes":["简短原因"]}
+{{"decision":"switch|continue","action":"候选id","reason_codes":["简短原因"]}}
 
-候选动作只能用下面列表里的 id。她懒散、爱打游戏（Minecraft/单机）、爱甜食和可乐、
-是个夜猫子、有只猫叫小喵。"""
+候选动作只能用下面列表里的 id。{character_line}"""
 
 
 class SandboxAIDecider:
@@ -31,6 +32,17 @@ class SandboxAIDecider:
     def __init__(self, engine: Any, *, timeout: float = 20.0) -> None:
         self._engine = engine
         self._timeout = timeout
+        #: injected by the runtime from the CharacterDefinition
+        self._character_line = ""
+        self._name = ""
+
+    def set_character_context(self, *, name: str, traits: list[str], pet_name: str = "") -> None:
+        """One line of who she is — built from the seed, not from literals."""
+        parts = [trait for trait in traits[:4] if trait]
+        line = "她" + "、".join(parts) if parts else ""
+        if pet_name:
+            line += f"，有只{pet_name}"
+        self._character_line = line + "。"
 
     async def __call__(self, payload: dict[str, Any]) -> Any:
         return await self._decide(payload)
@@ -46,8 +58,11 @@ class SandboxAIDecider:
             f"所在位置：{payload.get('space', '')}\n"
             f"候选动作：{', '.join(options)}\n请输出 JSON："
         )
+        base = PROMPT_TEMPLATE.format(
+            name=self._name or "角色", character_line=self._character_line
+        )
         request = AIRequest(
-            messages=[ChatMessage.user(f"{PROMPT}\n\n{prompt}")],
+            messages=[ChatMessage.user(f"{base}\n\n{prompt}")],
             temperature=0.2,
             metadata={"purpose": "sandbox"},
             max_tokens=500,

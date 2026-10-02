@@ -42,7 +42,7 @@ def dashboard(data: dict[str, Any]) -> str:
             ("正在做", context.get("action", "-") or "闲着", "当前 Action"),
             ("模式", " + ".join(context.get("modes", [])) or "-", "可叠加"),
             ("沙盒状态", data.get("phase", "-"), "running / paused / recovering"),
-            ("小喵", context.get("pet", "-"), "宠物实体状态"),
+            ("宠物", context.get("pet", "-"), "宠物实体状态"),
             ("需求", context.get("need_line", "") or "都还好", "明显的需求压力"),
         ]
     )
@@ -133,8 +133,8 @@ def inspectors(data: dict[str, Any]) -> str:
 
     return (
         ui.card(
-            "小喵（宠物实体）",
-            f"<p>{ui.esc(pet.get('name', '小喵'))} · 现在{ui.esc(str(pet.get('activity', '')))}"
+            "宠物（实体）",
+            f"<p>{ui.esc(pet.get('name', '-'))} · 现在{ui.esc(str(pet.get('activity', '')))}"
             f" · 位置 {ui.esc(str(pet.get('location', '')))}</p>"
             f"<p class='muted'>饥饿 {pet.get('hunger', 0):.2f} · 精力 {pet.get('energy', 0):.2f}"
             f" · 亲密度 {pet.get('affection', 0):.2f}</p>",

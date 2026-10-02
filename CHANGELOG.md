@@ -3,6 +3,39 @@
 本文件记录 CatooBot 的版本演进。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号见 `pyproject.toml`；日期取自真实提交历史（本仓库 2026-09-30 起）。
 
+## [Unreleased] — v2.1 Phase 1 · Character Bible → Sandbox Foundation
+
+- **Character Bible 成为唯一 Canonical Source（§6）**：新增
+  `CharacterDefinition`（bible → 角色契约，§7）与 `CharacterWorldSeed`
+  （bible+definition → 完整初始世界，§26），`SandboxRuntime` 的角色实体 /
+  宠物 / 空间 / 物件 / 库存 / 动作 / 项目 / 社交空间 / 模式全部从 Seed
+  初始化——`CharacterEntity()`/`PetState()` 零参默认名（罐头/小喵）已删除，
+  name/location 改为必填（§9）。
+- **Seed 可导出、可复现（§28/§29）**：`export_seed()` 输出完整初始世界 JSON；
+  同一 bible+simulation_seed 重复构建逐字节一致（有测试断言）。
+- **动作目录模板化（§20/§21）**：系统模板（`action_templates.py`）+ Seed 解析
+  （锚点物品 `{drink}/{snack}/…`、空间映射、动作归属按 bible 关键词推导）——
+  没有可乐的档案不会拥有买可乐动作链。
+- **模式 Definition 化（§18/§19）**：五模式不再是 Python 枚举；触发
+  （home/outdoor/time/action/social）、时间窗、口癖短语、语气提示全部来自
+  bible Modes 段；叠加机制保留。
+- **迁移 21**：`sticker_assets.scope`（character/global）+ 存量回填；重置时
+  角色表情清除、全局资产与平台数据保留（§44-§46）。
+- **重置清单补缺口（§38）**：`character_states / topics / behavior_events /
+  initiative_state / social_observations / reply_outcomes / expression_* /
+  memory_relations` 与 `social_engagement` 设置键进入角色重置范围；
+  `PRESERVED_TABLES` 移除三个不存在的幽灵表名。
+- **接口预留（§49-§53）**：`mutations.py`（StateMutation 审计 + MutationLog +
+  EntityInteraction/DecisionRequest/SandboxEventBus），动作完成与位置变更已
+  开始记录 source/reason/before/after。
+- **Parser 升级（§30-§37）**：空间 kind/parent/connections、物件库存键、
+  `（充足）=10`、社交空间正则提取（替代硬编码关键词表）、规则带
+  source_section 溯源、对话示例舞台指示 → Behavior Candidate（不自动成规则）、
+  Coverage 升级为 Parsed→Compiled→Seeded→RuntimeConnected→Tested 链。
+- WebUI 去「小喵/罐头」写死标签；沙盒 AI tie-break 提示词改为由
+  CharacterDefinition 注入；persona 同步去硬编码（habits/traits/dislikes/
+  关系句全部来自 bible 数据）。
+
 ## [Unreleased] — v3 线（任务 0–25）
 
 ### 记忆

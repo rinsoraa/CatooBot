@@ -21,21 +21,30 @@ logger = logging.getLogger("CatooBot.Sandbox.Bible")
 
 
 class BibleRule(BaseModel):
-    """One canonical behavioral rule (§115)."""
+    """One canonical behavioral rule (§115) with a traceable source (§35)."""
 
     id: str
     text: str
     source: str = ""
+    source_section: str = ""  # which bible section the rule was found in
     runtime: str = ""  # which subsystem enforces it
     canonical: bool = True
+    status: str = "canonical"  # canonical / candidate / unresolved
 
 
 class BibleMode(BaseModel):
+    """One mode definition (§18): id/name/trigger/style + extracted phrases."""
+
     id: str
     name: str
     trigger: str = ""
     style: str = ""
     behavior: list[str] = Field(default_factory=list)
+    #: quoted phrases lifted from style/behavior text (口癖 / speech calibration)
+    phrases: list[str] = Field(default_factory=list)
+    #: system-level tone/length hints inferred from style keywords
+    tone: str = ""
+    length: str = ""
 
 
 class BibleRelationship(BaseModel):
@@ -51,6 +60,9 @@ class BibleSpace(BaseModel):
     kind: str = "room"
     parent: str = ""
     note: str = ""
+    #: sibling/parent topology compiled from the bible's indentation tree
+    connections: list[str] = Field(default_factory=list)
+    objects: list[str] = Field(default_factory=list)
 
 
 class BibleObject(BaseModel):
@@ -58,6 +70,8 @@ class BibleObject(BaseModel):
     name: str
     space: str = ""
     note: str = ""
+    #: set when the bible's Inventory section keys this object as a container
+    inventory_key: str = ""
 
 
 class BiblePet(BaseModel):
@@ -66,6 +80,8 @@ class BiblePet(BaseModel):
     traits: list[str] = Field(default_factory=list)
     actions: list[str] = Field(default_factory=list)
     special: list[str] = Field(default_factory=list)
+    #: the pet's food item name, derived from the Inventory section (e.g. 猫粮)
+    food_item: str = ""
 
 
 class CharacterBible(BaseModel):
@@ -88,6 +104,9 @@ class CharacterBible(BaseModel):
     values: list[str] = Field(default_factory=list)
     prose: str = ""
     speech_examples: dict[str, list[str]] = Field(default_factory=dict)
+    #: §33: stage directions inside speech examples ("猫跳上键盘") — behavior
+    #: candidates, merged with real rules only when confirmed elsewhere
+    behavior_candidates: list[str] = Field(default_factory=list)
     #: §14/§112-§113 reporting — never silent
     unresolved: list[str] = Field(default_factory=list)
     conflicts: list[str] = Field(default_factory=list)
@@ -235,14 +254,18 @@ class BibleCompiler:
         bible.livelihood = _parse_kv(sections.get("Livelihood", []))
         bible.preferences = _parse_preferences(sections.get("Preferences", []))
         bible.spaces, bible.objects = _parse_world_seed(sections.get("World Seed", []))
+        _link_spaces(bible.spaces)
+        _link_objects(bible.objects, bible.spaces)
         seed_entries = _parse_world_seed_extra(sections.get("World Seed", []))
         bible.inventories = seed_entries.get("inventories", {})
         bible.pet = _parse_pet(sections.get("World Seed", []))
+        _derive_pet_food(bible)
         bible.values = _bullets(sections.get("Values", []))
         bible.prose = "\n".join(sections.get("Persona Prose", [])).strip()
         bible.speech_examples = _parse_examples(sections.get("Speech Examples", []))
+        bible.behavior_candidates = _parse_example_directions(sections.get("Speech Examples", []))
         bible.social_spaces = _social_space_names(sections)
-        bible.rules = self._compile_rules(text, sections, bible)
+        bible.rules = self._compile_rules(sections, bible)
         bible.unresolved = self._unresolved(sections, bible)
         bible.conflicts = self._conflicts(bible)
         bible.coverage = self._coverage(bible)
@@ -251,11 +274,29 @@ class BibleCompiler:
     # ----------------------------------------------------------------- rules
 
     def _compile_rules(
-        self, text: str, sections: dict[str, list[str]], bible: CharacterBible
+        self, sections: dict[str, list[str]], bible: CharacterBible
     ) -> list[BibleRule]:
+        """Keyword-anchored canonical rules (§34/§35) with per-section provenance.
+
+        The keyword anchors are *system-level* phrase families (romance/lecture/
+        privacy/...); a bible that lacks them simply produces no rule of that
+        id — and the miss is reported via ``unresolved`` so nothing vanishes
+        silently when the character changes.
+        """
         rules: list[BibleRule] = []
+        section_texts = {name: "\n".join(lines) for name, lines in sections.items()}
+        full_text = "\n".join(section_texts.values())
         for rule_id, keywords, runtime, label in RULE_LIBRARY:
-            hit = next((kw for kw in keywords if kw in text), "")
+            hit = ""
+            section = ""
+            for name, body in section_texts.items():
+                found = next((kw for kw in keywords if kw in body), "")
+                if found:
+                    hit = found
+                    section = name
+                    break
+            if not hit:
+                hit = next((kw for kw in keywords if kw in full_text), "")
             if not hit:
                 continue
             rules.append(
@@ -263,8 +304,10 @@ class BibleCompiler:
                     id=rule_id,
                     text=label,
                     source=f"“{hit}”",
+                    source_section=section,
                     runtime=runtime,
                     canonical=True,
+                    status="canonical",
                 )
             )
         # Social Boundaries are canonical rules too (one per bullet).
@@ -273,8 +316,23 @@ class BibleCompiler:
                 BibleRule(
                     id=f"social_boundary_{index}",
                     text=bullet[:80],
+                    source_section="Social Boundaries",
                     source="Social Boundaries",
                     runtime="conversation boundaries",
+                    status="canonical",
+                )
+            )
+        # §33: speech-example stage directions become *candidates* — recorded,
+        # never silently promoted to rules.
+        for candidate in bible.behavior_candidates[:10]:
+            rules.append(
+                BibleRule(
+                    id=f"behavior_candidate_{len(rules) + 1}",
+                    text=candidate[:80],
+                    source_section="Speech Examples",
+                    runtime="",
+                    canonical=False,
+                    status="candidate",
                 )
             )
         return rules
@@ -326,14 +384,11 @@ class BibleCompiler:
         return conflicts
 
     def _coverage(self, bible: CharacterBible) -> dict[str, Any]:
-        """§112/§167-§168: implemented / partial / prompt-only / unresolved."""
-        implemented = [
-            *(
-                f"rule:{r.id}"
-                for r in bible.rules
-                if r.runtime not in ("", "speech policy") or r.runtime == "speech policy"
-            ),
-        ]
+        """§36/§37 level chain: parsed → compiled → (seed/runtime/test added later).
+
+        ``world_seed.coverage_report()`` extends this with seeded /
+        runtime-connected / tested once the seed has been built.
+        """
         runtime_rules = [r for r in bible.rules if r.runtime]
         prompt_only = [
             "persona_prose",
@@ -341,6 +396,28 @@ class BibleCompiler:
             "values",
         ]
         total = len(bible.rules) + len(bible.facts) + len(bible.modes) + len(prompt_only)
+        #: §36 per-level counts (compile-time part of the chain)
+        parsed = (
+            len(bible.facts)
+            + len(bible.modes)
+            + len(bible.boundaries)
+            + len(bible.relationships)
+            + len(bible.spaces)
+            + len(bible.objects)
+            + len(bible.inventories)
+            + (1 if bible.pet.name else 0)
+            + len(bible.values)
+            + len(bible.speech_examples)
+        )
+        compiled = (
+            len(bible.rules)
+            + len(bible.spaces)
+            + len(bible.objects)
+            + len(bible.inventories)
+            + len(bible.modes)
+            + (1 if bible.pet.name else 0)
+            + len(bible.relationships)
+        )
         return {
             "total": total,
             "runtime": len(runtime_rules),
@@ -350,7 +427,17 @@ class BibleCompiler:
             "prompt_only": prompt_only,
             "unresolved": list(bible.unresolved),
             "conflicts": list(bible.conflicts),
-            "implemented": implemented,
+            "implemented": [
+                *(f"rule:{r.id}" for r in bible.rules if r.runtime),
+            ],
+            # §36 levels
+            "levels": {
+                "parsed": parsed,
+                "compiled": compiled,
+                "seeded": 0,  # filled by world_seed.coverage_report()
+                "runtime_connected": 0,
+                "tested": 0,
+            },
         }
 
 
@@ -424,7 +511,32 @@ def _parse_modes(lines: list[str]) -> list[BibleMode]:
             current.behavior.append(stripped.split("：", 1)[-1].split(":", 1)[-1].strip())
     if current is not None:
         modes.append(current)
+    for mode in modes:
+        _extract_mode_speech(mode)
     return [m for m in modes if m.id]
+
+
+#: system-level style keyword → (tone, length) hints — generic speech hints,
+#: not character-specific
+_STYLE_HINTS: tuple[tuple[tuple[str, ...], str, str], ...] = (
+    (("敬语", "礼貌", "温和"), "polite", "short"),
+    (("拖长音", "懒散"), "casual", "lengthened"),
+    (("少话", "低沉", "缓慢", "安静"), "quiet", "short"),
+    (("话多", "随意", "有梗", "轻松"), "chatty", "flexible"),
+    (("简短", "利落", "术语"), "focused", "short"),
+    (("自言自语",), "casual", "short"),
+)
+
+
+def _extract_mode_speech(mode: BibleMode) -> None:
+    """Lift quoted 口癖 phrases and tone hints out of style/behavior text."""
+    body = mode.style + "；".join(mode.behavior)
+    mode.phrases = re.findall(r"[“「]([^”」]{1,24})[”」]", body)
+    for needles, tone, length in _STYLE_HINTS:
+        if any(needle in body for needle in needles):
+            mode.tone = tone
+            mode.length = length
+            break
 
 
 def _parse_relationships(lines: list[str]) -> list[BibleRelationship]:
@@ -481,10 +593,11 @@ def _sub_bullets(lines: list[str], title: str) -> list[str]:
 
 
 def _parse_world_seed(lines: list[str]) -> tuple[list[BibleSpace], list[BibleObject]]:
+    """Spaces (indentation tree, kind per system keywords) + objects."""
     spaces: list[BibleSpace] = []
-    # parse indentation-aware: "- group（…）" starts a group, "  - child" follows
     in_spaces = False
     current_group = ""
+    current_group_kind = "apartment"
     for line in lines:
         if line.startswith("### "):
             in_spaces = line[4:].strip() == "Spaces"
@@ -494,11 +607,27 @@ def _parse_world_seed(lines: list[str]) -> tuple[list[BibleSpace], list[BibleObj
         stripped = line.rstrip()
         if stripped.startswith("- "):
             item = stripped[2:].strip()
-            match = re.match(r"([\w\u4e00-\u9fff_]+)[（(]([^）)]*)[）)]", item)
+            match = re.match(r"([\w\u4e00-\u9fff_]+)\s*[（(]([^）)]*)[）)]", item)
             if match:
                 sid = match.group(1)
-                name = match.group(2).split("，")[0]
-                spaces.append(BibleSpace(id=sid, name=name, kind="apartment"))
+                paren = match.group(2)
+                # "公寓，根空间" / "外部" — the parenthetical carries the role
+                name = paren.split("，")[0].split(",")[0].strip()
+                note = paren
+                if sid == "outside" or "外部" in paren or "室外" in paren:
+                    current_group_kind = "outdoor"
+                elif "根空间" in paren or "家" in name:
+                    current_group_kind = "apartment"
+                else:
+                    current_group_kind = "outdoor"
+                spaces.append(
+                    BibleSpace(
+                        id=sid,
+                        name=name or sid,
+                        kind=current_group_kind,
+                        note=note,
+                    )
+                )
                 current_group = sid
             continue
         if stripped.startswith("  - ") and current_group:
@@ -507,8 +636,18 @@ def _parse_world_seed(lines: list[str]) -> tuple[list[BibleSpace], list[BibleObj
             if not parts:
                 continue
             sid = parts[0]
-            name = parts[1] if len(parts) > 1 else sid
-            spaces.append(BibleSpace(id=sid, name=name, kind="room", parent=current_group))
+            rest = parts[1] if len(parts) > 1 else sid
+            name = rest.split("（")[0].split("，")[0].strip() or sid
+            note_match = re.search(r"[（(]([^）)]*)[）)]", rest)
+            spaces.append(
+                BibleSpace(
+                    id=sid,
+                    name=name,
+                    kind=_space_kind(sid, name),
+                    parent=current_group,
+                    note=note_match.group(1) if note_match else "",
+                )
+            )
 
     objects: list[BibleObject] = []
     for bullet in _sub_bullets(lines, "Objects"):
@@ -518,13 +657,78 @@ def _parse_world_seed(lines: list[str]) -> tuple[list[BibleSpace], list[BibleObj
         oid = parts[0]
         rest = parts[1] if len(parts) > 1 else ""
         note = ""
-        space = ""
-        match = re.match(r"([\w\u4e00-\u9fff_]+)[（(]([^）)]*)[）)]", rest)
+        space_ref = ""
+        match = re.match(r"([\w\u4e00-\u9fff_]+)\s*[（(]([^）)]*)[）)]", rest)
         if match:
             note = match.group(1)
-            space = match.group(2)
-        objects.append(BibleObject(id=oid, name=note or oid, space=space, note=rest))
+            space_ref = match.group(2)
+        objects.append(BibleObject(id=oid, name=note or oid, space=space_ref, note=rest))
     return spaces, objects
+
+
+#: system-level Chinese keyword → space kind — generic naming, not character data
+_SPACE_KIND_KEYWORDS: tuple[tuple[tuple[str, ...], str], ...] = (
+    (("走廊", "电梯", "楼道", "楼梯"), "transit"),
+    (("便利店", "超市", "店", "商场"), "shop"),
+    (("小区", "外面", "街道", "公园"), "outdoor"),
+    (("卧室", "客厅", "厨房", "卫生间", "书房", "阳台"), "room"),
+    (("玄关", "门厅"), "room"),
+)
+
+
+def _space_kind(sid: str, name: str) -> str:
+    for needles, kind in _SPACE_KIND_KEYWORDS:
+        if any(needle in name or needle in sid for needle in needles):
+            return kind
+    return "room"
+
+
+def _link_spaces(spaces: list[BibleSpace]) -> None:
+    """Compile connections from the tree: child↔parent + sibling mesh.
+
+    The bible expresses containment, not door topology; the compiled graph
+    (parent + same-parent siblings) is a conservative superset. Outdoor roots
+    link to each other so home↔outside remains reachable.
+    """
+    by_id = {space.id: space for space in spaces}
+    children: dict[str, list[str]] = {}
+    for space in spaces:
+        if space.parent:
+            children.setdefault(space.parent, []).append(space.id)
+    roots = [space.id for space in spaces if not space.parent]
+    for space in spaces:
+        linked: list[str] = []
+        if space.parent and space.parent in by_id:
+            linked.append(space.parent)
+        linked.extend(sibling for sibling in children.get(space.parent, []) if sibling != space.id)
+        if not space.parent:
+            linked.extend(root for root in roots if root != space.id)
+        space.connections = list(dict.fromkeys(linked))
+
+
+def _link_objects(objects: list[BibleObject], spaces: list[BibleSpace]) -> None:
+    """Resolve Chinese space references to space ids; record child objects.
+
+    Objects carried on the person ("随身") resolve to no space — they ride
+    the character's inventory instead.
+    """
+    name_to_id = {space.name: space.id for space in spaces}
+    space_ids = set(name_to_id.values())
+    for obj in objects:
+        if obj.space and obj.space not in space_ids:
+            obj.space = name_to_id.get(obj.space, "")
+        if obj.space:
+            target = next(s for s in spaces if s.id == obj.space)
+            if obj.id not in target.objects:
+                target.objects.append(obj.id)
+
+
+def _derive_pet_food(bible: CharacterBible) -> None:
+    """The pet's food item = first item of the pet-bowl inventory (e.g. 猫粮)."""
+    for key, items in bible.inventories.items():
+        if ("food" in key or "bowl" in key or "粮" in key) and items:
+            bible.pet.food_item = next(iter(items))
+            return
 
 
 def _parse_world_seed_extra(lines: list[str]) -> dict[str, Any]:
@@ -545,6 +749,9 @@ def _parse_world_seed_extra(lines: list[str]) -> dict[str, Any]:
             if amount:
                 count = int(amount.group(1))
                 part = part[: amount.start()].strip()
+            if re.search(r"[（(]\s*充足\s*[）)]", part):
+                count = 10  # system convention: 充足 → a comfortable stock
+                part = re.sub(r"[（(]\s*充足\s*[）)]", "", part).strip()
             name = re.sub(r"[（(].*?[）)]", "", part).strip()
             if name:
                 items[name] = count
@@ -581,6 +788,7 @@ def _parse_pet(lines: list[str]) -> BiblePet:
 
 
 def _parse_examples(lines: list[str]) -> dict[str, list[str]]:
+    """Quoted speech lines per example section (§32: Speech Calibration)."""
     examples: dict[str, list[str]] = {}
     current = ""
     for line in lines:
@@ -594,11 +802,47 @@ def _parse_examples(lines: list[str]) -> dict[str, list[str]]:
     return examples
 
 
+def _parse_example_directions(lines: list[str]) -> list[str]:
+    """Stage directions (（…）lines) — §33 behavior candidates, never rules."""
+    directions: list[str] = []
+    for line in lines:
+        stripped = line.strip()
+        if stripped.startswith("（") and "）" in stripped:
+            inner = stripped.strip("（）").strip("()").strip()
+            if inner and inner not in directions:
+                directions.append(inner)
+    return directions
+
+
+#: generic name pattern for simulated online hangouts — replaces the old
+#: hardcoded needle list (any "X群 / X服务器 / X论坛" in the bible counts)
+_SOCIAL_SPACE_RE = re.compile(
+    r"(?<![在个到会去于进和与了，。；：])"  # not mid-phrase after a particle/verb
+    r"([\w\u4e00-\u9fff]{2,10}(?:同好群|图群|游戏群|服务器|论坛|群))"
+)
+#: an enumeration's first member often reads "在游戏群、X服务器、…" — the
+#: leading 在 is grammar, not part of the name
+_SOCIAL_ENUM_RE = re.compile(r"^在([\w一-鿿]{2,9}(?:同好群|图群|游戏群|服务器|论坛|群))$")
+#: candidates that carry narration verbs are sentences, not hangout names
+_SOCIAL_VERB_BLOCKLIST = ("拍照", "放下", "开会", "聊得", "一边", "去开", "遇到", "配文")
+
+
 def _social_space_names(sections: dict[str, list[str]]) -> list[str]:
     names: list[str] = []
-    for key in ("Values", "Static Facts", "Preferences"):
+    for key in ("Modes", "Values", "Static Facts", "Preferences"):
         for line in sections.get(key, []):
-            for needle in ("游戏群", "Minecraft服务器", "甜品同好群", "猫图群", "论坛"):
-                if needle in line and needle not in names:
-                    names.append(needle)
+            for match in _SOCIAL_SPACE_RE.finditer(line):
+                name = match.group(1)
+                if name in names or any(verb in name for verb in _SOCIAL_VERB_BLOCKLIST):
+                    continue
+                names.append(name)
+            # enumeration tokens: "在游戏群" → "游戏群"
+            for token in re.split(r"[、，,；;]", line):
+                enum_match = _SOCIAL_ENUM_RE.match(token.strip())
+                if enum_match:
+                    name = enum_match.group(1)
+                    if name not in names and not any(
+                        verb in name for verb in _SOCIAL_VERB_BLOCKLIST
+                    ):
+                        names.append(name)
     return names

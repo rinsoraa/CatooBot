@@ -22,6 +22,7 @@ from app.sandbox.decision import (
     ProposalValidator,
     SandboxDecisionEngine,
 )
+from app.sandbox.definition import CharacterDefinition
 from app.sandbox.entities import PetSystem
 from app.sandbox.models import (
     ActionDefinition,
@@ -43,6 +44,7 @@ from app.sandbox.models import (
     WorldObjectItem,
 )
 from app.sandbox.modes import ModeRuntime
+from app.sandbox.mutations import MutationLog, StateMutation
 from app.sandbox.needs import NeedSystem
 from app.sandbox.seed import (
     build_action_definitions,
@@ -61,6 +63,7 @@ from app.sandbox.world import (
     SpaceSystem,
     WorldRuleEngine,
 )
+from app.sandbox.world_seed import build_world_seed
 from app.utils.narrator import narrate
 
 logger = logging.getLogger("CatooBot.Sandbox")
@@ -92,6 +95,70 @@ ACTIVITY_IDS: dict[str, str] = {
 TickListener = Callable[[dict[str, Any]], None]
 
 
+def seed_pets(runtime: Any) -> Any:
+    """The runtime seed's first pet (or None) — helper for narrow uses."""
+    pets = getattr(getattr(runtime, "seed", None), "pets", None)
+    return pets[0] if pets else None
+
+
+# ------------------------------------------------------- seed-derived helpers
+
+
+def _pet_tags(pet: Any) -> list[str]:
+    """Fact-injection tags for the pet: name + species + behavior keywords."""
+    tags = [pet.name, pet.species]
+    for behavior in pet.behaviors[:6]:
+        for word in (behavior[:2], behavior[:3]):
+            if word and word not in tags:
+                tags.append(word)
+                break
+    return [tag for tag in tags if tag]
+
+
+def _pet_food_name(seed: Any) -> str:
+    return seed.pets[0].food_item if seed.pets else ""
+
+
+def _locate_item(seed: Any, item: str) -> str:
+    """The inventory key holding ``item`` (fridge / bowl / …), or ''."""
+    if not item:
+        return ""
+    for key, items in seed.inventories.items():
+        if item in items:
+            return key
+    return ""
+
+
+def _first_action_with_tag(seed: Any, tag: str) -> str:
+    for action in seed.actions:
+        if tag in (action.get("tags") or []):
+            return str(action["id"])
+    return ""
+
+
+def _gaming_action_ids(seed: Any) -> tuple[str, ...]:
+    return tuple(
+        str(action["id"]) for action in seed.actions if "gaming" in (action.get("modes") or [])
+    )
+
+
+def _preference_bonus(seed: Any) -> dict[str, float]:
+    """§180: the bible's favorite actions get a deterministic nudge."""
+    return {
+        str(action["id"]): 0.3 if "favorite" in action.get("tags", []) else 0.15
+        for action in seed.actions
+        if "favorite" in action.get("tags", []) or "social" in action.get("tags", [])
+    }
+
+
+def _home_space_set(seed: Any) -> set[str]:
+    """Home spaces = the home root plus its children (go-do-it reachability)."""
+    home = seed.character.home_space
+    ids = {home}
+    ids.update(space.id for space in seed.spaces if space.parent == home)
+    return ids
+
+
 class SandboxRuntime:
     """The character's persistent life. One instance per bot."""
 
@@ -112,17 +179,44 @@ class SandboxRuntime:
         self.bot = bot
         self._clock = clock
         self._log = logger_ or logger
-        self._rng = seeded_rng(int(getattr(config, "simulation_seed", 0)))
+        simulation_seed = int(getattr(config, "simulation_seed", 0))
+        self._rng = seeded_rng(simulation_seed)
+
+        # ------------------------------------------- definition + seed (§27)
+        #: CharacterDefinition is the runtime contract; the seed is the full
+        #: initial world. Both derive from the bible alone — no hardcoded
+        #: character anywhere downstream (§6/§26/§27).
+        self.definition = CharacterDefinition.from_bible(bible)
+        self.seed = build_world_seed(self.definition, bible, simulation_seed=simulation_seed)
+        seed = self.seed
 
         # ------------------------------------------------------------ state
         self.phase = SandboxPhase.initializing
-        self.character = CharacterEntity()
-        self.pet = PetState()
-        self.projects = build_projects()
+        self.character = CharacterEntity(
+            name=seed.character.name,
+            location=seed.character.start_location,
+            modes=list(seed.character.start_modes),
+        )
+        pet_seed = seed.pets[0] if seed.pets else None
+        self.pet: PetState | None = (
+            PetState(
+                name=pet_seed.name,
+                species=pet_seed.species,
+                tags=_pet_tags(pet_seed),
+                location=pet_seed.start_location or seed.character.start_location,
+                habits=list(pet_seed.behaviors),
+                owner_relationship="companion",
+            )
+            if pet_seed is not None
+            else None
+        )
+        self.projects = build_projects(seed)
         self.social_spaces: dict[str, SocialSpace] = {}
         self.commissions: dict[str, Commission] = {}
         self.knowledge: dict[str, dict[str, Any]] = {}
         self.pending_events: list[ExternalEvent] = []
+        #: §53: every state change is recorded with source/reason/before/after
+        self.mutations = MutationLog()
         self._last_tick = float(clock())
         self._notes: list[str] = []  # micro-continuity feed
         self._restored = False
@@ -136,19 +230,39 @@ class SandboxRuntime:
         #: optional async (activity, location, energy) -> None projection into
         #: CharacterState so WebUI/prompts/timing all read the same life.
         self.state_sync: Any = None
+        #: seed-derived anchors: where her food/drink live, what she comes home to
+        self._default_location = seed.character.start_location
+        self._home_space = seed.character.home_space
+        food_name = _pet_food_name(seed)
+        self._pet_food: tuple[str, str] | None = (
+            (_locate_item(seed, food_name), food_name) if food_name else None
+        )
+        self._drink_item = seed.anchors.get("drink", "")
+        self._fridge_key = _locate_item(seed, self._drink_item)
+        self._gaming_action_id = _first_action_with_tag(seed, "game")
 
         # ------------------------------------------------------------ systems
-        self.spaces = SpaceSystem(build_spaces())
-        self.objects = ObjectSystem(build_objects())
-        self.inventories = InventorySystem(build_inventories(bible))
-        self.needs = NeedSystem(build_needs(), clock=clock)
-        self.actions = ActionSystem(build_action_definitions(), rng=self._rng, clock=clock)
+        self.spaces = SpaceSystem(build_spaces(seed))
+        self.objects = ObjectSystem(build_objects(seed))
+        self.inventories = InventorySystem(build_inventories(seed))
+        self.needs = NeedSystem(build_needs(seed), clock=clock, labels=seed.need_labels)
+        self.actions = ActionSystem(build_action_definitions(seed), rng=self._rng, clock=clock)
         self.rules = WorldRuleEngine(bible)
-        self.modes = ModeRuntime(clock=clock)
-        self.pet_system = PetSystem(self.pet, rng=self._rng, clock=clock)
+        self.modes = ModeRuntime(clock=clock, definitions=seed.modes)
+        self.pet_system: PetSystem | None = (
+            PetSystem(
+                self.pet,
+                rng=self._rng,
+                clock=clock,
+                nap_spots=self._nap_spots(),
+                gaming_action_ids=self._gaming_action_ids(),
+            )
+            if self.pet is not None
+            else None
+        )
         self.interrupt = InterruptEvaluator(bible=bible, clock=clock)
         self.validator = ProposalValidator(self.rules, self.actions)
-        self.social_spaces = build_social_spaces(bible)
+        self.social_spaces = build_social_spaces(seed)
         self.engine = SandboxDecisionEngine(
             bible=bible,
             actions=self.actions,
@@ -162,7 +276,18 @@ class SandboxRuntime:
             rng=self._rng,
             clock=clock,
             ai_decider=ai_decider if getattr(config, "allow_ai_decisions", True) else None,
+            preference_bonus=_preference_bonus(seed),
+            home_spaces=_home_space_set(seed),
         )
+        if ai_decider is not None and hasattr(ai_decider, "set_character_context"):
+            try:
+                ai_decider.set_character_context(
+                    name=seed.character.name,
+                    traits=self.definition.personality.traits,
+                    pet_name=seed.pets[0].name if seed.pets else "",
+                )
+            except Exception:  # noqa: BLE001 - cosmetic context only
+                pass
         self.current_action: ActionInstance | None = None
 
     # ------------------------------------------------------------------ api
@@ -195,9 +320,16 @@ class SandboxRuntime:
     # ---------------------------------------------------------------- seed
 
     async def _seed_fresh(self) -> None:
-        """First run of a new character: bible seed → initial world (§120)."""
-        self._log.info("[Sandbox] seeding a fresh world from %s", self.bible.version)
-        self.character.location = "livingroom"
+        """First run of a new character: seed → initial world (§120)."""
+        self._log.info(
+            "[Sandbox] seeding a fresh world from %s (character=%s, pet=%s)",
+            self.bible.version,
+            self.character.name,
+            self.pet.name if self.pet else "-",
+        )
+        self.character.location = self._default_location
+        if self.pet is not None:
+            self.pet.location = self._default_location
         await self.store.save_bible(self.bible)
         await self.store.state_set("bible_version", self.bible.version)
         await self._persist_all()
@@ -207,6 +339,27 @@ class SandboxRuntime:
             source=EventSource.system,
             level=EventLevel.major,
             reason="bible_seed",
+        )
+
+    def _nap_spots(self) -> list[str]:
+        """Pet nap spots that exist in *this* world's spaces."""
+        if not seed_pets(self):
+            return []
+        known = {space.id for space in self.spaces.all()}
+        spots = list(seed_pets(self).nap_spots)
+        return [spot for spot in spots if spot in known] or [self._default_location]
+
+    def _gaming_action_ids(self) -> tuple[str, ...]:
+        """Owned actions tagged with the gaming mode (seed-derived)."""
+        gaming_modes = {
+            mode.get("id")
+            for mode in self.seed.modes
+            if mode.get("trigger_kind") == "action" and "游戏" in str(mode.get("trigger", ""))
+        }
+        return tuple(
+            action["id"]
+            for action in self.seed.actions
+            if gaming_modes & set(action.get("modes") or [])
         )
 
     async def reinitialize(self) -> None:
@@ -223,26 +376,28 @@ class SandboxRuntime:
         step = minutes if minutes is not None else self._tick_minutes()
         now = float(self._clock())
         self.needs.advance(step, rest=self._rest_coefficient())
-        pet_events = self.pet_system.tick(
-            minutes=step,
-            owner_space=self.character.location,
-            owner_action=self.current_action.definition_id if self.current_action else "",
-            owner_home=self.spaces.is_home(self.character.location),
-            food_available=self.inventories.get("cat_food_bowl").count("猫粮") > 0,
-        )
-        for line in pet_events:
+        pet_events: list[tuple[str, str]] = []
+        if self.pet_system is not None:
+            pet_events = self.pet_system.tick(
+                minutes=step,
+                owner_space=self.character.location,
+                owner_action=self.current_action.definition_id if self.current_action else "",
+                owner_home=self.spaces.is_home(self.character.location),
+                food_available=self._pet_food_available(),
+            )
+        for kind, line in pet_events:
             await self._append_event(
                 "pet",
                 line,
                 source=EventSource.pet_action,
                 level=EventLevel.micro,
-                reason="pet_rule",
+                reason=kind,
             )
-        # pet complaints feed her need to care for the cat (§177)
-        if pet_events and "蹭过来" in pet_events[0]:
+        # a hungry pet begging feeds her need to care for it (§177)
+        if any(kind == "hungry_approach" for kind, _line in pet_events):
             self.needs.add("pet_care", 0.25)
 
-        report: dict[str, Any] = {"minutes": step, "pet": pet_events}
+        report: dict[str, Any] = {"minutes": step, "pet": [line for _k, line in pet_events]}
         self._last_tick = now
 
         # Action lifecycle.
@@ -279,6 +434,13 @@ class SandboxRuntime:
 
     # ------------------------------------------------------------ actions
 
+    def _pet_food_available(self) -> bool:
+        """Is there pet food in its bowl? (key + item both come from the seed)"""
+        if not self._pet_food:
+            return False
+        key, item = self._pet_food
+        return self.inventories.get(key).count(item) > 0
+
     async def _complete_action(self) -> None:
         action = self.current_action
         if action is None:
@@ -291,6 +453,18 @@ class SandboxRuntime:
 
         def apply() -> None:
             self.actions.finish(action, ActionStatus.completed)
+            for inv_key, items in definition.consumes.items():
+                for item, count in items.items():
+                    self.mutations.record(
+                        StateMutation(
+                            target=f"inventory:{inv_key}",
+                            field=item,
+                            before=self.inventories.get(inv_key).count(item),
+                            after=max(0, self.inventories.get(inv_key).count(item) - max(count, 0)),
+                            source="character_action",
+                            reason=definition.id,
+                        )
+                    )
             self.inventories.consume(definition.consumes)
             self.needs.relieve(definition.need_relief)
             for key, amount in definition.need_cost.items():
@@ -307,21 +481,39 @@ class SandboxRuntime:
                         project["progress"] = min(1.0, float(project["progress"]) + value)
                 elif effect_key.startswith("commission:"):
                     self._advance_commission(float(value))
-            if definition.id == "feed_cat":
+            if definition.id == "feed_cat" and self.pet_system is not None:
                 self.pet_system.feed()
             if definition.destination:
                 # she walked home after the errand (§30: space affects behavior)
-                self.character.location = "livingroom"
-            if definition.id in ("eat_pudding", "eat_cake", "eat_fruit"):
-                self.knowledge["fridge_stock"] = {
+                self.mutations.record(
+                    StateMutation(
+                        target="character.location",
+                        field="location",
+                        before=self.character.location,
+                        after=self._default_location,
+                        source="character_action",
+                        reason=definition.id,
+                    )
+                )
+                self.character.location = self._default_location
+            if any(key.startswith("inventory:") for key in definition.consumes) or any(
+                "fridge" in key for key in definition.consumes
+            ):
+                # eating/drinking from a container → she knows its stock now
+                container = next(iter(definition.consumes), "")
+                self.knowledge[f"{container}_stock"] = {
                     "known": True,
                     "source": "observation",
                     "learned_at": float(self._clock()),
                     "data": {},
                 }
-            # groceries consumed empty the fridge → replenishment awareness
-            if self.inventories.get("fridge").count("可乐") == 0:
-                self.knowledge["fridge_no_cola"] = {
+            # her staple drink ran out → replenishment awareness (seed anchor)
+            if (
+                self._fridge_key
+                and self._drink_item
+                and self.inventories.get(self._fridge_key).count(self._drink_item) == 0
+            ):
+                self.knowledge[f"{self._fridge_key}_empty_{self._drink_item}"] = {
                     "known": True,
                     "source": "observation",
                     "learned_at": float(self._clock()),
@@ -450,12 +642,20 @@ class SandboxRuntime:
             self.social_spaces_touch(event)
             if interrupt and self.current_action is not None:
                 await self._interrupt_action(why)
-                if meaning == "invitation_game":
-                    await self._start_action("play_minecraft", reason=["core_friend_invitation"])
-                    result["action"] = "play_minecraft"
+                if meaning == "invitation_game" and self._gaming_action_id:
+                    friend = (
+                        self.seed.core_friend_names[0]
+                        if self.seed.core_friend_names
+                        else "核心朋友"
+                    )
+                    await self._start_action(
+                        self._gaming_action_id, reason=["core_friend_invitation"]
+                    )
+                    result["action"] = self._gaming_action_id
                     await self._append_event(
                         "interrupt",
-                        "空凛喊她联机 → 放下手上的事去开服务器",
+                        f"{friend}喊她{self.actions.definitions[self._gaming_action_id].name}"
+                        " → 放下手上的事去赴约",
                         source=EventSource.external_event,
                         level=EventLevel.normal,
                         reason="core_friend_invitation",
@@ -687,7 +887,8 @@ class SandboxRuntime:
         hours = elapsed_minutes / 60.0
         assume_asleep = self._was_sleeping_through(elapsed_minutes)
         self.needs.advance(min(elapsed_minutes, 24 * 60), rest=1.0 if assume_asleep else 0.0)
-        self.pet_system.advance(min(elapsed_minutes, 12 * 60))
+        if self.pet_system is not None:
+            self.pet_system.advance(min(elapsed_minutes, 12 * 60))
         note: list[str] = [f"离线 {hours:.1f} 小时"]
 
         if self.current_action is not None:
@@ -794,7 +995,7 @@ class SandboxRuntime:
             phase=self.phase.value,
             location=self.character.location,
             character=self.character.model_dump(mode="json"),
-            pet=self.pet_system.snapshot(),
+            pet=(self.pet_system.snapshot() if self.pet_system else {}),
             needs={key: need.model_dump(mode="json") for key, need in self.needs.all().items()},
             action=(self.current_action.model_dump(mode="json") if self.current_action else None),
             modes=self.modes.snapshot(),
@@ -834,7 +1035,8 @@ class SandboxRuntime:
 
     def _apply_snapshot(self, snapshot: SandboxSnapshot) -> None:
         self.character = CharacterEntity.model_validate(snapshot.character)
-        self.pet_system.restore(snapshot.pet)
+        if self.pet_system is not None and snapshot.pet:
+            self.pet_system.restore(snapshot.pet)
         self.needs.restore(snapshot.needs)
         if snapshot.action:
             self.current_action = ActionInstance.model_validate(snapshot.action)
@@ -876,13 +1078,14 @@ class SandboxRuntime:
             space_id=self.character.location,
             data=self.character.model_dump(mode="json"),
         )
-        await self.store.save_entity(
-            "pet",
-            type="pet",
-            name=self.pet_system.pet.name,
-            space_id=self.pet_system.pet.location,
-            data=self.pet_system.snapshot(),
-        )
+        if self.pet_system is not None:
+            await self.store.save_entity(
+                "pet",
+                type="pet",
+                name=self.pet_system.pet.name,
+                space_id=self.pet_system.pet.location,
+                data=self.pet_system.snapshot(),
+            )
         for space in self.spaces.all():
             await self.store.save_space(
                 space.id,
@@ -941,14 +1144,15 @@ class SandboxRuntime:
             space_id=self.character.location,
             data=self.character.model_dump(mode="json"),
         )
-        await self.store.save_entity(
-            "pet",
-            type="pet",
-            name=self.pet_system.pet.name,
-            space_id=self.pet_system.pet.location,
-            data=self.pet_system.snapshot(),
-        )
-        for key in ("fridge", "cat_food_bowl", "character"):
+        if self.pet_system is not None:
+            await self.store.save_entity(
+                "pet",
+                type="pet",
+                name=self.pet_system.pet.name,
+                space_id=self.pet_system.pet.location,
+                data=self.pet_system.snapshot(),
+            )
+        for key in self.inventories.all():
             inventory = self.inventories.get(key)
             await self.store.save_inventory(key, inventory.model_dump(mode="json"))
         for key in self.knowledge:
@@ -1015,7 +1219,7 @@ class SandboxRuntime:
             "inventories": {k: v.model_copy(deep=True) for k, v in self.inventories.all().items()},
             "objects": [o.model_copy(deep=True) for o in self.objects.all()],
             "projects": {k: dict(v) for k, v in self.projects.items()},
-            "pet": self.pet_system.pet.model_copy(deep=True),
+            "pet": (self.pet_system.pet.model_copy(deep=True) if self.pet_system else None),
         }
 
     def _restore_state(self, backup: dict[str, Any]) -> None:
@@ -1026,7 +1230,8 @@ class SandboxRuntime:
             self.inventories.all()[key] = inv
         self.objects = ObjectSystem(backup["objects"])
         self.projects = backup["projects"]
-        self.pet_system.pet = backup["pet"]
+        if self.pet_system is not None and backup["pet"] is not None:
+            self.pet_system.pet = backup["pet"]
 
     # ------------------------------------------------------------- helpers
 
@@ -1117,7 +1322,7 @@ class SandboxRuntime:
         pieces = [f"现在她在{location}"]
         if action_line:
             pieces.append(f"正在{action_line}")
-        pet = self.pet_system.prompt_line()
+        pet = self.pet_system.prompt_line() if self.pet_system else ""
         project = next(iter(self.projects.values()), None)
         goal = ""
         if project is not None:
@@ -1129,7 +1334,7 @@ class SandboxRuntime:
         if commission is not None:
             goal = f"{commission.title or commission.kind}（进度 {commission.progress:.0%}）"
         return {
-            "state_line": "；".join(pieces) + f"；{pet}",
+            "state_line": "；".join(pieces + ([pet] if pet else [])),
             "mode_line": self.modes.prompt_line(),
             "need_line": self.needs.summary_line(),
             "goal": goal,

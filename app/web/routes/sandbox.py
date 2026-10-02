@@ -395,7 +395,7 @@ class SandboxRoutes(WebContext):
             self._sandbox_data()
         )
         return web.Response(
-            text=layout("沙盒 · 实体与空间", "/sandbox", body, subtitle="小喵、公寓、冰箱、库存"),
+            text=layout("沙盒 · 实体与空间", "/sandbox", body, subtitle="宠物、空间、物件、库存"),
             content_type="text/html",
         )
 

@@ -13,10 +13,18 @@ from app.sandbox.models import ActionDefinition, NeedState
 
 
 class NeedSystem:
-    def __init__(self, needs: dict[str, NeedState], *, clock: Any) -> None:
+    def __init__(
+        self,
+        needs: dict[str, NeedState],
+        *,
+        clock: Any,
+        labels: dict[str, str] | None = None,
+    ) -> None:
         self._needs = needs
         self._clock = clock
         self._last_ts = float(clock())
+        #: seed-injected character labels override the generic defaults
+        self._labels = dict(labels or {})
 
     def all(self) -> dict[str, NeedState]:
         return self._needs
@@ -93,6 +101,7 @@ class NeedSystem:
     def summary_line(self, *, limit: int = 3) -> str:
         """Prompt-ready: only the notable pressures (§86 — not a full dump)."""
         notable = sorted(self.pressing(), key=lambda n: n.level, reverse=True)[:limit]
+        # generic labels; character-specific ones (pet/project) arrive via seed
         labels = {
             "hunger": "有点饿",
             "thirst": "想喝点冰的",
@@ -101,11 +110,12 @@ class NeedSystem:
             "hygiene": "该洗澡了",
             "social_need": "想上网找人聊",
             "entertainment": "想找点乐子",
-            "pet_care": "该管管小喵了",
+            "pet_care": "该管管宠物了",
             "household_maintenance": "家里该收拾了",
             "work_need": "有个活拖着",
-            "project_progress": "想着没建完的城",
+            "project_progress": "想着没做完的事",
         }
+        labels.update(self._labels)
         return "；".join(
             labels.get(need.key, need.key) + ("（很强烈）" if need.band() == "critical" else "")
             for need in notable

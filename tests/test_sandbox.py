@@ -119,8 +119,9 @@ class TestSeed:
         assert runtime.pet_system.pet.name == "小喵"
         assert runtime.needs.get("hunger") is not None
         assert runtime.actions.definitions["play_minecraft"].typical_minutes == 120
-        assert runtime.social_spaces["game_group"].name == "游戏群"
-        assert runtime.projects["mc_city"]["progress"] == 0.35
+        assert any(s.name == "游戏群" for s in runtime.social_spaces.values())
+        project = next(iter(runtime.projects.values()))
+        assert project["progress"] == 0.35
 
 
 # --------------------------------------------------------------- tick basics
@@ -188,7 +189,8 @@ class TestCausality:
         runtime.current_action.planned_end_at = clock.now - 1
         await runtime.tick(minutes=1)
         assert runtime.inventories.get("fridge").count("可乐") == 0
-        assert "fridge_no_cola" in runtime.knowledge
+        drink = runtime._drink_item  # noqa: SLF001 - seed-derived anchor
+        assert f"fridge_empty_{drink}" in runtime.knowledge
         runtime.needs.add("thirst", 0.8)
         transitions = await run(runtime, clock, hours=12)
         bought = (
@@ -231,13 +233,14 @@ class TestCausality:
 
     async def test_minecraft_advances_the_city_project(self) -> None:
         runtime, clock = await make_runtime()
-        start = runtime.projects["mc_city"]["progress"]
+        project_id = next(iter(runtime.projects))
+        start = runtime.projects[project_id]["progress"]
         for _ in range(4):
             await runtime._start_action("play_minecraft")
             runtime.current_action.planned_end_at = clock.now
             clock.advance(120 * 60)
             await runtime.tick(minutes=1)
-        assert runtime.projects["mc_city"]["progress"] > start
+        assert runtime.projects[project_id]["progress"] > start
 
 
 # --------------------------------------------------------------- interrupts
@@ -334,7 +337,10 @@ class TestPersistence:
         await runtime._start_action("drink_cola")
         runtime.current_action.planned_end_at = clock.now - 1
         await runtime.tick(minutes=1)
-        assert runtime.knowledge["fridge_no_cola"]["known"] is True
+        assert any(
+            key.startswith("fridge_empty_") and value["known"]
+            for key, value in runtime.knowledge.items()
+        )
 
 
 # ------------------------------------------------------------- simulations
@@ -368,7 +374,7 @@ class TestSimulations:
         names = [new for _, _, new in transitions if new]
         assert names.count("sleep") >= 5, "she must sleep most nights"
         assert "play_minecraft" in names, "Minecraft is her anchor activity"
-        assert runtime.projects["mc_city"]["progress"] > 0.35
+        assert next(iter(runtime.projects.values()))["progress"] > 0.35
         assert len(transitions) <= 300
 
     async def test_actions_respect_min_duration(self) -> None:

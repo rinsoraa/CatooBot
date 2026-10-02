@@ -88,19 +88,21 @@ class FactSelector:
             if line:
                 entries.append(FactEntry(id=obj.id, label=obj.name, line=line, keywords=keywords))
 
-        pet = rt.pet_system.pet
-        entries.append(
-            FactEntry(
-                id="pet",
-                label=pet.name,
-                line=(
-                    f"{pet.name}：{rt.pet_system.activity_label()}"
-                    f"（{self._space_name(pet.location)}），"
-                    f"饥饿度 {pet.hunger:.2f}（0=不饿，1=很饿）"
-                ),
-                keywords=list(getattr(pet, "tags", []) or []) + [pet.name, "猫", "猫咪"],
+        pet_system = getattr(rt, "pet_system", None)
+        if pet_system is not None:
+            pet = pet_system.pet
+            entries.append(
+                FactEntry(
+                    id="pet",
+                    label=pet.name,
+                    line=(
+                        f"{pet.name}：{pet_system.activity_label()}"
+                        f"（{self._space_name(pet.location)}），"
+                        f"饥饿度 {pet.hunger:.2f}（0=不饿，1=很饿）"
+                    ),
+                    keywords=list(getattr(pet, "tags", []) or []) + [pet.name],
+                )
             )
-        )
 
         character_inventory = rt.inventories.get("character")
         if character_inventory.items:
@@ -257,8 +259,15 @@ class FactSelector:
                     re.compile(rf"{escaped}[^。！？!?\n]{{0,4}}最后一(?:罐|瓶|个|块|份|袋|杯)")
                 )
                 rules.append(re.compile(rf"没(?:有)?{escaped}(?:了)?"))
-        for name, count in rt.inventories.get("cat_food_bowl").items.items():
-            if count > 0:
-                escaped = re.escape(name)
-                rules.append(re.compile(rf"{escaped}[^。！？!?\n]{{0,6}}{gone}"))
+        # pet-bowl claim rules: any inventory that backs a pet bowl object
+        pet_bowl_keys = {
+            obj.inventory_key
+            for obj in rt.objects.all()
+            if obj.inventory_key and ("bowl" in obj.id or "food" in obj.id)
+        }
+        for key in pet_bowl_keys:
+            for name, count in rt.inventories.get(key).items.items():
+                if count > 0:
+                    escaped = re.escape(name)
+                    rules.append(re.compile(rf"{escaped}[^。！？!?\n]{{0,6}}{gone}"))
         return rules

@@ -18,11 +18,15 @@ from app.config.settings import PROJECT_ROOT
 
 logger = logging.getLogger("CatooBot.Sandbox.Lifecycle")
 
-#: character-scoped tables: wiped on reset (§6/§163-§165)
+#: character-scoped tables: wiped on reset (§6/§163-§165).
+#: Everything a *new* character must not inherit: memories, her view of users,
+#: her social feedback loops, her learned expressions, her whole sandbox.
 CHARACTER_TABLES: tuple[str, ...] = (
     "memories",
     "memory_embeddings",
+    "memory_relations",
     "relationships",
+    "character_states",
     "interaction_profiles",
     "shared_experiences",
     "open_loops",
@@ -30,6 +34,14 @@ CHARACTER_TABLES: tuple[str, ...] = (
     "affective_events",
     "conversation_turns",
     "conversations",
+    "topics",
+    "behavior_events",
+    "initiative_state",
+    "social_observations",
+    "reply_outcomes",
+    "expression_patterns",
+    "expression_samples",
+    "expression_vectors",
     "agent_goals",
     "agent_tasks",
     "agent_plans",
@@ -57,26 +69,30 @@ CHARACTER_SETTINGS: tuple[str, ...] = (
     "behavior_overrides",
     "prompt_overrides",
     "model_overrides",
+    "social_engagement",
 )
 
-#: tables that MUST survive the reset (§4/§7 + §7 users/QQ data)
+#: tables that MUST survive the reset (§4/§7 + §42 users/QQ data)
 PRESERVED_TABLES: tuple[str, ...] = (
     "users",
     "groups",
     "group_profiles",
-    "messages",
-    "settings",
-    "users_profiles",
     "user_profiles",
+    "settings",
     "schema_migrations",
+    "bot_state",
+    # sticker/media: platform caches stay; character-*acquired* stickers are
+    # removed separately via their scope column (§44-§46)
     "sticker_assets",
     "sticker_usage",
     "native_faces",
     "image_analysis",
+    "tool_configs",
     "tool_executions",
-    "tool_credentials",
     "tool_cache",
     "tool_permissions",
+    "embedding_cache",
+    "ai_usage",
     "web_users",
 )
 
@@ -113,6 +129,11 @@ class CharacterLifecycleManager:
                 removed["settings"] += 1
             except Exception:  # noqa: BLE001
                 pass
+        # §44-§46: character-*acquired* stickers are hers, not platform assets
+        # — global assets survive the reset through their scope column.
+        character_assets = await self._wipe_character_assets()
+        if character_assets:
+            removed["sticker_assets(character)"] = character_assets
         result = {
             "ok": True,
             "removed": removed,
@@ -126,6 +147,19 @@ class CharacterLifecycleManager:
             backup_path,
         )
         return result
+
+    async def _wipe_character_assets(self) -> int:
+        """Delete character-scope stickers (global ones are kept, §45)."""
+        try:
+            row = await self._db.fetchone(
+                "SELECT COUNT(*) AS n FROM sticker_assets WHERE scope = 'character'"
+            )
+            count = int(row["n"]) if row else 0
+            if count:
+                await self._db.execute("DELETE FROM sticker_assets WHERE scope = 'character'")
+            return count
+        except Exception:  # noqa: BLE001 - pre-migration DBs have no scope column
+            return 0
 
     async def _wipe_table(self, table: str) -> int:
         try:

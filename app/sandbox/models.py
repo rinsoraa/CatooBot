@@ -221,14 +221,18 @@ class ActionInstance(BaseModel):
 
 
 class PetState(BaseModel):
-    """小喵 as a real entity (§23-§26)."""
+    """A pet as a real entity (§23-§26) — identity from the seed, state runtime.
 
-    id: str = "cat_001"
-    name: str = "小喵"
-    species: str = "猫"
-    #: semantic tags for fact injection
-    tags: list[str] = Field(default_factory=lambda: ["猫", "小喵", "猫咪", "宠物"])
-    location: str = "livingroom"
+    Character-specific fields (name/species/tags/location) have no defaults:
+    a pet always comes from a :class:`~app.sandbox.world_seed.PetSeed`.
+    """
+
+    id: str = "pet_001"
+    name: str
+    species: str
+    #: semantic tags for fact injection (compiled from the seed's inventories)
+    tags: list[str] = Field(default_factory=list)
+    location: str
     activity: PetActivity = PetActivity.idle
     activity_until: float = 0.0
     hunger: float = 0.3
@@ -237,17 +241,21 @@ class PetState(BaseModel):
     mood: str = "平静"
     last_interaction: float = 0.0
     habits: list[str] = Field(default_factory=list)
-    owner_relationship: str = "独居伴侣"
+    owner_relationship: str = ""
 
 
 class CharacterEntity(BaseModel):
-    """The character inside the sandbox (§20-§21) — state, not personality."""
+    """The character inside the sandbox (§20-§21) — state, not personality.
+
+    Name/location have no defaults (§9): a character entity is always built
+    from the world seed's :class:`~app.sandbox.world_seed.CharacterSeed`.
+    """
 
     id: str = "character"
-    name: str = "罐头"
+    name: str
     type: EntityType = EntityType.character
-    location: str = "livingroom"
-    modes: list[str] = Field(default_factory=lambda: ["home"])
+    location: str
+    modes: list[str] = Field(default_factory=list)
     current_action_id: str = ""
     inventory_key: str = "character"
     energy: float = 0.7

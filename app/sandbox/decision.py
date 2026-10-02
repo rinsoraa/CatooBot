@@ -27,23 +27,12 @@ from app.sandbox.modes import ModeRuntime
 from app.sandbox.needs import NeedSystem
 from app.sandbox.world import InventorySystem, ObjectSystem, SpaceSystem, WorldRuleEngine
 
-#: preference nudges from the bible (§180) — ids hard-anchored to the character
-PREFERENCE_BONUS: dict[str, float] = {
-    "play_minecraft": 0.35,
-    "play_singleplayer": 0.2,
-    "eat_pudding": 0.3,
-    "eat_cake": 0.25,
-    "eat_fruit": 0.2,
-    "drink_cola": 0.3,
-    "buy_sweets": 0.15,
-    "film_cat": 0.15,
-    "talk_to_cat": 0.1,
-    "watch_animation": 0.15,
-    "browse_social": 0.15,
-}
-
-#: deep-night actions get a nudge only inside the window
-DEEP_NIGHT_BONUS = {"think": 0.35, "eat_pudding": 0.1}
+#: generic sleep/nap guard rails — conventional action ids, system mechanics
+SLEEP_ACTION = "sleep"
+NAP_ACTION = "nap"
+IDLE_ACTION = "idle"
+#: deep-night window (system convention, also the conventional deep_night mode)
+DEEP_NIGHT_HOURS = (2, 5)
 
 
 class SandboxDecisionEngine:
@@ -58,10 +47,12 @@ class SandboxDecisionEngine:
         inventories: InventorySystem,
         rules: WorldRuleEngine,
         modes: ModeRuntime,
-        pet: PetSystem,
+        pet: PetSystem | None,
         rng: random.Random,
         clock: Any,
         ai_decider: Any = None,
+        preference_bonus: dict[str, float] | None = None,
+        home_spaces: set[str] | None = None,
     ) -> None:
         self.bible = bible
         self.actions = actions
@@ -75,6 +66,10 @@ class SandboxDecisionEngine:
         self._rng = rng
         self._clock = clock
         self._ai = ai_decider  # optional: returns SandboxDecision for ambiguity
+        #: §180: seed-derived nudges — actions the bible marks as favorites
+        self._preference_bonus = dict(preference_bonus or {})
+        #: which spaces count as "home" for go-do-it candidates (from the seed)
+        self._home_spaces = home_spaces or set()
 
     # ------------------------------------------------------------ candidates
 
@@ -84,17 +79,18 @@ class SandboxDecisionEngine:
         """All currently sensible actions with (definition, score, reasons)."""
         out: list[tuple[ActionDefinition, float, list[str]]] = []
         if asleep:
-            definition = self.actions.definitions.get("sleep")
+            definition = self.actions.definitions.get(SLEEP_ACTION)
             if definition is not None:
                 return [(definition, 1.0, ["asleep"])]
         hour = _hour_of(self._clock())
         sleep_pressure = self.needs.pressure("sleepiness")
+        deep_start, deep_end = DEEP_NIGHT_HOURS
         for action_id, definition in self.actions.definitions.items():
-            if definition.id == "sleep" and not (sleep_pressure >= 0.6 or 1 <= hour < 7):
+            if definition.id == SLEEP_ACTION and not (sleep_pressure >= 0.6 or 1 <= hour < 7):
                 continue  # sleep appears at night or under real sleep pressure
-            if definition.id == "nap" and self.needs.level("sleepiness") >= 0.9:
+            if definition.id == NAP_ACTION and self.needs.level("sleepiness") >= 0.9:
                 continue  # not a substitute for the real thing
-            if definition.id == "nap" and 2 <= hour < 7:
+            if definition.id == NAP_ACTION and deep_start <= hour < 7:
                 continue  # at night she sleeps, she doesn't nap
             ok, _ = self.rules.validate_proposal(action_id, space_id, definition)
             if not ok:
@@ -136,30 +132,26 @@ class SandboxDecisionEngine:
 
     def _reachable_from(self, space_id: str, targets: list[str]) -> bool:
         """Walking to another home space is allowed; shops are handled by needs."""
-        allowed = {
-            "kitchen",
-            "livingroom",
-            "bedroom",
-            "bathroom",
-            "entrance",
-            "apartment",
-        }
-        return any(target in allowed for target in targets) or "*" in targets
+        return any(target in self._home_spaces for target in targets) or "*" in targets
 
     def _score(self, definition: ActionDefinition, *, hour: int) -> float:
         score = 0.0
         score += self.needs.weight_for(definition)  # need pressure
-        score += PREFERENCE_BONUS.get(definition.id, 0.0)  # bible preference
+        score += self._preference_bonus.get(definition.id, 0.0)  # bible preference
         if definition.requires_absent:
             # It only appears when something she relies on ran out (§33/§175):
             # a real, deferrable pull — not a forced action.
             score += 0.5
-        if 2 <= hour < 5:
-            score += DEEP_NIGHT_BONUS.get(definition.id, 0.0)
-        # The bible's clock: 凌晨三四点睡，白天补觉 (night_owl rule).
-        if definition.id == "sleep" and (1 <= hour < 7 or self.needs.pressure("sleepiness") >= 0.6):
+        deep_start, deep_end = DEEP_NIGHT_HOURS
+        if deep_start <= hour < deep_end:
+            # quiet/reflective actions fit the deep-night window
+            score += 0.35 if "idle" in definition.tags else 0.0
+        # A night-owl clock: real sleep pressure or the small hours.
+        if definition.id == SLEEP_ACTION and (
+            1 <= hour < 7 or self.needs.pressure("sleepiness") >= 0.6
+        ):
             score += 0.8
-        if definition.id == "nap" and 2 <= hour < 7:
+        if definition.id == NAP_ACTION and deep_start <= hour < 7:
             score -= 0.5
         if definition.tags and "core" in definition.tags:
             score = max(score, self.needs.pressure("sleepiness") * 1.2)
@@ -167,12 +159,13 @@ class SandboxDecisionEngine:
 
     def _score_reasons(self, definition: ActionDefinition, *, hour: int) -> list[str]:
         reasons: list[str] = []
+        deep_start, deep_end = DEEP_NIGHT_HOURS
         for key, relief in definition.need_relief.items():
             if self.needs.pressure(key) > 0.0 and relief > 0.0:
                 reasons.append(f"need:{key}")
-        if definition.id in PREFERENCE_BONUS:
+        if definition.id in self._preference_bonus:
             reasons.append("preference")
-        if 2 <= hour < 5 and definition.id in DEEP_NIGHT_BONUS:
+        if deep_start <= hour < deep_end and "idle" in definition.tags:
             reasons.append("deep_night")
         return reasons
 
@@ -187,10 +180,10 @@ class SandboxDecisionEngine:
     ) -> tuple[SandboxDecision, DecisionTrace]:
         """Choose continue / switch after completion or at a decision point."""
         if asleep:
-            definition = self.actions.definitions.get("sleep")
+            definition = self.actions.definitions.get(SLEEP_ACTION)
             decision = SandboxDecision(
                 decision="continue",
-                action_id="sleep",
+                action_id=SLEEP_ACTION,
                 reason_codes=["asleep"],
             )
             trace = DecisionTrace(
@@ -237,7 +230,7 @@ class SandboxDecisionEngine:
             return decision, trace
 
         if not options:
-            fallback = self.actions.definitions.get("idle") or next(
+            fallback = self.actions.definitions.get(IDLE_ACTION) or next(
                 iter(self.actions.definitions.values())
             )
             decision = SandboxDecision(
