@@ -401,6 +401,9 @@ sandbox:
   social_space_map: {}       # 例：QQ 群号 → "game_group"/"cat_group"/"minecraft_server"
   # Phase 11：社交语境里“最近和这个人一起做过什么”的唯一时间窗（分钟，0 = 不限时只用条数）
   social_context_recent_window_minutes: 2880
+  # Phase 12：单条回复字符上限（超长拒绝回退，不截断）与可选钉住的模型 name
+  conversation_max_response_chars: 400
+  conversation_model: ""
 
 # ============================================================
 # 对话轮次运行时（v1.2）

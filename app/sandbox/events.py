@@ -86,6 +86,9 @@ class SandboxEventType(str, Enum):  # noqa: UP042 - pydantic-friendly str enum
     COMMITMENT_FULFILLED = "commitment_fulfilled"
     COMMITMENT_CANCELLED = "commitment_cancelled"
     COMMITMENT_BROKEN = "commitment_broken"
+    # conversational response runtime (Phase 12 §33) — trace only, no revisions
+    CONVERSATION_RESPONSE_PROPOSED = "conversation_response_proposed"
+    CONVERSATION_RESPONSE_EMITTED = "conversation_response_emitted"
     # state authority closure (Phase 3.5)
     PROJECT_PROGRESS_CHANGED = "project_progress_changed"
     KNOWLEDGE_CHANGED = "knowledge_changed"

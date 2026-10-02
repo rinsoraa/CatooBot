@@ -3,6 +3,44 @@
 本文件记录 CatooBot 的版本演进。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号见 `pyproject.toml`；日期取自真实提交历史（本仓库 2026-09-30 起）。
 
+## [Unreleased] — v2.1 Phase 12 · Conversational Response Runtime & Fact-Safe Social Reply
+
+- **新模块 `app/sandbox/conversation.py`（§5-§59）**：`ConversationTurn`（本轮 turn：
+  turn_id / character_id / source / external_actor_id / person_id / social_space_id /
+  group_id / message_text / event_id / world+cognitive revision；**不落库**）、
+  `ResponseProposal`（严格 JSON：mode / text / memory_refs / experience_refs /
+  action_candidate_id / confidence）、`ConversationResponse`（含 source / reason /
+  dropped_refs / 两个 revision 戳）、`ConversationRuntime`（receive → resolve person →
+  `cognitive_context()` → 提案 → 校验 → 响应）。**没有新数据库、没有第二套认知系统、
+  没有 Planner/Agent/情绪系统**。
+- **唯一上下文来源（§15）**：所有上下文来自既有的 `SandboxRuntime.cognitive_context()`
+  （Phase 11 的 person / 关系 / 未完成约定 / 最近共同经历 / 共同记忆 / 当前世界），
+  Response Runtime 不自己查记忆或关系。角色名取自 `CharacterDefinition`，不硬编码。
+- **事实安全（§18/§19/§23/§51/§52）**：引用必须存在于本轮上下文——记忆引用只能取
+  本轮检索/情境里的 `memory_id`，经历引用只能取本轮 `experience_id` / `episode_key`；
+  行动只能引用调用方给出的**世界派生候选**（`action_candidate_id`）。越界引用一律
+  丢弃并记入 `dropped_refs`，绝不执行动作（命名候选 ≠ 执行）。
+- **过期保护（§25-§27）**：响应在返回前重新核对 `world_revision` 与
+  `cognitive_revision`；模型思考期间世界或认知一变（关系/承诺变化只动 cognitive），
+  整条回复作废（mode=silent、source=fallback、reason=world_changed / cognitive_changed），
+  不重试、不发送。
+- **失败处理（§53-§57）**：模型不可用 / 非法 JSON / 低置信（复用既有
+  `decision_min_confidence`）/ 空文本 / 超长（新增唯一长度配置
+  `conversation_max_response_chars`，超长直接拒绝而非截断）→ 一律 silent + fallback，
+  不抛异常、不编造人格化兜底台词。
+- **只说法不写世界（§2/§32/§62 V）**：生成回复前后 world/cognitive revision、关系、
+  承诺、目标、记忆、经历、动作、mutation 审计全部不变；`ConversationResponse.text`
+  只是语言，永不成为事件/记忆/承诺/目标。
+- **事件（§33/§34）**：新增 `CONVERSATION_RESPONSE_PROPOSED` /
+  `CONVERSATION_RESPONSE_EMITTED`，仅作 trace：记录 turn_id/mode/source/refs/
+  action_candidate/reason 与 ≤80 字文本摘要，**不推进任何 revision、不存聊天历史**。
+- 新增 `tests/test_sandbox_conversation.py`（22 个测试：私聊正常回复与提示词边界、
+  上下文只含当前 person、双角色隔离、合法/非法记忆引用、合法/非法经历引用、
+  合法/非法行动候选（不执行）、世界变化与认知变化导致的 stale 作废、生成前后
+  全状态只读、非 LLM 层确定性、模型不可用/非法 JSON/低置信/空文本/超长、
+  策略上限（silent 时根本不叫模型）、当前世界优先（sleep 不被 gaming 记忆覆盖）、
+  群聊字段透传、邀请流程不被重复决策），总测试 1313。
+
 ## [Unreleased] — v2.1 Phase 11 · Social Cognition & Conversational Continuity
 
 - **Social Situation 投影（§5/§26）**：`CognitiveContext` 新增唯一的小投影

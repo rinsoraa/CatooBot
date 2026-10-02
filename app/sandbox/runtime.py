@@ -28,6 +28,7 @@ from app.sandbox.continuity_snapshot import (
     ContinuitySnapshot,
     ContinuitySnapshotBuilder,
 )
+from app.sandbox.conversation import ConversationResponse, ConversationRuntime
 from app.sandbox.decision import (
     InterruptEvaluator,
     ProposalValidator,
@@ -307,6 +308,8 @@ class SandboxRuntime:
         self.commitment_detector = CommitmentDetector(self.commitments, clock=clock)
         self.commitment_bridge = CommitmentGoalBridge(self.commitments, clock=clock)
         self.events.subscribe(self.commitment_detector.observe)
+        #: Phase 12: turn → context → proposed reply → validated response
+        self.conversation = ConversationRuntime(self, clock=clock)
         self._last_tick = float(clock())
         self._notes: list[str] = []  # micro-continuity feed
         self._restored = False
@@ -2723,6 +2726,38 @@ class SandboxRuntime:
             source=fact.source,
         )
         return state
+
+    async def conversation_turn(
+        self,
+        *,
+        message: str,
+        actor_id: str,
+        source: str = "qq",
+        social_space_id: str = "",
+        group_id: str = "",
+        event_id: str = "",
+        correlation_id: str = "",
+        mode_ceiling: str = "reply",
+        action_candidates: list[str] | None = None,
+    ) -> ConversationResponse:
+        """One conversational response for this message (Phase 12).
+
+        Language only: the world, the relationships, the promises, the goals and
+        the memory are *read* — never written (§2/§32). Whether a turn may speak
+        comes from the caller's deterministic policy (Phase 3 influence), never
+        from the model.
+        """
+        return await self.conversation.respond(
+            message=message,
+            actor_id=actor_id,
+            source=source,
+            social_space_id=social_space_id,
+            group_id=group_id,
+            event_id=event_id,
+            correlation_id=correlation_id,
+            mode_ceiling=mode_ceiling,
+            action_candidates=action_candidates,
+        )
 
     async def relationship_for(self, actor_id: str) -> Any:
         """Relationship state of a QQ actor, or None when there is none yet.

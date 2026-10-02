@@ -693,6 +693,12 @@ class SandboxConfig(BaseModel):
     #: 0 = 只用条数上限）——社交语境不另设第二份 recency 阈值
     social_context_recent_window_minutes: float = Field(default=2880.0, ge=0)
 
+    # ---------- 对话回复运行时（Phase 12）：只产出语言，不写世界 ----------
+    #: 单条回复的字符上限（超长直接拒绝并回退，不截断）；唯一来源
+    conversation_max_response_chars: int = Field(default=400, ge=20, le=4000)
+    #: 回复可选钉住的模型 name（留空 = 路由默认）
+    conversation_model: str = ""
+
     # ---------- 认知决策层（Phase 6） ----------
     #: 决策调用可选钉住的模型 name（ai.models 里已注册；留空 = 路由默认）
     decision_model: str = ""

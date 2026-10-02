@@ -315,6 +315,8 @@ class CognitiveContextBuilder:
                         "status": commitment.status.value,
                         "description": commitment.description,
                         "due_at": commitment.due_at,
+                        # the wording the arrangement came from — factual context
+                        "time_hint": commitment.time_hint,
                     }
                     for commitment in rt.commitments.for_person(person_id)
                     if commitment.open
