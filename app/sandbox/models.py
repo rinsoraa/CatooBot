@@ -177,6 +177,10 @@ class ActionDefinition(BaseModel):
 
     id: str
     name: str
+    #: the activity this action engages, in the world's own vocabulary
+    #: (gaming / reading / eating / working / online / out / sleeping / …).
+    #: Provided by the seed's action templates — never inferred from the id.
+    activity: str = ""
     spaces: list[str] = Field(default_factory=list)  # where it can run
     required_objects: list[str] = Field(default_factory=list)
     min_minutes: float = 5.0

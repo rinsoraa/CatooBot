@@ -102,16 +102,41 @@ class ExternalEventQueue:
         self._seen: deque[str] = deque(maxlen=seen_size)
         self._seen_set: set[str] = set()
         self._maxlen = maxlen
+        #: events evicted by a more urgent arrival
         self.dropped = 0
+        #: arrivals refused because they were weaker than the whole queue
+        self.rejected = 0
+        #: evicted event ids, newest last (diagnostics)
+        self.evicted: deque[str] = deque(maxlen=64)
 
     # ------------------------------------------------------------------ api
 
     def push(self, event: ExternalWorldEvent) -> bool:
-        """Enqueue unless this event_id was already accepted (§19)."""
+        """Enqueue unless duplicate (§19) or weaker than a full queue (§13).
+
+        Eviction policy when full (deterministic):
+
+        * a *more urgent* arrival evicts the weakest queued event (lowest
+          urgency, oldest first among ties) — a critical fact therefore never
+          yields to a normal one;
+        * an arrival that is *not more urgent* than everything queued is
+          refused (returns False) so low-priority noise cannot push out
+          anything that matters.
+        """
         if event.event_id in self._seen_set:
             return False
         if len(self._pending) >= self._maxlen:
-            self._pending.popleft()  # oldest non-critical yields to the new one
+            weakest = min(
+                range(len(self._pending)),
+                key=lambda i: (self._pending[i].urgency.rank, i),
+            )
+            if event.urgency.rank <= self._pending[weakest].urgency.rank:
+                self.rejected += 1
+                return False
+            evicted = self._pending[weakest]
+            del self._pending[weakest]
+            self._forget(evicted.event_id)  # evicted ≠ consumed: may return later
+            self.evicted.append(evicted.event_id)
             self.dropped += 1
         self._pending.append(event)
         self._remember(event.event_id)
@@ -123,6 +148,13 @@ class ExternalEventQueue:
             self._seen_set.discard(oldest)
         self._seen.append(event_id)
         self._seen_set.add(event_id)
+
+    def _forget(self, event_id: str) -> None:
+        self._seen_set.discard(event_id)
+        try:
+            self._seen.remove(event_id)
+        except ValueError:
+            pass
 
     def note_processed(self, event_id: str) -> None:
         """Mark an id as consumed (also for events processed off-queue)."""

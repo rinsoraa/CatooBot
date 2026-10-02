@@ -13,6 +13,7 @@ from typing import Any
 
 ACTION_TEMPLATES: dict[str, dict[str, Any]] = {
     "play_minecraft": {
+        "activity": "gaming",
         "name": "玩{game}",
         "spaces": ["livingroom"],
         "required_objects": ["computer"],
@@ -30,6 +31,7 @@ ACTION_TEMPLATES: dict[str, dict[str, Any]] = {
         "social_space": "minecraft_server",
     },
     "play_singleplayer": {
+        "activity": "gaming",
         "name": "玩单机游戏",
         "spaces": ["livingroom"],
         "required_objects": ["computer"],
@@ -45,6 +47,7 @@ ACTION_TEMPLATES: dict[str, dict[str, Any]] = {
         "detail_pool": ["在打Boss", "在刷成就", "在读档重来"],
     },
     "watch_animation": {
+        "activity": "reading",
         "name": "看动画",
         "spaces": ["livingroom"],
         "required_objects": ["tv"],
@@ -60,6 +63,7 @@ ACTION_TEMPLATES: dict[str, dict[str, Any]] = {
         "detail_pool": ["在看新番", "在补旧番", "在看动画电影"],
     },
     "browse_social": {
+        "activity": "online",
         "name": "刷群/论坛",
         "spaces": ["livingroom", "bedroom"],
         "required_objects": ["phone"],
@@ -75,6 +79,7 @@ ACTION_TEMPLATES: dict[str, dict[str, Any]] = {
         "social_space": "game_group",
     },
     "chat_group": {
+        "activity": "online",
         "name": "在群里聊天",
         "spaces": ["livingroom", "bedroom"],
         "required_objects": ["phone"],
@@ -90,6 +95,7 @@ ACTION_TEMPLATES: dict[str, dict[str, Any]] = {
         "social_space": "game_group",
     },
     "browse_forum": {
+        "activity": "online",
         "name": "刷论坛",
         "spaces": ["livingroom", "bedroom"],
         "required_objects": ["phone"],
@@ -105,6 +111,7 @@ ACTION_TEMPLATES: dict[str, dict[str, Any]] = {
         "social_space": "game_forum",
     },
     "eat_pudding": {
+        "activity": "eating",
         "name": "吃{snack}",
         "spaces": ["kitchen"],
         "required_objects": ["fridge"],
@@ -121,6 +128,7 @@ ACTION_TEMPLATES: dict[str, dict[str, Any]] = {
         "requires_anchor": "snack",
     },
     "eat_cake": {
+        "activity": "eating",
         "name": "吃{dessert}",
         "spaces": ["kitchen"],
         "required_objects": ["fridge"],
@@ -137,6 +145,7 @@ ACTION_TEMPLATES: dict[str, dict[str, Any]] = {
         "requires_anchor": "dessert",
     },
     "eat_fruit": {
+        "activity": "eating",
         "name": "吃水果",
         "spaces": ["kitchen"],
         "required_objects": ["fridge"],
@@ -153,6 +162,7 @@ ACTION_TEMPLATES: dict[str, dict[str, Any]] = {
         "requires_anchor": "fruit",
     },
     "drink_cola": {
+        "activity": "eating",
         "name": "喝{drink}",
         "spaces": ["kitchen"],
         "required_objects": ["fridge"],
@@ -169,6 +179,7 @@ ACTION_TEMPLATES: dict[str, dict[str, Any]] = {
         "requires_anchor": "drink",
     },
     "feed_cat": {
+        "activity": "pet_care",
         "name": "给{pet}添粮",
         "spaces": ["kitchen"],
         "required_objects": ["cat_food_bowl"],
@@ -187,6 +198,7 @@ ACTION_TEMPLATES: dict[str, dict[str, Any]] = {
         "requires_inventory": "cat_food_bowl",
     },
     "talk_to_cat": {
+        "activity": "pet_care",
         "name": "跟{pet}说话",
         "spaces": ["livingroom", "bedroom"],
         "min_minutes": 1,
@@ -201,6 +213,7 @@ ACTION_TEMPLATES: dict[str, dict[str, Any]] = {
         "requires_pet": True,
     },
     "film_cat": {
+        "activity": "pet_care",
         "name": "拍{pet}发群",
         "spaces": ["livingroom"],
         "required_objects": ["phone"],
@@ -217,6 +230,7 @@ ACTION_TEMPLATES: dict[str, dict[str, Any]] = {
         "requires_pet": True,
     },
     "take_out_trash": {
+        "activity": "out",
         "name": "扔垃圾",
         "spaces": ["entrance", "neighborhood"],
         "required_objects": ["trash_bag"],
@@ -233,6 +247,7 @@ ACTION_TEMPLATES: dict[str, dict[str, Any]] = {
         "detail_pool": ["去扔垃圾"],
     },
     "pick_up_package": {
+        "activity": "out",
         "name": "取快递",
         "spaces": ["entrance", "neighborhood"],
         "required_objects": ["door"],
@@ -248,6 +263,7 @@ ACTION_TEMPLATES: dict[str, dict[str, Any]] = {
         "detail_pool": ["去取快递"],
     },
     "buy_cola": {
+        "activity": "out",
         "name": "买{drink}",
         "spaces": ["convenience_store"],
         "min_minutes": 8,
@@ -263,6 +279,7 @@ ACTION_TEMPLATES: dict[str, dict[str, Any]] = {
         "requires_anchor": "drink",
     },
     "buy_snacks": {
+        "activity": "out",
         "name": "买零食",
         "spaces": ["convenience_store"],
         "min_minutes": 8,
@@ -277,6 +294,7 @@ ACTION_TEMPLATES: dict[str, dict[str, Any]] = {
         "requires_anchor": "drink",
     },
     "buy_sweets": {
+        "activity": "out",
         "name": "买甜食",
         "spaces": ["dessert_shop"],
         "min_minutes": 10,
@@ -292,6 +310,7 @@ ACTION_TEMPLATES: dict[str, dict[str, Any]] = {
         "requires_anchor": "snack",
     },
     "go_shopping_cola": {
+        "activity": "out",
         "name": "出门买{drink}",
         "spaces": ["*"],
         "min_minutes": 25,
@@ -309,6 +328,7 @@ ACTION_TEMPLATES: dict[str, dict[str, Any]] = {
         "requires_anchor": "drink",
     },
     "go_shopping_sweets": {
+        "activity": "out",
         "name": "出门买甜食",
         "spaces": ["*"],
         "min_minutes": 30,
@@ -326,6 +346,7 @@ ACTION_TEMPLATES: dict[str, dict[str, Any]] = {
         "requires_anchor": "snack",
     },
     "sleep": {
+        "activity": "sleeping",
         "name": "睡觉",
         "spaces": ["bedroom"],
         "required_objects": ["bed"],
@@ -340,6 +361,7 @@ ACTION_TEMPLATES: dict[str, dict[str, Any]] = {
         "detail_pool": ["在睡觉"],
     },
     "nap": {
+        "activity": "napping",
         "name": "补觉",
         "spaces": ["bedroom", "livingroom"],
         "required_objects": ["bed"],
@@ -354,6 +376,7 @@ ACTION_TEMPLATES: dict[str, dict[str, Any]] = {
         "detail_pool": ["在补觉"],
     },
     "shower": {
+        "activity": "self_care",
         "name": "洗澡",
         "spaces": ["bathroom"],
         "min_minutes": 10,
@@ -367,6 +390,7 @@ ACTION_TEMPLATES: dict[str, dict[str, Any]] = {
         "detail_pool": ["在洗澡"],
     },
     "tidy_room": {
+        "activity": "household",
         "name": "整理房间",
         "spaces": ["livingroom", "bedroom"],
         "min_minutes": 15,
@@ -381,6 +405,7 @@ ACTION_TEMPLATES: dict[str, dict[str, Any]] = {
         "detail_pool": ["在收拾屋子"],
     },
     "work_commission": {
+        "activity": "working",
         "name": "做零工",
         "spaces": ["livingroom"],
         "required_objects": ["computer"],
@@ -397,6 +422,7 @@ ACTION_TEMPLATES: dict[str, dict[str, Any]] = {
         "detail_pool": ["在做委托", "在写稿", "在画稿"],
     },
     "idle_on_sofa": {
+        "activity": "idle",
         "name": "瘫在沙发上",
         "spaces": ["livingroom"],
         "required_objects": ["sofa"],
@@ -411,6 +437,7 @@ ACTION_TEMPLATES: dict[str, dict[str, Any]] = {
         "detail_pool": ["瘫在沙发上玩手机", "窝着发呆"],
     },
     "change_to_homewear": {
+        "activity": "idle",
         "name": "换睡衣",
         "spaces": ["bedroom", "entrance"],
         "required_objects": ["wardrobe"],
@@ -425,6 +452,7 @@ ACTION_TEMPLATES: dict[str, dict[str, Any]] = {
         "detail_pool": ["换上了睡衣"],
     },
     "change_to_outdoor": {
+        "activity": "idle",
         "name": "换外出装",
         "spaces": ["bedroom", "entrance"],
         "required_objects": ["wardrobe"],
@@ -439,6 +467,7 @@ ACTION_TEMPLATES: dict[str, dict[str, Any]] = {
         "detail_pool": ["打理好外表换上外出装"],
     },
     "think": {
+        "activity": "idle",
         "name": "发呆/想事情",
         "spaces": ["*"],
         "min_minutes": 5,
@@ -452,6 +481,7 @@ ACTION_TEMPLATES: dict[str, dict[str, Any]] = {
         "detail_pool": ["在发呆", "在想事情"],
     },
     "walk": {
+        "activity": "out",
         "name": "在外面走",
         "spaces": ["neighborhood"],
         "min_minutes": 5,
@@ -465,6 +495,7 @@ ACTION_TEMPLATES: dict[str, dict[str, Any]] = {
         "detail_pool": ["在外面走"],
     },
     "idle": {
+        "activity": "idle",
         "name": "闲着",
         "spaces": ["*"],
         "min_minutes": 5,

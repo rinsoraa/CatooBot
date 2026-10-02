@@ -28,6 +28,16 @@ RULE_ACTION_BANS: dict[str, set[str]] = {
 class SpaceSystem:
     def __init__(self, spaces: list[SpaceNode]) -> None:
         self._spaces = {space.id: space for space in spaces}
+        #: doors work both ways — the seed's tree lists child→parent edges plus
+        #: a sibling mesh, so the traversable graph is the symmetric closure
+        self._adjacency: dict[str, set[str]] = {}
+        for space in spaces:
+            self._adjacency.setdefault(space.id, set())
+            for other in space.connects:
+                if other not in self._spaces:
+                    continue
+                self._adjacency[space.id].add(other)
+                self._adjacency.setdefault(other, set()).add(space.id)
 
     def all(self) -> list[SpaceNode]:
         return list(self._spaces.values())
@@ -39,11 +49,11 @@ class SpaceSystem:
         space = self._spaces.get(space_id)
         return space.name if space else space_id
 
+    def neighbors(self, space_id: str) -> set[str]:
+        return set(self._adjacency.get(space_id, set()))
+
     def reachable(self, space_id: str) -> list[SpaceNode]:
-        here = self._spaces.get(space_id)
-        if here is None:
-            return []
-        return [self._spaces[sid] for sid in here.connects if sid in self._spaces]
+        return [self._spaces[sid] for sid in sorted(self.neighbors(space_id))]
 
     def is_home(self, space_id: str) -> bool:
         space = self._spaces.get(space_id)
@@ -63,6 +73,28 @@ class SpaceSystem:
             if "*" in definition.spaces or space_id in definition.spaces:
                 allowed.append(action_id)
         return allowed
+
+    def is_reachable(self, origin: str, target: str) -> bool:
+        """Multi-hop reachability over the connection graph (§9 movement gate).
+
+        Errands legitimately walk through several spaces (home → hallway →
+        elevator → shop), so the gate must judge the *graph*, not one hop.
+        """
+        if origin == target:
+            return True
+        if origin not in self._spaces or target not in self._spaces:
+            return False
+        seen = {origin}
+        frontier = [origin]
+        while frontier:
+            node = frontier.pop(0)
+            for next_id in self._adjacency.get(node, set()):
+                if next_id == target:
+                    return True
+                if next_id not in seen:
+                    seen.add(next_id)
+                    frontier.append(next_id)
+        return False
 
     def path_home(self, space_id: str) -> list[str]:
         """Bounded BFS to the nearest private space (for going home)."""

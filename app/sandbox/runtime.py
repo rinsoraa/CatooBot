@@ -79,30 +79,6 @@ from app.utils.narrator import narrate
 
 logger = logging.getLogger("CatooBot.Sandbox")
 
-#: action id → the canonical activity written into CharacterState
-#: ("gaming/reading/eating/working" are the ids ReplyTiming treats as busy)
-ACTIVITY_IDS: dict[str, str] = {
-    "play_minecraft": "gaming",
-    "play_singleplayer": "gaming",
-    "watch_animation": "reading",
-    "work_commission": "working",
-    "eat_pudding": "eating",
-    "eat_cake": "eating",
-    "eat_fruit": "eating",
-    "drink_cola": "eating",
-    "sleep": "sleeping",
-    "nap": "napping",
-    "browse_social": "online",
-    "chat_group": "online",
-    "browse_forum": "online",
-    "film_cat": "online",
-    "go_shopping_cola": "out",
-    "go_shopping_sweets": "out",
-    "take_out_trash": "out",
-    "pick_up_package": "out",
-    "walk": "out",
-}
-
 TickListener = Callable[[dict[str, Any]], None]
 
 
@@ -493,6 +469,8 @@ class SandboxRuntime:
             report["decided"] = True
 
         self._derive_modes()
+        # derived projection: `needs:energy` is the writer; this mirror is
+        # recomputed every tick (not an independent state change, §53 audit)
         self.character.energy = max(0.0, min(1.0, 1.0 - self.needs.level("energy")))
         await self._process_pending_events()
         if self._should_snapshot():
@@ -638,6 +616,12 @@ class SandboxRuntime:
         )
         parent = causation_id or (requested.event_id if requested else "")
         if self.spaces.get(to_space) is None:
+            self._record_rejected(
+                target="character.location",
+                field="location",
+                source=source,
+                reason="move_rejected:unknown_space",
+            )
             self.events.publish(
                 SandboxEventType.ENTITY_MOVE_REJECTED,
                 source=entity_id,
@@ -650,6 +634,12 @@ class SandboxRuntime:
         if to_space != self.character.location and not self._space_enterable(
             self.character.location, to_space
         ):
+            self._record_rejected(
+                target="character.location",
+                field="location",
+                source=source,
+                reason="move_rejected:not_reachable",
+            )
             self.events.publish(
                 SandboxEventType.ENTITY_MOVE_REJECTED,
                 source=entity_id,
@@ -681,10 +671,126 @@ class SandboxRuntime:
         )
         return MutationResult(ok=True, mutations=[mutation])
 
+    def _record_rejected(
+        self, *, target: str, field: str, source: str, reason: str
+    ) -> StateMutation:
+        """§53: a refused change is auditable too (state untouched, ok=False)."""
+        return self.mutations.record(
+            StateMutation(
+                target=target,
+                field=field,
+                before=None,
+                after=None,
+                source=source,
+                reason=reason,
+                ok=False,
+            )
+        )
+
+    def set_character_field(
+        self,
+        field: str,
+        value: Any,
+        *,
+        source: str,
+        reason: str,
+        correlation: str = "",
+        causation_id: str = "",
+    ) -> MutationResult:
+        """Character scalar state (current_action_id / focus / …) — always recorded."""
+        before = getattr(self.character, field, None)
+        if before == value:
+            return MutationResult(ok=True)
+        setattr(self.character, field, value)
+        mutation = self.mutations.record(
+            StateMutation(
+                target=f"character.{field}",
+                field=field,
+                before=before,
+                after=value,
+                source=source,
+                reason=reason,
+            )
+        )
+        self.events.publish(
+            SandboxEventType.CHARACTER_FIELD_CHANGED,
+            target=f"character.{field}",
+            payload={"before": before, "after": value, "reason": reason},
+            causation_id=causation_id,
+            correlation_id=correlation,
+        )
+        return MutationResult(ok=True, mutations=[mutation])
+
+    def update_social_space(
+        self,
+        space_id: str,
+        *,
+        presence: str = "",
+        temperature_delta: float = 0.0,
+        source: str,
+        reason: str,
+        correlation: str = "",
+        causation_id: str = "",
+    ) -> MutationResult:
+        """Canonical social-space change: mutation → SOCIAL_SPACE_CHANGED.
+
+        External influence (and anything else) must call this instead of
+        assigning ``character_presence`` / ``social_temperature`` directly.
+        """
+        social = self.social_spaces.get(space_id)
+        if social is None:
+            return MutationResult(ok=False, error="unknown_social_space")
+        mutations: list[StateMutation] = []
+        if presence and social.character_presence != presence:
+            before = social.character_presence
+            social.character_presence = presence
+            mutations.append(
+                self.mutations.record(
+                    StateMutation(
+                        target=f"social_space:{space_id}",
+                        field="character_presence",
+                        before=before,
+                        after=presence,
+                        source=source,
+                        reason=reason,
+                    )
+                )
+            )
+        if temperature_delta:
+            before_t = float(social.social_temperature)
+            after_t = max(0.0, min(1.0, before_t + temperature_delta))
+            if after_t != before_t:
+                social.social_temperature = after_t
+                mutations.append(
+                    self.mutations.record(
+                        StateMutation(
+                            target=f"social_space:{space_id}",
+                            field="social_temperature",
+                            before=before_t,
+                            after=after_t,
+                            source=source,
+                            reason=reason,
+                        )
+                    )
+                )
+        if mutations:
+            self.events.publish(
+                SandboxEventType.SOCIAL_SPACE_CHANGED,
+                target=space_id,
+                payload={
+                    "fields": [m.field for m in mutations],
+                    "presence": social.character_presence,
+                    "temperature": round(float(social.social_temperature), 4),
+                    "reason": reason,
+                },
+                causation_id=causation_id,
+                correlation_id=correlation,
+            )
+        return MutationResult(ok=True, mutations=mutations)
+
     def _space_enterable(self, from_space: str, to_space: str) -> bool:
-        """Reachability for one hop (errand travel is validated by actions)."""
-        reachable = {space.id for space in self.spaces.reachable(from_space)}
-        return to_space in reachable
+        """Graph reachability (multi-hop: errands walk through the world)."""
+        return self.spaces.is_reachable(from_space, to_space)
 
     def feed_pet(
         self, *, source: str, reason: str, correlation: str = "", causation_id: str = ""
@@ -1011,23 +1117,43 @@ class SandboxRuntime:
             urgency=urgency,
             duration_minutes=duration_minutes,
         )
-        await self._transaction(
-            lambda: setattr(self, "current_action", instance), label=f"start:{action_id}"
-        )
-        # §9: movement goes through the canonical gate (errand destinations
-        # may be far away — validation admits them by action, not proximity)
-        if (
-            target_space != self.character.location
-            and not self.move_entity(
+        correlation = f"act_{instance.id}"
+        # §9/remediation: movement first, through the canonical gate only —
+        # a rejected move fails the action instead of teleporting her there.
+        if target_space != self.character.location:
+            moved = self.move_entity(
                 entity_id="character",
                 to_space=target_space,
                 source="character_action",
                 reason=action_id,
-                correlation=f"act_{instance.id}",
-            ).ok
-        ):
-            self.character.location = target_space  # action-authorized travel
-        self.character.current_action_id = instance.id
+                correlation=correlation,
+            )
+            if not moved.ok:
+                instance.status = ActionStatus.blocked
+                self.events.publish(
+                    SandboxEventType.ACTION_FAILED,
+                    source="character",
+                    target=action_id,
+                    payload={"reason": f"move_rejected:{moved.error}", "space": target_space},
+                    correlation_id=correlation,
+                )
+                self._log.warning(
+                    "[Sandbox] action %s not started: cannot reach %s (%s)",
+                    action_id,
+                    target_space,
+                    moved.error,
+                )
+                return None
+        await self._transaction(
+            lambda: setattr(self, "current_action", instance), label=f"start:{action_id}"
+        )
+        self.set_character_field(
+            "current_action_id",
+            instance.id,
+            source="character_action",
+            reason=action_id,
+            correlation=correlation,
+        )
         self.events.publish(
             SandboxEventType.ACTION_STARTED,
             source="character",
@@ -1037,7 +1163,7 @@ class SandboxRuntime:
                 "detail": instance.detail,
                 "correlation": instance.id,
             },
-            correlation_id=f"act_{instance.id}",
+            correlation_id=correlation,
         )
         await self.store.save_action(instance)
         await self._sync_state()
@@ -1067,23 +1193,23 @@ class SandboxRuntime:
     # ---------------------------------------------- external world (§4-§13)
 
     def _activity_index(self) -> set[str]:
-        """Activities this world can actually engage (from owned actions)."""
-        from app.sandbox.runtime import ACTIVITY_IDS  # self-reference keeps table local
+        """Activities this world can engage — read from ActionDefinition (§18).
 
+        No id→activity mapping lives here: the seed's action templates declare
+        ``activity`` and the runtime only aggregates what it finds.
+        """
         return {
-            ACTIVITY_IDS[action_id]
-            for action_id in self.actions.definitions
-            if action_id in ACTIVITY_IDS
+            definition.activity
+            for definition in self.actions.definitions.values()
+            if definition.activity
         }
 
     def _action_for_activity(self, activity: str) -> str:
-        """First owned action that engages this activity — generic, seed-driven."""
-        from app.sandbox.runtime import ACTIVITY_IDS
-
+        """First owned action that declares this activity (seed-driven)."""
         if not activity:
             return ""
-        for action_id in self.actions.definitions:
-            if ACTIVITY_IDS.get(action_id) == activity:
+        for action_id, definition in self.actions.definitions.items():
+            if definition.activity == activity:
                 return action_id
         return ""
 
@@ -1273,9 +1399,13 @@ class SandboxRuntime:
             if candidate in self.social_spaces:
                 target = candidate
         if target:
-            social = self.social_spaces[target]
-            social.character_presence = "active"
-            social.social_temperature = min(1.0, social.social_temperature + 0.05)
+            self.update_social_space(
+                target,
+                presence="active",
+                temperature_delta=0.05,
+                source="external_event",
+                reason="external_stimulus",
+            )
 
     # ------------------------------------------------- external persistence
 
@@ -1488,9 +1618,12 @@ class SandboxRuntime:
         self._private_chat_until = float(self._clock()) + 1800.0
         space_id = session_id.split(":", 1)[1] if ":" in session_id else ""
         if session_id.startswith("group:") and space_id:
-            social = self.social_spaces.get(f"qq:{space_id}")
-            if social is not None:
-                social.character_presence = "active"
+            self.update_social_space(
+                f"qq:{space_id}",
+                presence="active",
+                source="user_interaction",
+                reason="note_user_interaction",
+            )
 
     async def _process_pending_events(self) -> None:
         while self.pending_events:
@@ -1882,7 +2015,8 @@ class SandboxRuntime:
         if self.state_sync is None:
             return
         definition = self.actions.definition(self.current_action)
-        activity = ACTIVITY_IDS.get(definition.id, definition.id) if definition else "idle"
+        # remediation-3: the activity is the definition's own metadata
+        activity = (definition.activity or definition.id) if definition else "idle"
         location = self.spaces.name(self.character.location)
         energy = max(0.0, min(1.0, 1.0 - self.needs.level("energy")))
         try:
@@ -1905,6 +2039,8 @@ class SandboxRuntime:
             is_home=self.spaces.is_home(self.character.location),
         )
         entered = self.modes.update(modes)
+        # derived projection: ModeRuntime.derive() owns the mode set (from
+        # location/time/action/social); the entity field only mirrors it
         self.character.modes = modes
         return entered
 

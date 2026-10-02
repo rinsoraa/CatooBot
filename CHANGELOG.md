@@ -3,6 +3,28 @@
 本文件记录 CatooBot 的版本演进。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号见 `pyproject.toml`；日期取自真实提交历史（本仓库 2026-09-30 起）。
 
+## [Unreleased] — v2.1 Phase 3 Remediation · 架构旁路修复
+
+- **动作启动不再绕过 Mutation（§9）**：`_start_action` 删除
+  `move_entity 失败 → 直接写 location` 的回退；移动一律经 canonical gate
+  （`SpaceSystem` 改为对称闭包 + 多跳 BFS，跑腿路线合法可达），失败则
+  ENTITY_MOVE_REJECTED + ACTION_FAILED、动作 `blocked`、current_action 不变、
+  拒绝记录以 `ok=False` 进 MutationLog（可审计）。
+- **SocialSpace 变更入 spine**：新增 `update_social_space()`
+  （presence/temperature → StateMutation → SOCIAL_SPACE_CHANGED），
+  `_touch_social_space` 与 `note_user_interaction` 全部改走它；
+  源码级扫描测试保证不再出现 `social.* =` 直接赋值。
+- **删除 ACTIVITY_IDS 硬编码表**：activity 改为 `ActionDefinition.activity`
+  结构化字段，由 Seed 的动作模板声明（gaming/reading/eating/out/…）；
+  `_sync_state`、`_activity_index`、`_action_for_activity` 只读定义元数据，
+  runtime 不再出现任何 action-id→语义映射；新增「第三活动 crafting」测试
+  证明不同 Bible 无需改核心代码。
+- **队列淘汰尊重紧急度（§13）**：满队列时仅允许*更紧急*的新事件淘汰
+  最弱（同级最老）事件，等强或更弱者被拒（返回 False，不标记已消费）；
+  被淘汰的事件可再次提交（淘汰 ≠ 消费）；critical 不会被普通事件挤掉；
+  淘汰确定性有测试钉死（FIFO 在同级内保持）。
+- 新增 `tests/test_sandbox_remediation.py`（13 个测试），总测试 1066。
+
 ## [Unreleased] — v2.1 Phase 3 · External Influence + Sandbox Wakeup + Action Interrupt
 
 - **ExternalWorldEvent（§4）**：协议无关的外部事实类型

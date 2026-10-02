@@ -30,6 +30,8 @@ class StateMutation:
     source: str  # character_action / interaction / external_event / admin / system
     reason: str  # action id / interaction type / event kind
     timestamp: float = dfield(default_factory=time.time)
+    #: False marks a *rejected* attempt (audit-trail record; state unchanged)
+    ok: bool = True
 
 
 @dataclass
