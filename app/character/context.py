@@ -130,6 +130,7 @@ class CharacterContextBuilder:
         interaction_profile: Any = None,
         shared_experiences: list | None = None,
         context_trace: dict | None = None,
+        sandbox_context: dict | None = None,
     ) -> list[ChatMessage]:
         system_parts: list[str] = []
 
@@ -250,6 +251,29 @@ class CharacterContextBuilder:
             system_parts.append(expressions)
         trace("expressions", bool(expressions), "no group or no learned phrases")
 
+        # 12b. Phase 5 cognitive bridge — sandbox life, in its own partitions.
+        # Rendered *after* the current world facts so nothing here can outrank
+        # them (§10); each section says so explicitly (§12).
+        if sandbox_context:
+            sandbox_parts, sandbox_layers = self._sandbox_blocks(sandbox_context)
+            system_parts.extend(sandbox_parts)
+            for layer, included, reason, extra in sandbox_layers:
+                if context_trace is not None and extra:
+                    context_trace.setdefault("layers", []).append(
+                        {"layer": layer, "included": included, "reason": reason, **extra}
+                    )
+                else:
+                    trace(layer, included, reason)
+        else:
+            trace("sandbox_memory", False, "sandbox off or context unavailable")
+            trace("continuity_snapshot", False, "sandbox off or context unavailable")
+            trace("recent_experience", False, "sandbox off or context unavailable")
+        trace(
+            "conversation_memory",
+            bool(memories),
+            "chat-history retrieval returned nothing relevant",
+        )
+
         # Tell the model what the [时间] tags on stale history turns mean.
         if any(msg.content.startswith("[") for msg in history):
             system_parts.append(
@@ -264,6 +288,86 @@ class CharacterContextBuilder:
         messages.extend(history)
         messages.append(ChatMessage.user(user_text))
         return messages
+
+    @staticmethod
+    def _sandbox_blocks(
+        sandbox: dict,
+    ) -> tuple[list[str], list[tuple[str, bool, str, dict]]]:
+        """Render the sandbox partitions as labelled, reference-only blocks.
+
+        Returns ``(prompt_parts, trace_entries)``; each partition keeps its own
+        header so a debugging operator can tell *which life* a line came from.
+        """
+        parts: list[str] = []
+        layers: list[tuple[str, bool, str, dict]] = []
+
+        continuity = sandbox.get("continuity") or {}
+        continuity_lines: list[str] = []
+        summary = str(continuity.get("summary", "") or "")
+        if summary:
+            continuity_lines.append(summary)
+        projects = continuity.get("projects") or []
+        if projects:
+            shown = "、".join(
+                f"{item.get('name', '')}（{round(float(item.get('progress', 0.0)) * 100)}%）"
+                for item in projects
+                if item.get("name")
+            )
+            if shown:
+                continuity_lines.append(f"手上没做完的：{shown}")
+        pending = int(continuity.get("pending_external", 0) or 0)
+        if pending:
+            continuity_lines.append(f"还有 {pending} 条外部消息待处理")
+        if continuity_lines:
+            parts.append(
+                "【近期延续状态】（她自己生活的近况，仅作参考；"
+                "与【世界事实】冲突时以世界事实为准）\n" + "\n".join(continuity_lines)
+            )
+        layers.append(
+            (
+                "continuity_snapshot",
+                bool(continuity_lines),
+                "sandbox life continuity" if continuity_lines else "snapshot empty",
+                {"count": len(continuity_lines)},
+            )
+        )
+
+        memories = sandbox.get("memories") or []
+        memory_lines = [f"- {item.get('text', '')}" for item in memories if item.get("text")]
+        if memory_lines:
+            parts.append(
+                "【她自己经历过的相关往事】（长期生活记忆，仅作参考；"
+                "与当前世界状态冲突时，以当前世界状态为准）\n" + "\n".join(memory_lines)
+            )
+        retrieval = sandbox.get("retrieval") or {}
+        layers.append(
+            (
+                "sandbox_memory",
+                bool(memory_lines),
+                str(retrieval.get("reason", "") or "no relevant life memory"),
+                {
+                    "count": len(memory_lines),
+                    "query": str(retrieval.get("query", "") or ""),
+                    "memory_ids": list(retrieval.get("memory_ids", []) or []),
+                },
+            )
+        )
+
+        experiences = sandbox.get("experiences") or []
+        experience_lines = [f"- {item.get('text', '')}" for item in experiences if item.get("text")]
+        if experience_lines:
+            parts.append(
+                "【最近发生的经历】（她刚经历过的事，仅作参考）\n" + "\n".join(experience_lines)
+            )
+        layers.append(
+            (
+                "recent_experience",
+                bool(experience_lines),
+                "recent life experiences" if experience_lines else "nothing notable yet",
+                {"count": len(experience_lines)},
+            )
+        )
+        return parts, layers
 
     #: history turns older than this are tagged with a human time marker
     STALE_HISTORY_SECONDS = 45 * 60

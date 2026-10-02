@@ -17,6 +17,7 @@ from typing import Any
 
 from app.sandbox.actions import ActionSystem
 from app.sandbox.bible import CharacterBible
+from app.sandbox.cognitive import CognitiveContext, CognitiveContextBuilder
 from app.sandbox.continuity_snapshot import (
     ContinuitySnapshot,
     ContinuitySnapshotBuilder,
@@ -240,6 +241,8 @@ class SandboxRuntime:
         )
         #: read model only — never feeds decision/persona/speech (§25)
         self.continuity_snapshot = ContinuitySnapshotBuilder(self, clock=clock)
+        #: Phase 5 bridge: read-only cognitive context for chat turns
+        self.cognition = CognitiveContextBuilder(self, clock=clock)
         self._last_tick = float(clock())
         self._notes: list[str] = []  # micro-continuity feed
         self._restored = False
@@ -2134,6 +2137,17 @@ class SandboxRuntime:
         if candidates and self.memory.available:
             await self.memory.ingest_all(candidates)
         return records
+
+    async def cognitive_context(
+        self, *, query: str = "", relationship_target: str = ""
+    ) -> CognitiveContext:
+        """Read-only view for one chat turn (Phase 5 §25).
+
+        Reads world state, sandbox memories and the continuity snapshot; it
+        never mutates anything and never calls an LLM. Retrieval failure
+        degrades to an empty layer, never to a broken chat (§33).
+        """
+        return await self.cognition.build(query=query, relationship_target=relationship_target)
 
     async def build_continuity(self) -> ContinuitySnapshot:
         """Generate (and persist) the read-model continuity snapshot (§23).

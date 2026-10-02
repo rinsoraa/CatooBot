@@ -672,6 +672,19 @@ class SandboxConfig(BaseModel):
     #: QQ 群号 → SocialSpace id（游戏群/猫图群…）；未映射的群自动成为 qq:<gid>
     social_space_map: dict[str, str] = Field(default_factory=dict)
 
+    # ---------- Cognitive Context Bridge（Phase 5）：注入聊天上下文的预算 ----------
+    #: 相关 Sandbox 记忆最多注入几条（0 = 关闭该层）
+    memory_context_limit: int = Field(default=3, ge=0, le=20)
+    #: 全部注入记忆的字符数上限
+    memory_context_max_chars: int = Field(default=600, ge=0, le=4000)
+    #: 相关性评分下限（低于此分不注入）
+    memory_context_min_score: float = Field(default=0.12, ge=0.0, le=1.0)
+    #: 必须有话题证据（关键词或实体命中）才允许注入——重要度+新近度
+    #: 不能单独把一条无关记忆拉进上下文
+    memory_context_require_evidence: bool = True
+    #: 最近经历注入条数上限
+    experience_context_limit: int = Field(default=3, ge=0, le=20)
+
 
 class ExpressionConfig(BaseModel):
     """Task 22: expression / 口癖 learning — patterns from group speech.

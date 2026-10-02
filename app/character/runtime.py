@@ -132,6 +132,20 @@ class CharacterRuntime:
 
         expressions = await self._expression_context(session_id, is_group)
 
+        # Phase 5: the sandbox half of cognition (read-only; sandbox off → None).
+        # The retrieval query follows the same hint as the facts lookup, so a
+        # proactive opener (topic/motivation) retrieves from her own life too.
+        sandbox_context = None
+        if sandbox is not None and getattr(sandbox, "enabled", False):
+            bridge_query = facts_query if facts_query is not None else user_text
+            try:
+                cognitive = await sandbox.cognitive_context(
+                    query=bridge_query, relationship_target=str(user_id)
+                )
+                sandbox_context = cognitive.as_prompt_payload()
+            except Exception:  # noqa: BLE001 - the bridge must never break chat
+                self._log.debug("Cognitive context unavailable", exc_info=True)
+
         messages = self.builder.build(
             persona,
             state,
@@ -151,6 +165,7 @@ class CharacterRuntime:
             interaction_profile=interaction_profile,
             shared_experiences=shared_experiences,
             context_trace=context_trace,
+            sandbox_context=sandbox_context,
         )
         temp = temperature if temperature is not None else self.engine.config.default_temperature
         started = time.perf_counter()

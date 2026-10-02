@@ -389,6 +389,132 @@ class SandboxMemoryStore:
         await repo.set_status(previous_id, "superseded")
         return previous_id
 
+    # ---------------------------------------------------------- retrieval
+
+    #: scoring weights (sum = 1.0) — deterministic, documented, tunable here
+    RETRIEVAL_WEIGHTS = {
+        "keyword": 0.45,
+        "entity": 0.15,
+        "importance": 0.25,
+        "recency": 0.15,
+    }
+    #: candidate window: newest N active rows for this character (bounded, §34)
+    RETRIEVAL_CANDIDATES = 200
+    #: recency half-life in days (a fortnight roughly halves a memory's pull)
+    RETRIEVAL_HALF_LIFE_DAYS = 14.0
+
+    async def retrieve_relevant(
+        self,
+        *,
+        query: str,
+        entities: list[str] | None = None,
+        limit: int = 3,
+        min_score: float = 0.12,
+        max_chars: int = 600,
+        require_evidence: bool = True,
+    ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+        """Relevant active memories for a turn, plus retrieval bookkeeping (§7-§9).
+
+        Scoring is deterministic: 相同输入 + 相同数据库状态 → 相同排序。
+        Only *active* rows are considered (§29): a superseded fact must never
+        be injected next to its successor. No embedding, no LLM, bounded
+        candidate window, explicit count/char budget.
+        """
+        from app.memory.keyword_index import bigrams
+
+        trace: dict[str, Any] = {
+            "query": query,
+            "candidates": 0,
+            "selected": 0,
+            "min_score": min_score,
+            "limit": limit,
+            "require_evidence": require_evidence,
+            "reason": "",
+        }
+        if not self.available or limit <= 0 or max_chars <= 0:
+            trace["reason"] = "disabled_or_unavailable"
+            return [], trace
+        rows = await self._db.fetchall(
+            "SELECT id, content, summary, importance, confidence, layer, category,"
+            " created_at, provenance FROM memories"
+            " WHERE character_id = ? AND status = 'active'"
+            " ORDER BY id DESC LIMIT ?",
+            (self.character_id, self.RETRIEVAL_CANDIDATES),
+        )
+        trace["candidates"] = len(rows)
+        if not rows:
+            trace["reason"] = "no_active_memories"
+            return [], trace
+        query_tokens = bigrams(query or "")
+        entity_needles = [str(entity) for entity in (entities or []) if entity]
+        now = float(self._clock())
+        scored: list[dict[str, Any]] = []
+        for row in rows:
+            text = f"{row['summary']} {row['content']}".strip()
+            tokens = bigrams(text)
+            overlap = len(query_tokens & tokens) if query_tokens else 0
+            keyword = min(1.0, overlap / max(4, len(query_tokens))) if query_tokens else 0.0
+            entity_hit = 1.0 if any(needle in text for needle in entity_needles) else 0.0
+            importance = max(0.0, min(1.0, float(row["importance"] or 0.0)))
+            age_days = max(0.0, (now - float(row["created_at"] or now)) / 86400.0)
+            recency = 0.5 ** (age_days / self.RETRIEVAL_HALF_LIFE_DAYS)
+            score = (
+                self.RETRIEVAL_WEIGHTS["keyword"] * keyword
+                + self.RETRIEVAL_WEIGHTS["entity"] * entity_hit
+                + self.RETRIEVAL_WEIGHTS["importance"] * importance
+                + self.RETRIEVAL_WEIGHTS["recency"] * recency
+            )
+            # evidence gate (§8, mirrors the conversation-retrieval lesson):
+            # importance + recency alone never pull an unrelated memory in.
+            if require_evidence and not (overlap > 0 or entity_hit > 0.0):
+                continue
+            if score < min_score:
+                continue
+            scored.append(
+                {
+                    "memory_id": int(row["id"]),
+                    "text": text,
+                    "summary": str(row["summary"] or ""),
+                    "importance": importance,
+                    "score": round(score, 6),
+                    "source": "sandbox",
+                    "provenance": self._decode_provenance(row),
+                    "_budget_len": len(text),
+                }
+            )
+        # deterministic order: score desc, then newest id first
+        scored.sort(key=lambda item: (-item["score"], -item["memory_id"]))
+        selected: list[dict[str, Any]] = []
+        used = 0
+        for item in scored:
+            if len(selected) >= limit:
+                break
+            remaining = max_chars - used
+            text = str(item["text"])
+            if remaining < 40:
+                break
+            if len(text) > remaining:
+                item["text"] = text[:remaining].rstrip() + "…"
+            used += len(str(item["text"]))
+            selected.append(item)
+        for item in selected:
+            item.pop("_budget_len", None)
+        trace["selected"] = len(selected)
+        trace["reason"] = (
+            f"{len(selected)} relevant memories" if selected else "no memory above min_score"
+        )
+        if selected:
+            trace["memory_ids"] = [item["memory_id"] for item in selected]
+        return selected, trace
+
+    @staticmethod
+    def _decode_provenance(row: Any) -> dict[str, Any]:
+        try:
+            data = json.loads(row["provenance"] or "{}")
+        except (TypeError, ValueError):
+            return {}
+        return data if isinstance(data, dict) else {}
+
     # ------------------------------------------------------------- reading
 
     async def active_memories(self, *, limit: int = 20) -> list[dict[str, Any]]:

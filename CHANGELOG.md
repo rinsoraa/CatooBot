@@ -3,6 +3,42 @@
 本文件记录 CatooBot 的版本演进。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号见 `pyproject.toml`；日期取自真实提交历史（本仓库 2026-09-30 起）。
 
+## [Unreleased] — v2.1 Phase 5 · Cognitive Context Bridge（Sandbox → 聊天上下文）
+
+- **CognitiveContext（§5/§25）**：`app/sandbox/cognitive.py` ——
+  `CognitiveContext` + `CognitiveContextBuilder`，入口
+  `SandboxRuntime.cognitive_context(query, relationship_target)`；
+  组装当前世界切片、v2.1 ContinuitySnapshot、相关 Sandbox 记忆、
+  最近经历与检索记账，并提供 `as_prompt_payload()` 供 ContextBuilder 渲染。
+  **严格只读**：不调用任何 mutation/Action API、不调 LLM（有源码 guard 测试）。
+- **确定性检索（§7-§9）**：`SandboxMemoryStore.retrieve_relevant(query,
+  entities, limit, min_score, max_chars, require_evidence)` ——
+  评分 = 0.45×关键词(复用 bigrams) + 0.15×实体命中 + 0.25×重要度 +
+  0.15×新近度（14 天半衰期）；**证据门槛**（无关键词/实体命中不入选，
+  重要度+新近度不能单独捞人）；只读 active（superseded 永不注入）；
+  候选窗口 200 行、条数与字符双预算；排序 (-score, -id) 完全确定。
+  预算可配：`sandbox.memory_context_limit / _max_chars / _min_score /
+  _require_evidence / experience_context_limit`。
+- **分层 Prompt（§11/§17/§27）**：`CharacterContextBuilder.build()` 新增
+  `sandbox_context` 参数，在「当前世界事实」之后渲染
+  【近期延续状态】【她自己经历过的相关往事】【最近发生的经历】，
+  每段自带「仅作参考；与当前世界/当前消息冲突时以它们为准」的声明——
+  旧记忆永不覆盖当前世界事实。
+- **来源分离 + Trace（§6/§13/§28）**：conversation memory（既有
+  MemoryManager 链，未动）与 sandbox memory 分区并列；context_trace 新增
+  `conversation_memory` / `continuity_snapshot` / `sandbox_memory` /
+  `recent_experience` 图层（含 count/query/memory_ids），v1.2 continuity 与
+  v2.1 ContinuitySnapshot 各自独立、互不覆盖。
+- **接线（§16/§23/§26）**：`CharacterRuntime.respond()` 内部取桥接数据
+  （sandbox 关闭/不可用时静默降级为 None，聊天不受影响）；检索 query 与
+  facts 一致（主动发言传 topic/动机，因此 Initiative 经 respond() 自然获得
+  Sandbox Memory 与 Continuity，未新建第二套检索）。
+- 新增 `tests/test_sandbox_cognitive_bridge.py`（16 个测试：相关记忆入 prompt
+  与 trace、无关记忆排除、当前世界优先声明、跨角色隔离、Continuity/经历注入、
+  双 continuity 来源分离、respond 不改 Sandbox（含只读源码 guard）、
+  确定性排序、预算上限与高分优先、superseded 剔除、旧对话记忆链保持、
+  sandbox 缺席聊天可用、Initiative 复用桥接、无 LLM），总测试 1118。
+
 ## [Unreleased] — v2.1 Phase 4 Remediation · Continuity 隔离 + Character-Neutral Memory 文案
 
 - **Continuity 按角色隔离（§remediation-1）**：快照持久化键从固定
