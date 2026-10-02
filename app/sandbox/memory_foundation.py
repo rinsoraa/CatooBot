@@ -101,6 +101,12 @@ class MemoryCandidateBuilder:
                 "commitment_id": str(experience.metadata.get("commitment_id", "")),
                 "action_id": str(experience.metadata.get("action_id", "")),
                 "action_instance_id": str(experience.metadata.get("action_instance_id", "")),
+                # §10.2 §15: audit link back to the persisted episode (never
+                # used for dedupe — that stays on dedupe_key)
+                "episode_key": experience.episode_key
+                or MemoryCandidateBuilder._episode_fallback(
+                    experience.metadata, experience.correlation_id or experience.id
+                ),
             }
         candidate = MemoryCandidate(
             candidate_id=f"cand_{uuid.uuid4().hex[:12]}",
@@ -120,6 +126,24 @@ class MemoryCandidateBuilder:
             provenance=provenance,
         )
         return [candidate]
+
+    @staticmethod
+    def _episode_fallback(meta: dict[str, Any], chain: str) -> str:
+        """Episode identity for records without a canonical key (§10.2 §3).
+
+        The priority mirrors the experience layer exactly — an ActionInstance
+        outranks the promise, because one promise may be lived more than once.
+        """
+        instance = str(meta.get("action_instance_id", "") or "")
+        if instance:
+            return f"action:{instance}"
+        commitment = str(meta.get("commitment_id", "") or "")
+        if commitment:
+            return f"commitment:{commitment}"
+        interaction = str(meta.get("interaction_id", "") or "")
+        if interaction:
+            return f"interaction:{interaction}"
+        return chain
 
     def _spec(  # noqa: PLR0911 - one branch per kind, flat by design
         self, experience: ExperienceRecord
@@ -218,11 +242,12 @@ class MemoryCandidateBuilder:
             activity = str(meta.get("activity", "")) or "活动"
             duration = float(meta.get("duration_minutes", 0.0) or 0.0)
             commitment_id = str(meta.get("commitment_id", ""))
-            episode = (
-                commitment_id
-                or str(meta.get("action_instance_id", ""))
-                or str(meta.get("interaction_id", ""))
-                or chain
+            # §10.2: never re-derive the priority here — the experience layer
+            # owns the canonical episode identity (ActionInstance > commitment >
+            # interaction). The fallback only serves historical records that
+            # predate the persisted key.
+            episode = experience.episode_key or MemoryCandidateBuilder._episode_fallback(
+                meta, chain
             )
             when = f"约{round(duration)}分钟" if duration else ""
             if commitment_id:

@@ -3,6 +3,26 @@
 本文件记录 CatooBot 的版本演进。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号见 `pyproject.toml`；日期取自真实提交历史（本仓库 2026-09-30 起）。
 
+## [Unreleased] — v2.1 Phase 10.2 Remediation · Memory Episode Identity Alignment
+
+- **记忆 episode identity 与经历层同源（§3/§16）**：`MemoryCandidateBuilder` 不再自己
+  推导优先级（旧的 `commitment_id or action_instance_id …` 会让同一承诺下的两次真实
+  活动共用一个 dedupe key），而是直接使用经历层的 canonical `experience.episode_key`
+  （`action:<ActionInstance>` > `commitment:<id>` > `interaction:<fact id>`），
+  只有 Phase 10.1 之前的历史记录没有该字段时才走同优先级的 fallback。
+  因此：**一个承诺 + 两个 ActionInstance → 两条 Experience + 两条 Memory**；
+  同一实例重放 / 同一承诺且无实例重放 / 跨重启重放仍各自只有一条。
+- **provenance 增加 episode_key（§15）**：社会记忆的 provenance 记录其所属 episode
+  （用于「Memory → Experience episode」审计），dedupe 依旧只用 `dedupe_key`，
+  不从 JSON 反推；检索权重与 promotion 规则一字未改（§17/§18），未改 schema、
+  未新增 migration、未回填历史 Memory（§22/§23）。
+- `tests/test_sandbox_shared_experience.py` 新增
+  `TestMemoryEpisodeIdentityAlignment`（6 个测试：同承诺两个实例 → 2 条经历 + 2 条记忆
+  且 dedupe key 为 `shared:<person>:action:act_one|act_two`、同实例重放仍是 1+1、
+  同承诺无实例仍 1+1（`commitment:` 键）、两个不同事实 → 2+2（`interaction:` 键）、
+  跨重启重放记忆行 id 不变、两个角色同 episode key 各自一条且 id/key/character 隔离），
+  并把 social spec 单测期望对齐到带前缀的 canonical key；总测试 1277。
+
 ## [Unreleased] — v2.1 Phase 10.1 Remediation · Persistent Episode Idempotency
 
 - **episode identity 落库（§4-§7/§12）**：迁移 **26** 给 `sandbox_experiences` 增加

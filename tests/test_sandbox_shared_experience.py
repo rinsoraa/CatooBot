@@ -9,6 +9,7 @@ override the current world or the relationship.
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 from app.config.settings import SandboxConfig
@@ -564,7 +565,7 @@ class TestCandidateSpec:
         assert spec is not None
         memory_type, scope, content, identity, confidence = spec
         assert memory_type is MemoryType.social and scope is MemoryScope.social
-        assert identity == "shared:person_qq_x:cm_1"
+        assert identity == "shared:person_qq_x:commitment:cm_1"
         assert "小明" in content and "gaming" in content
         assert confidence >= 0.8
         # a second real episode for the same person is a different identity
@@ -572,6 +573,19 @@ class TestCandidateSpec:
         again.metadata["commitment_id"] = "cm_2"
         other = MemoryCandidateBuilder()._spec(again)  # noqa: SLF001
         assert other is not None and other[3] != identity
+
+        # §10.2: an ActionInstance outranks the promise it was kept under
+        with_instance = record.model_copy(deep=True)
+        with_instance.metadata["action_instance_id"] = "act_one"
+        spec_with = MemoryCandidateBuilder()._spec(with_instance)  # noqa: SLF001
+        assert spec_with is not None
+        assert spec_with[3] == "shared:person_qq_x:action:act_one"
+        # …and the canonical persisted key is used verbatim when present
+        keyed = record.model_copy(deep=True)
+        keyed.episode_key = "action:act_persisted"
+        spec_keyed = MemoryCandidateBuilder()._spec(keyed)  # noqa: SLF001
+        assert spec_keyed is not None
+        assert spec_keyed[3] == "shared:person_qq_x:action:act_persisted"
 
 
 # ------------------------------------------------ §10.1 persistent episode identity
@@ -778,4 +792,229 @@ class TestPersistentEpisodeIdentity:
             assert len([row for row in rows if row["episode_key"] is None]) == 2
         finally:
             await runtime.shutdown()
+            await db.close()
+
+
+# ------------------------------------------- §10.2 memory episode identity alignment
+
+
+async def shared_memory_rows(runtime, *, instance_id: str = "") -> list[dict]:  # type: ignore[no-untyped-def]
+    """Active shared memories as *persisted*, identity columns included."""
+    rows = await runtime.store.database.fetchall(
+        "SELECT id, character_id, dedupe_key, importance, provenance FROM memories"
+        " WHERE character_id = ? AND status = 'active' ORDER BY id DESC",
+        (runtime.character_id,),
+    )
+    out: list[dict] = []
+    for row in rows:
+        try:
+            provenance = json.loads(row["provenance"] or "{}")
+        except ValueError:
+            provenance = {}
+        if not str(provenance.get("episode_key", "")):
+            continue
+        if instance_id and str(provenance.get("action_instance_id", "")) != instance_id:
+            continue
+        out.append({**dict(row), "provenance": provenance})
+    return out
+
+
+class TestMemoryEpisodeIdentityAlignment:
+    async def test_same_promise_two_instances_are_two_memories(self, tmp_path) -> None:  # type: ignore[no-untyped-def]
+        """§10.2 §1/§9 A: the promise never merges two lived acts."""
+        db = await make_db(tmp_path)
+        clock = Clock()
+        runtime = await make_sandbox(db=db, clock=clock)
+        try:
+            person = person_of(runtime, "9401")
+            await share(
+                runtime,
+                "9401",
+                minutes=40.0,
+                commitment_id="cm_many",
+                instance_id="act_one",
+                significance=InteractionSignificance.major,
+            )
+            await share(
+                runtime,
+                "9401",
+                minutes=45.0,
+                commitment_id="cm_many",
+                instance_id="act_two",
+                significance=InteractionSignificance.major,
+            )
+            await runtime.flush_experiences()
+
+            assert len(shared_experiences(runtime)) == 2  # experience layer: two acts
+            rows = await episode_rows(db, runtime.character_id)
+            keys = sorted(str(row["episode_key"]) for row in rows if row["episode_key"])
+            assert keys == ["action:act_one", "action:act_two"]
+
+            memories = await shared_memory_rows(runtime)
+            assert len(memories) == 2  # §10.2: and therefore two memories
+            identity_prefix = f"{runtime.character_id}|social|shared:{person}:"
+            dedupe_keys = {str(row["dedupe_key"]).replace(identity_prefix, "") for row in memories}
+            assert dedupe_keys == {"action:act_one", "action:act_two"}
+            episode_keys = {str(row["provenance"]["episode_key"]) for row in memories}
+            assert episode_keys == {"action:act_one", "action:act_two"}
+        finally:
+            await runtime.shutdown()
+            await db.close()
+
+    async def test_same_instance_replay_is_one_memory(self, tmp_path) -> None:  # type: ignore[no-untyped-def]
+        """§10.2 §10 B: same promise + same instance + replay → one of each."""
+        db = await make_db(tmp_path)
+        clock = Clock()
+        runtime = await make_sandbox(db=db, clock=clock)
+        try:
+            await share(
+                runtime,
+                "9402",
+                minutes=40.0,
+                commitment_id="cm_one",
+                instance_id="act_one",
+                significance=InteractionSignificance.major,
+            )
+            await share(
+                runtime,
+                "9402",
+                minutes=40.0,
+                commitment_id="cm_one",
+                instance_id="act_one",
+                significance=InteractionSignificance.major,
+            )
+            await runtime.flush_experiences()
+            assert len(shared_experiences(runtime)) == 1
+            assert len(await shared_memory_rows(runtime, instance_id="act_one")) == 1
+        finally:
+            await runtime.shutdown()
+            await db.close()
+
+    async def test_a_promise_without_an_instance_is_one_memory(self, tmp_path) -> None:  # type: ignore[no-untyped-def]
+        """§10.2 §11 C: no instance → the promise itself is the episode."""
+        db = await make_db(tmp_path)
+        clock = Clock()
+        runtime = await make_sandbox(db=db, clock=clock)
+        try:
+            person = person_of(runtime, "9403")
+            for _ in range(2):
+                fact = shared_fact(
+                    runtime,
+                    "9403",
+                    minutes=40.0,
+                    commitment_id="cm_single",
+                    significance=InteractionSignificance.major,
+                )
+                fact.metadata.pop("action_instance_id")
+                await runtime.apply_social_interaction(fact)
+            await runtime.flush_experiences()
+            assert len(shared_experiences(runtime)) == 1
+            memories = await shared_memory_rows(runtime)
+            assert len(memories) == 1
+            assert str(memories[0]["dedupe_key"]).endswith(f"shared:{person}:commitment:cm_single")
+        finally:
+            await runtime.shutdown()
+            await db.close()
+
+    async def test_different_interactions_are_two_memories(self, tmp_path) -> None:  # type: ignore[no-untyped-def]
+        """§10.2 §12 D: without instance or promise the fact identifies the episode."""
+        db = await make_db(tmp_path)
+        clock = Clock()
+        runtime = await make_sandbox(db=db, clock=clock)
+        try:
+            person = person_of(runtime, "9404")
+            for minutes in (40.0, 45.0):
+                fact = shared_fact(
+                    runtime,
+                    "9404",
+                    minutes=minutes,
+                    significance=InteractionSignificance.major,
+                )
+                fact.metadata.pop("action_instance_id")
+                await runtime.apply_social_interaction(fact)
+            await runtime.flush_experiences()
+            assert len(shared_experiences(runtime)) == 2
+            memories = await shared_memory_rows(runtime)
+            assert len(memories) == 2
+            keys = {str(row["dedupe_key"]).split(f"shared:{person}:", 1)[1] for row in memories}
+            assert all(key.startswith("interaction:") for key in keys)
+            assert len(keys) == 2
+        finally:
+            await runtime.shutdown()
+            await db.close()
+
+    async def test_cross_runtime_replay_keeps_one_memory(self, tmp_path) -> None:  # type: ignore[no-untyped-def]
+        """§10.2 §13 E: a restart replay must not mint a second memory."""
+        db = await make_db(tmp_path)
+        clock = Clock()
+        runtime = await make_sandbox(db=db, clock=clock)
+        try:
+            await share(
+                runtime,
+                "9405",
+                minutes=40.0,
+                commitment_id="cm_x",
+                instance_id="act_x",
+                significance=InteractionSignificance.major,
+            )
+            await runtime.flush_experiences()
+            character_id = runtime.character_id
+            first_memory_ids = {row["id"] for row in await shared_memory_rows(runtime)}
+            assert len(first_memory_ids) == 1
+            await runtime.shutdown()
+        finally:
+            pass
+
+        restored = await make_sandbox(db=db, clock=clock)
+        try:
+            await share(
+                restored,
+                "9405",
+                minutes=40.0,
+                commitment_id="cm_x",
+                instance_id="act_x",
+                significance=InteractionSignificance.major,
+            )
+            await restored.flush_experiences()
+            assert len(await episode_rows(db, character_id, "action:act_x")) == 1
+            later_memory_ids = {row["id"] for row in await shared_memory_rows(restored)}
+            assert later_memory_ids == first_memory_ids  # the same row, not a new one
+        finally:
+            await restored.shutdown()
+            await db.close()
+
+    async def test_two_characters_keep_their_own_memory(self, tmp_path) -> None:  # type: ignore[no-untyped-def]
+        """§10.2 §14 F: same episode key, two worlds → two isolated memories."""
+        db = await make_db(tmp_path)
+        clock = Clock()
+        first = await make_sandbox(db=db, clock=clock)
+        second = await make_sandbox(db=db, clock=clock, bible_path=OTHER_BIBLE_PATH)
+        try:
+            await share(
+                first,
+                "9406",
+                minutes=40.0,
+                instance_id="act_same",
+                significance=InteractionSignificance.major,
+            )
+            await share(
+                second,
+                "9406",
+                minutes=40.0,
+                instance_id="act_same",
+                significance=InteractionSignificance.major,
+            )
+            await first.flush_experiences()
+            await second.flush_experiences()
+            mine = await shared_memory_rows(first)
+            theirs = await shared_memory_rows(second)
+            assert len(mine) == 1 and len(theirs) == 1
+            assert mine[0]["id"] != theirs[0]["id"]
+            assert first.character_id in str(mine[0]["dedupe_key"])
+            assert second.character_id in str(theirs[0]["dedupe_key"])
+            assert str(mine[0]["provenance"]["episode_key"]) == "action:act_same"
+            assert str(theirs[0]["provenance"]["episode_key"]) == "action:act_same"
+        finally:
+            await first.shutdown()
+            await second.shutdown()
             await db.close()
