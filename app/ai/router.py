@@ -278,6 +278,12 @@ class ModelRouter:
                 state.failure_count += 1
                 await self._record_usage(spec, request, attempt, started, ok=False, error=exc)
 
+                # Reasoning models that stop because the completion budget ran
+                # out (finish=length) with no visible text are a distinct, counted
+                # failure mode — the operator can watch it and tune the budget.
+                if isinstance(exc, EmptyResponseError) and exc.finish_reason == "length":
+                    self._notify("empty_finish_length", spec.name)
+
                 transient = (AITimeoutError, AIConnectionError, EmptyResponseError)
                 if isinstance(exc, transient) and not retried_transient:
                     # One retry for transient trouble (network blips, a

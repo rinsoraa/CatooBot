@@ -7,10 +7,12 @@ import pytest
 from app.message.message import Message, parse_cq_string
 from app.message.segment import (
     AtSegment,
+    FileSegment,
     ImageSegment,
     ReplySegment,
     Segment,
     TextSegment,
+    VideoSegment,
 )
 
 
@@ -58,6 +60,20 @@ class TestSegments:
     def test_from_onebot_returns_typed_subclass(self) -> None:
         seg = Segment.from_onebot({"type": "at", "data": {"qq": 1}})
         assert isinstance(seg, AtSegment)
+
+    def test_video_segment_is_typed(self) -> None:
+        seg = Segment.from_onebot(
+            {"type": "video", "data": {"url": "https://x/a.mp4", "file": "a.mp4"}}
+        )
+        assert isinstance(seg, VideoSegment)
+        assert seg.url == "https://x/a.mp4"
+        assert seg.file == "a.mp4"
+
+    def test_file_segment_is_typed(self) -> None:
+        seg = Segment.from_onebot({"type": "file", "data": {"file": "doc.pdf"}})
+        assert isinstance(seg, FileSegment)
+        assert seg.file == "doc.pdf"
+        assert seg.name == "doc.pdf"
 
 
 class TestMessage:

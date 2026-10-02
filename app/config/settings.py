@@ -191,6 +191,11 @@ class AIConfig(BaseModel):
     system_prompt: str = "你是 CatooBot，一个运行在 QQ 上的 AI 助手。使用自然、友好的中文回答。"
     default_temperature: float = Field(default=0.8, ge=0, le=2)
     timeout: float = Field(default=60.0, gt=0)
+    #: Output budget for calls that do not pin one themselves (0 = let the
+    #: provider decide). Reasoning models can spend their whole completion on
+    #: reasoning_content and return empty content (finish=length); a bounded
+    #: budget plus the router's empty-response failover caps that damage.
+    max_tokens: int = Field(default=0, ge=0)
     context: AIContextConfig = Field(default_factory=AIContextConfig)
     cooldown: AICooldownConfig = Field(default_factory=AICooldownConfig)
     concurrency: AIConcurrencyConfig = Field(default_factory=AIConcurrencyConfig)
@@ -202,7 +207,7 @@ class AIConfig(BaseModel):
 class CharacterConfig(BaseModel):
     """Character identity/persona. Empty by default — defined via WebUI."""
 
-    timezone: str = "Asia/Singapore"
+    timezone: str = "Asia/Shanghai"
     identity: dict[str, Any] = Field(default_factory=dict)
     personality: dict[str, Any] = Field(default_factory=dict)
     speaking_style: dict[str, Any] = Field(default_factory=dict)
@@ -277,7 +282,9 @@ class MemoryPolicyConfig(BaseModel):
 class MemoryExtractionConfig(BaseModel):
     enabled: bool = True
     model: str = ""  # model *name* from ai.models used for extraction; empty = primary
-    timeout: float = Field(default=30.0, gt=0)
+    #: measured extraction latency is ~5-19s depending on the model; 30s only
+    #: hides a slow model. A tighter bound surfaces a lagging extraction sooner.
+    timeout: float = Field(default=12.0, gt=0)
     min_content_length: int = Field(default=4, ge=1)
 
 
@@ -408,6 +415,10 @@ class SocialParticipationConfig(BaseModel):
 
     daily_limit: int = Field(default=30, ge=0)
     cooldown_seconds: int = Field(default=90, ge=0)
+    #: poor_timing (defer) only delays, never vetoes. After this many *consecutive*
+    #: defers in one group, the next defer is ignored and the accumulated
+    #: participation credit is allowed to trigger normally.
+    max_consecutive_defer: int = Field(default=3, ge=1)
 
 
 class SocialGroupContextConfig(BaseModel):

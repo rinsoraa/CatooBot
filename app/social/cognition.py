@@ -81,6 +81,9 @@ class SocialCognitionEngine:
             logger=self._log,
         )
         self._locks: dict[str, asyncio.Lock] = {}
+        #: per-group consecutive poor_timing (defer) count — defer only delays,
+        #: so a long streak must eventually release the banked credit (see decide()).
+        self._defer_streak: dict[str, int] = {}
 
     @property
     def enabled(self) -> bool:
@@ -256,34 +259,84 @@ class SocialCognitionEngine:
                 return ParticipationDecision(decision="observe", reason_code="no_relevance")
             decision = await self._observe(group_id, batch)
             self.monitor.mark_observed(group_id)
-            # The structured judgment had "nothing to say": the operator's
-            # configured participation rate decides whether she still chimes in.
-            if decision.decision in ("observe", "ignore"):
-                fallback = self._participation_rate(
-                    group_id, target_ids=[m.message_id for m in batch]
-                )
-                if fallback is not None:
-                    return fallback
+            if decision.decision == "defer":
+                # poor_timing only delays, never vetoes (spec v0.9 §38/§45).
+                return self._resolve_defer(group_id, batch, decision)
+            # observe / ignore: the structured judgment had "nothing to say"; the
+            # operator's configured participation rate decides whether she still
+            # chimes in.
+            fallback = self._participation_rate(group_id, target_ids=[m.message_id for m in batch])
+            if fallback is not None:
+                return fallback
             return decision
 
-    def _participation_rate(
-        self, group_id: str, *, target_ids: list[str]
-    ) -> ParticipationDecision | None:
-        """Deterministic rate fallback: credit accumulates toward one chime-in."""
+    def _participation_rate_amount(self, target_ids: list[str]) -> float | None:
+        """Credit this batch earns = rate × message count; None when rate is off."""
         cfg = getattr(self.bot.config.behavior, "group", None)
         if cfg is None:
             return None
         rate = float(getattr(cfg, "participation_probability", 0.0) or 0.0)
         if rate <= 0.0:
             return None
-        if not self.policy.credit_participation(str(group_id), rate):
+        return rate * len(target_ids)
+
+    def _participation_rate(
+        self, group_id: str, *, target_ids: list[str]
+    ) -> ParticipationDecision | None:
+        """Deterministic rate fallback: credit accumulates toward one chime-in.
+
+        Credit is charged per eligible message (``rate × len``), so the
+        5-message observer path and the one-message-at-a-time path mean the
+        same thing for the same rate.
+        """
+        amount = self._participation_rate_amount(target_ids)
+        if amount is None or amount <= 0.0:
             return None
+        if not self.policy.credit_participation(str(group_id), amount):
+            return None
+        # confidence is the per-message rate (0..1), recovered from the batch amount
+        rate = amount / len(target_ids) if target_ids else 0.0
         return ParticipationDecision(
             decision="reply",
             reason_code="participation_rate",
             confidence=min(1.0, rate),
             target_message_ids=list(target_ids),
         )
+
+    def _resolve_defer(
+        self, group_id: str, batch: list[Any], decision: ParticipationDecision
+    ) -> ParticipationDecision:
+        """poor_timing defers, it does not veto (spec v0.9 §38/§45).
+
+        A defer keeps banking participation credit (without spending it), so the
+        character still earns her turn while the timing is judged poor. After
+        ``max_consecutive_defer`` consecutive defers, this batch ignores the
+        defer and lets the banked credit trigger normally — defer only shifts
+        *when* she speaks, never *whether*.
+        """
+        key = str(group_id)
+        target_ids = [m.message_id for m in batch]
+        streak = self._defer_streak.get(key, 0)
+        limit = self.config.participation.max_consecutive_defer
+        if streak >= limit:
+            self._defer_streak[key] = 0
+            self._log.warning(
+                "[Social] group=%s poor_timing 连续 %d 次未开口，本次忽略 defer 让额度正常触发",
+                key,
+                streak,
+            )
+            fallback = self._participation_rate(group_id, target_ids=target_ids)
+            if fallback is not None:
+                return fallback
+            return ParticipationDecision(decision="observe", reason_code="no_relevance")
+        self._defer_streak[key] = streak + 1
+        amount = self._participation_rate_amount(target_ids)
+        if amount is not None:
+            self.policy.accumulate_credit(key, amount)
+        metrics = getattr(self.bot, "metrics", None)
+        if metrics is not None:
+            metrics.inc("social_defer")
+        return decision
 
     # --------------------------------------------------------------- observe
 
@@ -491,6 +544,7 @@ class SocialCognitionEngine:
             "thread": thread,
             "attention": self.attention.snapshot(str(group_id)),
             "policy": self.policy.snapshot(str(group_id)),
+            "defer_streak": self._defer_streak.get(str(group_id), 0),
         }
 
     def groups(self) -> list[str]:

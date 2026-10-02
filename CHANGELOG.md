@@ -58,6 +58,13 @@
 ### 打包
 - `LICENSE`（Apache-2.0）、`NOTICE`（角色内容不随代码授权）、`EULA.md`（隐私说明 + AI 声明）。
 
+### 重启后的观察期检查项（本批改动的落地核对）
+- 模型页 `ai_usage` 出现 `purpose=social_observer`，且延迟约 3.4s（`models.decision` 指向非推理模型后）。
+- `[Watchdog]` 卡顿告警带上了「正在执行：… / 任务栈：…」线索，可直接定位阻塞来源。
+- `/social/group` 显示「因 poor_timing 连续 N 次未开口」（defer 只推迟、不否决）。
+- 模型页 `ai_empty_finish_length` 停止增长（`ai.max_tokens` 建议 2048 起）。
+- `/memory/health` 无红条，`[Memory.Extract]` 无 `parse_failed`。
+
 ## [2.0.0] — 2026-10-01 · Character Life Sandbox
 
 - 人物档案 → **Bible 编译器** → Seed：实体/空间/物件/需求/动作/规则/模式；

@@ -23,7 +23,7 @@ from typing import TYPE_CHECKING, Any
 
 from app.ai.errors import AIError
 from app.message.message import Message
-from app.message.segment import FaceSegment, ImageSegment, MfaceSegment
+from app.message.segment import FileSegment, VideoSegment
 from app.plugins.api import PluginApi
 from app.plugins.base import Plugin
 from app.response.delivery import DeliveryTarget
@@ -77,6 +77,8 @@ _MEDIA_PLACEHOLDER = {
     "image": "一张图片",
     "native_face": "一个表情",
     "sticker": "一个表情包",
+    "video": "一个视频",
+    "file": "一个文件",
 }
 
 
@@ -283,6 +285,10 @@ class CharacterPlugin(Plugin):
         if not text and items:
             first = items[0].media_type
             text = f"（发来{_MEDIA_PLACEHOLDER.get(first, '一条媒体消息')}）"
+        if not text:
+            # video / file / unknown media the pipeline does not handle — give
+            # them a readable placeholder so the message is never invisible.
+            text = self._unrecognized_media_placeholder(event.message)
         if bot.continuity is not None:
             try:
                 await bot.continuity.observe_message(
@@ -808,10 +814,40 @@ class CharacterPlugin(Plugin):
 
     @staticmethod
     def _has_media(event: MessageEvent) -> bool:
-        """True when the message carries image / face / mface segments."""
-        return any(
-            isinstance(seg, (ImageSegment, FaceSegment, MfaceSegment)) for seg in event.message
-        )
+        """True when the message carries media, not just text/at/reply.
+
+        image/face/mface feed the media pipeline; video/file (and any other
+        non-text, non-@, non-reply segment) are recognised here so a bare media
+        message is never dropped as an invisible blank.
+        """
+        return any(seg.type not in ("text", "at", "reply") for seg in event.message)
+
+    @staticmethod
+    def _unrecognized_media_placeholder(message: Message) -> str:
+        """Readable placeholder for media the media pipeline does not handle.
+
+        image/face/mface already flow through ``media.normalize`` (and get their
+        own placeholder); this covers video / file / anything else, so a
+        caption-less media message reaches the character instead of becoming an
+        empty string that also trips the ``too_short`` silence gate.
+        """
+        for segment in message:
+            if isinstance(segment, VideoSegment):
+                return "（发来一个视频）"
+            if isinstance(segment, FileSegment):
+                return "（发来一个文件）"
+            if segment.type not in (
+                "text",
+                "at",
+                "reply",
+                "image",
+                "face",
+                "mface",
+                "video",
+                "file",
+            ):
+                return "（发来一条媒体消息）"
+        return ""
 
     def _schedule_collection(
         self, event: MessageEvent | None, items: list[Any], *, vision: Any = None

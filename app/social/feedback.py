@@ -30,9 +30,14 @@ ADDRESSED_REASONS = frozenset({"direct_mention", "reply_to_bot", "direct_follow_
 DEFAULT_WINDOW_SECONDS = 90.0
 
 
-def is_self_initiated(reason_code: str) -> bool:
-    """True when *she* opened the topic rather than answering an address."""
-    return reason_code not in ADDRESSED_REASONS
+def is_self_initiated(reason_code: str, *, is_group: bool = True) -> bool:
+    """True when *she* opened the topic rather than answering an address.
+
+    Private chat is always an address by definition (someone DM'd her), so a
+    non-group turn is never self-initiated — it must never feed the group
+    engagement average.
+    """
+    return is_group and reason_code not in ADDRESSED_REASONS
 
 
 class ReplyFeedbackStore:
@@ -70,7 +75,7 @@ class ReplyFeedbackStore:
             "scope_key": scope_key,
             "is_group": is_group,
             "reason_code": reason_code,
-            "self_initiated": is_self_initiated(reason_code),
+            "self_initiated": is_self_initiated(reason_code, is_group=is_group),
             "sent_at": float(self._clock()),
             "window_seconds": float(window_seconds),
         }

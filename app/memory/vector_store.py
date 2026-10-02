@@ -29,6 +29,8 @@ from array import array
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
+from app.core.activity import track_blocking
+
 if TYPE_CHECKING:
     from app.database.database import Database
 
@@ -151,18 +153,23 @@ class SqliteVectorStore(VectorStore):
             tuple(candidate_ids),
         )
         scored: list[tuple[int, float]] = []
-        for row in rows:
-            data = dict(row)
-            vector, norm = self._decode_vector(data)
-            if len(vector) != len(query_vector):
-                continue  # different embedding model/dimension — skip, never compare
-            if norm <= 0:
-                norm = math.sqrt(math.sumprod(vector, vector))  # legacy row: no stored norm
-            if norm <= 0:
-                scored.append((int(data["memory_id"]), 0.0))  # zero vector → unrelated
-                continue
-            dot = math.sumprod(vector, query_vector)
-            scored.append((int(data["memory_id"]), max(0.0, min(1.0, dot / (norm * query_norm)))))
+        # Pure-Python dot products over the candidate pool run synchronously on
+        # the event loop; mark them so the watchdog can attribute a stall here.
+        with track_blocking("memory.vector scoring"):
+            for row in rows:
+                data = dict(row)
+                vector, norm = self._decode_vector(data)
+                if len(vector) != len(query_vector):
+                    continue  # different embedding model/dimension — skip, never compare
+                if norm <= 0:
+                    norm = math.sqrt(math.sumprod(vector, vector))  # legacy row: no stored norm
+                if norm <= 0:
+                    scored.append((int(data["memory_id"]), 0.0))  # zero vector → unrelated
+                    continue
+                dot = math.sumprod(vector, query_vector)
+                scored.append(
+                    (int(data["memory_id"]), max(0.0, min(1.0, dot / (norm * query_norm))))
+                )
         scored.sort(key=lambda pair: pair[1], reverse=True)
         return scored[:limit]
 

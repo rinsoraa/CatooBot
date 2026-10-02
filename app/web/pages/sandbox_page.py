@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from app.core.activity import blocking_fn
 from app.web import ui
 
 
@@ -27,6 +28,7 @@ def _tabs(active: str) -> str:
     )
 
 
+@blocking_fn("web.render sandbox")
 def dashboard(data: dict[str, Any]) -> str:
     if not data.get("enabled"):
         return ui.card(

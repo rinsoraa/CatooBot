@@ -36,7 +36,7 @@ METADATA = ToolMetadata(
         "properties": {
             "timezone": {
                 "type": "string",
-                "description": "IANA 时区名，例如 Asia/Singapore；留空使用角色时区",
+                "description": "IANA 时区名，例如 Asia/Shanghai；留空使用角色时区",
             }
         },
         "additionalProperties": False,
@@ -51,11 +51,11 @@ class TimeTool(ToolBase):
     metadata = METADATA
 
     async def execute(self, arguments: dict[str, Any], context: ToolContext) -> ToolResult:
-        tz_name = str(arguments.get("timezone") or context.timezone or "Asia/Singapore")
+        tz_name = str(arguments.get("timezone") or context.timezone or "Asia/Shanghai")
         try:
             tz = ZoneInfo(tz_name)
         except (ZoneInfoNotFoundError, ValueError):
-            tz_name = context.timezone or "Asia/Singapore"
+            tz_name = context.timezone or "Asia/Shanghai"
             tz = ZoneInfo(tz_name)
 
         now = datetime.now(tz)

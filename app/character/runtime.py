@@ -301,7 +301,7 @@ class CharacterRuntime:
             session_id=session_id,
             character_name=self.personas.persona.identity.name,
             locale="zh-CN",
-            timezone=getattr(time_context, "timezone", "") or "Asia/Singapore",
+            timezone=getattr(time_context, "timezone", "") or "Asia/Shanghai",
             current_datetime=getattr(time_context, "local_time", ""),
             is_group=is_group,
             # Read-only view of her life for tools/agent (v0.6 §18): they may know

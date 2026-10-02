@@ -10,9 +10,11 @@ from __future__ import annotations
 import json
 from typing import Any
 
+from app.core.activity import blocking_fn
 from app.web import ui
 
 
+@blocking_fn("web.render memory correction")
 def render(
     service: Any,
     *,

@@ -8,6 +8,9 @@ and the decision path never rolls a die.
 
 from __future__ import annotations
 
+import logging
+
+from app.ai.models import AIResponse
 from app.config.settings import SocialConfig
 from app.social.attention import SocialAttention
 from app.social.continuation import ContinuationDetector
@@ -18,6 +21,7 @@ from app.social.models import (
     RelevanceScores,
 )
 from app.social.monitor import GroupConversationMonitor
+from app.social.observer import GroupObserver
 from app.social.policy import ParticipationPolicy
 from app.social.relevance import RelevanceEvaluator
 from app.social.thread import ThreadManager
@@ -417,4 +421,158 @@ class TestCognitionEngine:
         )
         row = await bot.database.fetchone("SELECT decision FROM social_observations LIMIT 1")
         assert row is not None and row["decision"] == "ignore"
+        await bot.database.close()
+
+
+class FakeRelevance:
+    """Deterministic relevance scores for the observer's rule fallback."""
+
+    def __init__(self, scores):
+        self._scores = scores
+
+    async def evaluate(self, *, messages, topic, interests, activity_text, focus):
+        return self._scores
+
+
+class FakeEngine:
+    """Captures the observer's request and returns a canned response."""
+
+    def __init__(self, response=None, error=None):
+        self.enabled = True
+        self._response = response
+        self._error = error
+        self.last_request = None
+
+    async def chat(self, request):
+        self.last_request = request
+        if self._error is not None:
+            raise self._error
+        return self._response
+
+
+class TestObserver:
+    def test_parse_three_state(self) -> None:
+        assert GroupObserver._parse('{"decision":"ignore"}') == ("ok", {"decision": "ignore"})
+        assert GroupObserver._parse("不是 JSON") == ("parse_failed", None)
+        assert GroupObserver._parse('["list", "not", "dict"]') == ("parse_failed", None)
+        # tolerant: leading/trailing chatter around the JSON object
+        assert GroupObserver._parse('前面废话 {"decision":"reply"} 尾巴') == (
+            "ok",
+            {"decision": "reply"},
+        )
+
+    async def test_model_decision_tags_purpose(self) -> None:
+        engine = FakeEngine(
+            response=AIResponse(
+                content='{"decision":"ignore","reason_code":"no_relevance","confidence":0.0}'
+            )
+        )
+        observer = GroupObserver(config=SocialConfig(), engine=engine)
+        decision = await observer._model_decision(
+            group_id="g",
+            batch=[msg("g", "1", "a", "你好")],
+            recent_context=[],
+            character_block="",
+            topic="",
+        )
+        assert engine.last_request is not None
+        assert engine.last_request.metadata["purpose"] == "social_observer"
+        assert decision is not None and decision.decision == "ignore"
+
+    async def test_invalid_json_logs_excerpt(self, caplog) -> None:
+        engine = FakeEngine(response=AIResponse(content="抱歉，我现在没法判断，稍后再看"))
+        observer = GroupObserver(config=SocialConfig(), engine=engine)
+        with caplog.at_level(logging.WARNING, logger="CatooBot.Social"):
+            result = await observer._model_decision(
+                group_id="g",
+                batch=[msg("g", "1", "a", "你好")],
+                recent_context=[],
+                character_block="",
+                topic="",
+            )
+        assert result is None
+        assert any("no valid JSON" in r.message for r in caplog.records)
+
+    async def test_rule_fallback_poor_timing_surface(self) -> None:
+        """The offline fallback: reply / defer(poor_timing) / ignore boundaries."""
+        batch = [msg("g", "1", "a", "你好")]
+
+        def decide(scores):
+            observer = GroupObserver(config=SocialConfig(), relevance=FakeRelevance(scores))
+            return observer._rule_decision(batch, "")
+
+        high = await decide(
+            RelevanceScores(topic_relevance=0.8, contribution_value=0.8, social_fit=0.8)
+        )
+        assert high.decision == "reply"
+
+        # mid topic relevance + low contribution/social-fit → defer, not ignore
+        mid = await decide(
+            RelevanceScores(topic_relevance=0.5, contribution_value=0.1, social_fit=0.1)
+        )
+        assert mid.decision == "defer" and mid.reason_code == "poor_timing"
+
+        low = await decide(RelevanceScores(topic_relevance=0.2))
+        assert low.decision == "ignore" and low.reason_code == "no_relevance"
+
+
+class TestDeferNeverVetoes:
+    """poor_timing defers but never vetoes: the streak must release the credit."""
+
+    async def _setup(self, tmp_path, rate):
+        from tests.conftest import FakeAdapter, make_bot
+
+        bot = make_bot(tmp_path, FakeAdapter())
+        await bot.database.connect()
+        # _participation_rate reads this live off the bot config
+        bot.config.behavior.group.participation_probability = rate
+        return bot, bot.social
+
+    @staticmethod
+    def _batch(label: str) -> list[GroupMessage]:
+        return [msg("g", f"{label}-{i}", f"u{i}", f"普通聊天消息 {i}") for i in range(5)]
+
+    @staticmethod
+    def _defer() -> ParticipationDecision:
+        return ParticipationDecision(decision="defer", reason_code="poor_timing", confidence=0.5)
+
+    async def test_defer_releases_within_limit(self, tmp_path) -> None:
+        bot, social = await self._setup(tmp_path, rate=0.3)
+        # max_consecutive_defer defaults to 3: three defers, then released
+        for _ in range(3):
+            decision = social._resolve_defer("g", self._batch("b"), self._defer())
+            assert decision.decision == "defer"
+        released = social._resolve_defer("g", self._batch("b"), self._defer())
+        assert released.decision == "reply"
+        assert released.reason_code == "participation_rate"
+        await bot.database.close()
+
+    async def test_defer_rate_zero_stays_silent(self, tmp_path) -> None:
+        bot, social = await self._setup(tmp_path, rate=0.0)
+        for _ in range(6):
+            decision = social._resolve_defer("g", self._batch("b"), self._defer())
+            assert decision.decision != "reply"
+        await bot.database.close()
+
+    async def test_participation_rate_charged_per_message(self, tmp_path) -> None:
+        """额度按消息计费：一批 5 条 = rate×5，单条 = rate，空批 = 0。"""
+        bot, social = await self._setup(tmp_path, rate=0.04)
+        assert social._participation_rate_amount([str(i) for i in range(5)]) == 0.04 * 5
+        assert social._participation_rate_amount(["x"]) == 0.04
+        assert social._participation_rate_amount([]) == 0.0
+        await bot.database.close()
+
+    async def test_too_short_never_speaks(self, tmp_path) -> None:
+        bot, social = await self._setup(tmp_path, rate=1.0)
+        decision = await social.decide(
+            group_id="g",
+            message_id="1",
+            user_id="u1",
+            nickname="A",
+            text="哈",
+            mentioned=False,
+            reply_to_bot=False,
+            group_enabled=True,
+        )
+        assert decision.decision == "ignore" and decision.reason_code == "too_short"
         await bot.database.close()

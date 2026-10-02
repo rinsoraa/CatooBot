@@ -306,6 +306,8 @@ class Bot:
             self.metrics.inc("ai_requests")
         elif event == "rate_limited":
             self.metrics.inc("rate_limited")
+        elif event == "empty_finish_length":
+            self.metrics.inc("ai_empty_finish_length")
         elif event == "failed":
             self.metrics.inc("ai_errors")
 

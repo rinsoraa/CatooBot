@@ -39,6 +39,10 @@ class TestSelfInitiated:
         for reason in ("participation_rate", "topic_interest", "initiative", ""):
             assert is_self_initiated(reason) is True
 
+    def test_private_turns_are_never_self_initiated(self) -> None:
+        for reason in ("participation_rate", "topic_interest", "initiative", "", "direct_mention"):
+            assert is_self_initiated(reason, is_group=False) is False
+
 
 class TestRecording:
     async def test_one_row_per_turn(self, tmp_path) -> None:
@@ -77,6 +81,7 @@ class TestRecording:
             )
             row = await db.fetchone("SELECT * FROM reply_outcomes WHERE turn_id = 't3'")
             assert row is not None and row["is_group"] == 0
+            assert row["self_initiated"] == 0  # a private reply is never self-initiated
         finally:
             await db.close()
 
@@ -353,5 +358,25 @@ class TestSettler:
         try:
             await self._row(store, scope="private:7", is_group=False)
             assert await self._settle(store, FakeMonitor([]), now=1_200.0) == {"unknown": 1}
+        finally:
+            await db.close()
+
+    async def test_private_settlement_never_touches_group_engagement(self, tmp_path) -> None:
+        """A private (non-group) row settles to unknown and never folds into engagement."""
+        store, db, _ = await make_store(tmp_path)
+        called: list[tuple[str, float]] = []
+
+        async def on_settled(group_key: str, score: float) -> None:
+            called.append((group_key, score))
+
+        try:
+            await self._row(store, scope="private:7", is_group=False)
+            monitor = FakeMonitor([message(1_010.0, reply_to="bot-1")], bot_id="bot-1")
+            settler = ReplyFeedbackSettler(
+                store, monitor, clock=lambda: 1_200.0, on_settled=on_settled
+            )
+            counts = await settler.settle()
+            assert counts == {"unknown": 1}
+            assert called == []  # never folded into any group's engagement
         finally:
             await db.close()

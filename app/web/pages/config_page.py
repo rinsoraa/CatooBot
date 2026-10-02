@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from app.core.activity import blocking_fn
 from app.web import ui
 
 TABS: tuple[tuple[str, str, str], ...] = (
@@ -29,6 +30,7 @@ def _tab_links(active: str) -> str:
     return f"<nav class='tabs'>{links}</nav>"
 
 
+@blocking_fn("web.render config")
 def render(
     service: Any,
     *,

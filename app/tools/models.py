@@ -90,7 +90,7 @@ class ToolContext:
     session_id: str = ""
     character_name: str = ""
     locale: str = "zh-CN"
-    timezone: str = "Asia/Singapore"
+    timezone: str = "Asia/Shanghai"
     current_datetime: str = ""
     is_group: bool = False
     metadata: dict[str, Any] = field(default_factory=dict)

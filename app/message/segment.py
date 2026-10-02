@@ -143,6 +143,39 @@ class MfaceSegment(Segment):
         return str(raw) if raw is not None else None
 
 
+class VideoSegment(Segment):
+    """QQ video message (``type=video``).
+
+    Recognised as a *typed* segment so the character receives a readable
+    placeholder instead of an invisible blank. The bot never downloads or
+    transcodes video — ``url``/``file`` are exposed read-only only.
+    """
+
+    @property
+    def url(self) -> str | None:
+        raw = self.data.get("url")
+        return str(raw) if raw is not None else None
+
+    @property
+    def file(self) -> str | None:
+        raw = self.data.get("file")
+        return str(raw) if raw is not None else None
+
+
+class FileSegment(Segment):
+    """QQ file message (``type=file``). Typed for a readable placeholder; never downloaded."""
+
+    @property
+    def file(self) -> str | None:
+        raw = self.data.get("file")
+        return str(raw) if raw is not None else None
+
+    @property
+    def name(self) -> str | None:
+        raw = self.data.get("file") or self.data.get("name")
+        return str(raw) if raw is not None else None
+
+
 _TYPED_SEGMENTS: dict[str, type[Segment]] = {
     "text": TextSegment,
     "at": AtSegment,
@@ -150,4 +183,6 @@ _TYPED_SEGMENTS: dict[str, type[Segment]] = {
     "reply": ReplySegment,
     "face": FaceSegment,
     "mface": MfaceSegment,
+    "video": VideoSegment,
+    "file": FileSegment,
 }

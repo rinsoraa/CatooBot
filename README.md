@@ -103,8 +103,8 @@ copy config\config.example.yaml config\config.yaml
 # （跳过这步也行：首次启动会自动从 example 复制一份）
 ```
 
-> Windows 下建议确认 `tzdata` 已安装（`pip install tzdata`），否则时区相关的作息
-> 判断会退化为 UTC+8 并在日志里提示。
+> 时区开箱即用：`tzdata` 已是项目依赖（`pyproject.toml`），随安装自动带上，
+> `ZoneInfo('Asia/Shanghai')` 无需任何手工步骤。
 
 ### 依赖锁定与容器运行
 
@@ -201,12 +201,22 @@ models:
   acquisition: ""       # 表情收藏判断
 ```
 
-> **记忆抽取模型推荐**：`extraction` 留空会落到 `chat` 第一个（当前是推理模型
-> `cn:deepseek-v4.1-flash`，曾实测一次抽取 4.99s / 561 completion tokens，慢且贵，
-> 还可能只思考不输出）。建议指向一个**非推理的小模型**——例如 `extra` 里现成的
-> `vision`（`cn:glm-5.3-flash`）或任意的 flash/lite 小 chat 模型：
-> 在 `extra` 加一行 `{ name: small, provider: Workbuddy2API, model: "cn:glm-5.3-flash" }`，
-> 然后 `extraction: "small"`。
+> **记忆抽取模型推荐**：`extraction` 留空会落到 `chat` 第一个（推理模型）。选哪个模型
+> **以实测延迟为准**——推理模型可能"只思考不输出"（finish=length），但非推理小模型也不一定更快
+> （实测 `cn:glm-5.3-flash` 抽取反而比 primary 更慢）。抽取超时默认已收紧到 12s
+> （`memory.extraction.timeout`），模型页能看每次调用的耗时/失败。候选：在 `extra` 加
+> `{ name: small, provider: Workbuddy2API, model: "cn:glm-5.3-flash" }` 再 `extraction: "small"`，
+> 或指向任意 flash/lite 小 chat 模型。
+
+> **决策模型（decision）推荐**：观察/续话判断默认也落到 `chat` 第一个推理模型上。实测
+> `cn:minimax-m3`（`"fallback"`）**3.4s / 5 次全解析成功**，是三者里唯一又快又稳的；`small`
+> （`cn:glm-5.3-flash`）26s 且 2/5 空响应；primary 推理模型 4/5 finish=length 空响应。
+> 建议 `decision: "fallback"`。
+
+> **输出预算（ai.max_tokens）推荐**：默认 `0` = 由平台决定（等于未生效）。推理模型可能把整段
+> completion 花在思考上、正文为空（finish=length，看板的 `ai_empty_finish_length` 会计数）。
+> 建议 `max_tokens: 2048` 起，给 reasoning 留出「完成话」的预算；路由的空响应故障转移只是兜底，
+> 设这里才是根治。
 
 其余配置段一览（每段都有中文注释，见 `config.example.yaml`）：
 

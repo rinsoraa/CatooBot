@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from app.core.activity import blocking_fn
 from app.web import ui
 
 DECISION_LABEL = {
@@ -36,6 +37,7 @@ def _decision_badge(decision: str) -> str:
     return ui.badge(label, tone)
 
 
+@blocking_fn("web.render social")
 def dashboard(data: dict[str, Any]) -> str:
     if not data.get("enabled"):
         return ui.card(
@@ -154,20 +156,25 @@ def group_page(snapshot: dict[str, Any] | None, group_id: str) -> str:
         or '<tr><td colspan="2" class="muted">无</td></tr>'
     )
 
+    defer_streak = int(snapshot.get("defer_streak", 0) or 0)
+    kv_rows = [
+        ("未观察消息", f"{monitor.get('unobserved', 0)} / 5"),
+        ("当前话题", attention.get("current_topic") or "-"),
+        ("注意程度", f"{float(attention.get('attention_level', 0)):.2f}"),
+        ("疲劳度", f"{float(attention.get('fatigue', 0)):.2f}"),
+        ("活跃线程", "是" if thread else "否"),
+        ("她上一句", thread.get("last_bot_message", "-") if thread else "-"),
+        ("今日已参与", f"{policy.get('daily_count', 0)} / {policy.get('daily_limit', 0)}"),
+    ]
+    if defer_streak > 0:
+        kv_rows.append(("因 poor_timing", f"连续 {defer_streak} 次未开口"))
     kv = ui.kv(
-        [
-            ("未观察消息", f"{monitor.get('unobserved', 0)} / 5"),
-            ("当前话题", attention.get("current_topic") or "-"),
-            ("注意程度", f"{float(attention.get('attention_level', 0)):.2f}"),
-            ("疲劳度", f"{float(attention.get('fatigue', 0)):.2f}"),
-            ("活跃线程", "是" if thread else "否"),
-            ("她上一句", thread.get("last_bot_message", "-") if thread else "-"),
-            ("今日已参与", f"{policy.get('daily_count', 0)} / {policy.get('daily_limit', 0)}"),
-        ],
+        kv_rows,
         tips={
             "未观察消息": "攒够 5 条外部消息就触发一次观察器",
             "注意程度": "她对当前群的关注（叙事建模，不是用户心理）",
             "疲劳度": "连续参与会升高，闲置会缓慢恢复",
+            "因 poor_timing": "观察器连续判断时机不佳（defer）的次数；达到上限会自动放行一次发言",
         },
     )
     return (

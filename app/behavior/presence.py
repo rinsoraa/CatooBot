@@ -53,7 +53,7 @@ class PresenceResolver:
 
     def __init__(
         self,
-        timezone: str = "Asia/Singapore",
+        timezone: str = "Asia/Shanghai",
         schedule: BehaviorScheduleConfig | None = None,
         logger: logging.Logger | None = None,
     ) -> None:

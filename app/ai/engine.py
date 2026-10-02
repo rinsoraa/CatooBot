@@ -219,7 +219,20 @@ class AIEngine:
 
     async def chat(self, request: AIRequest) -> AIResponse:
         """Raw routed chat (no session handling). Raises AIError on failure."""
-        return await self.router.chat(request)
+        return await self.router.chat(self._with_default_max_tokens(request))
+
+    def _with_default_max_tokens(self, request: AIRequest) -> AIRequest:
+        """Apply the configured output budget to calls that don't pin their own.
+
+        A reasoning model can burn its whole completion on ``reasoning_content``
+        and return empty content (finish=length); an explicit budget bounds that
+        and, combined with the router's empty-response failover, limits the
+        blast radius. Callers that need a specific cap (observer, sandbox) set
+        ``max_tokens`` themselves and are left untouched.
+        """
+        if request.max_tokens is None and self.config.max_tokens > 0:
+            return request.model_copy(update={"max_tokens": self.config.max_tokens})
+        return request
 
     async def chat_in_session(
         self,
@@ -236,6 +249,7 @@ class AIEngine:
         history = await self.conversations.get_context(session_id)
         messages = self.build_messages(history, user_text, system_extra=system_extra)
         request = AIRequest(messages=messages, temperature=self.config.default_temperature)
+        request = self._with_default_max_tokens(request)
 
         self.log.info(
             "Chat session=%s prompt_messages=%d history=%d", session_id, len(messages), len(history)

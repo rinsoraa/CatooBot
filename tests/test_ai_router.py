@@ -320,3 +320,37 @@ class TestEmptyResponsePolicy:
         )
         with pytest.raises(AllModelsFailedError):
             await router.chat(request())
+
+
+class TestEmptyFinishLength:
+    """finish=length (budget exhausted, no text) is a distinct, counted mode."""
+
+    def _router_with_listener(self, behaviors, events):
+        provider = MockAIProvider(behaviors=behaviors)
+        specs = [ModelSpec(name=n, provider="mock", model=n) for n in behaviors]
+        router = ModelRouter(
+            specs,
+            {"mock": provider},
+            clock=FakeClock(),
+            logger=logging.getLogger("test.router"),
+            event_listener=lambda event, name: events.append((event, name)),
+        )
+        return router
+
+    async def test_finish_length_empty_is_signalled(self) -> None:
+        events: list[tuple[str, str | None]] = []
+        router = self._router_with_listener(
+            {"A": [EmptyResponseError("mock", "A", finish_reason="length")]}, events
+        )
+        with pytest.raises(AllModelsFailedError):
+            await router.chat(request())
+        assert ("empty_finish_length", "A") in events
+
+    async def test_reasoning_only_stop_is_not_finish_length(self) -> None:
+        events: list[tuple[str, str | None]] = []
+        router = self._router_with_listener(
+            {"A": [EmptyResponseError("mock", "A", finish_reason="stop")]}, events
+        )
+        with pytest.raises(AllModelsFailedError):
+            await router.chat(request())
+        assert ("empty_finish_length", "A") not in events

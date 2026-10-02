@@ -78,23 +78,38 @@ class ParticipationPolicy:
 
     # ------------------------------------------------------------ credit
 
-    def credit_participation(self, group_id: str, rate: float) -> bool:
+    def credit_participation(self, group_id: str, amount: float) -> bool:
         """Accumulate participation credit; True when a chime-in is earned.
 
-        ``rate`` is the configured participation probability (expected
-        participations per eligible message). Deterministic: no ``random()``.
-        Credit is capped at 1.0 so a burst of messages can't stack up replies.
+        ``amount`` is the credit this batch earns — the configured rate
+        multiplied by the number of eligible messages — so a 5-message batch and
+        five single-message ticks accrue the same credit. Deterministic: no
+        ``random()``. Credit is capped at 1.0 so a burst can't stack replies.
         """
-        if rate <= 0.0:
+        if amount <= 0.0:
             return False
         key = str(group_id)
         factor = self._engagement.factor(key) if self._engagement is not None else 1.0
-        credit = min(1.0, self._credit.get(key, 0.0) + rate * factor)
+        credit = min(1.0, self._credit.get(key, 0.0) + amount * factor)
         if credit >= 1.0:
             self._credit[key] = credit - 1.0
             return True
         self._credit[key] = credit
         return False
+
+    def accumulate_credit(self, group_id: str, amount: float) -> None:
+        """Bank credit *without* spending it — used by the defer path.
+
+        ``poor_timing`` (defer) must delay a reply but never veto it, so its
+        credit is banked and left for a later batch to spend via
+        :meth:`credit_participation`. A banked credit that reaches 1.0 is kept
+        at 1.0 (not consumed) until a non-deferred batch spends it.
+        """
+        if amount <= 0.0:
+            return
+        key = str(group_id)
+        factor = self._engagement.factor(key) if self._engagement is not None else 1.0
+        self._credit[key] = min(1.0, self._credit.get(key, 0.0) + amount * factor)
 
     # --------------------------------------------------------------- records
 

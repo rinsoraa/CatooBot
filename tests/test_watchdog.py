@@ -14,6 +14,7 @@ import time
 
 import pytest
 
+from app.core.activity import BlockingActivity
 from app.core.watchdog import EventLoopWatchdog
 
 
@@ -94,3 +95,40 @@ class TestAgainstARealLoop:
         assert first is second
         await watchdog.stop()
         await watchdog.stop()  # second stop is a no-op
+
+
+class FakeClock:
+    def __init__(self, start: float = 0.0) -> None:
+        self.value = start
+
+    def __call__(self) -> float:
+        return self.value
+
+    def advance(self, delta: float) -> None:
+        self.value += delta
+
+
+class TestAttribution:
+    def test_activity_overlap_reports_ops_in_window(self) -> None:
+        clock = FakeClock(0.0)
+        activity = BlockingActivity(clock=clock)
+        with activity.track("memory.vector scoring"):
+            clock.advance(0.5)
+        clock.advance(0.1)
+        with activity.track("web.render config"):
+            clock.advance(0.3)
+
+        names = [name for name, _ in activity.overlap(0.0, 1.0)]
+        assert "memory.vector scoring" in names and "web.render config" in names
+        # a window after the first op excludes it
+        assert [name for name, _ in activity.overlap(0.6, 1.0)] == ["web.render config"]
+
+    def test_warning_names_the_blocking_op(self, caplog) -> None:
+        clock = FakeClock(0.0)
+        activity = BlockingActivity(clock=clock)
+        with activity.track("memory.vector scoring"):
+            clock.advance(0.2)
+        watchdog = EventLoopWatchdog(threshold_ms=100, clock=clock, activity=activity)
+        with caplog.at_level(logging.WARNING, logger="CatooBot.Watchdog"):
+            watchdog.note_lag(0.2, window=(0.0, 0.2))
+        assert any("memory.vector scoring" in record.getMessage() for record in caplog.records)

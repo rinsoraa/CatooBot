@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from app.core.activity import blocking_fn
 from app.web import ui
 
 STATUS_TONE = {
@@ -33,6 +34,7 @@ def _tabs(active: str) -> str:
     )
 
 
+@blocking_fn("web.render conversation dashboard")
 def dashboard(data: dict[str, Any], turns: list[dict[str, Any]]) -> str:
     sessions = data.get("sessions", [])
     session_rows = (
@@ -93,6 +95,7 @@ def dashboard(data: dict[str, Any], turns: list[dict[str, Any]]) -> str:
     )
 
 
+@blocking_fn("web.render conversation continuity")
 def continuity_page(data: dict[str, Any]) -> str:
     if not data.get("enabled"):
         return ui.card(

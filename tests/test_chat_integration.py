@@ -165,6 +165,48 @@ class TestPrivateChat:
         finally:
             await bot.shutdown()
 
+    async def test_video_only_private_message_gets_placeholder(self, tmp_path) -> None:
+        """A caption-less video must reach her as a readable placeholder, not a blank."""
+        from app.message.event import PrivateMessageEvent
+
+        provider = MockAIProvider(behaviors={"A": ["这个视频有点意思"]})
+        bot = await make_character_bot(tmp_path, provider, models=["A"])
+        try:
+            raw = {
+                "post_type": "message",
+                "self_id": 10001,
+                "time": 1700000000,
+                "message_type": "private",
+                "sub_type": "friend",
+                "message_id": 12,
+                "user_id": 777,
+                "message": [{"type": "video", "data": {"url": "https://x/a.mp4", "file": "a.mp4"}}],
+                "raw_message": "[CQ:video,file=a.mp4]",
+                "sender": {"user_id": 777, "nickname": "Alice"},
+            }
+            event = PrivateMessageEvent.model_validate(raw)
+            await bot.event_bus.emit(event)
+            await bot.conversation.wait_idle()
+            texts = bot.adapter.sent_texts()  # type: ignore[attr-defined]
+            assert texts and texts[0] == "这个视频有点意思"
+            assert provider.calls and provider.calls[0]["last_user"] == "（发来一个视频）"
+        finally:
+            await bot.shutdown()
+
+    def test_unrecognized_media_placeholder_covers_video_file_unknown(self) -> None:
+        from app.message.message import Message
+        from plugins.chat.plugin import CharacterPlugin
+
+        def placeholder(seg: dict) -> str:
+            return CharacterPlugin._unrecognized_media_placeholder(  # noqa: SLF001
+                Message.from_onebot([seg])
+            )
+
+        assert placeholder({"type": "video", "data": {"file": "a.mp4"}}) == "（发来一个视频）"
+        assert placeholder({"type": "file", "data": {"file": "doc.pdf"}}) == "（发来一个文件）"
+        assert placeholder({"type": "record", "data": {"file": "v.amr"}}) == "（发来一条媒体消息）"
+        assert placeholder({"type": "text", "data": {"text": "hi"}}) == ""
+
 
 class TestGroupChat:
     async def test_at_bot_triggers_character(self, tmp_path) -> None:

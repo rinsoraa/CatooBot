@@ -56,6 +56,11 @@ ai:
   # 默认采样温度
   default_temperature: 0.8
 
+  # 输出预算：给 reasoning 模型留出「完成话」的预算，消除 finish=length 的空响应
+  # （推理模型可能把整段 completion 花在思考上、正文为空）。建议 2048 起；
+  # 0 = 由平台决定（等于未生效）。路由的空响应故障转移只是兜底，设这里才是根治。
+  max_tokens: 0
+
   # 短期上下文：每个会话保留最近 N 条消息（user+assistant）
   context:
     enabled: true
@@ -126,11 +131,13 @@ models:
     timeout: 10
 
   # —— 记忆抽取模型（把聊天沉淀成长记忆）：填 chat/extra 里的 name；留空 = 用 chat 第一个 ——
-  # 推荐指向非推理小模型（如 extra 里的 cn:glm-5.3-flash / vision），
-  # 别让抽取落在 deepseek-v4.* 这类推理模型上：思考占 token，慢且贵，还可能只思考不输出。
+  # 以实测延迟为准选模型：推理模型会"只思考不输出"（finish=length），但非推理小模型也不一定更快
+  # （实测 cn:glm-5.3-flash 抽取反而比 primary 更慢）。memory.extraction.timeout 默认已收紧到 12s。
   extraction: ""
 
   # —— 内部"快模型"（都填 chat/extra 里的 name；留空 = 用 chat 默认）——
+  # decision 建议填 "fallback"（cn:minimax-m3，非推理）。实测：fallback 3.4s/5 次全解析成功；
+  # small（cn:glm-5.3-flash）26s 且 2/5 空响应；primary 推理模型 4/5 finish=length 空响应。
   decision: ""                # 社交认知：观察 / 续话判断
   planner: ""                 # Agent：任务规划
   evaluator: ""               # Agent：结果评估（默认用规则，不调模型）
@@ -140,7 +147,7 @@ models:
 # 角色信息默认留空——全部通过 WebUI（/character 页面）填写并热加载。
 # 这里只作为初始默认值；WebUI 保存后会持久化到数据库。
 character:
-  timezone: "Asia/Singapore"   # 角色时间感所用时区（不要写死在代码里）
+  timezone: "Asia/Shanghai"   # 角色时间感所用时区（不要写死在代码里）
   identity: {}        # name / nickname / age / birthday / gender / occupation / location / background
   personality: {}     # traits / likes / dislikes / habits / interests
   speaking_style: {}  # language / tone / emoji / kaomoji / length_preference / notes

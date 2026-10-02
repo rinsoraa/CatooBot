@@ -25,6 +25,7 @@ from app.social.models import (
     GroupMessage,
     ParticipationDecision,
 )
+from app.utils.logger import redact
 
 OBSERVER_PROMPT = """你正在帮助一个虚拟角色判断"是否应该自然加入当前群聊"。
 你判断的是"这个角色此刻有没有自然参与这段对话的理由"，而不是"模型要不要生成回复"。
@@ -107,6 +108,9 @@ class GroupObserver:
             # a 300 cap truncated every response (finish=length) and the
             # observer silently degraded to rules on every call.
             max_tokens=900,
+            # Tag the call so the model page can break out observer latency /
+            # tokens instead of lumping it under an empty purpose.
+            metadata={"purpose": "social_observer"},
         )
         if self._config.decision_model:
             request = request.with_model(self._config.decision_model)
@@ -115,9 +119,13 @@ class GroupObserver:
         except AIError as exc:
             self._log.warning("[Social] observer model failed, using rules: %s", exc)
             return None
-        parsed = self._parse(response.content)
-        if parsed is None:
-            self._log.warning("[Social] observer returned no valid JSON; using rules")
+        status, parsed = self._parse(response.content)
+        if status != "ok" or parsed is None:
+            # Same three-state contract as memory extraction: a *parse* failure
+            # logs the model's raw output (first 200 chars) so a prompt drift
+            # is visible immediately instead of silently degrading to rules.
+            excerpt = redact(" ".join((response.content or "").split())[:200])
+            self._log.warning("[Social] observer returned no valid JSON（前 200 字）：%s", excerpt)
             return None
         return self._from_json(parsed, [m.message_id for m in batch])
 
@@ -147,6 +155,10 @@ class GroupObserver:
                 scores=scores,
             )
         if scores.topic_relevance >= 0.4:
+            # Mid-range relevance with too little contribution/social-fit to
+            # reply *now*: defer rather than ignore. This is the *offline*
+            # fallback only — with the AI engine on, poor_timing comes from the
+            # model's JSON, whose surface is governed by the prompt, not here.
             return ParticipationDecision(
                 decision="defer",
                 reason_code="poor_timing",
@@ -177,17 +189,26 @@ class GroupObserver:
         return "\n".join(lines)
 
     @staticmethod
-    def _parse(content: str) -> dict[str, Any] | None:
+    def _parse(content: str) -> tuple[str, dict[str, Any] | None]:
+        """Tolerant JSON extraction from the model reply.
+
+        Returns ``(status, data)``:
+
+        * ``parse_failed`` — no JSON / invalid JSON / top-level not a dict;
+        * ``ok`` — a usable decision object.
+        """
         text = (content or "").strip()
         start = text.find("{")
         end = text.rfind("}")
         if start == -1 or end <= start:
-            return None
+            return "parse_failed", None
         try:
             data = json.loads(text[start : end + 1])
         except ValueError:
-            return None
-        return data if isinstance(data, dict) else None
+            return "parse_failed", None
+        if not isinstance(data, dict):
+            return "parse_failed", None
+        return "ok", data
 
     @staticmethod
     def _from_json(data: dict[str, Any], target_ids: list[str]) -> ParticipationDecision:

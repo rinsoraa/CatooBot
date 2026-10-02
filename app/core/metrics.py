@@ -24,7 +24,9 @@ class Metrics:
             "messages_received": self.get("messages_received"),
             "ai_requests": self.get("ai_requests"),
             "ai_errors": self.get("ai_errors"),
+            "ai_empty_finish_length": self.get("ai_empty_finish_length"),
             "rate_limited": self.get("rate_limited"),
+            "social_defer": self.get("social_defer"),
             "replies_sent": self.get("replies_sent"),
             "memories_extracted": self.get("memories_extracted"),
         }
