@@ -202,6 +202,10 @@ class SandboxRuntime:
         #: monotonic counter bumped by every *applied* mutation — a proposal
         #: built against an older revision is stale and must be re-validated (§20)
         self.world_revision = 0
+        #: the second consistency line (Phase 8.1 §13): what the character
+        #: *knows* changed (relationship/social context) without the physical
+        #: world moving; a proposal is stale against either revision (§16)
+        self.cognitive_revision = 0
         simulation_seed = int(getattr(config, "simulation_seed", 0))
         self._rng = seeded_rng(simulation_seed)
 
@@ -1272,6 +1276,7 @@ class SandboxRuntime:
                 source="character_action",
                 timestamp=float(self._clock()),
                 outcome="completed",
+                external_ids=dict(pending.get("external_ids", {}) or {}),
             )
             task = asyncio.create_task(
                 self.apply_social_interaction(
@@ -1494,11 +1499,24 @@ class SandboxRuntime:
     # ---------------------------------------------- external world (§4-§13)
 
     def _bump_world_revision(self, mutation: Any) -> None:
-        # relationship/social bookkeeping is state, but it cannot change what
-        # an action requires or does — a pending decision stays valid
+        # relationship/social bookkeeping is audited like anything else, but it
+        # cannot change what an action requires or does — it never touches the
+        # world revision; the cognitive line is bumped once per *change* by its
+        # owner (Phase 8.1 §13-§16)
         if not getattr(mutation, "affects_world", True):
             return
         self.world_revision += 1
+
+    def note_cognitive_change(self, *, reason: str = "") -> None:
+        """One thing the character *learned* (§13) — one bump, whatever it moved.
+
+        A relationship fact that shifts four dimensions is still a single
+        change; the callers are the owners of the cognitive line (today: the
+        relationship engine) so the counting stays in one place.
+        """
+        self.cognitive_revision += 1
+        if reason:
+            self._log.debug("[Sandbox] cognitive revision %d (%s)", self.cognitive_revision, reason)
 
     # ---------------------------------------------------- goal layer (§7)
 
@@ -1670,8 +1688,10 @@ class SandboxRuntime:
         self._record_invitation_outcome(
             actor=actor, declined=False, correlation=correlation, causation=received_id
         )
+        person = self.persons.for_qq(actor)
         self._accepted_invitation = {
-            "person_id": self.persons.for_qq(actor).person_id,
+            "person_id": person.person_id,
+            "external_ids": dict(person.external_ids),
             "action_id": outcome.action_id,
             "correlation": correlation,
         }
@@ -1704,6 +1724,7 @@ class SandboxRuntime:
             timestamp=float(self._clock()),
             outcome="declined" if declined else "accepted",
             significance=InteractionSignificance.meaningful,
+            external_ids=dict(person.external_ids),
         )
         task = asyncio.create_task(
             self.apply_social_interaction(fact, correlation_id=correlation, causation_id=causation)
@@ -1819,7 +1840,13 @@ class SandboxRuntime:
             return result
 
         # accepted: the outside fact becomes a stimulus (§52 — never a command)
-        self._apply_influence_effects(event, decision, correlation)
+        pending_social = self._apply_influence_effects(event, decision, correlation)
+        if pending_social:
+            # §19A: the fact *this* event produced lands before any decision it
+            # triggers is built — an invitation decision must see the newest
+            # trust/closeness (the world revision is untouched by it, so this is
+            # the only ordering that makes the context true)
+            await asyncio.gather(*pending_social, return_exceptions=True)
 
         if decision.action is InfluenceAction.INTERRUPT:
             # §14: the influence layer says "this matters"; the decision layer
@@ -1850,14 +1877,22 @@ class SandboxRuntime:
 
     def _apply_influence_effects(
         self, event: ExternalWorldEvent, decision: Any, correlation: str
-    ) -> None:
-        """Non-action consequences of an accepted external fact."""
+    ) -> list[Any]:
+        """Non-action consequences of an accepted external fact.
+
+        Returns the social tasks this event started, so a decision triggered by
+        the *same* event can let them land first (§19A); everything else stays
+        asynchronous (§19B).
+        """
+        pending: list[Any] = []
         if event.source is ExternalSource.qq:
             self._private_chat_until = float(self._clock()) + 1800.0
             familiar = bool(
                 event.metadata.get("familiar", event.actor_relationship == "core_friend")
             )
-            self._record_qq_interaction(event, familiar=familiar)
+            task = self._record_qq_interaction(event, familiar=familiar)
+            if task is not None:
+                pending.append(task)
             self._adjust_need(
                 "social_need",
                 -0.08 if familiar else -0.04,
@@ -1886,13 +1921,15 @@ class SandboxRuntime:
                 source=event.source.value,
                 reason="delivery_arrived",
             )
+        return pending
 
-    def _record_qq_interaction(self, event: Any, *, familiar: bool) -> None:
+    def _record_qq_interaction(self, event: Any, *, familiar: bool) -> Any:
         """QQ message → deterministic SocialInteractionFact (§9/§17/§18).
 
         Trivial small talk is classified as such and moves nothing; an
         invitation becomes a ``game_invitation`` fact — never a bond by itself
-        (§19/§33: the invite is not the acceptance).
+        (§19/§33: the invite is not the acceptance). Returns the task so the
+        caller can settle it before a decision built from the same event (§19A).
         """
         person = self.persons.for_qq(
             event.actor_id, display_name=str(event.metadata.get("display_name", "") or "")
@@ -1913,12 +1950,14 @@ class SandboxRuntime:
             timestamp=float(event.timestamp or self._clock()),
             social_space_id=str(event.metadata.get("social_space_id", "") or ""),
             significance=significance,
-            metadata={"display_name": person.display_name, **person.external_ids},
+            external_ids=dict(person.external_ids),  # real handles, never the id
+            metadata={"display_name": person.display_name},
         )
-        task = asyncio.create_task(  # never blocks the influence pipeline
+        task = asyncio.create_task(  # background unless a decision needs it (§19A)
             self.apply_social_interaction(fact, correlation_id=event.correlation_id or "")
         )
         self._track_background(task)
+        return task
 
     def _track_background(self, task: Any) -> None:
         tasks = getattr(self, "_social_tasks", None)
@@ -2523,7 +2562,10 @@ class SandboxRuntime:
             causation_id=published.event_id if published else causation_id,
         )
         await self.relationships_dyn.remember_person(
-            fact.person_id, display_name=str(fact.metadata.get("display_name", "") or "")
+            fact.person_id,
+            display_name=str(fact.metadata.get("display_name", "") or ""),
+            external_ids=dict(fact.external_ids),
+            source=fact.source,
         )
         return state
 

@@ -390,7 +390,14 @@ sandbox:
   bible_path: "config/character_bible.md"
   allow_ai_decisions: true   # 只在多个候选都合理时叫模型裁决；false = 纯规则
   reset_on_bible_change: true
-  core_friend_ids: []        # ← 空凛的 QQ 号填在这里（更快回复/联机优先/深夜拉回）
+  # ← 核心好友 QQ 号：更快回复 / 联机优先 / 深夜拉回。
+  # 单个核心好友用列表即可；多个核心好友请用「QQ号: 档案里的名字」映射，
+  # 避免全部绑到同一个人（歧义时程序只警告，不会乱绑）：
+  #   core_friend_ids:
+  #     "123456": "空凛"
+  #     "234567": "另一个核心好友"
+  core_friend_ids: []
+  core_friend_identities: {}  # 等价写法（优先级更高）：{"123456": "空凛"}
   social_space_map: {}       # 例：QQ 群号 → "game_group"/"cat_group"/"minecraft_server"
 
 # ============================================================

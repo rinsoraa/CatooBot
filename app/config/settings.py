@@ -668,7 +668,12 @@ class SandboxConfig(BaseModel):
     max_background_messages_per_day: int = Field(default=3, ge=0)
     #: 启动时把人物档案同步成 WebUI 的 /character 角色设定（唯一权威来源）
     sync_persona_from_bible: bool = True
-    core_friend_ids: list[str] = Field(default_factory=list)
+    #: QQ 用户号 → 核心朋友。两种写法：
+    #:   - 旧列表 ["123456"]：仅当 Bible 只有一个核心好友时可映射（否则警告并退化为普通身份）
+    #:   - 映射 {"123456": "空凛", "234567": "阿澈"}：一一对应，推荐
+    core_friend_ids: list[str] | dict[str, str] = Field(default_factory=list)
+    #: 显式 QQ → Bible 核心好友名映射（优先于上面两种写法；名字不匹配会被忽略并警告）
+    core_friend_identities: dict[str, str] = Field(default_factory=dict)
     #: QQ 群号 → SocialSpace id（游戏群/猫图群…）；未映射的群自动成为 qq:<gid>
     social_space_map: dict[str, str] = Field(default_factory=dict)
 

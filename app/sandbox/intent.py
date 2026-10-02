@@ -86,6 +86,10 @@ class DecisionRequest(BaseModel):
     deadline: float = 0.0
     #: world revision captured when the request was built (§20 staleness)
     world_revision: int = 0
+    #: cognitive revision captured at the same moment (Phase 8.1 §15): what the
+    #: character knows — relationships/social context — can move without the
+    #: world moving, and a proposal must not outlive either
+    cognitive_revision: int = 0
     correlation_id: str = ""
     causation_id: str = ""
 
@@ -116,6 +120,11 @@ class DecisionOutcome(BaseModel):
 #: two or more executable candidates with a real trade-off need the model;
 #: one candidate (or none) never does (§13)
 LLM_MIN_CANDIDATES = 2
+
+#: a proposal whose request no longer matches the live revisions is not
+#: "answered badly" — the request itself is out of date (§16/§22), so it is
+#: rejected outright instead of being replaced by a deterministic pick
+STALE_REASONS = frozenset({"world_changed", "cognitive_changed"})
 
 
 class DecisionGate:
@@ -156,6 +165,10 @@ class DecisionValidator:
             return False, "expired"
         if request.world_revision != rt.world_revision:
             return False, "world_changed"  # stale: state moved under the model
+        if request.cognitive_revision != rt.cognitive_revision:
+            # §16: the relationship/social picture moved — an answer that was
+            # written against the old picture is not executed
+            return False, "cognitive_changed"
         if candidate.kind is CandidateKind.action:
             definition = rt.actions.definitions.get(candidate.action_id)
             if definition is None:
@@ -261,7 +274,18 @@ class DecisionCoordinator:
                 c for c in request.candidates if c.candidate_id == proposal.candidate_id
             )
             return self._accept(request, candidate, source="llm")
-        # §11: a rejected proposal falls back deterministically — never a crash
+        if why in STALE_REASONS:
+            # §16: the world *or* what the character knows moved while the model
+            # was thinking — nothing from this request may execute
+            self.rejections += 1
+            self._publish(ET.DECISION_REJECTED, request, reason=why)
+            return DecisionOutcome(
+                request_id=request.request_id,
+                accepted=False,
+                reason=why,
+                correlation_id=correlation_id,
+            )
+        # §11: any other rejected proposal falls back deterministically — never a crash
         self.fallbacks += 1
         pick = self.deterministic_pick(self.gate.executable(request.candidates))
         self._publish(
@@ -292,7 +316,7 @@ class DecisionCoordinator:
         causation_id: str = "",
         context: dict[str, Any] | None = None,
     ) -> DecisionRequest:
-        """Build a request stamped with the live world revision (§20)."""
+        """Build a request stamped with the live world and cognitive revisions (§20)."""
         rt = self._rt
         return DecisionRequest(
             request_id=f"dec_{uuid.uuid4().hex[:12]}",
@@ -304,6 +328,7 @@ class DecisionCoordinator:
             deadline=float(rt._clock())  # noqa: SLF001
             + float(getattr(rt.config, "decision_timeout", 20.0)),
             world_revision=rt.world_revision,
+            cognitive_revision=rt.cognitive_revision,
             correlation_id=correlation_id,
             causation_id=causation_id,
         )

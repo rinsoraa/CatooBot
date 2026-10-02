@@ -21,6 +21,8 @@ Design boundaries this module holds:
 from __future__ import annotations
 
 import hashlib
+import json
+import logging
 import re
 import uuid
 from enum import Enum
@@ -30,6 +32,8 @@ from pydantic import BaseModel, Field
 
 from app.sandbox.events import SandboxEventType as ET
 from app.sandbox.mutations import StateMutation
+
+logger = logging.getLogger("CatooBot.Sandbox")
 
 
 class InteractionSignificance(str, Enum):  # noqa: UP042 - §18
@@ -87,6 +91,9 @@ class SocialInteractionFact(BaseModel):
     outcome: str = ""
     significance: InteractionSignificance = InteractionSignificance.normal
     importance: float = Field(default=0.3, ge=0.0, le=1.0)
+    #: the platform handles this fact proves — persisted with the person so a
+    #: later surface can resolve the same person without guessing (§7/§31)
+    external_ids: dict[str, str] = Field(default_factory=dict)
     metadata: dict[str, Any] = Field(default_factory=dict)
 
     @classmethod
@@ -154,22 +161,56 @@ def person_id_for(*, kind: str, value: str) -> str:
     return f"person_{kind}_{digest}" if kind != "bible" else f"person_bible_{digest}"
 
 
+def decode_external_ids(raw: Any) -> dict[str, str]:
+    """Stored ``external_ids`` JSON → mapping, dropping legacy fake entries.
+
+    Phase 8 rows could hold ``{"person_id": "person_qq_x"}``: the person id is
+    already its own column, so that value maps nowhere and is reported empty
+    (§5) — never guessed into a QQ identity.
+    """
+    try:
+        data = json.loads(raw) if isinstance(raw, str) else dict(raw or {})
+    except Exception:  # noqa: BLE001 - a corrupt cell is simply "no mapping"
+        return {}
+    if set(data) == {"person_id"}:
+        return {}
+    return {str(key): str(value) for key, value in data.items() if value}
+
+
 class PersonIdentityResolver:
-    """Maps platform handles (qq today, more later) onto person ids (§31)."""
+    """Maps platform handles (qq today, more later) onto person ids (§7/§31).
+
+    A QQ id only reaches a bible core friend through an *explicit* mapping
+    (§9): ``core_friend_identities: {"123456": 空凛}`` (or the mapping form of
+    ``core_friend_ids``). The legacy one-entry list keeps working while it is
+    unambiguous — one id and one bible core friend; anything ambiguous falls
+    back to a plain ``person_qq_*`` identity **and warns** instead of guessing.
+    """
 
     def __init__(self, runtime: Any) -> None:
         self._rt = runtime
+        self._warned: set[str] = set()
+
+    # ---------------------------------------------------------------- entry
 
     def for_qq(self, qq_id: str, *, display_name: str = "") -> PersonIdentity:
-        """QQ handle → identity; a bible core friend keeps his canonical id."""
+        """QQ handle → identity; only an explicit mapping reaches a core friend."""
         qq = str(qq_id)
-        core_ids = {str(item) for item in getattr(self._rt.config, "core_friend_ids", []) or []}
-        bible_person = self._bible_core_person() if qq in core_ids else None
-        if bible_person is not None:
-            identity = bible_person.model_copy(deep=True)
-            identity.external_ids.setdefault("qq", qq)
-            identity.display_name = identity.display_name or display_name
-            return identity
+        name = self._core_name_for(qq)
+        if name:
+            person = self._bible_person(name)
+            if person is not None:
+                identity = person.model_copy(deep=True)
+                identity.external_ids.setdefault("qq", qq)
+                identity.display_name = identity.display_name or display_name
+                return identity
+        if self._legacy_ambiguous(qq):
+            self._warn(
+                f"ambiguous:{qq}",
+                f"core-friend configuration cannot express which bible friend QQ {qq} is"
+                " — using a plain person_qq identity; configure core_friend_identities"
+                " (or core_friend_ids as a mapping) to bind them explicitly",
+            )
         return PersonIdentity(
             person_id=person_id_for(kind="qq", value=qq),
             display_name=display_name,
@@ -177,18 +218,67 @@ class PersonIdentityResolver:
             source="qq",
         )
 
-    def _bible_core_person(self) -> PersonIdentity | None:
-        core = list(getattr(self._rt.seed, "core_friend_names", []) or [])
-        for name in core:
-            state = self._rt.relationships_dyn.initial_for_name(name)
-            if state is not None:
-                return PersonIdentity(
-                    person_id=state.person_id,
-                    display_name=name,
-                    external_ids={"character_bible": name},
-                    source="bible",
-                )
-        return None
+    # -------------------------------------------------------------- mapping
+
+    def core_map(self) -> dict[str, str]:
+        """QQ id → bible core friend name, from *explicit* configuration only."""
+        cfg = getattr(self._rt, "config", None)
+        mapping: dict[str, str] = {}
+        raw = getattr(cfg, "core_friend_ids", []) or []
+        if isinstance(raw, dict):
+            mapping.update({str(k): str(v) for k, v in raw.items() if v})
+        explicit = getattr(cfg, "core_friend_identities", None) or {}
+        if isinstance(explicit, dict):
+            mapping.update({str(k): str(v) for k, v in explicit.items() if v})
+        if isinstance(raw, (list, tuple)) and len(raw) == 1:
+            names = self._core_names()
+            if len(names) == 1:  # legacy single-id form: unambiguous
+                mapping.setdefault(str(raw[0]), names[0])
+        return mapping
+
+    def _core_name_for(self, qq: str) -> str:
+        name = self.core_map().get(qq, "")
+        if name and name not in self._core_names():
+            self._warn(
+                f"unknown:{qq}",
+                f"core-friend mapping for QQ {qq} names {name!r}, which is not a bible"
+                " core friend — the mapping is ignored",
+            )
+            return ""
+        return name
+
+    def _legacy_ambiguous(self, qq: str) -> bool:
+        """True when the old list form claims this QQ but cannot express the map."""
+        raw = getattr(self._rt.config, "core_friend_ids", []) or []
+        if not isinstance(raw, (list, tuple)):
+            return False
+        ids = [str(item) for item in raw]
+        if qq not in ids or self._core_name_for(qq):
+            return False
+        if len(ids) > 1:
+            return True  # several ids with no names: never bind them all to one
+        return len(self._core_names()) != 1  # one id, but which bible friend?
+
+    def _core_names(self) -> list[str]:
+        return [str(name) for name in getattr(self._rt.seed, "core_friend_names", []) or []]
+
+    def _bible_person(self, name: str) -> PersonIdentity | None:
+        state = self._rt.relationships_dyn.initial_for_name(name)
+        if state is None:
+            return None
+        return PersonIdentity(
+            person_id=state.person_id,
+            display_name=name,
+            external_ids={"character_bible": name},
+            source="bible",
+        )
+
+    def _warn(self, key: str, message: str) -> None:
+        if key in self._warned:
+            return
+        self._warned.add(key)
+        log = getattr(self._rt, "_log", logger)
+        log.warning("[Sandbox] %s", message)
 
 
 def initial_states(definition: Any, *, character_id: str, clock: Any) -> list[RelationshipState]:
@@ -226,6 +316,8 @@ class RelationshipUpdateEngine:
         self._rt = runtime
         self.applied = 0
         self.milestones = 0
+        #: facts whose state change could not be persisted (reported, never hidden)
+        self.persist_failures = 0
 
     def deltas_for(self, fact: SocialInteractionFact) -> dict[str, float]:
         base = dict(INTERACTION_RULES.get(fact.interaction_type, {}))
@@ -243,22 +335,30 @@ class RelationshipUpdateEngine:
     async def apply(
         self, fact: SocialInteractionFact, *, correlation_id: str = "", causation_id: str = ""
     ) -> tuple[RelationshipState, bool]:
-        """Apply one fact; returns (state, milestone_crossed)."""
+        """Apply one fact; returns (state, milestone_crossed).
+
+        Order (§26): read before → compute after → apply → *record the mutation*
+        → persist → announce. The mutation trail's ``before``/``after`` are the
+        values that end up persisted; a failed write is reported, never
+        silently promoted to "committed" (§27) and never rolled back — the
+        in-memory relationship stays the truth the world keeps using.
+        """
         state = await self._rt.relationships_dyn.ensure(fact.person_id)
         mutation_facts = self.deltas_for(fact)
         positive = any(delta > 0 for delta in mutation_facts.values())
         negative = any(delta < 0 for delta in mutation_facts.values())
         crossed = False
-        fields_before: dict[str, float] = {}
+        changes: list[tuple[str, float, float]] = []
         for field, delta in mutation_facts.items():
             before = float(getattr(state, field))
             after = max(0.0, min(1.0, before + delta))
             if after == before:
                 continue
-            fields_before[field] = before
-            setattr(state, field, after)
+            changes.append((field, before, after))
             if any(before < mark <= after for mark in MILESTONES):
                 crossed = True
+        for field, _before, after in changes:
+            setattr(state, field, after)
         state.interaction_count += 1
         state.last_interaction_at = float(fact.timestamp or self._rt._clock())  # noqa: SLF001
         state.updated_at = float(self._rt._clock())  # noqa: SLF001
@@ -266,22 +366,34 @@ class RelationshipUpdateEngine:
             state.positive_interactions += 1
         if negative:
             state.negative_interactions += 1
-        await self._rt.relationships_dyn.save(state)
 
         significance = "major" if crossed else fact.significance.value
-        for field, before in fields_before.items():
+        for field, before, after in changes:
             self._rt.mutations.record(  # canonical mutation trail (§14)
                 StateMutation(
                     target=f"relationship:{fact.person_id}",
                     field=field,
                     before=before,
-                    after=float(getattr(state, field)),
+                    after=after,
                     source=fact.source,
                     reason=fact.interaction_type,
                     # a relationship moves *alongside* the world, never inside
                     # it: it must not invalidate a decision already in flight
+                    # for world-legality reasons — see cognitive_revision (§13)
                     affects_world=False,
                 )
+            )
+        # one fact, one cognitive step (§13): what she knows changed, whether
+        # that moved one dimension or four
+        self._rt.note_cognitive_change(reason=fact.interaction_type)
+        persisted = await self._rt.relationships_dyn.save(state)
+        if not persisted and self._rt.relationships_dyn.available:
+            self.persist_failures += 1
+            log = getattr(self._rt, "_log", logger)
+            log.warning(  # §27: bookkeeping never crashes the world, but never lies
+                "[Sandbox] relationship state for %s could not be persisted"
+                " (in-memory state kept, world continues)",
+                fact.person_id,
             )
         self.applied += 1
         if crossed:
@@ -295,12 +407,13 @@ class RelationshipUpdateEngine:
                 "interaction_type": fact.interaction_type,
                 "interaction_id": fact.interaction_id,
                 "significance": significance,
-                "fields": list(fields_before),
+                "fields": [field for field, _b, _a in changes],
                 "trust": round(state.trust, 3),
                 "familiarity": round(state.familiarity, 3),
                 "closeness": round(state.closeness, 3),
                 "social_comfort": round(state.social_comfort, 3),
                 "relation_type": state.relation_type,
+                "persisted": bool(persisted),
             },
             causation_id=causation_id,
             correlation_id=correlation_id,
@@ -362,8 +475,6 @@ class RelationshipStore:
         )
         if row is None:
             return None
-        import json
-
         state = RelationshipState.model_validate(json.loads(row["data"]))
         self._cache[person_id] = state
         return state
@@ -399,8 +510,6 @@ class RelationshipStore:
         self._cache[state.person_id] = state
         if not self.available:
             return False
-        import json
-
         now = float(self._rt._clock())
         state.updated_at = now
         try:
@@ -424,8 +533,6 @@ class RelationshipStore:
                 " ORDER BY updated_at DESC LIMIT 50",
                 (self._rt.character_id,),
             )
-            import json
-
             cached = set(self._cache)
             for row in rows:
                 state = RelationshipState.model_validate(json.loads(row["data"]))
@@ -436,12 +543,26 @@ class RelationshipStore:
         states.sort(key=lambda s: (-(s.closeness + s.trust), -s.last_interaction_at, s.person_id))
         return [state.model_copy(deep=True) for state in states[:limit]]
 
-    async def remember_person(self, person_id: str, *, display_name: str = "") -> None:
-        """Keep the platform→person mapping (§7/§31). Best-effort."""
+    async def remember_person(
+        self,
+        person_id: str,
+        *,
+        display_name: str = "",
+        external_ids: dict[str, str] | None = None,
+        source: str = "runtime",
+    ) -> None:
+        """Keep the platform→person mapping (§7/§31). Best-effort.
+
+        ``external_ids`` stores the *real* handles (``{"qq": "123456"}``) —
+        never the person id: ``person_id`` is already its own column and a fake
+        self-mapping would be worthless to any future surface (§4). An empty
+        mapping never overwrites a known one.
+        """
         if not self.available:
             return
-        import json
-
+        payload = json.dumps(
+            {str(key): str(value) for key, value in (external_ids or {}).items() if value}
+        )
         try:
             await self._db.execute(
                 """INSERT INTO sandbox_persons
@@ -451,17 +572,47 @@ class RelationshipStore:
                        display_name = CASE
                            WHEN excluded.display_name <> '' THEN excluded.display_name
                            ELSE sandbox_persons.display_name END,
+                       external_ids = CASE
+                           WHEN excluded.external_ids <> '{}' THEN excluded.external_ids
+                           ELSE sandbox_persons.external_ids END,
+                       source = CASE
+                           WHEN excluded.source <> '' THEN excluded.source
+                           ELSE sandbox_persons.source END,
                        updated_at = excluded.updated_at""",
                 (
                     person_id,
                     display_name,
-                    json.dumps({"person_id": person_id}),
-                    "runtime",
+                    payload,
+                    source,
                     float(self._rt._clock()),
                 ),
             )
         except Exception:  # noqa: BLE001 - identity bookkeeping never breaks the world
             pass
+
+    async def person_row(self, person_id: str) -> dict[str, Any] | None:
+        """The stored identity, with legacy mappings decoded away (§5).
+
+        Phase 8 rows could contain ``{"person_id": ...}`` in ``external_ids``;
+        that is *not* a platform mapping and is reported as empty rather than
+        mistaken for a QQ identity.
+        """
+        if not self.available:
+            return None
+        row = await self._db.fetchone(
+            "SELECT person_id, display_name, external_ids, source, updated_at"
+            " FROM sandbox_persons WHERE person_id = ?",
+            (person_id,),
+        )
+        if row is None:
+            return None
+        return {
+            "person_id": str(row["person_id"]),
+            "display_name": str(row["display_name"]),
+            "external_ids": decode_external_ids(row["external_ids"]),
+            "source": str(row["source"]),
+            "updated_at": float(row["updated_at"]),
+        }
 
     def describe(self, state: RelationshipState) -> str:
         """Neutral one-liner for prompts/decision context (§23)."""

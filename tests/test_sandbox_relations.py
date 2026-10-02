@@ -397,16 +397,18 @@ class TestRelationshipInfluencesDecision:
         """§21: a relationship moves alongside the world, never inside it.
 
         Bookkeeping is audited and persisted, but it cannot change what an
-        action requires or does — so it must not invalidate a proposal that is
-        being validated against the world right now.
+        action requires or does — the world revision stays put while the
+        cognitive one carries the change (Phase 8.1 §13).
         """
         db = await make_db(tmp_path)
         runtime = await make_sandbox(db=db, clock=Clock())
         try:
             person = person_id_for(kind="qq", value="7017")
             revision = runtime.world_revision
+            cognitive = runtime.cognitive_revision
             await fact(runtime, person, "shared_activity")
             assert runtime.world_revision == revision  # no world bump
+            assert runtime.cognitive_revision > cognitive  # her knowledge moved
             audited = [
                 entry
                 for entry in runtime.mutations.recent(limit=20)

@@ -3,6 +3,44 @@
 本文件记录 CatooBot 的版本演进。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号见 `pyproject.toml`；日期取自真实提交历史（本仓库 2026-09-30 起）。
 
+## [Unreleased] — v2.1 Phase 8.1 Remediation · Person Identity + Cognitive Revision
+
+- **`external_ids` 持久化真实平台映射（§1-§6）**：`remember_person()` 现在接收
+  `external_ids` / `source`，数据库里存的是真句柄（`{"qq": "123456"}`），
+  不再把 `person_id` 塞进 external_ids（person_id 已是独立字段）。空映射永不
+  覆盖已知映射。**兼容旧库**：`decode_external_ids()` 把
+  `{"person_id": ...}` 视为 legacy 无效映射 → 读取时报告为空，绝不猜成 QQ 身份，
+  下一次真实平台身份到达时覆盖。新增 `person_row()` 作为带 legacy 解码的读入口。
+- **多 Core Friend 一一映射（§7-§11）**：`PersonIdentityResolver` 只在**显式配置**
+  下把 QQ 绑到 Bible 好友——`core_friend_identities: {"123": "空凛"}` 或
+  `core_friend_ids` 的映射写法；旧列表写法在「一个 QQ + 一个 Bible 核心好友」时
+  继续生效（空凛行为不变）。**歧义不猜**：多核心好友 + 旧列表、或多 id 无名字，
+  一律退化为 `person_qq_<hash>` 并记一次 WARNING。Bible 编译器同时修正
+  `core=index==0` → 按 `type: core_friend` 判定（Bible 说了算；未声明时保留
+  第一条为回退），因此「多个核心好友」现在真的能被识别。
+- **Cognitive Revision（§12-§17/§24/§25）**：关系变化不再只被世界 revision 掩盖——
+  新增 `runtime.cognitive_revision`（transient，不落库），**一次关系事实 = 一次
+  bump**（无论动了几个维度）；`DecisionRequest` 同时记录
+  `world_revision` + `cognitive_revision`，Validator 两者分别检查，认知过期返回
+  `cognitive_changed`。**stale 即拒绝**：`world_changed` / `cognitive_changed`
+  不再走确定性地重挑，而是直接 `DECISION_REJECTED`，本次请求的任何动作都不执行
+  （其他被拒提案仍按 §11 回退）。`affects_world=False` 语义保留：关系不是物理世界。
+- **邀请序（§18-§20）**：同一外部事件产生的社交事实现在**先完成**再构造
+  `DecisionRequest`（`_apply_influence_effects` 返回本次事件的社交任务，决策分支
+  前 await）——邀请决策看到的永远是最新关系；其他后台社交事实仍异步。
+  关系变化只刷新认知版本，**不会**反向触发新决策。
+- **Mutation 顺序与落库失败（§26/§27）**：`RelationshipUpdateEngine.apply()` 改为
+  before → 计算 after → 应用 → **记 StateMutation** → 落库 → `RELATIONSHIP_CHANGED`；
+  mutation 的 before/after 与最终持久化值一致。`save()` 失败时记 WARNING 并计入
+  `persist_failures`，事件 payload 带 `persisted: false`——内存真相继续使用，
+  世界不崩、不伪装成功、不新建 dirty 系统。
+- 新增 `tests/test_sandbox_relations_identity.py`（12 个测试：QQ 句柄落库、
+  生产路径落库、legacy 自映射不被当身份、双核心好友一一映射且关系隔离、
+  旧单 id 行为保持、两种歧义都不乱绑（含 WARNING）、认知 bump 而世界不动、
+  world/cognitive 三态独立、认知过期的 Proposal 被拒且不执行、邀请事实先于
+  DecisionRequest、落库失败如实上报）+ `tests/fixtures/character_two_friends.md`；
+  总测试 1207。
+
 ## [Unreleased] — v2.1 Phase 8 · Social & Relationship Dynamics
 
 - **新模块 `app/sandbox/relations.py`（复用既有 Experience/Memory/Decision，不新建

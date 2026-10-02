@@ -323,11 +323,15 @@ class CharacterDefinition(BaseModel):
             phrases=[phrase for mode in bible.modes for phrase in mode.phrases],
             prose=bible.prose,
         )
+        core_declared = any(rel.type == "core_friend" for rel in bible.relationships)
         definition.relationships = [
             RelationshipDefinition(
                 name=rel.name,
                 type=rel.type,
-                core=index == 0,
+                # a bible that names its core friends is taken at its word (a
+                # character may have more than one); the first entry stays the
+                # fallback for bibles that never say it
+                core=(rel.type == "core_friend") if core_declared else index == 0,
                 notes=list(rel.notes),
             )
             for index, rel in enumerate(bible.relationships)
