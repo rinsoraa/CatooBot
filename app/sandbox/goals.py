@@ -273,9 +273,14 @@ class GoalManager:
     """Holds the character's goals and drives *one* of them at a time (§29)."""
 
     def __init__(self, runtime: Any, *, clock: Any) -> None:
+        import logging
+
         self.runtime = runtime
         self._clock = clock
+        self._log = logging.getLogger("CatooBot.Sandbox.Goal")
         self._goals: dict[str, Goal] = {}
+        #: goals whose last write failed — retried by flush()
+        self._dirty: set[str] = set()
         self.detected = 0
         self.steps_started = 0
         self.blocked = 0
@@ -531,22 +536,67 @@ class GoalManager:
         )
         self._evaluate(goal)
 
-    def rebind_instance(
+    async def rebind_instance(
         self, action_id: str, *, old_instance_id: str, new_instance_id: str
     ) -> bool:
-        """§7: an interrupted-then-resumed action gets a new instance id."""
+        """Resume rebinding (§7/§28x): *only* an active step that was actually
+        running the interrupted instance may be rebound.
+
+        Strict on purpose — an interrupted action always has the instance id it
+        was running under, so an empty ``old_instance_id`` is a caller bug, and
+        a failed/blocked/pending step must never be silently adopted. Ambiguous
+        matches are refused rather than guessed at (§5).
+
+        The new binding is persisted *before returning*, so a crash right after
+        resume cannot resurrect the stale instance id (§9-§13). A failed write
+        keeps the goal dirty for the next flush — the running action is never
+        rolled back and no second action is started (§12).
+        """
+        if not old_instance_id or not new_instance_id:
+            self._log.warning(
+                "[Goal] rebind refused: missing instance id (action=%s old=%r new=%r)",
+                action_id,
+                old_instance_id,
+                new_instance_id,
+            )
+            return False
+        matches: list[Goal] = []
         for goal in self._goals.values():
             step = goal.current_step
-            if step is None or step.status is StepStatus.completed:
+            if goal.status is not GoalStatus.active:
+                continue
+            if step is None or step.status is not StepStatus.active:
                 continue
             if step.action_id != action_id:
                 continue
-            if step.action_instance_id not in ("", old_instance_id):
+            if step.action_instance_id != old_instance_id:
                 continue
-            step.action_instance_id = new_instance_id
-            goal.updated_at = float(self._clock())
-            return True
-        return False
+            matches.append(goal)
+        if len(matches) != 1:
+            self._log.warning(
+                "[Goal] rebind refused: %d matching active step(s) for %s (old=%s)",
+                len(matches),
+                action_id,
+                old_instance_id,
+            )
+            return False
+        goal = matches[0]
+        step = goal.current_step
+        assert step is not None  # matched above
+        step.action_instance_id = new_instance_id
+        goal.updated_at = float(self._clock())
+        written = await self._persist(goal)
+        if not written:
+            self._dirty.add(goal.goal_id)
+            self._log.error(
+                "[Goal] rebind of %s not persisted (goal=%s) — kept dirty for the "
+                "next flush; the running action is untouched",
+                action_id,
+                goal.goal_id,
+            )
+        else:
+            self._dirty.discard(goal.goal_id)
+        return True
 
     def on_pet_fed(self, *, pet_id: str) -> None:
         for goal in self._goals.values():
@@ -674,17 +724,22 @@ class GoalManager:
             correlation_id=f"goal_{goal.goal_id}",
         )
 
-    async def _persist(self, goal: Goal) -> None:
-        await self.runtime.store.save_goal(goal)
+    async def _persist(self, goal: Goal) -> bool:
+        return bool(await self.runtime.store.save_goal(goal))
 
     async def flush(self) -> None:
         """Persist every open goal (bus handlers are sync; this rides the
-        existing flush cadence). Terminal goals are written once and skipped."""
+        existing flush cadence). Terminal goals are written once and skipped;
+        goals whose write failed earlier are retried and stay dirty."""
         for goal in list(self._goals.values()):
             if goal.status.terminal and goal.goal_id in self._flushed_terminal:
                 continue
-            await self._persist(goal)
-            if goal.status.terminal:
+            written = await self._persist(goal)
+            if written:
+                self._dirty.discard(goal.goal_id)
+            elif not goal.status.terminal:
+                self._dirty.add(goal.goal_id)
+            if goal.status.terminal and written:
                 self._flushed_terminal.add(goal.goal_id)
 
 

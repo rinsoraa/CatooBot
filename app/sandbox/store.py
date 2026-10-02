@@ -498,9 +498,10 @@ class SandboxStore:
 
     # ------------------------------------------------- goals (Phase 7)
 
-    async def save_goal(self, goal: Any) -> None:
+    async def save_goal(self, goal: Any) -> bool:
+        """Persist one goal; False means "not written" (caller keeps it dirty)."""
         if not self.available:
-            return
+            return False
         try:
             await self._db.execute(
                 """INSERT INTO sandbox_goals
@@ -546,6 +547,8 @@ class SandboxStore:
             )
         except Exception:  # noqa: BLE001 - goal bookkeeping never breaks the world
             logger.debug("[Sandbox.Store] goal write failed", exc_info=True)
+            return False
+        return True
 
     async def list_goals(self, *, character_id: str = "") -> list[dict[str, Any]]:
         if not self.available:

@@ -3,6 +3,24 @@
 本文件记录 CatooBot 的版本演进。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号见 `pyproject.toml`；日期取自真实提交历史（本仓库 2026-09-30 起）。
 
+## [Unreleased] — v2.1 Phase 7.1 Remediation · Resume Binding Integrity
+
+- **rebind 严格匹配（§3-§5）**：`GoalManager.rebind_instance()` 现在只接受
+  **active Goal + active Step + 同一 action_id + 实际被中断的 instance id**
+  四者同时成立；`old_instance_id=""`（或 new 为空）直接拒绝且状态零变化；
+  多命中（理论不应出现）也拒绝并记 WARNING——不再"第一个命中就返回 True"，
+  failed / blocked / pending 的旧步骤绝不会被静默收养。
+- **立即持久化（§9-§13）**：`rebind_instance` 改为 async，改绑后立刻
+  `_persist(goal)`（复用既有 `SandboxStore.save_goal`，无第二套持久化）；
+  `save_goal` 现在返回 bool；写失败时记录 ERROR、把目标标记为 dirty 交给既有
+  flush 重试——**不回滚世界、不启动第二个动作、不创建第二个目标**（§12）。
+  Resume 返回时数据库已带新 instance id，崩溃/重建后目标恢复到新实例。
+- 新增 `tests/test_sandbox_goals_binding.py`（7 个测试：blocked+failed 步骤
+  不被收养而 active+active 步骤被正确改绑、active Goal + failed Step 拒绝、
+  blocked Goal + active Step 拒绝、缺 old instance 拒绝且零变化、
+  歧义匹配拒绝、resume 后**未经 tick 直接读库**即为新实例且旧实例完成事件
+  不再推进、崩溃重建后目标读到新实例），总测试 1178。
+
 ## [Unreleased] — v2.1 Phase 7 Remediation · Goal 状态恢复 + Action Instance 一致性
 
 - **blocked → active（§1）**：冷却期结束后重试成功的 blocked 目标会真正回到

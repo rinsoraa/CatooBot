@@ -1279,8 +1279,9 @@ class SandboxRuntime:
         )
         if instance is None:
             return ""
-        # §7: resume creates a new lifecycle — a waiting goal step must follow
-        self.goals.rebind_instance(
+        # §7/§9: resume creates a new lifecycle — the waiting goal step follows
+        # and the new binding is persisted before this returns
+        await self.goals.rebind_instance(
             context.definition_id,
             old_instance_id=context.action_id,
             new_instance_id=instance.id,
