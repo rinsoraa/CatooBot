@@ -66,10 +66,11 @@ async def make_gateway(  # type: ignore[no-untyped-def]
     **cfg,
 ):
     transport = transport or FakeOneBotTransport()
+    onebot_config = OneBotConfig(**cfg)
     gateway = OneBotGateway(
         runtime,
         transport=transport,
-        config=OneBotConfig(**cfg),
+        config=onebot_config,
         clock=runtime._clock,  # noqa: SLF001
         retry_delay=0.001,
     )
@@ -360,8 +361,7 @@ class TestOrdering:
         """§30/§31: overflow loses a *reply*, never a verified message."""
         db = await make_db(tmp_path)
         clock = Clock()
-        engine, _provider = make_engine([proposal(text="回")] * 10)
-        runtime = await make_sandbox(db=db, clock=clock, engine=engine)
+        runtime = await make_sandbox(db=db, clock=clock)
         gateway, transport = await make_gateway(runtime=runtime, max_pending_per_lane=1)
         try:
             blocker = asyncio.Event()
@@ -372,7 +372,8 @@ class TestOrdering:
 
                 return SimpleNamespace(content=proposal(text="回"))
 
-            runtime.ai_engine = _StubEngine(stalled)
+            stub = _StubEngine(stalled)
+            runtime.ai_engine = stub
             await transport.receive(qq_message(message_id="o1", user_id="21004", text="一"))
             await asyncio.sleep(0.005)  # the worker picks up #1 and stalls
             await transport.receive(qq_message(message_id="o2", user_id="21004", text="二"))
@@ -393,10 +394,15 @@ class TestOrdering:
                     if event.target_entity_id == "21004"
                 ]
 
-            assert len(facts()) >= 2
+            assert len(facts()) == 1  # only M1 has been ingested so far
             blocker.set()
             await settle(gateway)
             assert len(facts()) == 3  # nobody was silently dropped from the world
+            assert [str(item.payload.get("content", "")) for item in facts()] == [
+                "一",
+                "二",
+                "三",
+            ]
         finally:
             await gateway.stop()
             await runtime.shutdown()
@@ -502,11 +508,10 @@ class TestLifecycle:
         try:
             await transport.receive(qq_message(user_id="23001", text="一"))
             await settle(gateway)
-            transport.disconnect()
+            transport.disconnect()  # the client dropped; the callback reports it
+            assert gateway.state is ConnectionState.disconnected
+            transport.reconnect_client()  # NapCat dials us again (§25)
             assert gateway.state is ConnectionState.connected
-            await gateway.handle_disconnect()  # bounded ladder, no busy loop
-            assert gateway.state is ConnectionState.connected
-            assert transport.reconnects >= 1
             await transport.receive(qq_message(message_id="after", user_id="23001", text="二"))
             await settle(gateway)
             assert len(transport.sent_messages) == 2
@@ -732,8 +737,10 @@ class _StubEngine:
 
     def __init__(self, answer):  # type: ignore[no-untyped-def]
         self._answer = answer
+        self.calls: list[str] = []
 
     async def chat(self, request):  # type: ignore[no-untyped-def]
+        self.calls.append(request.messages[0].content)
         return await self._answer(request)
 
 
@@ -797,3 +804,426 @@ class TestServerTransport:
         await handler(SimpleNamespace(post_type="meta_event"))
         await handler(SimpleNamespace(post_type="notice"))
         assert seen == ["gateway", "legacy", "legacy"]
+
+
+# -------------------------------- Phase 13.1 §6-§29: lane order, shutdown, lifecycle
+
+
+class TestLaneOrderingUnderOverflow:
+    async def test_overflow_keeps_the_sandbox_fact_in_lane_order(self, tmp_path) -> None:  # type: ignore[no-untyped-def]
+        """§6/§7/§10: FIFO applies to *fact ingestion*, not only to replies."""
+        db = await make_db(tmp_path)
+        clock = Clock()
+        runtime = await make_sandbox(db=db, clock=clock)
+        gateway, transport = await make_gateway(runtime=runtime, max_pending_per_lane=1)
+        try:
+            blocker = asyncio.Event()
+
+            async def stalled(request):  # type: ignore[no-untyped-def]
+                message = request.messages[0].content.rsplit("对方的消息：", 1)[-1]
+                message = message.splitlines()[0].strip()
+                if message == "一":
+                    await blocker.wait()
+                from types import SimpleNamespace
+
+                return SimpleNamespace(content=proposal(text=f"回{message}"))
+
+            stub = _StubEngine(stalled)
+            runtime.ai_engine = stub
+            await transport.receive(qq_message(message_id="q1", user_id="26001", text="一"))
+            await asyncio.sleep(0.01)  # M1 is now inside the turn and stalled
+            await transport.receive(qq_message(message_id="q2", user_id="26001", text="二"))
+            await transport.receive(qq_message(message_id="q3", user_id="26001", text="三"))
+            for _ in range(20):
+                await asyncio.sleep(0.005)
+            assert gateway.dropped == 1  # M2 traded its reply away
+            order = [
+                str(event.payload.get("content", ""))
+                for event in runtime.events.of_type(ET.EXTERNAL_EVENT_RECEIVED)
+            ]
+            # M2 is *in* the lane, behind M1 — it is not rushed ahead of it (§2)
+            assert order == ["一"]
+            blocker.set()
+            await settle(gateway)
+            order = [
+                str(event.payload.get("content", ""))
+                for event in runtime.events.of_type(ET.EXTERNAL_EVENT_RECEIVED)
+            ]
+            assert order == ["一", "二", "三"]  # never 一, 三, 二
+            # §7: the degraded turn has no LLM call and no outbound reply
+            assert len(stub.calls) == 2
+            assert all("对方的消息：二" not in call for call in stub.calls)
+            texts = [item["message"][0]["data"]["text"] for item in transport.sent_messages]
+            assert texts == ["回一", "回三"]
+            degraded = runtime.events.last(ET.EXTERNAL_TRANSPORT_DROPPED)
+            assert degraded is not None and degraded.payload["reason"] == "lane_full"
+        finally:
+            await gateway.stop()
+            await runtime.shutdown()
+            await db.close()
+
+    async def test_multiple_overflows_keep_every_fact_and_every_order(self, tmp_path) -> None:  # type: ignore[no-untyped-def]
+        """§8: several overflow rounds — all five facts, all in arrival order."""
+        db = await make_db(tmp_path)
+        clock = Clock()
+        runtime = await make_sandbox(db=db, clock=clock)
+        gateway, transport = await make_gateway(runtime=runtime, max_pending_per_lane=1)
+        try:
+            blocker = asyncio.Event()
+
+            async def stalled(request):  # type: ignore[no-untyped-def]
+                message = request.messages[0].content.rsplit("对方的消息：", 1)[-1]
+                message = message.splitlines()[0].strip()
+                if message == "一":
+                    await blocker.wait()
+                from types import SimpleNamespace
+
+                return SimpleNamespace(content=proposal(text=f"回{message}"))
+
+            stub = _StubEngine(stalled)
+            runtime.ai_engine = stub
+            await transport.receive(qq_message(message_id="p1", user_id="26002", text="一"))
+            await asyncio.sleep(0.01)
+            for index, text in enumerate(("二", "三", "四", "五"), start=2):
+                await transport.receive(
+                    qq_message(message_id=f"p{index}", user_id="26002", text=text)
+                )
+            for _ in range(20):
+                await asyncio.sleep(0.005)
+            assert gateway.dropped == 3  # 二/三/四 lost only their replies
+            blocker.set()
+            await settle(gateway)
+            order = [
+                str(event.payload.get("content", ""))
+                for event in runtime.events.of_type(ET.EXTERNAL_EVENT_RECEIVED)
+            ]
+            assert order == ["一", "二", "三", "四", "五"]
+            assert len(stub.calls) == 2  # only the first and the last turned
+            texts = [item["message"][0]["data"]["text"] for item in transport.sent_messages]
+            assert texts == ["回一", "回五"]
+        finally:
+            await gateway.stop()
+            await runtime.shutdown()
+            await db.close()
+
+    async def test_cross_lane_concurrency_survives_the_fix(self, tmp_path) -> None:  # type: ignore[no-untyped-def]
+        """§9: lanes still run concurrently, each strictly FIFO inside itself."""
+        db = await make_db(tmp_path)
+        clock = Clock()
+        runtime = await make_sandbox(db=db, clock=clock)
+        gateway, transport = await make_gateway(runtime=runtime)
+        try:
+            order: list[str] = []
+
+            async def slow(request):  # type: ignore[no-untyped-def]
+                prompt = request.messages[0].content
+                message = prompt.rsplit("对方的消息：", 1)[-1].splitlines()[0].strip()
+                order.append(f"start:{message}")
+                if message.startswith("A"):
+                    await asyncio.sleep(0.05)
+                order.append(f"end:{message}")
+                from types import SimpleNamespace
+
+                return SimpleNamespace(content=proposal(text=f"回{message}"))
+
+            runtime.ai_engine = _StubEngine(slow)
+            for index, text in enumerate(("A1", "A2"), start=1):
+                await transport.receive(
+                    qq_message(
+                        message_id=f"a{index}",
+                        user_id="26003",
+                        group_id="1201",
+                        text=text,
+                        at_self=True,
+                    )
+                )
+            for index, text in enumerate(("B1", "B2"), start=1):
+                await transport.receive(
+                    qq_message(
+                        message_id=f"b{index}",
+                        user_id="26004",
+                        group_id="1202",
+                        text=text,
+                        at_self=True,
+                    )
+                )
+            await settle(gateway)
+            a_starts = [item for item in order if item.startswith("start:A")]
+            a_ends = [item for item in order if item.startswith("end:A")]
+            b_starts = [item for item in order if item.startswith("start:B")]
+            b_ends = [item for item in order if item.startswith("end:B")]
+            assert a_starts == ["start:A1", "start:A2"]  # lane A stays FIFO
+            assert a_ends == ["end:A1", "end:A2"]
+            assert b_starts == ["start:B1", "start:B2"]
+            assert b_ends == ["end:B1", "end:B2"]
+            assert order.index("end:B1") < order.index("end:A1")  # B was not blocked
+        finally:
+            await gateway.stop()
+            await runtime.shutdown()
+            await db.close()
+
+
+class TestGracefulShutdown:
+    async def test_a_started_turn_finishes_before_the_gateway_stops(self, tmp_path) -> None:  # type: ignore[no-untyped-def]
+        """§16: the work that already started is allowed to complete (§15)."""
+        db = await make_db(tmp_path)
+        clock = Clock()
+        runtime = await make_sandbox(db=db, clock=clock)
+        gateway, transport = await make_gateway(runtime=runtime, shutdown_timeout=2.0)
+        try:
+            release = asyncio.Event()
+            started = asyncio.Event()
+
+            async def slow(_request):  # type: ignore[no-untyped-def]
+                started.set()
+                await release.wait()
+                from types import SimpleNamespace
+
+                return SimpleNamespace(content=proposal(text="收尾中的回复"))
+
+            runtime.ai_engine = _StubEngine(slow)
+            await transport.receive(qq_message(user_id="27001", text="在吗"))
+            await asyncio.wait_for(started.wait(), timeout=2.0)
+            stopping = asyncio.create_task(gateway.stop())
+            await asyncio.sleep(0.02)
+            assert not stopping.done(), "stop waits for the started turn"
+            release.set()
+            await asyncio.wait_for(stopping, timeout=3.0)
+            assert [item["message"][0]["data"]["text"] for item in transport.sent_messages] == [
+                "收尾中的回复"
+            ]
+            assert gateway.state is ConnectionState.stopped
+            assert transport.stops == 1 and transport.connected is False
+            assert gateway._lanes == {} and gateway._outbound_worker is None  # noqa: SLF001
+            assert not gateway.busy()
+        finally:
+            await gateway.stop()
+            await runtime.shutdown()
+            await db.close()
+
+    async def test_a_hanging_turn_cannot_hang_the_shutdown(self, tmp_path) -> None:  # type: ignore[no-untyped-def]
+        """§17: the budget is honoured — cancel what is left, never hang."""
+        db = await make_db(tmp_path)
+        clock = Clock()
+        runtime = await make_sandbox(db=db, clock=clock)
+        gateway, transport = await make_gateway(runtime=runtime, shutdown_timeout=0.05)
+        try:
+            forever = asyncio.Event()
+            started = asyncio.Event()
+
+            async def hanging(_request):  # type: ignore[no-untyped-def]
+                started.set()
+                await forever.wait()
+                from types import SimpleNamespace
+
+                return SimpleNamespace(content=proposal())
+
+            runtime.ai_engine = _StubEngine(hanging)
+            await transport.receive(qq_message(user_id="27002", text="在吗"))
+            await asyncio.wait_for(started.wait(), timeout=2.0)
+            await asyncio.wait_for(gateway.stop(), timeout=3.0)  # returns, does not hang
+            assert gateway.state is ConnectionState.stopped
+            assert transport.connected is False
+            assert not gateway.busy()
+            assert gateway._lanes == {} and gateway._outbound_worker is None  # noqa: SLF001
+            forever.set()
+        finally:
+            await runtime.shutdown()
+            await db.close()
+
+    async def test_unstarted_queued_replies_are_discarded_but_facts_are_not(self, tmp_path) -> None:  # type: ignore[no-untyped-def]
+        """§15/§18: committed outbound may finish; queued conversation may be dropped."""
+        db = await make_db(tmp_path)
+        clock = Clock()
+        runtime = await make_sandbox(db=db, clock=clock)
+        gateway, transport = await make_gateway(runtime=runtime, shutdown_timeout=0.05)
+        try:
+            release = asyncio.Event()
+            started = asyncio.Event()
+
+            async def slow(_request):  # type: ignore[no-untyped-def]
+                started.set()
+                await release.wait()
+                from types import SimpleNamespace
+
+                return SimpleNamespace(content=proposal(text="慢回复"))
+
+            runtime.ai_engine = _StubEngine(slow)
+            await transport.receive(qq_message(message_id="s1", user_id="27003", text="一"))
+            await asyncio.wait_for(started.wait(), timeout=2.0)
+            await transport.receive(qq_message(message_id="s2", user_id="27003", text="二"))
+            await asyncio.wait_for(gateway.stop(), timeout=3.0)
+            facts = [
+                str(event.payload.get("content", ""))
+                for event in runtime.events.of_type(ET.EXTERNAL_EVENT_RECEIVED)
+            ]
+            assert facts == ["一"]  # the queued turn never started, its fact is untouched
+            assert transport.sent_messages == []  # and nothing was sent for it
+            release.set()
+        finally:
+            await runtime.shutdown()
+            await db.close()
+
+
+class TestConnectionLifecycle:
+    async def test_a_disconnect_propagates_to_the_gateway_state(self, tmp_path) -> None:  # type: ignore[no-untyped-def]
+        """§22-§24: the callback chain transport → gateway, no polling."""
+        db = await make_db(tmp_path)
+        clock = Clock()
+        runtime = await make_sandbox(db=db, clock=clock)
+        gateway, transport = await make_gateway(runtime=runtime, reconnect_max_seconds=1.0)
+        try:
+            before_facts = len(runtime.events.of_type(ET.EXTERNAL_EVENT_RECEIVED))
+            before_social = len(runtime.events.of_type(ET.SOCIAL_INTERACTION))
+            transport.disconnect()  # the callback fires; no gateway.handle_disconnect() call
+            assert gateway.state is ConnectionState.disconnected  # §23, not "connected forever"
+            transport.reconnect_client()  # NapCat dials us back (§25)
+            assert gateway.state is ConnectionState.connected
+            # §27: a dropped socket is transport state, never a sandbox fact
+            assert len(runtime.events.of_type(ET.EXTERNAL_EVENT_RECEIVED)) == before_facts
+            assert len(runtime.events.of_type(ET.SOCIAL_INTERACTION)) == before_social
+            assert runtime.world_revision == 0
+        finally:
+            await gateway.stop()
+            await runtime.shutdown()
+            await db.close()
+
+    async def test_a_replayed_message_after_reconnect_is_deduped(self, tmp_path) -> None:  # type: ignore[no-untyped-def]
+        """§28/§29: same self_id + message_id inside the TTL is the same event."""
+        db = await make_db(tmp_path)
+        clock = Clock()
+        engine, provider = make_engine([proposal(text="只回一次")])
+        runtime = await make_sandbox(db=db, clock=clock, engine=engine)
+        gateway, transport = await make_gateway(runtime=runtime)
+        try:
+            raw = qq_message(message_id="replay-1", user_id="28001", text="在吗")
+            await transport.receive(dict(raw))
+            await settle(gateway)
+            transport.disconnect()
+            transport.reconnect_client()
+            report = await transport.receive(dict(raw))  # the client resends after reconnecting
+            await settle(gateway)
+            assert report["reason"] == "duplicate"
+            assert len(runtime.events.of_type(ET.SOCIAL_INTERACTION)) == 1
+            assert len(provider.calls) == 1
+            assert len(transport.sent_messages) == 1
+        finally:
+            await gateway.stop()
+            await runtime.shutdown()
+            await db.close()
+
+    async def test_new_messages_are_served_again_after_reconnect(self, tmp_path) -> None:  # type: ignore[no-untyped-def]
+        db = await make_db(tmp_path)
+        clock = Clock()
+        engine, provider = make_engine([proposal(text="一"), proposal(text="二")])
+        runtime = await make_sandbox(db=db, clock=clock, engine=engine)
+        gateway, transport = await make_gateway(runtime=runtime)
+        try:
+            await transport.receive(qq_message(message_id="l1", user_id="28002", text="一"))
+            await settle(gateway)
+            transport.disconnect()
+            transport.reconnect_client()
+            await transport.receive(qq_message(message_id="l2", user_id="28002", text="二"))
+            await settle(gateway)
+            assert [item["message"][0]["data"]["text"] for item in transport.sent_messages] == [
+                "一",
+                "二",
+            ]
+        finally:
+            await gateway.stop()
+            await runtime.shutdown()
+            await db.close()
+
+
+class TestResponsePolicyGate:
+    async def test_a_rejected_influence_never_speaks(self, tmp_path) -> None:  # type: ignore[no-untyped-def]
+        """§32: the ceiling can only lower the sandbox's decision, never raise it."""
+        db = await make_db(tmp_path)
+        clock = Clock()
+        engine, provider = make_engine([proposal()])
+        runtime = await make_sandbox(db=db, clock=clock, engine=engine)
+        gateway, transport = await make_gateway(runtime=runtime)
+        try:
+            from app.sandbox.external import InfluenceAction
+
+            original = runtime.influence.evaluate
+
+            def rejecting(*args, **kwargs):  # type: ignore[no-untyped-def]
+                decision = original(*args, **kwargs)
+                decision.action = InfluenceAction.REJECT
+                return decision
+
+            runtime.influence.evaluate = rejecting  # type: ignore[method-assign]
+            await transport.receive(qq_message(user_id="29001", text="在吗"))
+            await settle(gateway)
+            assert not provider.calls  # the sandbox said no
+            assert transport.sent_messages == []
+        finally:
+            await gateway.stop()
+            await runtime.shutdown()
+            await db.close()
+
+    async def test_no_effect_also_means_silence(self, tmp_path) -> None:  # type: ignore[no-untyped-def]
+        db = await make_db(tmp_path)
+        clock = Clock()
+        engine, provider = make_engine([proposal()])
+        runtime = await make_sandbox(db=db, clock=clock, engine=engine)
+        gateway, transport = await make_gateway(runtime=runtime)
+        try:
+            from app.sandbox.external import InfluenceAction
+
+            original = runtime.influence.evaluate
+
+            def ignoring(*args, **kwargs):  # type: ignore[no-untyped-def]
+                decision = original(*args, **kwargs)
+                decision.action = InfluenceAction.NO_EFFECT
+                return decision
+
+            runtime.influence.evaluate = ignoring  # type: ignore[method-assign]
+            await transport.receive(qq_message(user_id="29002", text="在吗"))
+            await settle(gateway)
+            assert not provider.calls and transport.sent_messages == []
+        finally:
+            await gateway.stop()
+            await runtime.shutdown()
+            await db.close()
+
+    async def test_a_mention_still_requires_the_sandbox_gate(self, tmp_path) -> None:  # type: ignore[no-untyped-def]
+        """§32: @self is allowed *only* while the sandbox influence allows it."""
+        db = await make_db(tmp_path)
+        clock = Clock()
+        engine, provider = make_engine([proposal()])
+        runtime = await make_sandbox(db=db, clock=clock, engine=engine)
+        gateway, transport = await make_gateway(runtime=runtime)
+        try:
+            from app.sandbox.external import InfluenceAction
+
+            original = runtime.influence.evaluate
+            state = {"allow": True}
+
+            def gated(*args, **kwargs):  # type: ignore[no-untyped-def]
+                decision = original(*args, **kwargs)
+                if not state["allow"]:
+                    decision.action = InfluenceAction.REJECT
+                return decision
+
+            runtime.influence.evaluate = gated  # type: ignore[method-assign]
+            await transport.receive(
+                qq_message(
+                    message_id="m1", user_id="29003", group_id="1301", text="在吗", at_self=True
+                )
+            )
+            await settle(gateway)
+            assert len(transport.sent_messages) == 1  # allowed while the gate is open
+            state["allow"] = False
+            await transport.receive(
+                qq_message(
+                    message_id="m2", user_id="29003", group_id="1301", text="还在吗", at_self=True
+                )
+            )
+            await settle(gateway)
+            assert len(transport.sent_messages) == 1  # the mention alone grants nothing
+        finally:
+            await gateway.stop()
+            await runtime.shutdown()
+            await db.close()

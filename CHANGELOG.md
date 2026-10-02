@@ -3,6 +3,30 @@
 本文件记录 CatooBot 的版本演进。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号见 `pyproject.toml`；日期取自真实提交历史（本仓库 2026-09-30 起）。
 
+## [Unreleased] — v2.1 Phase 13.1 Remediation · Lane Ordering & Lifecycle Integrity
+
+- **overflow 不再脱离 lane（§1-§10）**：lane 溢出不再把被降级的消息丢到 lane 外
+  并发执行（那会让 M3 抢在 M2 之前进入沙箱、破坏 FIFO）——改为**原地降级**：
+  `_LaneItem.respond = False`，仍保留原位置，按序 ingest，只是不再进入对话运行时
+  （无 LLM 调用、无出站回复）。FIFO 现在对**世界事实的摄入**成立，而不只是对回复
+  顺序成立；跨 lane 仍并发（测试用慢 LLM 验证交错）。
+- **优雅关闭与文档一致（§11-§19）**：`stop()` 先停收件，再按
+  `shutdown_timeout`（新增配置，默认 5s）等待已开始的 turn 与已提交的出站投递收尾，
+  超时才取消剩余任务，然后关闭传输——不会挂死，也不留 orphan；未开始的会话工作
+  可以丢弃，但已进入沙箱的事实不受影响。
+- **反向 WS 生命周期回调（§21-§29）**：既有 `OneBotV11Server` 增加 connect/
+  disconnect 生命周期回调（`set_lifecycle_handler`），`ServerTransport` 转发给网关；
+  网关状态正确经历 CONNECTED → DISCONNECTED → CONNECTED，断线**不产生任何沙箱
+  事实**（无 SOCIAL_INTERACTION / EXTERNAL_EVENT_RECEIVED）。反向 WS 下由 NapCat
+  重连到我们（`reconnect_client()`），退避阶梯仅作为状态恢复去抖，**不再暗示
+  CatooBot 主动拨号**（仅有 `can_dial` 的传输才会主动重连）。
+- **响应策略明确为上限（§32）**：`_mode_ceiling()` 现在只**下调**、绝不上调沙箱的
+  影响判定——`reject` 与 `no_effect` 一律静默，@ 提及也必须在沙箱策略允许时才说话。
+- 新增/加强测试 12 个（overflow 保序且保事实、被降级消息无 LLM 无出站、多次溢出
+  五条消息全序、跨 lane 并发仍成立、已开始的 turn 完成后再关闭、挂起 turn 不阻塞
+  关闭、断线回调传播与重连、重连后重放去重、断线不产生沙箱事实、reject/no_effect/
+  mention 三态策略门控），总测试 1361。
+
 ## [Unreleased] — v2.1 Phase 13 · Real External Runtime Integration & OneBot Event Gateway
 
 - **审计优先（§75 Step 1）**：传输层已存在并全部复用——`OneBotV11Server`（反向 WS、

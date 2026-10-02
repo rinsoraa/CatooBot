@@ -44,6 +44,7 @@ class OneBotV11Server:
     ) -> None:
         self._config = config
         self._event_handler = event_handler
+        self._lifecycle_handler: Any = None
         self._log = logger or logging.getLogger("CatooBot.OneBot")
         self._server: Any = None  # websockets.Server
         self._connection: OneBotV11Connection | None = None
@@ -65,6 +66,14 @@ class OneBotV11Server:
     @property
     def connection(self) -> OneBotV11Connection | None:
         return self._connection
+
+    def set_lifecycle_handler(self, handler: Any) -> None:
+        """Optional callback for connect/disconnect (Phase 13.1 §22).
+
+        Called with ``"connected"`` / ``"disconnected"``; failures are logged and
+        never allowed to disturb the connection itself.
+        """
+        self._lifecycle_handler = handler
 
     def set_event_handler(self, handler: EventHandler) -> None:
         """Register the sink for parsed events (usually ``bot.handle_event``)."""
@@ -162,6 +171,7 @@ class OneBotV11Server:
         self._connection = connection
         self._connected.set()
         self._log.info("NapCat connected from %s", connection.remote)
+        self._notify_lifecycle("connected")
         if self._config.access_token:
             self._log.info("Bot authenticated")
         asyncio.create_task(self._resolve_login_info(connection))
@@ -177,7 +187,17 @@ class OneBotV11Server:
             if self._connection is connection:
                 self._connection = None
                 self._connected.clear()
+                self._notify_lifecycle("disconnected")
             self._log.info("Connection closed, waiting for NapCat to reconnect...")
+
+    def _notify_lifecycle(self, state: str) -> None:
+        handler = getattr(self, "_lifecycle_handler", None)
+        if handler is None:
+            return
+        try:
+            handler(state)
+        except Exception:  # noqa: BLE001 - a callback must never break the connection
+            self._log.exception("Lifecycle handler failed (%s)", state)
 
     async def _recv_loop(self, connection: OneBotV11Connection) -> None:
         while True:

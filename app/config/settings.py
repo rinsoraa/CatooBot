@@ -82,8 +82,10 @@ class OneBotConfig(BaseModel):
     max_pending_per_lane: int = Field(default=20, ge=1)
     #: 出站发送的最大重试次数（§46）
     outbound_max_retries: int = Field(default=3, ge=0, le=10)
-    #: 重连退避上限（秒，§50）
+    #: 重连退避上限（秒，§50）；反向 WS 下只作为状态恢复的去抖，不主动拨号
     reconnect_max_seconds: float = Field(default=30.0, ge=1)
+    #: 优雅关闭的时间预算（秒，Phase 13.1 §13）：先让已开始的工作收尾，再取消剩余
+    shutdown_timeout: float = Field(default=5.0, gt=0)
 
     @property
     def url(self) -> str:

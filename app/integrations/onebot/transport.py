@@ -44,6 +44,9 @@ class ServerTransport:
         self._on_event = None
         #: non-message events (notice/meta/request) keep their existing path
         self._fallback = fallback
+        #: the gateway's connect/disconnect hooks (Phase 13.1 §22)
+        self._on_connected: Any = None
+        self._on_disconnected: Any = None
         #: server mode: the bot already owns the socket; the gateway only routes
         self._manage_lifecycle = manage_lifecycle
 
@@ -55,10 +58,26 @@ class ServerTransport:
     def self_id(self) -> int | None:
         return getattr(self._server, "self_id", None)
 
+    def set_lifecycle(self, *, on_connected: Any = None, on_disconnected: Any = None) -> None:
+        """Register the gateway's lifecycle hooks with the existing server (§22)."""
+        self._on_connected = on_connected
+        self._on_disconnected = on_disconnected
+        self._server.set_lifecycle_handler(self._lifecycle)
+
+    def _lifecycle(self, state: str) -> None:
+        if state == "connected" and self._on_connected is not None:
+            self._on_connected()
+        elif state == "disconnected" and self._on_disconnected is not None:
+            self._on_disconnected()
+
     async def start(self, on_event: Any) -> None:
         self._on_event = on_event
         # the server hands us typed OneBot events; the gateway normalizes them
         self._server.set_event_handler(self._dispatch)
+        if self._on_connected is not None:  # a live socket is already connected
+            self.set_lifecycle(
+                on_connected=self._on_connected, on_disconnected=self._on_disconnected
+            )
         if self._manage_lifecycle:
             await self._server.start()
 

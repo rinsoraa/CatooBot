@@ -86,7 +86,10 @@ class _LaneItem:
     """One inbound message waiting for its turn in a lane."""
 
     event: NormalizedMessageEvent
+    #: False = the overflow degraded this turn to a fact-only ingest (§3)
+    respond: bool = True
     started: bool = False
+    degraded: bool = False
 
 
 class _Lane:
@@ -101,6 +104,7 @@ class _Lane:
         self._worker: asyncio.Task[Any] | None = None
         self.processed = 0
         self.dropped = 0
+        self.degraded = 0
         self.busy = False
 
     def start(self) -> None:
@@ -122,19 +126,30 @@ class _Lane:
         return len(self._pending)
 
     def submit(self, item: _LaneItem) -> _LaneItem | None:
-        """Queue one item; returns the item that had to be dropped, if any."""
-        dropped: _LaneItem | None = None
+        """Queue one item; an overflow degrades the oldest turn, in place (§4).
+
+        The degraded item is *not* removed from the lane: it keeps its
+        position and is still ingested in order — only its response is
+        cancelled. Dropping it out of the lane would let a later message
+        reach the sandbox first, which §1/§10 forbid.
+        """
+        degraded: _LaneItem | None = None
         while len(self._pending) >= self.max_pending:
-            # §30: overflow drops the *oldest unstarted* turn, deterministically
-            candidate = next((entry for entry in self._pending if not entry.started), None)
+            candidate = next(
+                (entry for entry in self._pending if not entry.started and entry.respond),
+                None,
+            )
             if candidate is None:
+                # nothing conversational left to trade away: the remaining
+                # items are cheap fact-only ingests and stay ordered
                 break
-            self._pending.remove(candidate)
-            dropped = candidate
+            candidate.respond = False
+            candidate.degraded = True
+            degraded = candidate
             self.dropped += 1
         self._pending.append(item)
         self._wakeup.set()
-        return dropped
+        return degraded
 
     async def _run(self) -> None:
         while True:
@@ -147,6 +162,8 @@ class _Lane:
             self.busy = True
             try:
                 await self._gateway._handle_lane_item(item)  # noqa: SLF001 - same package
+                if not item.respond:
+                    self.degraded += 1
                 self.processed += 1
             except asyncio.CancelledError:
                 raise
@@ -223,6 +240,13 @@ class OneBotGateway:
         """Connect the transport and start the outbound worker (§49)."""
         self.state = ConnectionState.connecting
         self._outbound_worker = asyncio.create_task(self._outbound_loop())
+        set_lifecycle = getattr(self.transport, "set_lifecycle", None)
+        if callable(set_lifecycle):
+            # §22: the transport reports the socket's fate; the gateway owns state
+            set_lifecycle(
+                on_connected=self.on_transport_connected,
+                on_disconnected=self.on_transport_disconnected,
+            )
         await self.transport.start(self.handle_transport_event)
         if getattr(self.transport, "connected", True):
             self.state = ConnectionState.connected
@@ -231,10 +255,19 @@ class OneBotGateway:
             list(getattr(self.config, "self_ids", []) or []) or ["<unset>"],
         )
 
-    async def stop(self) -> None:
-        """§60/§61: stop accepting, finish what started, then close — no orphans."""
+    async def stop(self, *, timeout: float | None = None) -> None:
+        """Graceful stop with a bounded budget (Phase 13.1 §11-§19).
+
+        Stop accepting new inbound work, let already-started turns and already
+        committed deliveries finish (bounded by ``shutdown_timeout``), then
+        cancel whatever is left — never hang, never leave orphans.
+        """
         was = self.state
         self.state = ConnectionState.stopped
+        budget = float(
+            timeout if timeout is not None else getattr(self.config, "shutdown_timeout", 5.0)
+        )
+        drained = await self.drain(timeout=budget)
         for lane in list(self._lanes.values()):
             await lane.stop()
         self._lanes.clear()
@@ -249,7 +282,7 @@ class OneBotGateway:
             task.cancel()
         self._in_flight.clear()
         await self.transport.stop()
-        self._log.info("[OneBot] gateway stopped (was %s)", was.value)
+        self._log.info("[OneBot] gateway stopped (was %s, drained=%s)", was.value, drained)
 
     def _spawn(self, coro: Any) -> asyncio.Task[Any]:
         task = asyncio.create_task(coro)
@@ -263,22 +296,49 @@ class OneBotGateway:
         return [min(delay, cap) for delay in self.BACKOFF_SEQUENCE]
 
     async def handle_disconnect(self) -> None:
-        """§53: a connection loss is transport state — it never touches the world."""
+        """Report a dropped socket (kept for callers that poll transport state)."""
+        self.on_transport_disconnected()
+
+    # ------------------------------------------------- connection lifecycle
+
+    def on_transport_connected(self) -> None:
+        """A client (NapCat) connected again — resume serving (§23)."""
+        if self.state is ConnectionState.stopped:
+            return
+        self.state = ConnectionState.connected
+        self._log.info("[OneBot] transport connected")
+
+    def on_transport_disconnected(self) -> None:
+        """The socket dropped: transport state only, never a world fact (§27)."""
         if self.state is ConnectionState.stopped:
             return
         self.state = ConnectionState.disconnected
+        self._log.warning("[OneBot] transport disconnected (waiting for the client)")
+        task = asyncio.create_task(self._recover_connection())
+        self._in_flight.add(task)
+        task.add_done_callback(self._in_flight.discard)
+
+    async def _recover_connection(self) -> None:
+        """§26: bounded recovery *debounce* — never a client dial.
+
+        In reverse-WebSocket mode NapCat reconnects to us; the ladder only
+        keeps the gateway from flapping while the socket comes back.
+        """
         for delay in self.backoff_delays():
-            if self.state is ConnectionState.stopped:
+            if self.state in (ConnectionState.connected, ConnectionState.stopped):
                 return
-            self.state = ConnectionState.reconnecting
-            await asyncio.sleep(delay)
-            try:
-                await self.transport.reconnect(self.handle_transport_event)
-            except Exception:  # noqa: BLE001 - keep trying, bounded by the ladder
-                self._log.warning("[OneBot] reconnect attempt failed", exc_info=True)
+            if getattr(self.transport, "can_dial", False):
+                self.state = ConnectionState.reconnecting
+                try:
+                    await self.transport.reconnect(self.handle_transport_event)
+                except Exception:  # noqa: BLE001 - keep waiting, bounded by the ladder
+                    self._log.warning("[OneBot] reconnect attempt failed", exc_info=True)
+                    continue
+                if getattr(self.transport, "connected", False):
+                    self.on_transport_connected()
+                    return
                 continue
-            self.state = ConnectionState.connected
-            return
+            await asyncio.sleep(delay)  # passive: the client dials us back
 
     # --------------------------------------------------------------- inbound
 
@@ -319,13 +379,15 @@ class OneBotGateway:
             return {"accepted": False, "reason": "duplicate"}
 
         lane = self._lane_for(event.lane_id)
-        dropped = lane.submit(_LaneItem(event=event))
-        if dropped is not None:
-            # §30/§31: the overflow is *conversational* — its sandbox fact is
-            # ingested right away so a real message is never silently unseen
+        degraded = lane.submit(_LaneItem(event=event))
+        if degraded is not None:
+            # §30/§31 (Phase 13.1): the overflow loses its *reply*, never its
+            # fact and never its lane position — it stays ordered and is
+            # ingested right where it arrived
             self.dropped += 1
-            self._trace(ET.EXTERNAL_TRANSPORT_DROPPED, self._ids(dropped.event), reason="lane_full")
-            self._spawn(self._ingest_only(dropped.event))
+            self._trace(
+                ET.EXTERNAL_TRANSPORT_DROPPED, self._ids(degraded.event), reason="lane_full"
+            )
         self.accepted += 1
         return {"accepted": True, "lane": lane.key, "transport_event_id": event.transport_event_id}
 
@@ -369,11 +431,17 @@ class OneBotGateway:
     # ------------------------------------------------------------ the turn
 
     async def _handle_lane_item(self, item: _LaneItem) -> None:
-        """Ingest first, then (maybe) reply — the two phases stay separate (§31)."""
+        """Ingest first, then (maybe) reply — the two phases stay separate (§31).
+
+        A degraded item (lane overflow) still ingests *in its lane position*;
+        it simply never reaches the conversation runtime.
+        """
         event = item.event
         world_event = self._world_event(event)
         await self.runtime.submit_external(world_event)
         results = await self.runtime.wakeup()
+        if not item.respond:
+            return  # the fact happened; the reply was traded away (§3)
         influence = next(
             (
                 str(result.get("influence", ""))
@@ -386,15 +454,6 @@ class OneBotGateway:
         if ceiling == "silent":
             return
         await self._respond(event, world_event, ceiling)
-
-    async def _ingest_only(self, event: NormalizedMessageEvent) -> None:
-        """The sandbox fact of a dropped conversational turn (§31)."""
-        world_event = self._world_event(event)
-        try:
-            await self.runtime.submit_external(world_event)
-            await self.runtime.wakeup()
-        except Exception:  # noqa: BLE001 - ingestion is best-effort, never fatal
-            self._log.exception("[OneBot] overflow ingestion failed")
 
     def _world_event(self, event: NormalizedMessageEvent) -> Any:
         """§9/§10: the only shape the sandbox sees; identity stays a handle here."""
@@ -418,13 +477,15 @@ class OneBotGateway:
         )
 
     def _mode_ceiling(self, event: NormalizedMessageEvent, influence: str) -> str:
-        """§33/§36: whether this turn may speak — a deterministic runtime policy.
+        """§32/§36: the adapter-side *upper bound*, on top of the sandbox gate.
 
-        Private chat and being addressed (mention / reply / core friend) allow a
-        full reply; an unaddressed group message is observed, not answered; a
-        rejected influence (the existing Phase 3 policy) never speaks.
+        The existing external-influence decision stays authoritative: a fact
+        the sandbox rejected or decided to take no effect from never speaks,
+        and this method can only lower the ceiling — it never raises it.
+        Private chat and being addressed allow a full reply; an unaddressed
+        group message is observed, not answered.
         """
-        if influence == "reject":
+        if influence in ("reject", "no_effect"):
             return "silent"
         if not event.is_group:
             return "reply"

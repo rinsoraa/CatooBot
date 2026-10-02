@@ -18,6 +18,10 @@ class FakeOneBotTransport:
         self.stops = 0
         self.reconnects = 0
         self._on_event: Any = None
+        self._on_connected: Any = None
+        self._on_disconnected: Any = None
+        #: a fake never dials: reconnect means "the client connects again"
+        self.can_dial = False
         self._fail_next_sends = 0
         self._send_delay = 0.0
         self._receive_delay = 0.0
@@ -54,10 +58,16 @@ class FakeOneBotTransport:
 
     # -------------------------------------------------------------- lifecycle
 
+    def set_lifecycle(self, *, on_connected: Any = None, on_disconnected: Any = None) -> None:
+        self._on_connected = on_connected
+        self._on_disconnected = on_disconnected
+
     async def start(self, on_event: Any) -> None:
         self.starts += 1
         self._on_event = on_event
         self.connected = True
+        if self._on_connected is not None:
+            self._on_connected()
 
     async def stop(self) -> None:
         self.stops += 1
@@ -72,6 +82,14 @@ class FakeOneBotTransport:
     def disconnect(self) -> None:
         """Drop the connection the way a real socket would (transport state only)."""
         self.connected = False
+        if self._on_disconnected is not None:
+            self._on_disconnected()
+
+    def reconnect_client(self) -> None:
+        """NapCat dials us back: the server accepts and reports "connected" (§25)."""
+        self.connected = True
+        if self._on_connected is not None:
+            self._on_connected()
 
 
 def qq_message(  # noqa: PLR0913 - a test builder mirrors the protocol
