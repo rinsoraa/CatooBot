@@ -61,13 +61,24 @@ class MutationResult:
 
 
 class MutationLog:
-    """Bounded in-memory audit trail of state mutations (§53)."""
+    """Bounded in-memory audit trail of state mutations (§53).
+
+    ``on_record`` lets the owning runtime bump its world revision — every
+    *applied* mutation is a state change a stale decision must notice (§20).
+    """
 
     def __init__(self, *, maxlen: int = 500) -> None:
         self._entries: deque[StateMutation] = deque(maxlen=maxlen)
+        #: called with each applied mutation (rejected attempts do not count)
+        self.on_record: Any = None
 
     def record(self, mutation: StateMutation) -> StateMutation:
         self._entries.append(mutation)
+        if mutation.ok and self.on_record is not None:
+            try:
+                self.on_record(mutation)
+            except Exception:  # noqa: BLE001 - bookkeeping must never break a mutation
+                pass
         return mutation
 
     def recent(self, *, limit: int = 50) -> list[dict[str, Any]]:
@@ -89,14 +100,13 @@ class MutationLog:
         return len(self._entries)
 
 
-@dataclass
-class DecisionRequest:
-    """§12/§49: a request for the decision layer to (re)plan.
+# The full decision-layer request lives in :mod:`app.sandbox.intent` (Phase 6);
+# re-exported here so the Phase 2/3 name keeps resolving without a second copy.
+from app.sandbox.intent import DecisionRequest  # noqa: E402,F401  (single definition)
 
-    Phase 2 defines the payload only — the LLM decision layer arrives in a
-    later phase; the deterministic decision engine keeps its current role.
-    """
-
-    reason: str  # external_event / need_critical / interaction / admin / schedule
-    space_id: str = ""
-    payload: dict[str, Any] = dfield(default_factory=dict)
+__all__ = [
+    "DecisionRequest",
+    "MutationLog",
+    "MutationResult",
+    "StateMutation",
+]

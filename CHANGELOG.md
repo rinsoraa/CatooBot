@@ -3,6 +3,49 @@
 本文件记录 CatooBot 的版本演进。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号见 `pyproject.toml`；日期取自真实提交历史（本仓库 2026-09-30 起）。
 
+## [Unreleased] — v2.1 Phase 6 · Cognitive Decision & Intent Layer（LLM 可提议，沙盒才决定）
+
+- **决策层（§5-§20）**：新增 `app/sandbox/intent.py` ——
+  `DecisionTrigger` / `DecisionCandidate`（候选只从世界生成：continue /
+  action:<owned> / postpone，未拥有的动作不可能出现）/ `DecisionRequest`
+  （含 request_id、character_id、trigger、截断的 CognitiveContext、候选、
+  约束、deadline、**world_revision**、causation/correlation）/
+  `IntentProposal`（严格 JSON：candidate_id + confidence）/
+  `DecisionGate`（唯一候选→确定性；≥2 候选才需要模型）/ `DecisionValidator`
+  （执行前重读实时状态：候选存在、动作存在、规则允许、物件/库存/前置满足、
+  deadline、**world_changed 失效检测**）/ `DecisionCoordinator`（编排
+  gate → 事件 → 模型 → 校验 → 事件）。
+- **决策事件入既有 spine（§16/§17）**：新增
+  DECISION_REQUESTED / PROPOSED / ACCEPTED / REJECTED / FALLBACK，
+  PROPOSED/ACCEPTED/FALLBACK 一律挂在 REQUESTED 之下（RECEIVED →
+  REQUESTED → …），全链带 causation/correlation。
+- **邀请走进决策管线（§14）**：外部影响层判定"值得打断"后不再直接起动作，
+  而是由 `_run_invitation_decision()` 建候选（核心朋友邀请优先级 0.85 >
+  继续 0.5 > 推迟 0.4，规则受阻会成为不可执行候选）→ Coordinator →
+  校验通过才 ACTION_REQUESTED →（必要时）ACTION_INTERRUPTED →
+  ACTION_STARTED → WORLD_EXTERNAL_INFLUENCE。
+- **确定性回退（§11/§28）**：模型不可用/超时/非法 JSON/未知候选/低置信度
+  （< decision_min_confidence）→ DECISION_FALLBACK → 确定性挑选
+  （临界需求 → 候选优先级 → 偏好继续执行），沙盒永不卡死；全部候选非法时
+  DECISION_REJECTED 且零副作用。
+- **不越权（§3/§12/§18）**：决策本身零世界变更（有测试逐项比对）；LLM 只在
+  DecisionRequest 产生时被调用——每 tick、每次宠物/库存事件、每条聊天消息
+  都不调用（有测试与源码事实支撑）；闲聊路径（character/runtime.py）零决策
+  引用；Phase 2 的模糊裁决 tie-break 也被包装进同一事件/校验管线（不再有
+  第二条 LLM 决策通道）。
+- **候选/上下文预算（§23/§24）**：决策 prompt 只带世界行/状态行/需求行/
+  目标 + 至多 3 条相关记忆（复用 Phase 5 检索与预算）+ 编号候选清单；
+  CharacterDefinition 的 boundaries 仅取前 3 条作为约束行。
+- **配置**：`sandbox.decision_model`（由 `models.decision` 统一注入并参与
+  启动校验）、`sandbox.decision_timeout`（20s）、
+  `sandbox.decision_min_confidence`（0.35）。
+- 新增 `tests/test_sandbox_intent.py`（17 个测试：确定性单候选零模型调用、
+  真实宠物链零模型、纯 tick 零模型、模型选择端到端、事件因果链、
+  未知候选/低置信/超时回退、world_revision 失效与 deadline 过期、
+  决策零变更、第二角色世界级否决 + 伪造提案 validator 兜底、
+  规则禁止 LLM 选择、决策上下文带相关记忆（仅供参考）、
+  决策事件不成记忆、gate/候选来源面），总测试 1141。
+
 ## [Unreleased] — v2.1 Phase 5 Remediation · Context Prompt Character-Neutral
 
 - **Prompt 固定标签去性别化**：Phase 5 注入的三段固定文案改名——

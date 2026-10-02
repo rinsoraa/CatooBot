@@ -39,6 +39,12 @@ from app.sandbox.external import (
     InfluenceAction,
 )
 from app.sandbox.external_adapters import from_legacy_event, legacy_meaning
+from app.sandbox.intent import (
+    CandidateKind,
+    DecisionCandidate,
+    DecisionCoordinator,
+    DecisionTrigger,
+)
 from app.sandbox.interactions import InteractionResolver
 from app.sandbox.memory_foundation import (
     MemoryCandidateBuilder,
@@ -168,6 +174,7 @@ class SandboxRuntime:
         bot: Any = None,
         clock: Any = time.time,
         ai_decider: Any = None,
+        ai_engine: Any = None,
         logger_: logging.Logger | None = None,
     ) -> None:
         self.config = config
@@ -176,6 +183,14 @@ class SandboxRuntime:
         self.bot = bot
         self._clock = clock
         self._log = logger_ or logger
+        #: the shared AI engine (decision layer + tie-break calls); a Phase 2
+        #: ``ai_decider`` that wraps one is used as the fallback source.
+        self.ai_engine = (
+            ai_engine if ai_engine is not None else getattr(ai_decider, "_engine", None)
+        )
+        #: monotonic counter bumped by every *applied* mutation — a proposal
+        #: built against an older revision is stale and must be re-validated (§20)
+        self.world_revision = 0
         simulation_seed = int(getattr(config, "simulation_seed", 0))
         self._rng = seeded_rng(simulation_seed)
 
@@ -243,6 +258,9 @@ class SandboxRuntime:
         self.continuity_snapshot = ContinuitySnapshotBuilder(self, clock=clock)
         #: Phase 5 bridge: read-only cognitive context for chat turns
         self.cognition = CognitiveContextBuilder(self, clock=clock)
+        #: Phase 6 decision layer: gate → request → model → validate → events
+        self.decisions = DecisionCoordinator(self)
+        self.mutations.on_record = self._bump_world_revision
         self._last_tick = float(clock())
         self._notes: list[str] = []  # micro-continuity feed
         self._restored = False
@@ -301,7 +319,11 @@ class SandboxRuntime:
             pet=self.pet_system,
             rng=self._rng,
             clock=clock,
-            ai_decider=ai_decider if getattr(config, "allow_ai_decisions", True) else None,
+            ai_decider=(
+                self.decisions.wrap_tie_breaker(ai_decider)
+                if ai_decider is not None and getattr(config, "allow_ai_decisions", True)
+                else None
+            ),
             preference_bonus=_preference_bonus(seed),
             home_spaces=_home_space_set(seed),
         )
@@ -1404,6 +1426,130 @@ class SandboxRuntime:
 
     # ---------------------------------------------- external world (§4-§13)
 
+    def _bump_world_revision(self, _mutation: Any) -> None:
+        self.world_revision += 1
+
+    def _invitation_candidates(self, activity: str, *, from_core: bool) -> list[DecisionCandidate]:
+        """The legal options for an activity invitation — world-derived (§5).
+
+        Priorities encode the *trigger's* strength (a core friend's invitation
+        outranks continuing; a stranger's does not), so the deterministic
+        fallback needs no model to stay in character.
+        """
+        candidates: list[DecisionCandidate] = []
+        if self.current_action is not None:
+            definition = self.actions.definition(self.current_action)
+            label = definition.name if definition is not None else "正在做的事"
+            candidates.append(
+                DecisionCandidate(
+                    candidate_id="continue_current_action",
+                    kind=CandidateKind.continue_current,
+                    label=f"继续{label}",
+                    reason="keep_running_action",
+                    priority=0.5,
+                )
+            )
+        action_id = self._action_for_activity(activity)
+        if action_id:
+            definition = self.actions.definitions[action_id]
+            requirements: list[str] = []
+            allowed, rule_reason = self.rules.allows_action(definition.id)
+            if not allowed:
+                requirements.append(rule_reason or "rule_blocked")
+            if not self.engine._objects_available(definition):  # noqa: SLF001
+                requirements.append("objects_unavailable")
+            if not self.inventories.can_consume(definition.consumes):
+                requirements.append("requirements_unmet")
+            if not self.engine._requirements_met(definition):  # noqa: SLF001
+                requirements.append("requirements_unmet")
+            candidates.append(
+                DecisionCandidate(
+                    candidate_id=f"action:{action_id}",
+                    kind=CandidateKind.action,
+                    action_id=action_id,
+                    label=definition.name,
+                    reason="accept_invitation" if from_core else "join_activity",
+                    requirements=requirements,
+                    priority=0.85 if from_core else 0.6,
+                )
+            )
+        candidates.append(
+            DecisionCandidate(
+                candidate_id="postpone_invitation",
+                kind=CandidateKind.postpone,
+                label="先不理会，按原计划来",
+                reason="keep_own_plan",
+                priority=0.4,
+            )
+        )
+        return candidates
+
+    async def _run_invitation_decision(
+        self,
+        *,
+        activity: str,
+        from_core: bool,
+        actor: str,
+        reason_code: str,
+        received_id: str,
+        correlation: str,
+    ) -> dict[str, Any]:
+        """§14: invitation → decision pipeline → (maybe) interrupt + action.
+
+        Thin orchestration only: the coordinator decides and validates, this
+        method executes the accepted outcome through the normal action path.
+        """
+        candidates = self._invitation_candidates(activity, from_core=from_core)
+        context = {
+            "world": self.context().get("state_line", ""),
+            "mode": self.modes.prompt_line(),
+            "needs": self.needs.summary_line(),
+            "goal": self.context().get("goal", ""),
+            "invitation": {"actor": actor, "activity": activity, "reason": reason_code},
+        }
+        outcome = await self.decisions.decide(
+            trigger=DecisionTrigger.external_invitation,
+            candidates=candidates,
+            correlation_id=correlation,
+            causation_id=received_id,
+            context=context,
+        )
+        result: dict[str, Any] = {
+            "interrupt": False,
+            "decision": outcome.model_dump(),
+        }
+        if not outcome.accepted or outcome.kind != CandidateKind.action.value:
+            return result
+        self.events.publish(
+            SandboxEventType.ACTION_REQUESTED,
+            source="character",
+            target=outcome.action_id,
+            payload={"reason": f"decision:{outcome.source}", "space": self.character.location},
+            causation_id=received_id,
+            correlation_id=correlation,
+        )
+        if self.current_action is not None:
+            await self._interrupt_action(reason_code, resumable=True)
+        started = await self._start_action(outcome.action_id, reason=[f"decision:{outcome.source}"])
+        if started is None:
+            return result
+        result["interrupt"] = True
+        result["action"] = outcome.action_id
+        self.events.publish(
+            SandboxEventType.WORLD_EXTERNAL_INFLUENCE,
+            source="external",
+            target=outcome.action_id,
+            payload={
+                "actor": actor,
+                "semantic_kind": "activity_invitation",
+                "reason": reason_code,
+                "decision_source": outcome.source,
+            },
+            causation_id=received_id,
+            correlation_id=correlation,
+        )
+        return result
+
     def _activity_index(self) -> set[str]:
         """Activities this world can engage — read from ActionDefinition (§18).
 
@@ -1515,25 +1661,21 @@ class SandboxRuntime:
         # accepted: the outside fact becomes a stimulus (§52 — never a command)
         self._apply_influence_effects(event, decision, correlation)
 
-        if decision.action is InfluenceAction.INTERRUPT and self.current_action is not None:
-            await self._interrupt_action(decision.reason_code, resumable=True)
-            action_id = self._action_for_activity(decision.target_activity)
-            if action_id:
-                await self._start_action(action_id, reason=[decision.reason_code])
-                result["interrupt"] = True
-                result["action"] = action_id
-                self.events.publish(
-                    SandboxEventType.WORLD_EXTERNAL_INFLUENCE,
-                    source=event.source.value,
-                    target=action_id,
-                    payload={
-                        "actor": event.actor_id,
-                        "semantic_kind": event.semantic_kind,
-                        "reason": decision.reason_code,
-                    },
-                    causation_id=received.event_id if received else "",
-                    correlation_id=correlation,
-                )
+        if decision.action is InfluenceAction.INTERRUPT:
+            # §14: the influence layer says "this matters"; the decision layer
+            # (candidates → gate → model → validator) decides what happens.
+            outcome = await self._run_invitation_decision(
+                activity=decision.target_activity,
+                from_core=event.actor_relationship == "core_friend",
+                actor=event.actor_id,
+                reason_code=decision.reason_code,
+                received_id=received.event_id if received else "",
+                correlation=correlation,
+            )
+            result["interrupt"] = bool(outcome.get("interrupt"))
+            result["decision"] = outcome.get("decision")
+            if outcome.get("action"):
+                result["action"] = outcome["action"]
         elif (
             decision.action is InfluenceAction.WAKE
             and self.current_action is None

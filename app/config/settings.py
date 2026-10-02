@@ -685,6 +685,13 @@ class SandboxConfig(BaseModel):
     #: 最近经历注入条数上限
     experience_context_limit: int = Field(default=3, ge=0, le=20)
 
+    # ---------- 认知决策层（Phase 6） ----------
+    #: 决策调用可选钉住的模型 name（ai.models 里已注册；留空 = 路由默认）
+    decision_model: str = ""
+    #: 决策 LLM 的调用超时（秒）与最低置信度（低于则走确定性回退）
+    decision_timeout: float = Field(default=20.0, gt=0)
+    decision_min_confidence: float = Field(default=0.35, ge=0.0, le=1.0)
+
 
 class ExpressionConfig(BaseModel):
     """Task 22: expression / 口癖 learning — patterns from group speech.
@@ -852,6 +859,8 @@ def _resolve_models(data: dict[str, Any]) -> dict[str, Any]:
     set_if_blank(media, "acquisition_model", acquisition)
 
     set_if_blank(ensure("social"), "decision_model", decision)
+    #: the sandbox decision layer uses the same "internal fast model" knob
+    set_if_blank(ensure("sandbox"), "decision_model", decision)
     set_if_blank(ensure("agent").setdefault("planner", {}), "model", planner)
     set_if_blank(ensure("agent").setdefault("evaluator", {}), "model", evaluator)
 
@@ -907,6 +916,7 @@ def _validate_model_refs(config: AppConfig) -> None:
     check_model("media.vision_model", config.media.vision_model)
     check_model("media.acquisition_model", config.media.acquisition_model)
     check_model("social.decision_model", config.social.decision_model)
+    check_model("sandbox.decision_model", config.sandbox.decision_model)
     check_model("agent.planner.model", config.agent.planner.model)
     check_model("agent.evaluator.model", config.agent.evaluator.model)
 

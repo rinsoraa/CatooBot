@@ -239,6 +239,7 @@ class Bot:
                     bot=self,
                     clock=self._clock,
                     ai_decider=SandboxAIDecider(self.ai),
+                    ai_engine=self.ai,
                 )
                 self.lifecycle_manager = CharacterLifecycleManager(self.database, clock=self._clock)
                 self.character.sandbox = self.sandbox
