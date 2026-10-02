@@ -180,6 +180,7 @@ ACTION_TEMPLATES: dict[str, dict[str, Any]] = {
         "tags": ["pet", "care"],
         "need_relief": {"pet_care": 0.95},
         "consumes": {"cat_food_bowl": {"{pet_food}": -1}},
+        "effects": {"pet:feed": 1.0},
         "modes": ["home"],
         "detail_pool": ["在给{pet}添粮"],
         "requires_pet": True,

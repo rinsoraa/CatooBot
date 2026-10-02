@@ -24,6 +24,8 @@ from app.sandbox.decision import (
 )
 from app.sandbox.definition import CharacterDefinition
 from app.sandbox.entities import PetSystem
+from app.sandbox.events import EventBus, SandboxEventType
+from app.sandbox.interactions import InteractionResolver
 from app.sandbox.models import (
     ActionDefinition,
     ActionInstance,
@@ -44,7 +46,7 @@ from app.sandbox.models import (
     WorldObjectItem,
 )
 from app.sandbox.modes import ModeRuntime
-from app.sandbox.mutations import MutationLog, StateMutation
+from app.sandbox.mutations import MutationLog, MutationResult, StateMutation
 from app.sandbox.needs import NeedSystem
 from app.sandbox.seed import (
     build_action_definitions,
@@ -217,6 +219,15 @@ class SandboxRuntime:
         self.pending_events: list[ExternalEvent] = []
         #: §53: every state change is recorded with source/reason/before/after
         self.mutations = MutationLog()
+        #: §14: one bus per runtime — events are facts, owned by this world
+        self.events = EventBus(clock=clock)
+        #: §11: kind-driven interaction resolver (what the world allows)
+        self.interactions = InteractionResolver(self)
+        #: PET_HUNGRY fires once per crossing, not every tick
+        self._pet_hungry_signaled = False
+        self._last_pet_hungry: Any = None
+        # §6: reactions subscribe to facts — a begging pet raises pet_care.
+        self.events.subscribe(self._on_pet_approached)
         self._last_tick = float(clock())
         self._notes: list[str] = []  # micro-continuity feed
         self._restored = False
@@ -369,6 +380,27 @@ class SandboxRuntime:
 
     # ------------------------------------------------------------ tick loop
 
+    def _on_pet_approached(self, event: Any) -> None:
+        """Bus handler: a hungry pet approaching bumps her care need (§177)."""
+        if event.event_type is SandboxEventType.PET_APPROACHED:
+            before = self.needs.level("pet_care")
+            self.needs.add("pet_care", 0.25)
+            self.mutations.record(
+                StateMutation(
+                    target="needs:pet_care",
+                    field="level",
+                    before=before,
+                    after=self.needs.level("pet_care"),
+                    source="pet_action",
+                    reason="pet_approached",
+                )
+            )
+            self.events.publish(
+                SandboxEventType.NEED_CHANGED,
+                target="pet_care",
+                payload={"before": before, "after": self.needs.level("pet_care")},
+            )
+
     async def tick(self, *, minutes: float | None = None) -> dict[str, Any]:
         """One sandbox tick (§68). Returns a small report for logs/tests."""
         if self.phase not in (SandboxPhase.running, SandboxPhase.degraded):
@@ -393,9 +425,30 @@ class SandboxRuntime:
                 level=EventLevel.micro,
                 reason=kind,
             )
-        # a hungry pet begging feeds her need to care for it (§177)
-        if any(kind == "hungry_approach" for kind, _line in pet_events):
-            self.needs.add("pet_care", 0.25)
+        # §7 Case A: hunger crossing becomes a fact event; the *reaction*
+        # (need bump) rides the bus as a handler, not an inline if.
+        if self.pet is not None:
+            if self.pet.hunger >= 0.7 and not self._pet_hungry_signaled:
+                self._pet_hungry_signaled = True
+                hungry = self.events.publish(
+                    SandboxEventType.PET_HUNGRY,
+                    source=self.pet.id,
+                    payload={"hunger": self.pet.hunger},
+                )
+                self._last_pet_hungry = hungry
+            elif self.pet.hunger < 0.5:
+                self._pet_hungry_signaled = False
+            if any(kind == "hungry_approach" for kind, _l in pet_events):
+                self.events.publish(
+                    SandboxEventType.PET_APPROACHED,
+                    source=self.pet.id,
+                    target="character",
+                    payload={"line": pet_events[0][1]},
+                    causation_id=(self._last_pet_hungry.event_id if self._last_pet_hungry else ""),
+                    correlation_id=(
+                        self._last_pet_hungry.correlation_id if self._last_pet_hungry else ""
+                    ),
+                )
 
         report: dict[str, Any] = {"minutes": step, "pet": [line for _k, line in pet_events]}
         self._last_tick = now
@@ -441,6 +494,237 @@ class SandboxRuntime:
         key, item = self._pet_food
         return self.inventories.get(key).count(item) > 0
 
+    # ------------------------------------------ mutation helpers (§6/§52)
+
+    def take_item(
+        self,
+        inventory_key: str,
+        item: str,
+        *,
+        quantity: int = 1,
+        source: str,
+        reason: str,
+        correlation: str = "",
+        causation_id: str = "",
+    ) -> MutationResult:
+        """Consume N items — the only sanctioned inventory-consumption path.
+
+        Emits ITEM_CONSUMED per call and INVENTORY_DEPLETED when the
+        container runs empty, with before/after mutations recorded (§53).
+        """
+        inventory = self.inventories.get(inventory_key)
+        if inventory.count(item) < quantity:
+            return MutationResult(ok=False, error="not_enough_items")
+        before = inventory.count(item)
+        inventory.take(item, quantity)
+        after = inventory.count(item)
+        mutation = self.mutations.record(
+            StateMutation(
+                target=f"inventory:{inventory_key}",
+                field=item,
+                before=before,
+                after=after,
+                source=source,
+                reason=reason,
+            )
+        )
+        consumed = self.events.publish(
+            SandboxEventType.ITEM_CONSUMED,
+            source=source,
+            target=f"inventory:{inventory_key}",
+            payload={"item": item, "quantity": quantity, "left": after},
+            causation_id=causation_id,
+            correlation_id=correlation,
+        )
+        event_ids = [consumed.event_id] if consumed else []
+        depleted = None
+        if not inventory.items:
+            # depletion was *caused by* the consumption (§13)
+            depleted = self.events.publish(
+                SandboxEventType.INVENTORY_DEPLETED,
+                source=source,
+                target=f"inventory:{inventory_key}",
+                payload={"was": item},
+                causation_id=causation_id or (consumed.event_id if consumed else ""),
+                correlation_id=correlation or (consumed.correlation_id if consumed else ""),
+            )
+            if depleted:
+                event_ids.append(depleted.event_id)
+        return MutationResult(ok=True, mutations=[mutation], event_ids=event_ids)
+
+    def acquire_item(
+        self,
+        inventory_key: str,
+        item: str,
+        *,
+        quantity: int = 1,
+        source: str,
+        reason: str,
+        correlation: str = "",
+        causation_id: str = "",
+    ) -> MutationResult:
+        """Counterpart of take_item: items enter the world (shopping effects)."""
+        inventory = self.inventories.get(inventory_key)
+        before = inventory.count(item)
+        inventory.add(item, quantity)
+        mutation = self.mutations.record(
+            StateMutation(
+                target=f"inventory:{inventory_key}",
+                field=item,
+                before=before,
+                after=inventory.count(item),
+                source=source,
+                reason=reason,
+            )
+        )
+        self.events.publish(
+            SandboxEventType.ITEM_ACQUIRED,
+            source=source,
+            target=f"inventory:{inventory_key}",
+            payload={"item": item, "quantity": quantity, "total": inventory.count(item)},
+            causation_id=causation_id,
+            correlation_id=correlation,
+        )
+        return MutationResult(ok=True, mutations=[mutation])
+
+    def move_entity(
+        self,
+        *,
+        entity_id: str,
+        to_space: str,
+        source: str,
+        reason: str,
+        correlation: str = "",
+        causation_id: str = "",
+    ) -> MutationResult:
+        """Canonical movement (§9): validate, mutate, ENTITY_MOVED/REJECTED.
+
+        Feature code must never assign ``character.location`` directly —
+        this gate owns existence + reachability validation.
+        """
+        requested = self.events.publish(
+            SandboxEventType.ENTITY_MOVE_REQUESTED,
+            source=entity_id,
+            target=to_space,
+            payload={"reason": reason},
+            causation_id=causation_id,
+            correlation_id=correlation,
+        )
+        parent = causation_id or (requested.event_id if requested else "")
+        if self.spaces.get(to_space) is None:
+            self.events.publish(
+                SandboxEventType.ENTITY_MOVE_REJECTED,
+                source=entity_id,
+                target=to_space,
+                payload={"reason": "unknown_space"},
+                causation_id=parent,
+                correlation_id=correlation or (requested.correlation_id if requested else ""),
+            )
+            return MutationResult(ok=False, error="unknown_space")
+        if to_space != self.character.location and not self._space_enterable(
+            self.character.location, to_space
+        ):
+            self.events.publish(
+                SandboxEventType.ENTITY_MOVE_REJECTED,
+                source=entity_id,
+                target=to_space,
+                payload={"reason": "not_reachable"},
+                causation_id=parent,
+                correlation_id=correlation or (requested.correlation_id if requested else ""),
+            )
+            return MutationResult(ok=False, error="not_reachable")
+        before = self.character.location
+        self.character.location = to_space
+        mutation = self.mutations.record(
+            StateMutation(
+                target="character.location",
+                field="location",
+                before=before,
+                after=to_space,
+                source=source,
+                reason=reason,
+            )
+        )
+        self.events.publish(
+            SandboxEventType.ENTITY_MOVED,
+            source=entity_id,
+            target=to_space,
+            payload={"from": before, "reason": reason},
+            causation_id=parent,
+            correlation_id=correlation or (requested.correlation_id if requested else ""),
+        )
+        return MutationResult(ok=True, mutations=[mutation])
+
+    def _space_enterable(self, from_space: str, to_space: str) -> bool:
+        """Reachability for one hop (errand travel is validated by actions)."""
+        reachable = {space.id for space in self.spaces.reachable(from_space)}
+        return to_space in reachable
+
+    def feed_pet(
+        self, *, source: str, reason: str, correlation: str = "", causation_id: str = ""
+    ) -> bool:
+        """Case A tail: consume pet food, relieve hunger, emit PET_FED.
+
+        Generic on the seed's (bowl inventory, food item) — no names here.
+        """
+        if self.pet_system is None or self.pet is None or not self._pet_food:
+            return False
+        key, item = self._pet_food
+        taken = self.take_item(
+            key,
+            item,
+            quantity=1,
+            source=source,
+            reason=reason,
+            correlation=correlation,
+            causation_id=causation_id,
+        )
+        if not taken.ok:
+            return False
+        before = self.pet.hunger
+        self.pet_system.feed()
+        self.mutations.record(
+            StateMutation(
+                target=f"pet:{self.pet.id}",
+                field="hunger",
+                before=before,
+                after=self.pet.hunger,
+                source=source,
+                reason=reason,
+            )
+        )
+        self.events.publish(
+            SandboxEventType.PET_FED,
+            source=source,
+            target=self.pet.id,
+            payload={"food": item, "hunger_after": self.pet.hunger},
+            causation_id=(taken.event_ids[-1] if taken.event_ids else causation_id),
+            correlation_id=correlation,
+        )
+        return True
+
+    def apply_object_effect(
+        self,
+        effect_key: str,
+        value: float,
+        *,
+        reason: str,
+        correlation: str = "",
+        causation_id: str = "",
+    ) -> None:
+        """Object-state effects emit OBJECT_STATE_CHANGED (§6)."""
+        self.objects.apply_effect(effect_key, value)
+        rest = effect_key.partition(":")[2]
+        obj_id, _, obj_field = rest.partition(".")
+        obj = self.objects.get(obj_id)
+        self.events.publish(
+            SandboxEventType.OBJECT_STATE_CHANGED,
+            target=obj_id,
+            payload={"field": obj_field, "value": obj.state.get(obj_field) if obj else None},
+            causation_id=causation_id,
+            correlation_id=correlation,
+        )
+
     async def _complete_action(self) -> None:
         action = self.current_action
         if action is None:
@@ -451,54 +735,88 @@ class SandboxRuntime:
             self.current_action = None
             return
 
+        correlation = f"act_{action.id}"
+
         def apply() -> None:
             self.actions.finish(action, ActionStatus.completed)
+            # §6: consumption goes through the mutation path (ITEM_CONSUMED…)
             for inv_key, items in definition.consumes.items():
                 for item, count in items.items():
-                    self.mutations.record(
-                        StateMutation(
-                            target=f"inventory:{inv_key}",
-                            field=item,
-                            before=self.inventories.get(inv_key).count(item),
-                            after=max(0, self.inventories.get(inv_key).count(item) - max(count, 0)),
+                    if count > 0:
+                        self.take_item(
+                            inv_key,
+                            item,
+                            quantity=count,
                             source="character_action",
                             reason=definition.id,
+                            correlation=correlation,
                         )
-                    )
-            self.inventories.consume(definition.consumes)
+                    elif count < 0:
+                        # negative = "must exist, not consumed" (e.g. pet food)
+                        pass
             self.needs.relieve(definition.need_relief)
             for key, amount in definition.need_cost.items():
                 self.needs.add(key, amount)
+            self.events.publish(
+                SandboxEventType.ACTION_EFFECT_APPLIED,
+                source="character",
+                target=definition.id,
+                payload={
+                    "need_relief": definition.need_relief,
+                    "consumes": definition.consumes,
+                },
+                correlation_id=correlation,
+            )
             for effect_key, value in definition.effects.items():
                 if effect_key.startswith("object:"):
-                    self.objects.apply_effect(effect_key, value)
+                    self.apply_object_effect(
+                        effect_key, value, reason=definition.id, correlation=correlation
+                    )
                 elif effect_key.startswith("inventory:"):
-                    self.inventories.apply_effect(effect_key, value)
+                    _, inv_key, item = effect_key.split(":", 2)
+                    self.acquire_item(
+                        inv_key,
+                        item,
+                        quantity=int(value),
+                        source="character_action",
+                        reason=definition.id,
+                        correlation=correlation,
+                    )
+                elif effect_key.startswith("pet:"):
+                    # §18: generic pet effects — the seed decides what exists
+                    self.feed_pet(
+                        source="character_action",
+                        reason=definition.id,
+                        correlation=correlation,
+                    )
                 elif effect_key.startswith("project:"):
                     name = effect_key.split(":", 1)[1]
                     project = self.projects.get(name)
                     if project is not None:
-                        project["progress"] = min(1.0, float(project["progress"]) + value)
+                        before = float(project["progress"])
+                        project["progress"] = min(1.0, before + value)
+                        self.mutations.record(
+                            StateMutation(
+                                target=f"project:{name}",
+                                field="progress",
+                                before=before,
+                                after=project["progress"],
+                                source="character_action",
+                                reason=definition.id,
+                            )
+                        )
                 elif effect_key.startswith("commission:"):
                     self._advance_commission(float(value))
-            if definition.id == "feed_cat" and self.pet_system is not None:
-                self.pet_system.feed()
             if definition.destination:
                 # she walked home after the errand (§30: space affects behavior)
-                self.mutations.record(
-                    StateMutation(
-                        target="character.location",
-                        field="location",
-                        before=self.character.location,
-                        after=self._default_location,
-                        source="character_action",
-                        reason=definition.id,
-                    )
+                self.move_entity(
+                    entity_id="character",
+                    to_space=self._default_location,
+                    source="character_action",
+                    reason=definition.id,
+                    correlation=correlation,
                 )
-                self.character.location = self._default_location
-            if any(key.startswith("inventory:") for key in definition.consumes) or any(
-                "fridge" in key for key in definition.consumes
-            ):
+            if definition.consumes:
                 # eating/drinking from a container → she knows its stock now
                 container = next(iter(definition.consumes), "")
                 self.knowledge[f"{container}_stock"] = {
@@ -507,7 +825,7 @@ class SandboxRuntime:
                     "learned_at": float(self._clock()),
                     "data": {},
                 }
-            # her staple drink ran out → replenishment awareness (seed anchor)
+            # her staple drink ran out → replenishment awareness (Case B tail)
             if (
                 self._fridge_key
                 and self._drink_item
@@ -521,6 +839,13 @@ class SandboxRuntime:
                 }
 
         await self._transaction(apply, label=f"complete:{action.definition_id}")
+        self.events.publish(
+            SandboxEventType.ACTION_COMPLETED,
+            source="character",
+            target=definition.id,
+            payload={"detail": action.detail, "reason": "natural_completion"},
+            correlation_id=correlation,
+        )
         await self._append_event(
             "action_completed",
             f"{definition.name}结束" + (f"（{action.detail}）" if action.detail else ""),
@@ -547,9 +872,22 @@ class SandboxRuntime:
                 and not self.actions.is_due(self.current_action)
             ):
                 return decision
+            requested = self.events.publish(
+                SandboxEventType.ACTION_REQUESTED,
+                source="character",
+                target=decision.action_id,
+                payload={"space": space_id, "reason_codes": decision.reason_codes},
+            )
             ok, reason = self.validator.validate(decision.action_id, space_id)
             if not ok:
                 trace.factors.append(f"rejected:{reason}")
+                self.events.publish(
+                    SandboxEventType.ACTION_FAILED,
+                    source="character",
+                    target=decision.action_id,
+                    payload={"reason": reason},
+                    causation_id=requested.event_id if requested else "",
+                )
                 decision = SandboxDecision(
                     decision="continue",
                     action_id=decision.action_id,
@@ -592,8 +930,31 @@ class SandboxRuntime:
         await self._transaction(
             lambda: setattr(self, "current_action", instance), label=f"start:{action_id}"
         )
-        self.character.location = target_space
+        # §9: movement goes through the canonical gate (errand destinations
+        # may be far away — validation admits them by action, not proximity)
+        if (
+            target_space != self.character.location
+            and not self.move_entity(
+                entity_id="character",
+                to_space=target_space,
+                source="character_action",
+                reason=action_id,
+                correlation=f"act_{instance.id}",
+            ).ok
+        ):
+            self.character.location = target_space  # action-authorized travel
         self.character.current_action_id = instance.id
+        self.events.publish(
+            SandboxEventType.ACTION_STARTED,
+            source="character",
+            target=action_id,
+            payload={
+                "space": target_space,
+                "detail": instance.detail,
+                "correlation": instance.id,
+            },
+            correlation_id=f"act_{instance.id}",
+        )
         await self.store.save_action(instance)
         await self._sync_state()
         if definition.typical_minutes >= 20:
@@ -703,6 +1064,13 @@ class SandboxRuntime:
             label=f"interrupt:{action.definition_id}",
         )
         await self.store.save_action(action)
+        self.events.publish(
+            SandboxEventType.ACTION_INTERRUPTED,
+            source="external",
+            target=action.definition_id,
+            payload={"reason": why},
+            correlation_id=f"act_{action.id}",
+        )
         await self._append_event(
             "action_interrupted",
             f"{definition.name if definition else action.definition_id}被打断",

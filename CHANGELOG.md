@@ -3,6 +3,36 @@
 本文件记录 CatooBot 的版本演进。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号见 `pyproject.toml`；日期取自真实提交历史（本仓库 2026-09-30 起）。
 
+## [Unreleased] — v2.1 Phase 2 · Entity Interaction + Event Bus + State Mutation
+
+- **Sandbox 事件主干（§5/§13）**：新增 `app/sandbox/events.py`——
+  `SandboxEvent`（event_id/timestamp/type/source/target/payload）+
+  **causation_id**（谁导致了我）+ **correlation_id**（同一条行为链）；
+  `EventBus` 为 Runtime 私有实例（§14，无全局单例），带 dispatch 深度护栏与
+  correlation 链上限（§15：允许有界因果链，无限循环降级为丢弃+WARN）。
+- **统一状态变更路径（§6/§52-§53）**：`take_item / acquire_item / move_entity /
+  feed_pet / apply_object_effect` 成为唯一状态入口——每次变更记录
+  source/reason/before/after 并发出对应事实事件
+  （ITEM_CONSUMED / INVENTORY_DEPLETED / ENTITY_MOVED / PET_FED /
+  OBJECT_STATE_CHANGED…）；`interactions.py` 只经此路径改状态。
+- **Entity Interaction（§11-§12）**：`InteractionResolver` 按**实体 kind**
+  （pet/object/space）给出 `InteractionCandidate`（feed/observe/take_item/
+  inspect/move + requirements）并执行 `Request → 验证 → Mutation → Event`；
+  不做决定、不调 LLM；宠物饥饿反应（pet_care ↑）改为总线订阅者而非内联 if。
+- **动作生命周期入链（§10）**：ACTION_REQUESTED → STARTED → EFFECT_APPLIED →
+  COMPLETED / FAILED / INTERRUPTED 全部发出事实事件并以
+  `act_<instance.id>` 关联；`feed_cat` 专属分支删除，改为通用 `pet:feed`
+  效果（§18：动作效果按 id 语义路由，不按角色特例）。
+- **四条完整因果链落地**：宠物饿了（PET_HUNGRY→APPROACHED→feed→
+  ITEM_CONSUMED→PET_FED，全链可重放）；库存耗尽（ITEM_CONSUMED→
+  INVENTORY_DEPLETED，causation 直指消费事件）；实体移动（REQUESTED→
+  验证→MUTATION→MOVED/REJECTED，非法空间绝不产生错误状态）；动作生命周期
+  （含验证失败路径）。
+- 事件总线为 transient（§20）：持久化仍走既有 SandboxEventRecord/store；
+  第二角色（阿澈，无宠物、咖啡锚点）下整条主干照常工作，名称零依赖。
+- 新增 `tests/test_sandbox_causality.py`（15 个因果链测试：链路/嵌套/防环/
+  深度护栏/双沙盒隔离/第二角色回归/候选需求面），总测试 1035。
+
 ## [Unreleased] — v2.1 Phase 1 · Character Bible → Sandbox Foundation
 
 - **Character Bible 成为唯一 Canonical Source（§6）**：新增
