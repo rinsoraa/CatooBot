@@ -9,6 +9,7 @@ mutations flow through ``_transaction`` and the only writer is this runtime
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
 import uuid
@@ -30,6 +31,7 @@ from app.sandbox.decision import (
 from app.sandbox.definition import CharacterDefinition
 from app.sandbox.entities import PetSystem
 from app.sandbox.events import EventBus, SandboxEventType
+from app.sandbox.events import SandboxEventType as ET
 from app.sandbox.experience import ExperienceBuilder
 from app.sandbox.external import (
     ExternalEventQueue,
@@ -74,6 +76,14 @@ from app.sandbox.models import (
 from app.sandbox.modes import ModeRuntime
 from app.sandbox.mutations import MutationLog, MutationResult, StateMutation
 from app.sandbox.needs import NeedSystem
+from app.sandbox.relations import (
+    InteractionSignificance,
+    PersonIdentityResolver,
+    RelationshipStore,
+    RelationshipUpdateEngine,
+    SocialInteractionFact,
+    classify_significance,
+)
 from app.sandbox.seed import (
     build_action_definitions,
     build_inventories,
@@ -262,6 +272,12 @@ class SandboxRuntime:
         #: Phase 6 decision layer: gate → request → model → validate → events
         self.decisions = DecisionCoordinator(self)
         self.mutations.on_record = self._bump_world_revision
+        #: Phase 8 social layer: relationship dynamics (character-scoped)
+        self.relationships_dyn = RelationshipStore(self)
+        self.persons = PersonIdentityResolver(self)
+        self.social = RelationshipUpdateEngine(self)
+        #: an accepted invitation waiting for its shared-activity outcome (§19)
+        self._accepted_invitation: dict[str, Any] | None = None
         #: Phase 7 goal layer: why she keeps doing something (§4-§34)
         self.goals = GoalManager(self, clock=clock)
         self.goal_detector = GoalDetector(self.goals, clock=clock)
@@ -368,6 +384,9 @@ class SandboxRuntime:
         await self.goals.restore()
         self.goal_detector.sweep()
         await self.goals.flush()
+        # §28: the bible's relationships are the canonical starting states
+        self.relationships_dyn.seed_initial()
+        await self.relationships_dyn.seed_persisted()
         self.phase = SandboxPhase.running
         await self.store.state_set("phase", self.phase.value)
         self._derive_modes()
@@ -375,6 +394,7 @@ class SandboxRuntime:
 
     async def shutdown(self) -> None:
         self.phase = SandboxPhase.stopped
+        await self.wait_social()
         await self.flush_experiences()
         await self.build_continuity()
         await self._persist_all()
@@ -1242,6 +1262,23 @@ class SandboxRuntime:
             reason="natural_completion",
         )
         self._notes.append(f"{definition.name}做完了")
+        pending = self._accepted_invitation
+        if pending is not None and pending.get("action_id") == definition.id:
+            self._accepted_invitation = None
+            fact = SocialInteractionFact.create(  # §19: the activity *did* happen
+                character_id=self.character_id,
+                person_id=str(pending["person_id"]),
+                interaction_type="shared_activity",
+                source="character_action",
+                timestamp=float(self._clock()),
+                outcome="completed",
+            )
+            task = asyncio.create_task(
+                self.apply_social_interaction(
+                    fact, correlation_id=str(pending.get("correlation", ""))
+                )
+            )
+            self._track_background(task)
         self.current_action = None
         await self.store.save_action(action)
         await self._resume_interrupted()
@@ -1456,7 +1493,11 @@ class SandboxRuntime:
 
     # ---------------------------------------------- external world (§4-§13)
 
-    def _bump_world_revision(self, _mutation: Any) -> None:
+    def _bump_world_revision(self, mutation: Any) -> None:
+        # relationship/social bookkeeping is state, but it cannot change what
+        # an action requires or does — a pending decision stays valid
+        if not getattr(mutation, "affects_world", True):
+            return
         self.world_revision += 1
 
     # ---------------------------------------------------- goal layer (§7)
@@ -1580,13 +1621,21 @@ class SandboxRuntime:
         method executes the accepted outcome through the normal action path.
         """
         candidates = self._invitation_candidates(activity, from_core=from_core)
+        relationship = await self.relationship_for(actor)
         context = {
             "world": self.context().get("state_line", ""),
             "mode": self.modes.prompt_line(),
             "needs": self.needs.summary_line(),
             "goal": self.context().get("goal", ""),
             "invitation": {"actor": actor, "activity": activity, "reason": reason_code},
+            "relationship": self.relationships_dyn.describe(relationship) if relationship else "",
         }
+        if relationship is not None:
+            # §21/§22: closeness nudges *desirability* — the gate still decides
+            bonus = min(0.15, relationship.closeness * 0.15 + relationship.trust * 0.05)
+            for candidate in candidates:
+                if candidate.kind is CandidateKind.action:
+                    candidate.priority = min(1.0, candidate.priority + bonus)
         outcome = await self.decisions.decide(
             trigger=DecisionTrigger.external_invitation,
             candidates=candidates,
@@ -1599,6 +1648,10 @@ class SandboxRuntime:
             "decision": outcome.model_dump(),
         }
         if not outcome.accepted or outcome.kind != CandidateKind.action.value:
+            # §19/§20: declining is a fact of its own (a small comfort dip)
+            self._record_invitation_outcome(
+                actor=actor, declined=True, correlation=correlation, causation=received_id
+            )
             return result
         self.events.publish(
             SandboxEventType.ACTION_REQUESTED,
@@ -1613,6 +1666,15 @@ class SandboxRuntime:
         started = await self._start_action(outcome.action_id, reason=[f"decision:{outcome.source}"])
         if started is None:
             return result
+        # §19/§33: acceptance is recorded, the shared activity only after it runs
+        self._record_invitation_outcome(
+            actor=actor, declined=False, correlation=correlation, causation=received_id
+        )
+        self._accepted_invitation = {
+            "person_id": self.persons.for_qq(actor).person_id,
+            "action_id": outcome.action_id,
+            "correlation": correlation,
+        }
         result["interrupt"] = True
         result["action"] = outcome.action_id
         self.events.publish(
@@ -1629,6 +1691,24 @@ class SandboxRuntime:
             correlation_id=correlation,
         )
         return result
+
+    def _record_invitation_outcome(
+        self, *, actor: str, declined: bool, correlation: str, causation: str
+    ) -> None:
+        person = self.persons.for_qq(actor)
+        fact = SocialInteractionFact.create(
+            character_id=self.character_id,
+            person_id=person.person_id,
+            interaction_type="invitation_declined" if declined else "invitation_accepted",
+            source="character_decision",
+            timestamp=float(self._clock()),
+            outcome="declined" if declined else "accepted",
+            significance=InteractionSignificance.meaningful,
+        )
+        task = asyncio.create_task(
+            self.apply_social_interaction(fact, correlation_id=correlation, causation_id=causation)
+        )
+        self._track_background(task)
 
     def _activity_index(self) -> set[str]:
         """Activities this world can engage — read from ActionDefinition (§18).
@@ -1777,6 +1857,7 @@ class SandboxRuntime:
             familiar = bool(
                 event.metadata.get("familiar", event.actor_relationship == "core_friend")
             )
+            self._record_qq_interaction(event, familiar=familiar)
             self._adjust_need(
                 "social_need",
                 -0.08 if familiar else -0.04,
@@ -1805,6 +1886,53 @@ class SandboxRuntime:
                 source=event.source.value,
                 reason="delivery_arrived",
             )
+
+    def _record_qq_interaction(self, event: Any, *, familiar: bool) -> None:
+        """QQ message → deterministic SocialInteractionFact (§9/§17/§18).
+
+        Trivial small talk is classified as such and moves nothing; an
+        invitation becomes a ``game_invitation`` fact — never a bond by itself
+        (§19/§33: the invite is not the acceptance).
+        """
+        person = self.persons.for_qq(
+            event.actor_id, display_name=str(event.metadata.get("display_name", "") or "")
+        )
+        interaction_type = (
+            "game_invitation"
+            if event.semantic_kind in ("game_invitation", "activity_invitation")
+            else "message_received"
+        )
+        significance = classify_significance(
+            event.content, interaction_type=interaction_type, core_person=familiar
+        )
+        fact = SocialInteractionFact.create(
+            character_id=self.character_id,
+            person_id=person.person_id,
+            interaction_type=interaction_type,
+            source="qq",
+            timestamp=float(event.timestamp or self._clock()),
+            social_space_id=str(event.metadata.get("social_space_id", "") or ""),
+            significance=significance,
+            metadata={"display_name": person.display_name, **person.external_ids},
+        )
+        task = asyncio.create_task(  # never blocks the influence pipeline
+            self.apply_social_interaction(fact, correlation_id=event.correlation_id or "")
+        )
+        self._track_background(task)
+
+    def _track_background(self, task: Any) -> None:
+        tasks = getattr(self, "_social_tasks", None)
+        if tasks is None:
+            tasks = set()
+            self._social_tasks = tasks
+        tasks.add(task)
+        task.add_done_callback(tasks.discard)
+
+    async def wait_social(self) -> None:
+        """Test/shutdown helper: let pending interaction facts land."""
+        tasks = getattr(self, "_social_tasks", None)
+        if tasks:
+            await asyncio.gather(*list(tasks), return_exceptions=True)
 
     async def _trace_external(
         self, event: ExternalWorldEvent, decision: Any, correlation: str
@@ -2361,6 +2489,56 @@ class SandboxRuntime:
         if candidates and self.memory.available:
             await self.memory.ingest_all(candidates)
         return records
+
+    async def apply_social_interaction(
+        self,
+        fact: SocialInteractionFact,
+        *,
+        correlation_id: str = "",
+        causation_id: str = "",
+    ) -> Any:
+        """The one canonical entry for a verified interaction fact (§9/§14).
+
+        Emits SOCIAL_INTERACTION (the fact) and lets the deterministic engine
+        produce RELATIONSHIP_CHANGED; the engine is the only writer of
+        relationship state.
+        """
+        published = self.events.publish(
+            ET.SOCIAL_INTERACTION,
+            source=fact.source,
+            target=fact.person_id,
+            payload={
+                "interaction_id": fact.interaction_id,
+                "interaction_type": fact.interaction_type,
+                "significance": fact.significance.value,
+                "social_space_id": fact.social_space_id,
+                "outcome": fact.outcome,
+            },
+            causation_id=causation_id,
+            correlation_id=correlation_id,
+        )
+        state, crossed = await self.social.apply(
+            fact,
+            correlation_id=correlation_id,
+            causation_id=published.event_id if published else causation_id,
+        )
+        await self.relationships_dyn.remember_person(
+            fact.person_id, display_name=str(fact.metadata.get("display_name", "") or "")
+        )
+        return state
+
+    async def relationship_for(self, actor_id: str) -> Any:
+        """Relationship state of a QQ actor, or None when there is none yet.
+
+        Read-only *by design* (§38): looking someone up (a chat turn, a
+        decision context) never creates or persists a relationship — only
+        verified interaction facts do, through the update engine.
+        """
+        try:
+            person = self.persons.for_qq(str(actor_id))
+            return await self.relationships_dyn.get(person.person_id)
+        except Exception:  # noqa: BLE001 - social context is an aid
+            return None
 
     async def cognitive_context(
         self, *, query: str = "", relationship_target: str = ""

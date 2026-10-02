@@ -43,6 +43,8 @@ class CognitiveContext(BaseModel):
     recent_experiences: list[dict[str, Any]] = Field(default_factory=list)
     #: deterministic retrieval bookkeeping (candidates/selected/query/reason)
     retrieval: dict[str, Any] = Field(default_factory=dict)
+    #: the people relevant *to this turn* (current interlocutor) — never all (§23/§24)
+    relevant_relationships: list[dict[str, Any]] = Field(default_factory=list)
 
     # ------------------------------------------------------------- prompt
 
@@ -90,6 +92,17 @@ class CognitiveContext(BaseModel):
                 for row in self.recent_experiences
             ],
             "retrieval": dict(self.retrieval),
+            "relationships": [
+                {
+                    "person_id": str(item.get("person_id", "")),
+                    "name": str(item.get("name", "")),
+                    "relation_type": str(item.get("relation_type", "")),
+                    "trust": float(item.get("trust", 0.0)),
+                    "familiarity": float(item.get("familiarity", 0.0)),
+                    "closeness": float(item.get("closeness", 0.0)),
+                }
+                for item in self.relevant_relationships
+            ],
         }
 
 
@@ -153,9 +166,27 @@ class CognitiveContextBuilder:
                 min_importance=0.5,
             )
 
+        relationships: list[dict[str, Any]] = []
+        if relationship_target:
+            try:
+                state = await rt.relationship_for(relationship_target)
+                if state is not None and state.interaction_count > 0:
+                    relationships.append(
+                        {
+                            "person_id": state.person_id,
+                            "name": state.metadata.get("name", "") or "",
+                            "relation_type": state.relation_type,
+                            "trust": state.trust,
+                            "familiarity": state.familiarity,
+                            "closeness": state.closeness,
+                        }
+                    )
+            except Exception:  # noqa: BLE001 - social context is an aid
+                relationships = []
         world = rt.context()
         definition = rt.actions.definition(rt.current_action)
         return CognitiveContext(
+            relevant_relationships=relationships,
             character_id=rt.character_id,
             query=query,
             current_world=world,

@@ -32,6 +32,10 @@ class StateMutation:
     timestamp: float = dfield(default_factory=time.time)
     #: False marks a *rejected* attempt (audit-trail record; state unchanged)
     ok: bool = True
+    #: False marks bookkeeping that cannot change what the sandbox may do
+    #: (relationship drift): it is audited and persisted, but it must not
+    #: invalidate a decision proposal computed against the world (§18/§21)
+    affects_world: bool = True
 
 
 @dataclass
@@ -64,7 +68,9 @@ class MutationLog:
     """Bounded in-memory audit trail of state mutations (§53).
 
     ``on_record`` lets the owning runtime bump its world revision — every
-    *applied* mutation is a state change a stale decision must notice (§20).
+    *applied* world mutation is a state change a stale decision must notice
+    (§20); mutations flagged ``affects_world=False`` are bookkeeping and are
+    reported with the flag so the owner can leave the revision alone.
     """
 
     def __init__(self, *, maxlen: int = 500) -> None:

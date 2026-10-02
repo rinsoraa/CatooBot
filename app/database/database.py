@@ -1127,6 +1127,36 @@ CREATE INDEX IF NOT EXISTS idx_sandbox_goal_steps_goal
     ON sandbox_goal_steps(goal_id, step_order);
 """,
     ),
+    (
+        24,
+        "social & relationship dynamics (Phase 8)",
+        """
+-- Person identities: a person is not a QQ id (§7). external_ids maps platform
+-- handles onto one stable person across QQ / future surfaces. Platform-level
+-- data: shared by every character, never stores relationship opinions.
+CREATE TABLE IF NOT EXISTS sandbox_persons (
+    person_id    TEXT PRIMARY KEY,
+    display_name TEXT NOT NULL DEFAULT '',
+    external_ids TEXT NOT NULL DEFAULT '{}',
+    source       TEXT NOT NULL DEFAULT '',
+    metadata     TEXT NOT NULL DEFAULT '{}',
+    updated_at   REAL NOT NULL DEFAULT 0
+);
+
+-- Dynamic relationship state, scoped per character (§6): the same person in
+-- two worlds is two different relationships. Rows are only ever written by the
+-- deterministic update engine from verified interaction facts (§10/§14).
+CREATE TABLE IF NOT EXISTS sandbox_relationships (
+    character_id TEXT NOT NULL,
+    person_id    TEXT NOT NULL,
+    data         TEXT NOT NULL DEFAULT '{}',
+    updated_at   REAL NOT NULL DEFAULT 0,
+    PRIMARY KEY (character_id, person_id)
+);
+CREATE INDEX IF NOT EXISTS idx_sandbox_relationships_char_updated
+    ON sandbox_relationships(character_id, updated_at DESC);
+""",
+    ),
 ]
 
 

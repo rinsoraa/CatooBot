@@ -48,6 +48,11 @@ EXPERIENCE_EVENTS: frozenset[ET] = frozenset(
     }
 )
 
+#: events that carry experience meaning only under a payload condition.
+#: A relationship change is an experience when it crossed a milestone (§27);
+#: ordinary trust 0.50 → 0.51 must never pollute memory.
+CONDITIONAL_EXPERIENCE_EVENTS: frozenset[ET] = frozenset({ET.RELATIONSHIP_CHANGED})
+
 #: project progress thresholds that count as milestones (§22/§28-6)
 PROJECT_MILESTONES = (0.5, 0.75, 1.0)
 
@@ -63,6 +68,7 @@ class ExperienceKind(str, Enum):  # noqa: UP042 - pydantic-friendly str enum
     external_influence = "external_influence"
     social_contact = "social_contact"
     goal_completed = "goal_completed"
+    relationship_changed = "relationship_changed"
 
 
 class ExperienceRecord(BaseModel):
@@ -124,7 +130,11 @@ class ExperienceBuilder:
 
     def observe(self, event: SandboxEvent) -> None:
         """Bus handler (sync): qualifying event → experience in the buffer."""
-        if event.event_type not in EXPERIENCE_EVENTS:
+        if event.event_type in CONDITIONAL_EXPERIENCE_EVENTS:
+            if str(event.payload.get("significance", "")) != "major":
+                self.ignored += 1  # ordinary drift is not an experience (§27)
+                return
+        elif event.event_type not in EXPERIENCE_EVENTS:
             self.ignored += 1
             return
         built = self._build(event)
@@ -268,6 +278,19 @@ class ExperienceBuilder:
                     "goal_id": str(payload.get("goal_id", "")),
                     "goal_kind": str(payload.get("goal_kind", "")),
                     "description": description,
+                },
+            )
+        if event.event_type is ET.RELATIONSHIP_CHANGED:
+            person = str(payload.get("name") or payload.get("person_id", ""))
+            return (
+                ExperienceKind.relationship_changed,
+                f"与{person}的关系发生了变化（{payload.get('interaction_type', '')}）",
+                0.75,
+                {
+                    "person_id": str(payload.get("person_id", "")),
+                    "relation_type": str(payload.get("relation_type", "")),
+                    "interaction_type": str(payload.get("interaction_type", "")),
+                    "fields": list(payload.get("fields", []) or []),
                 },
             )
         if event.event_type is ET.SOCIAL_SPACE_CHANGED:

@@ -89,7 +89,7 @@ class ContinuitySnapshotBuilder:
                 }
                 for event in rt.external_queue.pending()
             ],
-            relationship_context=self._relationship_context(),
+            relationship_context=await self._relationship_context(),
             active_goals=self._active_goal_lines(),
         )
         return snapshot
@@ -140,13 +140,36 @@ class ContinuitySnapshotBuilder:
             return []
         return await rt.memory.active_memories(limit=self.MEMORY_LIMIT)
 
-    def _relationship_context(self) -> dict[str, Any]:
-        """Existing relationship data only — never re-derived (§23)."""
+    async def _relationship_context(self) -> dict[str, Any]:
+        """Existing relationship data only — never re-derived (§23).
+
+        The dynamic states are *important* ones only (top few by closeness and
+        recency) — the whole relationship DB never enters a snapshot (§26).
+        """
         rt = self._rt
         context: dict[str, Any] = {}
         core = list(getattr(rt.seed, "core_friend_names", []) or [])
         if core:
             context["core_friends"] = core
+        dyn = getattr(rt, "relationships_dyn", None)
+        if dyn is not None:
+            try:
+                important = await dyn.important(limit=3)
+                if important:
+                    context["important"] = [
+                        {
+                            "person_id": state.person_id,
+                            "name": state.metadata.get("name", "") or state.person_id,
+                            "relation_type": state.relation_type,
+                            "trust": round(state.trust, 3),
+                            "closeness": round(state.closeness, 3),
+                            "interaction_count": state.interaction_count,
+                        }
+                        for state in important
+                        if state.interaction_count > 0
+                    ]
+            except Exception:  # noqa: BLE001 - continuity is an aid
+                pass
         social = getattr(rt, "social_spaces", {})
         active = [space.id for space in social.values() if space.character_presence == "active"]
         if active:

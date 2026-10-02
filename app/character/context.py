@@ -362,6 +362,17 @@ class CharacterContextBuilder:
             )
         )
 
+        relationships = sandbox.get("relationships") or []
+        if relationships:
+            lines = []
+            for item in relationships[:2]:
+                who = item.get("name") or item.get("person_id", "")
+                kind = item.get("relation_type", "")
+                trust = float(item.get("trust", 0.0))
+                closeness = float(item.get("closeness", 0.0))
+                lines.append(f"{who}（{kind}，信任 {trust:.2f}，亲近 {closeness:.2f}）")
+            parts.append("【当前对话者与角色的关系】（仅作参考）\n" + "\n".join(lines))
+
         experiences = sandbox.get("experiences") or []
         experience_lines = [f"- {item.get('text', '')}" for item in experiences if item.get("text")]
         if experience_lines:

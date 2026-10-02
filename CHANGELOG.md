@@ -3,6 +3,42 @@
 本文件记录 CatooBot 的版本演进。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号见 `pyproject.toml`；日期取自真实提交历史（本仓库 2026-09-30 起）。
 
+## [Unreleased] — v2.1 Phase 8 · Social & Relationship Dynamics
+
+- **新模块 `app/sandbox/relations.py`（复用既有 Experience/Memory/Decision，不新建
+  第二套社交系统）**：`PersonIdentity`（QQ id 与 Person 身份分离，`external_ids`
+  保存 qq/bible 映射）、`SocialInteractionFact`（**唯一输入**——只有"被验证的互动事实"
+  能推动关系）、`RelationshipState`（trust / familiarity / closeness / social_comfort
+  + 正负互动计数，按 character_id + person_id 作用域，绝无全局 map）。
+- **确定性小步更新（§12/§14/§16）**：`INTERACTION_RULES` 增量 × 显著性倍数，
+  单事实上限 `MAX_DELTA_PER_FACT = 0.05`，跨过 `MILESTONES=(0.5,0.7,0.85)` 记为
+  major；每次变化经既有 `StateMutation` 记录并发布 `RELATIONSHIP_CHANGED`，
+  携带 causation_id（= SOCIAL_INTERACTION 事件）/correlation_id，因果链完整。
+- **琐碎聊天过滤（§18）**：`classify_significance()` 把"嗯/哈哈/在吗/……"判为 trivial
+  并乘 0 倍——事实仍计数（interaction_count），但四个维度一动不动。
+- **邀请 ≠ 接受（§19/§33）**：`game_invitation` 是独立事实（只加熟悉度）；
+  认识的人邀请只被 OBSERVE，本人邀请 + 可被决定打断时才进入决策；
+  `invitation_accepted` 在决定接受时记录，`shared_activity` **只有该活动真正跑完**
+  才记录；拒绝同样是独立事实（social_comfort 小幅下降）。
+- **关系只影响"想要"，绝不执行（§21/§22）**：closeness/trust 以
+  `min(0.15, closeness*0.15 + trust*0.05)` 加成候选优先级，并作为一行上下文进入
+  决策/认知提示词；动作仍由既有 Decision 门控 → Action 轨道执行。
+- **边界（§23-§27）**：认知上下文只带当前对话者的关系；连续性快照只带最重要的
+  3 条；只有 major（跨里程碑）变化经 `CONDITIONAL_EXPERIENCE_EVENTS` 守卫进入
+  体验/记忆（`relationship_changed`），普通漂移 0.01 不成为记忆；读记忆、读快照
+  绝不改动关系。**没有** LLM 关系评分、**没有** Memory→Relationship、
+  **没有** Relationship→世界变更。
+- **持久化**：迁移 24 新增 `sandbox_persons` / `sandbox_relationships`
+  （character_id + person_id 复合主键，按角色隔离）；Bible 关系作为
+  `source="character_bible"` 的初始状态种入，重启后读回。
+- **读路径纪律**：`RelationshipStore.get()` 返回副本、`relationship_for()` 只读不创建；
+  关系记账标记 `affects_world=False`——它照样审计、照样持久化，但**不会让进行中的
+  决策提案失效**（回归测试覆盖）。
+- 新增 `tests/test_sandbox_relations.py`（17 个测试：确定性与渐变性、trivial 不移动、
+  邀请/接受/拒绝三态、活动跑完才算共同经历、负向互动可恢复、角色隔离、
+  Bible 初始状态、关系加成只改候选优先级、只影响当前对话者、只有 major 进记忆、
+  读路径不改状态），总测试 1195。
+
 ## [Unreleased] — v2.1 Phase 7.1 Remediation · Resume Binding Integrity
 
 - **rebind 严格匹配（§3-§5）**：`GoalManager.rebind_instance()` 现在只接受

@@ -184,6 +184,17 @@ class MemoryCandidateBuilder:
                 f"external:{actor}:{chain}",
                 0.75,
             )
+        if kind is ExperienceKind.relationship_changed:
+            person = str(meta.get("person_id", ""))
+            return (
+                MemoryType.social,
+                MemoryScope.social,
+                f"与某人的关系发生了变化（{meta.get('interaction_type', '')}）"
+                if not meta.get("name")
+                else f"与{meta.get('name')}的关系发生了变化",
+                f"relationship:{person}",
+                0.85,
+            )
         if kind is ExperienceKind.goal_completed:
             description = str(meta.get("description", ""))
             return (

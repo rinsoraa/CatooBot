@@ -76,6 +76,9 @@ class SandboxEventType(str, Enum):  # noqa: UP042 - pydantic-friendly str enum
     DECISION_ACCEPTED = "decision_accepted"
     DECISION_REJECTED = "decision_rejected"
     DECISION_FALLBACK = "decision_fallback"
+    # social / relationship dynamics (Phase 8)
+    SOCIAL_INTERACTION = "social_interaction"
+    RELATIONSHIP_CHANGED = "relationship_changed"
     # state authority closure (Phase 3.5)
     PROJECT_PROGRESS_CHANGED = "project_progress_changed"
     KNOWLEDGE_CHANGED = "knowledge_changed"
