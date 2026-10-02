@@ -220,6 +220,25 @@ class ActionInstance(BaseModel):
     previous_definition_id: str = ""  # to resume after an interruption
 
 
+class InterruptedActionContext(BaseModel):
+    """What it takes to resume a paused action (Phase 3 §14).
+
+    Deliberately small: the action's identity, how far it got, where she was
+    standing, and why it stopped — never a snapshot of the whole runtime.
+    """
+
+    action_id: str
+    definition_id: str
+    progress: float = 0.0
+    location: str = ""
+    started_at: float = 0.0
+    planned_end_at: float = 0.0
+    remaining_minutes: float = 0.0
+    interrupt_reason: str = ""
+    source_action_id: str = ""
+    resumable: bool = True
+
+
 class PetState(BaseModel):
     """A pet as a real entity (§23-§26) — identity from the seed, state runtime.
 

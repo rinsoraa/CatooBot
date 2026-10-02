@@ -3,6 +3,40 @@
 本文件记录 CatooBot 的版本演进。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号见 `pyproject.toml`；日期取自真实提交历史（本仓库 2026-09-30 起）。
 
+## [Unreleased] — v2.1 Phase 3 · External Influence + Sandbox Wakeup + Action Interrupt
+
+- **ExternalWorldEvent（§4）**：协议无关的外部事实类型
+  （event_id/timestamp/source/actor_id/event_type/content/metadata/urgency/
+  semantic_kind/target_activity/actor_relationship/correlation_id）——
+  `app/sandbox/external.py`；QQ/OneBot/NapCat 对象不进入沙箱。
+- **ExternalEventAdapter（§5/§18）**：`app/sandbox/external_adapters.py`
+  以*原语*为输入产出外部事件（可在无 QQ 对象的环境完整测试），并把
+  "来一起联机"这类措辞经系统级 cue 词表翻译为
+  `semantic_kind=game_invitation / target_activity=gaming`；插件只负责
+  提交原语（plugins/chat 不再构造协议对象、不再碰沙箱状态）。
+- **External Influence Layer（§6/§7）**：`ExternalInfluenceEvaluator` 只回答
+  NO_EFFECT / OBSERVE / WAKE / INTERRUPT / REJECT（含 `activity_unavailable`
+  等 reason_code），输入是 urgency/语义/关系/可用活动/可打断度——不改状态、
+  不选动作、不调 LLM；是否拥有某活动由 World Seed 决定。
+- **Sandbox Wakeup + 队列（§8/§9/§13/§19）**：`submit_external()` 入队
+  （按 event_id 幂等去重、FIFO+紧急度优先），`wakeup()` 立即评估而不是等
+  10 分钟 tick；`sandbox_state` 持久化 pending/seen，重启既不重放已消费事件
+  也不丢未处理事件（§20）。
+- **Action Interrupt / Resume（§14/§15）**：`InterruptedActionContext`
+  （definition/progress/remaining_minutes/interrupt_reason/resumable——
+  只存恢复所需，不存 Runtime 快照）；被打断的动作在新动作完成后按**剩余
+  时间**恢复，并发出 ACTION_REQUESTED→ACTION_RESUMED 的新生命周期事件；
+  存在临界需求时不假装没发生，直接放弃恢复。
+- **因果链（§10/§11）**：EXTERNAL_EVENT_RECEIVED →（INTERRUPT 时）
+  ACTION_INTERRUPTED → ACTION_STARTED → WORLD_EXTERNAL_INFLUENCE，
+  causation 逐级串联；非法/不可表示的外部事件发 EXTERNAL_EVENT_REJECTED
+  且世界状态零变更。所有效果仍经 Phase 2 的 Mutation/Event spine
+  （含快递 present 改走 apply_object_effect、需求变化走 _adjust_need）。
+- 新增 `tests/test_sandbox_external.py`（18 个测试：无影响消息 / 邀请中断 /
+  恢复与临界需求抢占 / 幂等（含 legacy 桥）/ 队列优先级 / 双沙盒隔离 /
+  协议隔离（AST 断言无 onebot 依赖）/ 第二角色阿澈（无该活动→REJECT）/
+  重启持久化 / evaluator 单元面），总测试 1053。
+
 ## [Unreleased] — v2.1 Phase 2 · Entity Interaction + Event Bus + State Mutation
 
 - **Sandbox 事件主干（§5/§13）**：新增 `app/sandbox/events.py`——

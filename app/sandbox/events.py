@@ -60,6 +60,11 @@ class SandboxEventType(str, Enum):  # noqa: UP042 - pydantic-friendly str enum
     INTERACTION_STARTED = "interaction_started"
     INTERACTION_COMPLETED = "interaction_completed"
     INTERACTION_REJECTED = "interaction_rejected"
+    # external world influence (Phase 3)
+    EXTERNAL_EVENT_RECEIVED = "external_event_received"
+    EXTERNAL_EVENT_REJECTED = "external_event_rejected"
+    WORLD_EXTERNAL_INFLUENCE = "world_external_influence"
+    ACTION_RESUMED = "action_resumed"
     # needs / generic
     NEED_CHANGED = "need_changed"
     WORLD_NOTE = "world_note"

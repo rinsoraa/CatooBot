@@ -25,6 +25,14 @@ from app.sandbox.decision import (
 from app.sandbox.definition import CharacterDefinition
 from app.sandbox.entities import PetSystem
 from app.sandbox.events import EventBus, SandboxEventType
+from app.sandbox.external import (
+    ExternalEventQueue,
+    ExternalInfluenceEvaluator,
+    ExternalSource,
+    ExternalWorldEvent,
+    InfluenceAction,
+)
+from app.sandbox.external_adapters import from_legacy_event, legacy_meaning
 from app.sandbox.interactions import InteractionResolver
 from app.sandbox.models import (
     ActionDefinition,
@@ -36,6 +44,7 @@ from app.sandbox.models import (
     EventLevel,
     EventSource,
     ExternalEvent,
+    InterruptedActionContext,
     PetState,
     SandboxDecision,
     SandboxEventRecord,
@@ -223,6 +232,11 @@ class SandboxRuntime:
         self.events = EventBus(clock=clock)
         #: §11: kind-driven interaction resolver (what the world allows)
         self.interactions = InteractionResolver(self)
+        #: §6/§9 (Phase 3): outside world → queue → influence → wakeup
+        self.external_queue = ExternalEventQueue()
+        self.influence = ExternalInfluenceEvaluator()
+        #: §14: the paused action waiting to resume, if any
+        self._interrupted: InterruptedActionContext | None = None
         #: PET_HUNGRY fires once per crossing, not every tick
         self._pet_hungry_signaled = False
         self._last_pet_hungry: Any = None
@@ -318,6 +332,8 @@ class SandboxRuntime:
                 await self._settle_gap(elapsed_min)
         else:
             await self._seed_fresh()
+        # §20: pending external events survive a restart; consumed ids too (§19)
+        await self._restore_external_state()
         self.phase = SandboxPhase.running
         await self.store.state_set("phase", self.phase.value)
         self._derive_modes()
@@ -383,23 +399,33 @@ class SandboxRuntime:
     def _on_pet_approached(self, event: Any) -> None:
         """Bus handler: a hungry pet approaching bumps her care need (§177)."""
         if event.event_type is SandboxEventType.PET_APPROACHED:
-            before = self.needs.level("pet_care")
-            self.needs.add("pet_care", 0.25)
-            self.mutations.record(
-                StateMutation(
-                    target="needs:pet_care",
-                    field="level",
-                    before=before,
-                    after=self.needs.level("pet_care"),
-                    source="pet_action",
-                    reason="pet_approached",
-                )
+            self._adjust_need("pet_care", 0.25, source="pet_action", reason="pet_approached")
+
+    def _adjust_need(self, key: str, delta: float, *, source: str, reason: str) -> None:
+        """§6/§53: need changes are mutations too — recorded and published."""
+        before = self.needs.level(key)
+        if delta == 0.0:
+            return
+        self.needs.add(key, delta)
+        after = self.needs.level(key)
+        if after == before:
+            return
+        self.mutations.record(
+            StateMutation(
+                target=f"needs:{key}",
+                field="level",
+                before=before,
+                after=after,
+                source=source,
+                reason=reason,
             )
-            self.events.publish(
-                SandboxEventType.NEED_CHANGED,
-                target="pet_care",
-                payload={"before": before, "after": self.needs.level("pet_care")},
-            )
+        )
+        self.events.publish(
+            SandboxEventType.NEED_CHANGED,
+            source=source,
+            target=key,
+            payload={"before": before, "after": after, "reason": reason},
+        )
 
     async def tick(self, *, minutes: float | None = None) -> dict[str, Any]:
         """One sandbox tick (§68). Returns a small report for logs/tests."""
@@ -856,7 +882,59 @@ class SandboxRuntime:
         self._notes.append(f"{definition.name}做完了")
         self.current_action = None
         await self.store.save_action(action)
+        await self._resume_interrupted()
         await self._sync_state()
+
+    async def _resume_interrupted(self) -> str:
+        """§15: pick the paused action back up — a *new* lifecycle, honestly.
+
+        Skipped when a critical need now outranks the old plan (the context is
+        dropped instead of pretending nothing happened). The remaining time is
+        restored from the saved context, not re-rolled.
+        """
+        context = self._interrupted
+        if context is None or not context.resumable:
+            return ""
+        self._interrupted = None
+        if self.current_action is not None or self.needs.critical():
+            return ""
+        definition = self.actions.definitions.get(context.definition_id)
+        if definition is None:
+            return ""
+        requested = self.events.publish(
+            SandboxEventType.ACTION_REQUESTED,
+            source="character",
+            target=context.definition_id,
+            payload={
+                "reason": "resume_after_interrupt",
+                "remaining_minutes": context.remaining_minutes,
+            },
+        )
+        instance = await self._start_action(
+            context.definition_id,
+            reason=[f"resume:{context.interrupt_reason}"],
+            duration_minutes=context.remaining_minutes,
+        )
+        if instance is None:
+            return ""
+        self.events.publish(
+            SandboxEventType.ACTION_RESUMED,
+            source="character",
+            target=context.definition_id,
+            payload={
+                "remaining_minutes": round(context.remaining_minutes, 1),
+                "interrupt_reason": context.interrupt_reason,
+            },
+            causation_id=requested.event_id if requested else "",
+        )
+        await self._append_event(
+            "action_resumed",
+            f"回到刚才没做完的{definition.name}",
+            source=EventSource.character_action,
+            level=EventLevel.micro,
+            reason="resume_after_interrupt",
+        )
+        return context.definition_id
 
     async def _decide_and_apply(self, *, space_id: str) -> SandboxDecision:
         decision, trace = await self.engine.decide_next(
@@ -909,7 +987,12 @@ class SandboxRuntime:
         return decision
 
     async def _start_action(
-        self, action_id: str, *, reason: list[str] | None = None, space_id: str | None = None
+        self,
+        action_id: str,
+        *,
+        reason: list[str] | None = None,
+        space_id: str | None = None,
+        duration_minutes: float | None = None,
     ) -> ActionInstance | None:
         definition = self.actions.definitions.get(action_id)
         if definition is None:
@@ -926,6 +1009,7 @@ class SandboxRuntime:
             space_id=target_space,
             reason_code=(reason[0] if reason else "decision"),
             urgency=urgency,
+            duration_minutes=duration_minutes,
         )
         await self._transaction(
             lambda: setattr(self, "current_action", instance), label=f"start:{action_id}"
@@ -980,85 +1064,263 @@ class SandboxRuntime:
 
     # ------------------------------------------------------- external events
 
-    async def handle_external(self, event: ExternalEvent) -> dict[str, Any]:
-        """QQ message / package / admin: enters the world (§49-§53)."""
-        event.handled = False
-        meaning, reason = self.rules.external_influence_action(event)
-        event.data["meaning"] = meaning
-        definition = self.actions.definition(self.current_action)
-        interrupt, why = self.interrupt.evaluate(
-            event, current=self.current_action, definition=definition
-        )
-        result: dict[str, Any] = {
-            "meaning": meaning,
-            "reason": reason,
-            "interrupt": interrupt,
-            "why": why,
+    # ---------------------------------------------- external world (§4-§13)
+
+    def _activity_index(self) -> set[str]:
+        """Activities this world can actually engage (from owned actions)."""
+        from app.sandbox.runtime import ACTIVITY_IDS  # self-reference keeps table local
+
+        return {
+            ACTIVITY_IDS[action_id]
+            for action_id in self.actions.definitions
+            if action_id in ACTIVITY_IDS
         }
-        if event.kind in ("user_message", "group_mention"):
-            # social stimulus: it never *silently* rewrites her activity (§52)
+
+    def _action_for_activity(self, activity: str) -> str:
+        """First owned action that engages this activity — generic, seed-driven."""
+        from app.sandbox.runtime import ACTIVITY_IDS
+
+        if not activity:
+            return ""
+        for action_id in self.actions.definitions:
+            if ACTIVITY_IDS.get(action_id) == activity:
+                return action_id
+        return ""
+
+    async def submit_external(self, event: ExternalWorldEvent) -> bool:
+        """Queue an outside fact (§9). Duplicate event_ids are refused (§19)."""
+        accepted = self.external_queue.push(event)
+        if accepted:
+            await self._persist_external_state()
+        return accepted
+
+    async def wakeup(self) -> list[dict[str, Any]]:
+        """§8: evaluate queued external events *now* instead of waiting for tick.
+
+        Drains highest-urgency-first; each event flows through the same
+        influence pipeline. Never mutates state directly — every effect goes
+        through the Phase 2 mutation/event spine.
+        """
+        results: list[dict[str, Any]] = []
+        while True:
+            event = self.external_queue.pop()
+            if event is None:
+                break
+            results.append(await self._process_external(event))
+        if results:
+            await self._persist_external_state()
+        return results
+
+    async def handle_external(self, event: ExternalEvent) -> dict[str, Any]:
+        """Phase-2 compatibility entry: adapt → same pipeline as ``wakeup``."""
+        world_event = from_legacy_event(event)
+        self.external_queue.note_processed(world_event.event_id)
+        result = await self._process_external(world_event)
+        event.handled = True
+        return result
+
+    async def notify(self, event: ExternalEvent) -> dict[str, Any]:
+        """Legacy alias: submit → immediate wakeup (Phase 3 semantics)."""
+        world_event = from_legacy_event(event)
+        queued = await self.submit_external(world_event)
+        if not queued:
+            return {"queued": False, "reason": "duplicate_event"}
+        results = await self.wakeup()
+        return results[0] if results else {"queued": True}
+
+    # ------------------------------------------------------ the pipeline
+
+    async def _process_external(self, event: ExternalWorldEvent) -> dict[str, Any]:
+        """Influence → (wake/interrupt) → existing Action/Mutation spine (§7)."""
+        definition = self.actions.definition(self.current_action)
+        decision = self.influence.evaluate(
+            event,
+            available_activities=self._activity_index(),
+            has_action=self.current_action is not None,
+            interruptibility=definition.interruptibility if definition else 1.0,
+        )
+        received = self.events.publish(
+            SandboxEventType.EXTERNAL_EVENT_RECEIVED,
+            source=event.source.value,
+            target=event.actor_id,
+            payload={
+                "event_type": event.event_type,
+                "semantic_kind": event.semantic_kind,
+                "urgency": event.urgency.value,
+                "influence": decision.action.value,
+                "reason": decision.reason_code,
+                "content": event.content[:80],
+            },
+            correlation_id=event.correlation_id,
+        )
+        correlation = received.correlation_id if received else ""
+        result: dict[str, Any] = {
+            "meaning": legacy_meaning(event),
+            "reason": decision.reason_code,
+            "interrupt": False,
+            "why": decision.reason_code,
+            "influence": decision.action.value,
+            "event_id": event.event_id,
+        }
+        if decision.action is InfluenceAction.REJECT:
+            self.events.publish(
+                SandboxEventType.EXTERNAL_EVENT_REJECTED,
+                source=event.source.value,
+                target=event.actor_id,
+                payload={"reason": decision.reason_code, "semantic_kind": event.semantic_kind},
+                causation_id=received.event_id if received else "",
+                correlation_id=correlation,
+            )
+            await self._trace_external(event, decision, correlation)
+            return result
+
+        # accepted: the outside fact becomes a stimulus (§52 — never a command)
+        self._apply_influence_effects(event, decision, correlation)
+
+        if decision.action is InfluenceAction.INTERRUPT and self.current_action is not None:
+            await self._interrupt_action(decision.reason_code, resumable=True)
+            action_id = self._action_for_activity(decision.target_activity)
+            if action_id:
+                await self._start_action(action_id, reason=[decision.reason_code])
+                result["interrupt"] = True
+                result["action"] = action_id
+                self.events.publish(
+                    SandboxEventType.WORLD_EXTERNAL_INFLUENCE,
+                    source=event.source.value,
+                    target=action_id,
+                    payload={
+                        "actor": event.actor_id,
+                        "semantic_kind": event.semantic_kind,
+                        "reason": decision.reason_code,
+                    },
+                    causation_id=received.event_id if received else "",
+                    correlation_id=correlation,
+                )
+        elif (
+            decision.action is InfluenceAction.WAKE
+            and self.current_action is None
+            and self.phase in (SandboxPhase.running, SandboxPhase.degraded)
+        ):
+            # §8: the wake is the *evaluation*, not a forced action; the
+            # deterministic decision engine still chooses what (if anything).
+            await self._decide_and_apply(space_id=self.character.location)
+
+        await self._trace_external(event, decision, correlation)
+        return result
+
+    def _apply_influence_effects(
+        self, event: ExternalWorldEvent, decision: Any, correlation: str
+    ) -> None:
+        """Non-action consequences of an accepted external fact."""
+        if event.source is ExternalSource.qq:
             self._private_chat_until = float(self._clock()) + 1800.0
-            friend_like = bool(event.data.get("familiar", True))
-            self.needs.add("social_need", -0.08 if friend_like else -0.04)
-            self.social_spaces_touch(event)
-            if interrupt and self.current_action is not None:
-                await self._interrupt_action(why)
-                if meaning == "invitation_game" and self._gaming_action_id:
-                    friend = (
-                        self.seed.core_friend_names[0]
-                        if self.seed.core_friend_names
-                        else "核心朋友"
-                    )
-                    await self._start_action(
-                        self._gaming_action_id, reason=["core_friend_invitation"]
-                    )
-                    result["action"] = self._gaming_action_id
-                    await self._append_event(
-                        "interrupt",
-                        f"{friend}喊她{self.actions.definitions[self._gaming_action_id].name}"
-                        " → 放下手上的事去赴约",
-                        source=EventSource.external_event,
-                        level=EventLevel.normal,
-                        reason="core_friend_invitation",
-                    )
-        elif event.kind == "delivery_arrived":
-            obj = self.objects.get("package_box")
-            if obj is not None:
-                obj.state["present"] = True
-            await self._append_event(
-                "delivery",
-                "快递到了（放在门口）",
-                source=EventSource.external_event,
-                level=EventLevel.micro,
+            familiar = bool(
+                event.metadata.get("familiar", event.actor_relationship == "core_friend")
+            )
+            self._adjust_need(
+                "social_need",
+                -0.08 if familiar else -0.04,
+                source=event.source.value,
+                reason="external_stimulus",
+            )
+            self._touch_social_space(
+                str(event.metadata.get("social_space_id", "") or ""),
+                str(event.metadata.get("group_id", "") or ""),
+            )
+        if event.event_type == "delivery_arrived":
+            package_id = next(
+                (obj.id for obj in self.objects.all() if obj.id.startswith("package")),
+                "",
+            )
+            if package_id:
+                self.apply_object_effect(
+                    f"object:{package_id}.present",
+                    1.0,
+                    reason="delivery_arrived",
+                    correlation=correlation,
+                )
+            self._adjust_need(
+                "household_maintenance",
+                0.05,
+                source=event.source.value,
                 reason="delivery_arrived",
             )
-            self.needs.add("household_maintenance", 0.05)
-        elif event.kind == "admin":
-            await self._append_event(
-                "admin",
-                event.summary or "管理员事件",
-                source=EventSource.admin,
-                level=EventLevel.normal,
-                reason=event.reason_code or "manual",
-            )
-        event.handled = True
+
+    async def _trace_external(
+        self, event: ExternalWorldEvent, decision: Any, correlation: str
+    ) -> None:
         await self.store.append_trace(
             DecisionTrace(
                 ts=float(self._clock()),
                 kind="external_event",
-                summary=event.summary or event.kind,
-                reason_code=why,
-                factors=[meaning, f"priority:{event.priority.value}"],
+                summary=(event.content or event.event_type)[:80],
+                reason_code=decision.reason_code,
+                factors=[
+                    f"source:{event.source.value}",
+                    f"urgency:{event.urgency.value}",
+                    f"influence:{decision.action.value}",
+                    *([f"semantic:{event.semantic_kind}"] if event.semantic_kind else []),
+                ],
             )
         )
         await self._persist_deltas()
-        return result
 
-    async def _interrupt_action(self, why: str) -> None:
+    def _touch_social_space(self, space_id: str, group_id: str) -> None:
+        """A QQ message marks presence where it landed (generic, id-driven)."""
+        target = space_id if space_id and space_id in self.social_spaces else ""
+        if not target and group_id:
+            candidate = f"qq:{group_id}"
+            if candidate in self.social_spaces:
+                target = candidate
+        if target:
+            social = self.social_spaces[target]
+            social.character_presence = "active"
+            social.social_temperature = min(1.0, social.social_temperature + 0.05)
+
+    # ------------------------------------------------- external persistence
+
+    async def _persist_external_state(self) -> None:
+        await self.store.state_set(
+            "external_queue_state",
+            _json(self.external_queue.snapshot()),
+        )
+
+    async def _restore_external_state(self) -> None:
+        raw = await self.store.state_get("external_queue_state")
+        if not raw:
+            return
+        try:
+            import json as _json_mod
+
+            self.external_queue.restore(_json_mod.loads(raw))
+        except (TypeError, ValueError):
+            self._log.warning("[Sandbox] external queue state unreadable, starting empty")
+
+    def _delivery_object_id(self) -> str:
+        return next((obj.id for obj in self.objects.all() if obj.id.startswith("package")), "")
+
+    async def _interrupt_action(self, why: str, *, resumable: bool = True) -> None:
         action = self.current_action
         if action is None:
             return
         definition = self.actions.definition(action)
+        # §14: remember just enough to resume — never a runtime snapshot
+        remaining = max(0.0, (action.planned_end_at - float(self._clock())) / 60.0)
+        progress = self.actions.progress(action)
+        if resumable and definition is not None and progress < 1.0 and remaining >= 1.0:
+            self._interrupted = InterruptedActionContext(
+                action_id=action.id,
+                definition_id=action.definition_id,
+                progress=progress,
+                location=self.character.location,
+                started_at=action.started_at,
+                planned_end_at=action.planned_end_at,
+                remaining_minutes=remaining,
+                interrupt_reason=why,
+                resumable=True,
+            )
+        else:
+            self._interrupted = None
         await self._transaction(
             lambda: self.actions.finish(action, ActionStatus.interrupted),
             label=f"interrupt:{action.definition_id}",
@@ -1068,9 +1330,14 @@ class SandboxRuntime:
             SandboxEventType.ACTION_INTERRUPTED,
             source="external",
             target=action.definition_id,
-            payload={"reason": why},
+            payload={
+                "reason": why,
+                "progress": round(progress, 3),
+                "resumable": bool(self._interrupted),
+            },
             correlation_id=f"act_{action.id}",
         )
+        await self._persist_external_state()
         await self._append_event(
             "action_interrupted",
             f"{definition.name if definition else action.definition_id}被打断",
@@ -1079,21 +1346,6 @@ class SandboxRuntime:
             reason=why,
         )
         self.current_action = None
-
-    def social_spaces_touch(self, event: ExternalEvent) -> None:
-        space_id = event.social_space_id
-        if space_id and space_id in self.social_spaces:
-            social = self.social_spaces[space_id]
-            social.character_presence = "active"
-            social.social_temperature = min(1.0, social.social_temperature + 0.05)
-        elif event.group_id:
-            found = self.social_spaces.get(f"qq:{event.group_id}")
-            if found is not None:
-                found.character_presence = "active"
-
-    async def notify(self, event: ExternalEvent) -> dict[str, Any]:
-        """Event-driven wakeup (§70): handle immediately, don't wait for tick."""
-        return await self.handle_external(event)
 
     # -------------------------------------------------- initiative support
 
@@ -1711,6 +1963,7 @@ class SandboxRuntime:
             "action": action_line,
             "modes": self.modes.ids(),
             "pet": pet,
+            "interrupted": (self._interrupted.definition_id if self._interrupted else ""),
         }
 
     def status_line(self) -> str:

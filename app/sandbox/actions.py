@@ -63,9 +63,15 @@ class ActionSystem:
         source: str = "decision",
         previous_definition_id: str = "",
         detail: str = "",
+        duration_minutes: float | None = None,
     ) -> ActionInstance:
         now = float(self._clock())
-        minutes = self.plan_duration(definition, urgency=urgency)
+        minutes = (
+            float(duration_minutes)
+            if duration_minutes is not None
+            else self.plan_duration(definition, urgency=urgency)
+        )
+        minutes = max(1.0, min(definition.max_minutes, minutes))
         if not detail and definition.detail_pool:
             detail = self._rng.choice(definition.detail_pool)
         return ActionInstance(

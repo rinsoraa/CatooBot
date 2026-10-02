@@ -187,11 +187,17 @@ class CharacterPlugin(Plugin):
     async def _sandbox_external(
         self, event: MessageEvent, text: str, *, mentioned: bool, reply_to_bot: bool
     ) -> None:
-        """QQ is the outside world: the message enters her sandbox (v2.0 §49-§53)."""
+        """QQ is the outside world: adapter → ExternalWorldEvent → sandbox (§5).
+
+        The plugin supplies *primitives* only; protocol-free translation and
+        semantic cue parsing live in :mod:`app.sandbox.external_adapters`, and
+        every effect flows through the sandbox's own influence pipeline —
+        the plugin never touches sandbox state (v2.1 Phase 3).
+        """
         sandbox = getattr(self.bot, "sandbox", None)
         if sandbox is None or not getattr(sandbox, "enabled", False):
             return
-        from app.sandbox.models import EventPriority, ExternalEvent
+        from app.sandbox.external_adapters import adapt_qq_message
 
         config = self.bot.config.sandbox
         user_id = str(event.user_id)
@@ -201,27 +207,20 @@ class CharacterPlugin(Plugin):
             mapped = config.social_space_map.get(str(event.group_id), "")
             space_id = mapped or f"qq:{event.group_id}"
         try:
-            await sandbox.notify(
-                ExternalEvent(
-                    id=f"evt_{event.message_id or ''}",
-                    kind="group_mention" if (mentioned and event.is_group) else "user_message",
-                    priority=EventPriority.high
-                    if (is_core or mentioned or reply_to_bot)
-                    else EventPriority.normal,
-                    summary=f"{event.sender.display_name or user_id}: {text[:40]}",
-                    reason_code="qq_message",
-                    user_id=user_id,
-                    group_id=str(event.group_id) if event.is_group else "",
-                    social_space_id=space_id,
-                    data={
-                        "text": text,
-                        "is_core_friend": is_core,
-                        "familiar": reply_to_bot or is_core or mentioned,
-                        "mentioned": mentioned,
-                        "reply_to_bot": reply_to_bot,
-                    },
-                )
+            world_event = adapt_qq_message(
+                message_id=str(getattr(event, "message_id", "") or ""),
+                actor_id=user_id,
+                text=text,
+                display_name=event.sender.display_name,
+                is_group=event.is_group,
+                group_id=str(event.group_id) if event.is_group else "",
+                mentioned=mentioned,
+                reply_to_bot=reply_to_bot,
+                is_core_actor=is_core,
+                social_space_id=space_id,
             )
+            if await sandbox.submit_external(world_event):
+                await sandbox.wakeup()
         except Exception:  # noqa: BLE001 - sandbox trouble must not break chat
             self.bot.log.exception("[Sandbox] external event failed")
 
