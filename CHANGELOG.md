@@ -26,6 +26,11 @@
   五条消息全序、跨 lane 并发仍成立、已开始的 turn 完成后再关闭、挂起 turn 不阻塞
   关闭、断线回调传播与重连、重连后重放去重、断线不产生沙箱事实、reject/no_effect/
   mention 三态策略门控），总测试 1361。
+- **测试去时序化**：网关测试的跨 lane 交错与 overflow 起点原先依赖固定 sleep，
+  在 CI（Linux/负载更高）上判定不稳；现全部改为事件握手（A 等 B 完成、M1 进入
+  turn 用 Event 通知），本地连跑三次稳定。顺带把 CI 的 pytest 步骤改为失败时输出
+  `::error::` 注解（job 日志不一定可读，注解 API 可以），并清理仓库根部遗留的
+  一次性补丁脚本。
 
 ## [Unreleased] — v2.1 Phase 13 · Real External Runtime Integration & OneBot Event Gateway
 
