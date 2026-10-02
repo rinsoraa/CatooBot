@@ -377,16 +377,34 @@ class SandboxRuntime:
         if event.event_type is SandboxEventType.PET_APPROACHED:
             self._adjust_need("pet_care", 0.25, source="pet_action", reason="pet_approached")
 
-    def _adjust_need(self, key: str, delta: float, *, source: str, reason: str) -> None:
-        """§6/§53: need changes are mutations too — recorded and published."""
+    def adjust_need(
+        self,
+        key: str,
+        *,
+        delta: float = 0.0,
+        relieve: float = 0.0,
+        source: str,
+        reason: str,
+        correlation: str = "",
+        causation_id: str = "",
+    ) -> MutationResult:
+        """Canonical need change (§3.5): mutation → NEED_CHANGED, or nothing.
+
+        Two semantics, both recorded identically:
+
+        * ``delta``   — absolute pressure change (action cost, stimulus);
+        * ``relieve`` — proportional relief of the *remaining* pressure,
+          matching :meth:`NeedSystem.relieve` (action completion).
+        """
         before = self.needs.level(key)
-        if delta == 0.0:
-            return
-        self.needs.add(key, delta)
+        if delta:
+            self.needs.add(key, delta)
+        if relieve:
+            self.needs.relieve({key: relieve})
         after = self.needs.level(key)
         if after == before:
-            return
-        self.mutations.record(
+            return MutationResult(ok=True)
+        mutation = self.mutations.record(
             StateMutation(
                 target=f"needs:{key}",
                 field="level",
@@ -400,8 +418,152 @@ class SandboxRuntime:
             SandboxEventType.NEED_CHANGED,
             source=source,
             target=key,
-            payload={"before": before, "after": after, "reason": reason},
+            payload={
+                "before": before,
+                "after": after,
+                "source": source,
+                "reason": reason,
+            },
+            causation_id=causation_id,
+            correlation_id=correlation,
         )
+        return MutationResult(ok=True, mutations=[mutation])
+
+    def _adjust_need(self, key: str, delta: float, *, source: str, reason: str) -> None:
+        """Convenience alias (Phase 3 call sites): absolute delta, no causation."""
+        self.adjust_need(key, delta=delta, source=source, reason=reason)
+
+    def _note_need_drift(self, before_bands: dict[str, str]) -> None:
+        """Time-driven drift (tick/settle): band crossings become facts (§3.5).
+
+        Continuous level drift itself is time evolution, not a business
+        mutation — but when a need enters a new band (soft/strong/critical)
+        that *is* a world fact worth recording (payload carries both levels).
+        """
+        for key, band_after in self.needs.bands().items():
+            band_before = before_bands.get(key, band_after)
+            if band_before == band_after:
+                continue
+            need = self.needs.get(key)
+            self.events.publish(
+                SandboxEventType.NEED_CHANGED,
+                source="time_advance",
+                target=key,
+                payload={
+                    "before": need.level if need else 0.0,
+                    "after": need.level if need else 0.0,
+                    "band_before": band_before,
+                    "band_after": band_after,
+                    "source": "time_advance",
+                    "reason": "time_advance",
+                },
+            )
+
+    def update_project_progress(
+        self,
+        project_id: str,
+        *,
+        delta: float,
+        source: str,
+        reason: str,
+        correlation: str = "",
+        causation_id: str = "",
+    ) -> MutationResult:
+        """Canonical project progress (§4): mutation → PROJECT_PROGRESS_CHANGED.
+
+        Completion (crossing into progress == 1.0) is reported in the same
+        event's payload — no second project-event system.
+        """
+        project = self.projects.get(project_id)
+        if project is None:
+            return MutationResult(ok=False, error="unknown_project")
+        before = float(project.get("progress", 0.0))
+        after = max(0.0, min(1.0, before + delta))
+        if after == before:
+            return MutationResult(ok=True)
+        project["progress"] = after
+        completed = before < 1.0 <= after
+        if completed:
+            project["status"] = "completed"
+        mutation = self.mutations.record(
+            StateMutation(
+                target=f"project:{project_id}",
+                field="progress",
+                before=before,
+                after=after,
+                source=source,
+                reason=reason,
+            )
+        )
+        self.events.publish(
+            SandboxEventType.PROJECT_PROGRESS_CHANGED,
+            source=source,
+            target=project_id,
+            payload={
+                "before": before,
+                "after": after,
+                "delta": round(after - before, 6),
+                "completed": completed,
+                "source": source,
+                "reason": reason,
+            },
+            causation_id=causation_id,
+            correlation_id=correlation,
+        )
+        return MutationResult(ok=True, mutations=[mutation])
+
+    def set_knowledge(
+        self,
+        key: str,
+        *,
+        known: bool = True,
+        source: str,
+        reason: str,
+        data: dict[str, Any] | None = None,
+        correlation: str = "",
+        causation_id: str = "",
+    ) -> MutationResult:
+        """Canonical knowledge write (§5): mutation → KNOWLEDGE_CHANGED.
+
+        ``learned_at`` / ``source`` stay in the entry payload as before; the
+        before/after pair is the entry itself, so a future Memory/Continuity
+        pass can tell *when* she learned what and why.
+        """
+        before = self.knowledge.get(key)
+        entry = {
+            "known": bool(known),
+            "source": source,
+            "learned_at": float(self._clock()),
+            "data": dict(data or {}),
+        }
+        if before == entry:
+            return MutationResult(ok=True)
+        self.knowledge[key] = entry
+        mutation = self.mutations.record(
+            StateMutation(
+                target=f"knowledge:{key}",
+                field="entry",
+                before=before,
+                after=dict(entry),
+                source=source,
+                reason=reason,
+            )
+        )
+        self.events.publish(
+            SandboxEventType.KNOWLEDGE_CHANGED,
+            source=source,
+            target=key,
+            payload={
+                "key": key,
+                "before": before,
+                "after": dict(entry),
+                "source": source,
+                "reason": reason,
+            },
+            causation_id=causation_id,
+            correlation_id=correlation,
+        )
+        return MutationResult(ok=True, mutations=[mutation])
 
     async def tick(self, *, minutes: float | None = None) -> dict[str, Any]:
         """One sandbox tick (§68). Returns a small report for logs/tests."""
@@ -409,7 +571,9 @@ class SandboxRuntime:
             return {"skipped": self.phase.value}
         step = minutes if minutes is not None else self._tick_minutes()
         now = float(self._clock())
+        bands_before = self.needs.bands()
         self.needs.advance(step, rest=self._rest_coefficient())
+        self._note_need_drift(bands_before)
         pet_events: list[tuple[str, str]] = []
         if self.pet_system is not None:
             pet_events = self.pet_system.tick(
@@ -871,7 +1035,25 @@ class SandboxRuntime:
 
         def apply() -> None:
             self.actions.finish(action, ActionStatus.completed)
-            # §6: consumption goes through the mutation path (ITEM_CONSUMED…)
+            # §11 (3.5): every effect below hangs off this event — one chain,
+            # no orphan facts.
+            applied = self.events.publish(
+                SandboxEventType.ACTION_EFFECT_APPLIED,
+                source="character",
+                target=definition.id,
+                payload={
+                    "need_relief": definition.need_relief,
+                    "need_cost": definition.need_cost,
+                    "consumes": definition.consumes,
+                },
+                correlation_id=correlation,
+            )
+            cause = applied.event_id if applied else ""
+
+            def effect_context() -> dict[str, Any]:
+                return {"correlation": correlation, "causation_id": cause}
+
+            # consumption goes through the mutation path (ITEM_CONSUMED…)
             for inv_key, items in definition.consumes.items():
                 for item, count in items.items():
                     if count > 0:
@@ -881,28 +1063,35 @@ class SandboxRuntime:
                             quantity=count,
                             source="character_action",
                             reason=definition.id,
-                            correlation=correlation,
+                            **effect_context(),
                         )
                     elif count < 0:
                         # negative = "must exist, not consumed" (e.g. pet food)
                         pass
-            self.needs.relieve(definition.need_relief)
+            # needs: relief and cost both go through adjust_need (§3.5)
+            for key, amount in definition.need_relief.items():
+                self.adjust_need(
+                    key,
+                    relieve=amount,
+                    source="character_action",
+                    reason=definition.id,
+                    **effect_context(),
+                )
             for key, amount in definition.need_cost.items():
-                self.needs.add(key, amount)
-            self.events.publish(
-                SandboxEventType.ACTION_EFFECT_APPLIED,
-                source="character",
-                target=definition.id,
-                payload={
-                    "need_relief": definition.need_relief,
-                    "consumes": definition.consumes,
-                },
-                correlation_id=correlation,
-            )
+                self.adjust_need(
+                    key,
+                    delta=amount,
+                    source="character_action",
+                    reason=definition.id,
+                    **effect_context(),
+                )
             for effect_key, value in definition.effects.items():
                 if effect_key.startswith("object:"):
                     self.apply_object_effect(
-                        effect_key, value, reason=definition.id, correlation=correlation
+                        effect_key,
+                        value,
+                        reason=definition.id,
+                        **effect_context(),
                     )
                 elif effect_key.startswith("inventory:"):
                     _, inv_key, item = effect_key.split(":", 2)
@@ -912,31 +1101,24 @@ class SandboxRuntime:
                         quantity=int(value),
                         source="character_action",
                         reason=definition.id,
-                        correlation=correlation,
+                        **effect_context(),
                     )
                 elif effect_key.startswith("pet:"):
                     # §18: generic pet effects — the seed decides what exists
                     self.feed_pet(
                         source="character_action",
                         reason=definition.id,
-                        correlation=correlation,
+                        **effect_context(),
                     )
                 elif effect_key.startswith("project:"):
                     name = effect_key.split(":", 1)[1]
-                    project = self.projects.get(name)
-                    if project is not None:
-                        before = float(project["progress"])
-                        project["progress"] = min(1.0, before + value)
-                        self.mutations.record(
-                            StateMutation(
-                                target=f"project:{name}",
-                                field="progress",
-                                before=before,
-                                after=project["progress"],
-                                source="character_action",
-                                reason=definition.id,
-                            )
-                        )
+                    self.update_project_progress(
+                        name,
+                        delta=float(value),
+                        source="character_action",
+                        reason=definition.id,
+                        **effect_context(),
+                    )
                 elif effect_key.startswith("commission:"):
                     self._advance_commission(float(value))
             if definition.destination:
@@ -946,29 +1128,29 @@ class SandboxRuntime:
                     to_space=self._default_location,
                     source="character_action",
                     reason=definition.id,
-                    correlation=correlation,
+                    **effect_context(),
                 )
             if definition.consumes:
                 # eating/drinking from a container → she knows its stock now
                 container = next(iter(definition.consumes), "")
-                self.knowledge[f"{container}_stock"] = {
-                    "known": True,
-                    "source": "observation",
-                    "learned_at": float(self._clock()),
-                    "data": {},
-                }
+                self.set_knowledge(
+                    f"{container}_stock",
+                    source="observation",
+                    reason=definition.id,
+                    **effect_context(),
+                )
             # her staple drink ran out → replenishment awareness (Case B tail)
             if (
                 self._fridge_key
                 and self._drink_item
                 and self.inventories.get(self._fridge_key).count(self._drink_item) == 0
             ):
-                self.knowledge[f"{self._fridge_key}_empty_{self._drink_item}"] = {
-                    "known": True,
-                    "source": "observation",
-                    "learned_at": float(self._clock()),
-                    "data": {},
-                }
+                self.set_knowledge(
+                    f"{self._fridge_key}_empty_{self._drink_item}",
+                    source="observation",
+                    reason=definition.id,
+                    **effect_context(),
+                )
 
         await self._transaction(apply, label=f"complete:{action.definition_id}")
         self.events.publish(
@@ -978,6 +1160,7 @@ class SandboxRuntime:
             payload={"detail": action.detail, "reason": "natural_completion"},
             correlation_id=correlation,
         )
+        await self._persist_deltas()
         await self._append_event(
             "action_completed",
             f"{definition.name}结束" + (f"（{action.detail}）" if action.detail else ""),
@@ -1602,7 +1785,13 @@ class SandboxRuntime:
     ) -> None:
         """An agent task finished — a life event, not a state command (§93-§94)."""
         done = status in ("completed", "partial")
-        self.needs.add("social_need", -0.05 if done else 0.0)
+        if done:
+            self.adjust_need(
+                "social_need",
+                delta=-0.05,
+                source="user_interaction",
+                reason=f"agent:{task_type}:{status}",
+            )
         self._notes.append(summary)
         await self._append_event(
             "agent_result",
@@ -1614,7 +1803,12 @@ class SandboxRuntime:
 
     async def note_user_interaction(self, *, user_id: str, session_id: str) -> None:
         """A QQ user started talking: a social stimulus, not a command (§52)."""
-        self.needs.add("social_need", -0.05)
+        self.adjust_need(
+            "social_need",
+            delta=-0.05,
+            source="user_interaction",
+            reason="note_user_interaction",
+        )
         self._private_chat_until = float(self._clock()) + 1800.0
         space_id = session_id.split(":", 1)[1] if ":" in session_id else ""
         if session_id.startswith("group:") and space_id:
@@ -1639,7 +1833,9 @@ class SandboxRuntime:
         """Bounded settle after downtime (§72): no per-tick replay."""
         hours = elapsed_minutes / 60.0
         assume_asleep = self._was_sleeping_through(elapsed_minutes)
+        bands_before = self.needs.bands()
         self.needs.advance(min(elapsed_minutes, 24 * 60), rest=1.0 if assume_asleep else 0.0)
+        self._note_need_drift(bands_before)
         if self.pet_system is not None:
             self.pet_system.advance(min(elapsed_minutes, 12 * 60))
         note: list[str] = [f"离线 {hours:.1f} 小时"]
@@ -2055,7 +2251,12 @@ class SandboxRuntime:
         active.progress = min(1.0, active.progress + amount)
         if active.progress >= 1.0:
             active.status = "delivered"
-            self.needs.relieve({"work_need": 1.0})
+            self.adjust_need(
+                "work_need",
+                relieve=1.0,
+                source="character_action",
+                reason="commission_delivered",
+            )
 
     # -------------------------------------------------------- context output
 

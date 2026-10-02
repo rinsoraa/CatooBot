@@ -71,6 +71,10 @@ class NeedSystem:
 
     # ------------------------------------------------------------- readings
 
+    def bands(self) -> dict[str, str]:
+        """Current band per need (calm/soft/strong/critical) — drift detectors."""
+        return {key: need.band() for key, need in self._needs.items()}
+
     def critical(self) -> list[NeedState]:
         return [need for need in self._needs.values() if need.band() == "critical"]
 

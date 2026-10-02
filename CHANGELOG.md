@@ -3,6 +3,30 @@
 本文件记录 CatooBot 的版本演进。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号见 `pyproject.toml`；日期取自真实提交历史（本仓库 2026-09-30 起）。
 
+## [Unreleased] — v2.1 Phase 3.5 · State Authority Closure（Need / Project / Knowledge 收口）
+
+- **Need（§3）**：新增 canonical `adjust_need(key, delta=, relieve=, source,
+  reason, correlation, causation_id)`（两种语义：绝对增量 / 按剩余压力比例
+  缓解），每次真实变化 → StateMutation(needs:<key>, level, before/after) +
+  NEED_CHANGED；`_complete_action` 的 need_relief/need_cost、委托完成的
+  work_need、agent 结果、用户互动全部改走它；tick/离线结算的连续漂移
+  按时间演化保留，但**带位跨越**（calm/soft/strong/critical）会发
+  NEED_CHANGED（payload 带 band_before/after）——世界事实可追溯。
+- **Project（§4）**：新增 canonical `update_project_progress(project_id,
+  delta, source, reason, …)` → StateMutation + PROJECT_PROGRESS_CHANGED
+  （payload 含 before/after/delta/completed）；击穿 1.0 时同事件标记
+  completed=true 并把项目置为 completed，不另造第二套项目事件系统。
+- **Knowledge（§5）**：新增 canonical `set_knowledge(key, known=, source,
+  reason, data=, …)` → StateMutation(knowledge:<key>, entry, before/after) +
+  KNOWLEDGE_CHANGED（payload 含 key/before/after/source/reason）；
+  learned_at/source/data 字段保持；与 Memory 继续分离（未接任何记忆层）。
+- **因果连接（§11）**：`_complete_action` 先发 ACTION_EFFECT_APPLIED，随后
+  所有效果（消耗/获取/物件/需求/项目/知识/宠物/回家移动）以它为
+  causation_id、同一 correlation 挂进同一行为链；ACTION_COMPLETED 亦在同链。
+- 新增 `tests/test_sandbox_state_authority.py`（11 个测试，含作用域感知的
+  源码 guard：canonical helper 之外不得出现 needs.add/relieve、
+  project["progress"]=、knowledge[...]=），总测试 1077。
+
 ## [Unreleased] — v2.1 Phase 3 Remediation · 架构旁路修复
 
 - **动作启动不再绕过 Mutation（§9）**：`_start_action` 删除
