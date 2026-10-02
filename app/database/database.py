@@ -1157,6 +1157,49 @@ CREATE INDEX IF NOT EXISTS idx_sandbox_relationships_char_updated
     ON sandbox_relationships(character_id, updated_at DESC);
 """,
     ),
+    (
+        25,
+        "social commitment & obligation (Phase 9)",
+        """
+-- What she told someone she would do (§5/§28). Character-scoped: the same
+-- person in two worlds owes two different things (§6). Rows are only written
+-- by the CommitmentManager from verified facts, never from memory or a model.
+CREATE TABLE IF NOT EXISTS sandbox_commitments (
+    commitment_id        TEXT PRIMARY KEY,
+    character_id         TEXT NOT NULL DEFAULT '',
+    person_id            TEXT NOT NULL DEFAULT '',
+    kind                 TEXT NOT NULL DEFAULT 'shared_activity',
+    status               TEXT NOT NULL DEFAULT 'pending',
+    strength             TEXT NOT NULL DEFAULT 'explicit',
+    description          TEXT NOT NULL DEFAULT '',
+    revision             INTEGER NOT NULL DEFAULT 0,
+    priority             REAL NOT NULL DEFAULT 0.5,
+    target_action        TEXT NOT NULL DEFAULT '',
+    target_activity      TEXT NOT NULL DEFAULT '',
+    time_hint            TEXT NOT NULL DEFAULT '',
+    earliest_at          REAL NOT NULL DEFAULT 0,
+    latest_at            REAL NOT NULL DEFAULT 0,
+    due_at               REAL NOT NULL DEFAULT 0,
+    created_at           REAL NOT NULL DEFAULT 0,
+    updated_at           REAL NOT NULL DEFAULT 0,
+    activated_at         REAL NOT NULL DEFAULT 0,
+    resolved_at          REAL NOT NULL DEFAULT 0,
+    source_interaction_id TEXT NOT NULL DEFAULT '',
+    source_event_id      TEXT NOT NULL DEFAULT '',
+    correlation_id       TEXT NOT NULL DEFAULT '',
+    causation_id         TEXT NOT NULL DEFAULT '',
+    metadata             TEXT NOT NULL DEFAULT '{}'
+);
+CREATE INDEX IF NOT EXISTS idx_sandbox_commitments_char_status
+    ON sandbox_commitments(character_id, status);
+CREATE INDEX IF NOT EXISTS idx_sandbox_commitments_char_person
+    ON sandbox_commitments(character_id, person_id);
+CREATE INDEX IF NOT EXISTS idx_sandbox_commitments_char_due
+    ON sandbox_commitments(character_id, due_at);
+CREATE INDEX IF NOT EXISTS idx_sandbox_commitments_char_status_person
+    ON sandbox_commitments(character_id, status, person_id);
+""",
+    ),
 ]
 
 

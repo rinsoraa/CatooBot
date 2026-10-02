@@ -79,6 +79,13 @@ class SandboxEventType(str, Enum):  # noqa: UP042 - pydantic-friendly str enum
     # social / relationship dynamics (Phase 8)
     SOCIAL_INTERACTION = "social_interaction"
     RELATIONSHIP_CHANGED = "relationship_changed"
+    # social commitment / obligation (Phase 9)
+    COMMITMENT_CREATED = "commitment_created"
+    COMMITMENT_ACTIVATED = "commitment_activated"
+    COMMITMENT_RESCHEDULED = "commitment_rescheduled"
+    COMMITMENT_FULFILLED = "commitment_fulfilled"
+    COMMITMENT_CANCELLED = "commitment_cancelled"
+    COMMITMENT_BROKEN = "commitment_broken"
     # state authority closure (Phase 3.5)
     PROJECT_PROGRESS_CHANGED = "project_progress_changed"
     KNOWLEDGE_CHANGED = "knowledge_changed"

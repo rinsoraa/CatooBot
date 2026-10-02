@@ -29,6 +29,8 @@ class GoalKind(str, Enum):  # noqa: UP042 - pydantic-friendly str enum
     restock_resource = "restock_resource"
     pet_care = "pet_care"
     complete_project = "complete_project"
+    #: Phase 9: honour a promise made to someone — the execution side of a commitment
+    fulfill_commitment = "fulfill_commitment"
 
 
 class GoalStatus(str, Enum):  # noqa: UP042
@@ -52,6 +54,8 @@ class GoalSource(str, Enum):  # noqa: UP042 - §7
     external_event = "external_event"
     unfinished_task = "unfinished_task"
     scheduled_need = "scheduled_need"
+    #: Phase 9: born from a live social commitment, never from a need
+    social_commitment = "social_commitment"
 
 
 class StepStatus(str, Enum):  # noqa: UP042
@@ -96,6 +100,8 @@ class Goal(BaseModel):
     target_space: str = ""
     target_item: str = ""
     target_project: str = ""
+    #: the commitment this goal exists to honour (§15: reference, never a copy)
+    target_commitment: str = ""
     #: restock bookkeeping (generic — never an item-name special case)
     metadata: dict[str, Any] = Field(default_factory=dict)
     progress: float = Field(default=0.0, ge=0.0, le=1.0)
@@ -109,8 +115,14 @@ class Goal(BaseModel):
 
     @property
     def dedupe_key(self) -> str:
-        """(character, kind, target) — the same shortage never stacks (§9)."""
-        target = self.target_item or self.target_project or self.target_entity
+        """(character, kind, target) — the same shortage never stacks (§9).
+
+        A commitment goal targets the *commitment id* (§16), so one promise can
+        only ever hold one goal — no matter how many ticks it stays due.
+        """
+        target = (
+            self.target_commitment or self.target_item or self.target_project or self.target_entity
+        )
         return f"{self.character_id}|{self.kind.value}|{target}"
 
 
@@ -345,6 +357,7 @@ class GoalManager:
             target_item=str(targets.get("target_item", "") or ""),
             target_entity=str(targets.get("target_entity", "") or ""),
             target_project=str(targets.get("target_project", "") or ""),
+            target_commitment=str(targets.get("target_commitment", "") or ""),
             target_space=str(targets.get("target_space", "") or ""),
             created_at=float(self._clock()),
             updated_at=float(self._clock()),
@@ -395,6 +408,15 @@ class GoalManager:
             pairs = [
                 (action_id, definition, 0)
                 for action_id, definition in runtime.project_actions(goal.target_project)
+            ]
+        elif goal.kind is GoalKind.fulfill_commitment:
+            # §15: the *world* says which action can honour the activity; the
+            # bridge only says the promise is due
+            pairs = [
+                (action_id, definition, 0)
+                for action_id, definition in runtime.commitment_actions(
+                    str(goal.metadata.get("target_activity", ""))
+                )
             ]
         candidates = []
         for action_id, definition, _quantity in pairs:
@@ -453,11 +475,21 @@ class GoalManager:
         if not outcome.accepted or not outcome.action_id:
             self._block(goal, outcome.reason or "decision_rejected")
             return False
+        stale = runtime.goal_precheck(goal)
+        if stale:
+            # Phase 9 §37/§38: the social state behind this goal moved (the
+            # commitment was rescheduled, cancelled or broken) — the goal dies
+            # instead of executing an arrangement that no longer exists
+            self.cancel(goal, reason=stale)
+            return False
         step = GoalStep(
             step_id=f"step_{uuid.uuid4().hex[:10]}",
             goal_id=goal.goal_id,
             action_id=outcome.action_id,
-            target=goal.target_item or goal.target_project or goal.target_entity,
+            target=goal.target_item
+            or goal.target_project
+            or goal.target_commitment
+            or goal.target_entity,
             order=goal.current_step.order + 1 if goal.current_step else 0,
             requirements=[],
             result={"source": outcome.source},
@@ -641,6 +673,10 @@ class GoalManager:
                     reason="partial",
                     extra={"progress": round(goal.progress, 3)},
                 )
+        elif goal.kind is GoalKind.fulfill_commitment:
+            # the goal's own progress is the commitment's honesty, decided by
+            # the commitment layer — never re-derived from the world here
+            return
         elif goal.kind is GoalKind.complete_project:
             project = runtime.projects.get(goal.target_project, {})
             goal.progress = float(project.get("progress", 0.0))
@@ -662,6 +698,13 @@ class GoalManager:
         if goal.current_step is not None and goal.current_step.status is not StepStatus.completed:
             goal.current_step.status = StepStatus.completed
         self._publish(ET.GOAL_COMPLETED, goal, reason=reason, extra={"goal_kind": goal.kind.value})
+
+    def cancel(self, goal: Goal, *, reason: str) -> None:
+        """Cancel a live goal (Phase 9 §37: a stale commitment goal dies here)."""
+        goal.status = GoalStatus.cancelled
+        goal.current_step = None
+        goal.updated_at = float(self._clock())
+        self._publish(ET.GOAL_CANCELLED, goal, reason=reason)
 
     def _block(self, goal: Goal, reason: str) -> None:
         goal.retry_count += 1
@@ -692,6 +735,9 @@ class GoalManager:
         if goal.kind is GoalKind.complete_project:
             project = self.runtime.projects.get(goal.target_project, {})
             return f"继续 {project.get('name', goal.target_project)}"
+        if goal.kind is GoalKind.fulfill_commitment:
+            activity = str(goal.metadata.get("target_activity", "")) or "约定"
+            return f"履行约定：{activity}"
         return goal.kind.value
 
     def _publish(

@@ -45,6 +45,8 @@ class CognitiveContext(BaseModel):
     retrieval: dict[str, Any] = Field(default_factory=dict)
     #: the people relevant *to this turn* (current interlocutor) — never all (§23/§24)
     relevant_relationships: list[dict[str, Any]] = Field(default_factory=list)
+    #: open promises with the current interlocutor (Phase 9 §31) — information only
+    relevant_commitments: list[dict[str, Any]] = Field(default_factory=list)
 
     # ------------------------------------------------------------- prompt
 
@@ -102,6 +104,16 @@ class CognitiveContext(BaseModel):
                     "closeness": float(item.get("closeness", 0.0)),
                 }
                 for item in self.relevant_relationships
+            ],
+            "commitments": [
+                {
+                    "commitment_id": str(item.get("commitment_id", "")),
+                    "kind": str(item.get("kind", "")),
+                    "status": str(item.get("status", "")),
+                    "description": str(item.get("description", "")),
+                    "due_at": float(item.get("due_at", 0.0)),
+                }
+                for item in self.relevant_commitments
             ],
         }
 
@@ -166,6 +178,24 @@ class CognitiveContextBuilder:
                 min_importance=0.5,
             )
 
+        commitments: list[dict[str, Any]] = []
+        if relationship_target:
+            try:
+                person_id = rt.persons.for_qq(str(relationship_target)).person_id
+                commitments = [
+                    {
+                        "commitment_id": commitment.commitment_id,
+                        "kind": commitment.kind.value,
+                        "status": commitment.status.value,
+                        "description": commitment.description,
+                        "due_at": commitment.due_at,
+                    }
+                    for commitment in rt.commitments.for_person(person_id)
+                    if commitment.open
+                ][:3]
+            except Exception:  # noqa: BLE001 - context is an aid, never a blocker
+                commitments = []
+
         relationships: list[dict[str, Any]] = []
         if relationship_target:
             try:
@@ -187,6 +217,7 @@ class CognitiveContextBuilder:
         definition = rt.actions.definition(rt.current_action)
         return CognitiveContext(
             relevant_relationships=relationships,
+            relevant_commitments=commitments,
             character_id=rt.character_id,
             query=query,
             current_world=world,

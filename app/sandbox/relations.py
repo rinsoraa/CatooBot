@@ -121,6 +121,11 @@ INTERACTION_RULES: dict[str, dict[str, float]] = {
     "help_given": {"trust": 0.01, "closeness": 0.01},
     "interaction_ignored": {"social_comfort": -0.015, "closeness": -0.01},
     "no_response": {"trust": -0.01, "social_comfort": -0.01},
+    # Phase 9 §22/§46: a promise's outcome reaches the relationship *only* as a
+    # fact — the deltas stay small and live here with every other social rule
+    "commitment_fulfilled": {"trust": 0.02, "closeness": 0.01, "social_comfort": 0.01},
+    "commitment_broken": {"trust": -0.03, "social_comfort": -0.02},
+    "commitment_rescheduled": {"social_comfort": -0.005},
 }
 
 #: significance scales a fact's deltas — trivial traffic moves nothing (§18)
@@ -450,6 +455,13 @@ class RelationshipStore:
     def initial_for_name(self, name: str) -> RelationshipState | None:
         for state in self._initial:
             if state.metadata.get("name") == name:
+                return state
+        return None
+
+    def initial_for_person(self, person_id: str) -> RelationshipState | None:
+        """The bible-side state of a canon friend (labels for other layers)."""
+        for state in self._initial:
+            if state.person_id == person_id:
                 return state
         return None
 

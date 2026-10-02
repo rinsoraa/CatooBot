@@ -373,6 +373,19 @@ class CharacterContextBuilder:
                 lines.append(f"{who}（{kind}，信任 {trust:.2f}，亲近 {closeness:.2f}）")
             parts.append("【当前对话者与角色的关系】（仅作参考）\n" + "\n".join(lines))
 
+        commitments = sandbox.get("commitments") or []
+        commitment_lines = [
+            f"- {item.get('description', '')}"
+            + (f"［{item.get('status', '')}］" if item.get("status") not in ("", "active") else "")
+            for item in commitments[:2]
+            if item.get("description")
+        ]
+        if commitment_lines:
+            parts.append(
+                "【与当前对话者的未完成约定】（仅作参考，尚未履行的社会约定）\n"
+                + "\n".join(commitment_lines)
+            )
+
         experiences = sandbox.get("experiences") or []
         experience_lines = [f"- {item.get('text', '')}" for item in experiences if item.get("text")]
         if experience_lines:

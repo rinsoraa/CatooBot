@@ -3,6 +3,63 @@
 本文件记录 CatooBot 的版本演进。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号见 `pyproject.toml`；日期取自真实提交历史（本仓库 2026-09-30 起）。
 
+## [Unreleased] — v2.1 Phase 9 · Social Commitment & Obligation
+
+- **审计结论（§4）**：全仓 promise/commitment/obligation/appointment/pledge 能力为 **0**；
+  既有的 v1.2 open loop（`app/continuity` 的 OpenLoop/SharedExperience、
+  `app/behavior/topics` 的未聊完话题）是**对话层**的"话没说完"，没有时间语义、
+  没有履行/失约概念，无法表达"答应某人某时做某事"——因此本阶段新建
+  `SocialCommitment`，其余全部复用（EventBus / StateMutation / Goal / Decision /
+  Experience / Memory / Continuity / CognitiveContext）。
+- **新模块 `app/sandbox/commitments.py`**：`SocialCommitment`（commitment_id /
+  character_id / person_id / kind / status / strength / description / revision /
+  priority / target_action / target_activity / time_hint / earliest-latest-due /
+  provenance（source_interaction_id + source_event_id）/ correlation + causation /
+  metadata）、`CommitmentManager`、`CommitmentDetector`、`CommitmentGoalBridge`。
+  **四种状态严格分离（§3）**：关系≠承诺≠目标≠记忆；person 只用 Phase 8 的
+  `person_id`（绝不回存 QQ id）。
+- **确定性检测（§9/§10/§12/§35/§36）**：只有 `invitation_accepted` /
+  `promise_made` / `appointment_confirmed` 这类**显式事实** + 可解析的**未来**时间
+  才创建承诺；模糊表达（下次/有空/改天/以后…）与无时间暗示一律不创建（宁可不建，
+  不猜）；`parse_time_hint()` 只认一个封闭词表（今晚/明晚/明天/周X/N点/N分钟后/HH:MM），
+  不可读即不创建。**邀请 ≠ 承诺，接受 ≠ 承诺**（§10）。
+- **持久化（§6/§28）**：迁移 **25** → `sandbox_commitments`（含
+  character_id+status / +person_id / +due_at / +status+person_id 四个索引）；
+  `SandboxStore.save_commitment/list_commitments`；重启恢复（§29）后先
+  `sweep()`（窗口激活/超时判定）再由桥重新评估——**绝不"旧承诺各建一个目标"**。
+- **Commitment → Goal（§14-§17/§19）**：新增 `GoalKind.fulfill_commitment` +
+  `GoalSource.social_commitment` + `Goal.target_commitment`（dedupe 用
+  commitment_id，所以一个承诺永远只有一个目标）；`CommitmentGoalBridge.evaluate()`
+  只在执行窗口内建目标，优先级 = kind 档位 + strength ± 关系亲近度（只影响排序）；
+  承诺**绝不**直接 `ActionSystem.start()`，仍走 Goal → Decision → Validator → Action。
+- **履行/失约/改期（§20-§25）**：`shared_activity` 真正发生且达到最小持续时间
+  （10 分钟）才算 `fulfilled`——她自己的目标驱动完成同样成立（承诺提供了另一方）；
+  due + grace（2 小时）之后仍无结果才算 `broken`（迟一分钟不算失约）；
+  改期 = 同一 commitment_id、revision+1、旧计划归档进 metadata.schedule_history；
+  取消区分 character/other_party/system，礼貌早退不是背叛。`revision` 同时用于
+  §37/§38 过期保护：目标在**执行前**用 `commitment_id + commitment_revision`
+  复核，不一致则取消该目标且不执行动作。
+- **事件与因果（§40/§41）**：`COMMITMENT_CREATED/ACTIVATED/RESCHEDULED/FULFILLED/
+  CANCELLED/BROKEN`，全部带 causation/correlation，指向创建它的那条验证事实；
+  承诺变化记为 `StateMutation(affects_world=False)` 并只推进 `cognitive_revision`
+  （§39，不新增第三套全局 revision）。
+- **关系与记忆边界（§22/§32/§33/§46/§47）**：承诺结果只通过
+  `SocialInteractionFact`（`commitment_fulfilled/broken/rescheduled`，
+  INTERACTION_RULES 新增三条小步规则）进入 Phase 8 引擎——**没有**任何
+  `commitment → trust += …`；承诺本身不写记忆，只有 meaningful/major 的结果经
+  `ExperienceKind.commitment_outcome` → MemoryCandidate（social）进入既有记忆。
+- **上下文（§30/§31）**：连续性快照只带最多 3 条最要紧的未完成承诺；
+  与当前对话者相关的未完成承诺进入 CognitiveContext 与聊天提示词（仅作信息，
+  Context Builder 不执行任何目标）。
+- `_complete_action` 的共享活动事实泛化：邀请接受路径与"她自己按承诺去做"路径
+  产生同一种 `shared_activity` 事实（身份用 ActionInstance 精确匹配）。
+- 新增 `tests/test_sandbox_commitments.py`（30 个测试：显式约定/模糊不建/邀请≠承诺/
+  角色隔离/持久化/重启恢复/窗口内成目标/一承诺一目标/走决策层/共享活动履行/
+  grace 不误判/失约/改期同一生命线/礼貌取消/目标过期取消/执行前拒绝/打断恢复/
+  关系后果（履行↑、失约↓）/自身创建不进记忆/重大结果进记忆/连续性最多 3 条/
+  认知上下文只含当前对话者/生命周期不用 LLM/多方案才用 LLM/跨角色结果隔离/
+  24h 无 QQ 零承诺/48h 后自然收束/同种子可复现/时间解析封顶），总测试 1237。
+
 ## [Unreleased] — v2.1 Phase 8.1 Remediation · Person Identity + Cognitive Revision
 
 - **`external_ids` 持久化真实平台映射（§1-§6）**：`remember_person()` 现在接收

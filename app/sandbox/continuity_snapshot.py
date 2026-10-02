@@ -35,6 +35,8 @@ class ContinuitySnapshot(BaseModel):
     relationship_context: dict[str, Any] = Field(default_factory=dict)
     #: important open goals (Phase 7 §19) — never the full list
     active_goals: list[dict[str, Any]] = Field(default_factory=list)
+    #: the few promises that actually matter right now (Phase 9 §30) — max 3
+    active_commitments: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class ContinuitySnapshotBuilder:
@@ -91,8 +93,26 @@ class ContinuitySnapshotBuilder:
             ],
             relationship_context=await self._relationship_context(),
             active_goals=self._active_goal_lines(),
+            active_commitments=self._commitment_lines(),
         )
         return snapshot
+
+    def _commitment_lines(self) -> list[dict[str, Any]]:
+        """§30: at most three open, closest-to-due promises — never history."""
+        manager = getattr(self._rt, "commitments", None)
+        if manager is None:
+            return []
+        return [
+            {
+                "commitment_id": commitment.commitment_id,
+                "kind": commitment.kind.value,
+                "status": commitment.status.value,
+                "description": commitment.description,
+                "due_at": commitment.due_at,
+                "time_hint": commitment.time_hint,
+            }
+            for commitment in manager.important(limit=3)
+        ]
 
     def _active_goal_lines(self) -> list[dict[str, Any]]:
         """Important open goals only (never the whole list, §19)."""

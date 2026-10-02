@@ -19,6 +19,11 @@ from typing import Any
 from app.sandbox.actions import ActionSystem
 from app.sandbox.bible import CharacterBible
 from app.sandbox.cognitive import CognitiveContext, CognitiveContextBuilder
+from app.sandbox.commitments import (
+    CommitmentDetector,
+    CommitmentGoalBridge,
+    CommitmentManager,
+)
 from app.sandbox.continuity_snapshot import (
     ContinuitySnapshot,
     ContinuitySnapshotBuilder,
@@ -41,7 +46,7 @@ from app.sandbox.external import (
     InfluenceAction,
 )
 from app.sandbox.external_adapters import from_legacy_event, legacy_meaning
-from app.sandbox.goals import GoalDetector, GoalManager
+from app.sandbox.goals import GoalDetector, GoalKind, GoalManager
 from app.sandbox.intent import (
     CandidateKind,
     DecisionCandidate,
@@ -287,6 +292,11 @@ class SandboxRuntime:
         self.goal_detector = GoalDetector(self.goals, clock=clock)
         self.events.subscribe(self.goal_detector.observe)
         self.events.subscribe(self._on_goal_facts)
+        #: Phase 9 social commitment layer: what she promised whom (§5-§46)
+        self.commitments = CommitmentManager(self, clock=clock)
+        self.commitment_detector = CommitmentDetector(self.commitments, clock=clock)
+        self.commitment_bridge = CommitmentGoalBridge(self.commitments, clock=clock)
+        self.events.subscribe(self.commitment_detector.observe)
         self._last_tick = float(clock())
         self._notes: list[str] = []  # micro-continuity feed
         self._restored = False
@@ -388,6 +398,13 @@ class SandboxRuntime:
         await self.goals.restore()
         self.goal_detector.sweep()
         await self.goals.flush()
+        # §29: commitments reload, missed ones are evaluated, then the bridge
+        # re-decides which of them actually needs a goal (never "one goal each")
+        await self.commitments.restore()
+        self.commitments.sweep()
+        self.commitment_bridge.cancel_stale()
+        await self.commitment_bridge.evaluate()
+        await self.commitments.flush()
         # §28: the bible's relationships are the canonical starting states
         self.relationships_dyn.seed_initial()
         await self.relationships_dyn.seed_persisted()
@@ -401,6 +418,7 @@ class SandboxRuntime:
         await self.wait_social()
         await self.flush_experiences()
         await self.build_continuity()
+        await self.commitments.flush()
         await self._persist_all()
         await self.store.state_set("phase", self.phase.value)
 
@@ -712,6 +730,12 @@ class SandboxRuntime:
 
         # Critical needs / no action → decision point. A goal with a legal
         # next step drives first (§15); otherwise the existing engine decides.
+        # §29 (Phase 9): commitments are swept first, so a promise whose window
+        # just opened can become a goal *this* tick instead of the next one.
+        report["commitments"] = self.commitments.sweep()
+        self.commitment_bridge.cancel_stale()
+        report["commitment_goals"] = len(await self.commitment_bridge.evaluate())
+        await self.commitments.flush()
         need_decision = self.current_action is None or self.needs.critical()
         if need_decision:
             drove = await self.goals.advance(space_id=self.character.location)
@@ -1267,20 +1291,37 @@ class SandboxRuntime:
         )
         self._notes.append(f"{definition.name}做完了")
         pending = self._accepted_invitation
+        shared_with: dict[str, Any] | None = None
         if pending is not None and pending.get("action_id") == definition.id:
             self._accepted_invitation = None
+            shared_with = dict(pending)
+        else:
+            # Phase 9 §20: a promise she keeps on her own initiative is still a
+            # shared activity — the commitment supplies the other party, so the
+            # same fact (and therefore the same fulfilment rule) applies
+            shared_with = self._commitment_step_shared(action, definition)
+        if shared_with is not None:
             fact = SocialInteractionFact.create(  # §19: the activity *did* happen
                 character_id=self.character_id,
-                person_id=str(pending["person_id"]),
+                person_id=str(shared_with["person_id"]),
                 interaction_type="shared_activity",
                 source="character_action",
                 timestamp=float(self._clock()),
                 outcome="completed",
-                external_ids=dict(pending.get("external_ids", {}) or {}),
+                external_ids=dict(shared_with.get("external_ids", {}) or {}),
+                metadata={
+                    # Phase 9 §20: what the activity was and how long it ran —
+                    # a promise is only fulfilled by the real thing
+                    "target_activity": str(shared_with.get("activity", "") or definition.activity),
+                    "duration_minutes": round(
+                        self.actions.elapsed_minutes(action, now=float(self._clock())), 2
+                    ),
+                    "time_hint": str(shared_with.get("time_hint", "") or ""),
+                },
             )
             task = asyncio.create_task(
                 self.apply_social_interaction(
-                    fact, correlation_id=str(pending.get("correlation", ""))
+                    fact, correlation_id=str(shared_with.get("correlation", ""))
                 )
             )
             self._track_background(task)
@@ -1288,6 +1329,31 @@ class SandboxRuntime:
         await self.store.save_action(action)
         await self._resume_interrupted()
         await self._sync_state()
+
+    def _commitment_step_shared(self, action: Any, definition: Any) -> dict[str, Any] | None:
+        """The open promise this completing action was honouring (Phase 9 §20).
+
+        Identity is the *step's action instance* — the same discipline as the
+        goal layer — so an unrelated action can never fulfil someone's promise.
+        """
+        for goal in self.goals.all():
+            if goal.kind is not GoalKind.fulfill_commitment:
+                continue
+            step = goal.current_step
+            if step is None or (step.action_instance_id and step.action_instance_id != action.id):
+                continue
+            commitment_id = str(goal.metadata.get("commitment_id", "") or goal.target_commitment)
+            commitment = self.commitments.get(commitment_id)
+            if commitment is None or not commitment.open:
+                continue
+            return {
+                "person_id": commitment.person_id,
+                "external_ids": {},
+                "activity": commitment.target_activity or definition.activity,
+                "time_hint": commitment.time_hint,
+                "correlation": commitment.correlation_id,
+            }
+        return None
 
     async def _resume_interrupted(self) -> str:
         """§15: pick the paused action back up — a *new* lifecycle, honestly.
@@ -1568,6 +1634,25 @@ class SandboxRuntime:
             if needle in definition.effects
         ]
 
+    def commitment_actions(self, activity: str) -> list[Any]:
+        """Owned actions that can honour an activity (Phase 9 §15).
+
+        The world decides: an activity no action can engage simply has no
+        step, and the bridge then has nothing to schedule.
+        """
+        if not activity:
+            return []
+        return [
+            (action_id, definition)
+            for action_id, definition in self.actions.definitions.items()
+            if definition.activity == activity
+        ]
+
+    def goal_precheck(self, goal: Any) -> str:
+        """Phase 9 §37/§38: "" when the goal may run, else the stale reason."""
+        ok, reason = self.commitment_bridge.validate(goal)
+        return "" if ok else reason
+
     def _invitation_candidates(self, activity: str, *, from_core: bool) -> list[DecisionCandidate]:
         """The legal options for an activity invitation — world-derived (§5).
 
@@ -1632,6 +1717,7 @@ class SandboxRuntime:
         reason_code: str,
         received_id: str,
         correlation: str,
+        hint_text: str = "",
     ) -> dict[str, Any]:
         """§14: invitation → decision pipeline → (maybe) interrupt + action.
 
@@ -1668,7 +1754,12 @@ class SandboxRuntime:
         if not outcome.accepted or outcome.kind != CandidateKind.action.value:
             # §19/§20: declining is a fact of its own (a small comfort dip)
             self._record_invitation_outcome(
-                actor=actor, declined=True, correlation=correlation, causation=received_id
+                actor=actor,
+                declined=True,
+                correlation=correlation,
+                causation=received_id,
+                activity=activity,
+                hint_text=hint_text,
             )
             return result
         self.events.publish(
@@ -1686,7 +1777,12 @@ class SandboxRuntime:
             return result
         # §19/§33: acceptance is recorded, the shared activity only after it runs
         self._record_invitation_outcome(
-            actor=actor, declined=False, correlation=correlation, causation=received_id
+            actor=actor,
+            declined=False,
+            correlation=correlation,
+            causation=received_id,
+            activity=activity,
+            hint_text=hint_text,
         )
         person = self.persons.for_qq(actor)
         self._accepted_invitation = {
@@ -1694,6 +1790,8 @@ class SandboxRuntime:
             "external_ids": dict(person.external_ids),
             "action_id": outcome.action_id,
             "correlation": correlation,
+            # Phase 9 §36: the wording that may or may not contain an arrangement
+            "time_hint": hint_text[:120],
         }
         result["interrupt"] = True
         result["action"] = outcome.action_id
@@ -1713,7 +1811,14 @@ class SandboxRuntime:
         return result
 
     def _record_invitation_outcome(
-        self, *, actor: str, declined: bool, correlation: str, causation: str
+        self,
+        *,
+        actor: str,
+        declined: bool,
+        correlation: str,
+        causation: str,
+        activity: str = "",
+        hint_text: str = "",
     ) -> None:
         person = self.persons.for_qq(actor)
         fact = SocialInteractionFact.create(
@@ -1725,6 +1830,11 @@ class SandboxRuntime:
             outcome="declined" if declined else "accepted",
             significance=InteractionSignificance.meaningful,
             external_ids=dict(person.external_ids),
+            metadata={
+                # Phase 9 §35: the detector reads the *fact*, never the chat
+                "target_activity": activity,
+                "time_hint": hint_text[:120],
+            },
         )
         task = asyncio.create_task(
             self.apply_social_interaction(fact, correlation_id=correlation, causation_id=causation)
@@ -1858,6 +1968,7 @@ class SandboxRuntime:
                 reason_code=decision.reason_code,
                 received_id=received.event_id if received else "",
                 correlation=correlation,
+                hint_text=str(event.content or ""),
             )
             result["interrupt"] = bool(outcome.get("interrupt"))
             result["decision"] = outcome.get("decision")
@@ -2552,6 +2663,11 @@ class SandboxRuntime:
                 "significance": fact.significance.value,
                 "social_space_id": fact.social_space_id,
                 "outcome": fact.outcome,
+                # Phase 9 §34-§36: the arrangement material a detector may use —
+                # the raw wording, the activity, how long the thing actually ran
+                "time_hint": str(fact.metadata.get("time_hint", "") or ""),
+                "target_activity": str(fact.metadata.get("target_activity", "") or ""),
+                "duration_minutes": float(fact.metadata.get("duration_minutes", 0.0) or 0.0),
             },
             causation_id=causation_id,
             correlation_id=correlation_id,

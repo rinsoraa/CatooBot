@@ -195,6 +195,23 @@ class MemoryCandidateBuilder:
                 f"relationship:{person}",
                 0.85,
             )
+        if kind is ExperienceKind.commitment_outcome:
+            person = str(meta.get("person_id", ""))
+            outcome = str(meta.get("outcome", ""))
+            label = str(meta.get("name", "")) or "某人"
+            if outcome == "fulfilled":
+                summary, importance = f"说到做到：与{label}的约定履行了", 0.75
+            elif outcome == "broken":
+                summary, importance = f"没能守约：与{label}的约定没做到", 0.85
+            else:
+                summary, importance = f"与{label}的约定改期了", 0.5
+            return (
+                MemoryType.social,
+                MemoryScope.social,
+                summary,
+                f"commitment:{meta.get('commitment_id', chain)}:{outcome}",
+                importance,
+            )
         if kind is ExperienceKind.goal_completed:
             description = str(meta.get("description", ""))
             return (

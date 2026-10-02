@@ -48,10 +48,19 @@ EXPERIENCE_EVENTS: frozenset[ET] = frozenset(
     }
 )
 
-#: events that carry experience meaning only under a payload condition.
-#: A relationship change is an experience when it crossed a milestone (§27);
-#: ordinary trust 0.50 → 0.51 must never pollute memory.
-CONDITIONAL_EXPERIENCE_EVENTS: frozenset[ET] = frozenset({ET.RELATIONSHIP_CHANGED})
+#: events that carry experience meaning only under a payload condition, and
+#: the significance values that qualify. A relationship change is an experience
+#: when it crossed a milestone (§27); ordinary trust 0.50 → 0.51 must never
+#: pollute memory. A commitment *outcome* is an experience (§32) — creating a
+#: commitment is not.
+CONDITIONAL_SIGNIFICANCE: dict[ET, frozenset[str]] = {
+    ET.RELATIONSHIP_CHANGED: frozenset({"major"}),
+    ET.COMMITMENT_FULFILLED: frozenset({"meaningful", "major"}),
+    ET.COMMITMENT_BROKEN: frozenset({"meaningful", "major"}),
+    ET.COMMITMENT_RESCHEDULED: frozenset({"major"}),
+}
+#: kept for existing callers: every conditionally-experienced event
+CONDITIONAL_EXPERIENCE_EVENTS: frozenset[ET] = frozenset(CONDITIONAL_SIGNIFICANCE)
 
 #: project progress thresholds that count as milestones (§22/§28-6)
 PROJECT_MILESTONES = (0.5, 0.75, 1.0)
@@ -69,6 +78,8 @@ class ExperienceKind(str, Enum):  # noqa: UP042 - pydantic-friendly str enum
     social_contact = "social_contact"
     goal_completed = "goal_completed"
     relationship_changed = "relationship_changed"
+    #: Phase 9 §32: a promise kept / missed / moved — never its mere creation
+    commitment_outcome = "commitment_outcome"
 
 
 class ExperienceRecord(BaseModel):
@@ -130,8 +141,9 @@ class ExperienceBuilder:
 
     def observe(self, event: SandboxEvent) -> None:
         """Bus handler (sync): qualifying event → experience in the buffer."""
-        if event.event_type in CONDITIONAL_EXPERIENCE_EVENTS:
-            if str(event.payload.get("significance", "")) != "major":
+        if event.event_type in CONDITIONAL_SIGNIFICANCE:
+            allowed = CONDITIONAL_SIGNIFICANCE[event.event_type]
+            if str(event.payload.get("significance", "")) not in allowed:
                 self.ignored += 1  # ordinary drift is not an experience (§27)
                 return
         elif event.event_type not in EXPERIENCE_EVENTS:
@@ -174,6 +186,52 @@ class ExperienceBuilder:
         self._emitted.append(record)
 
     # ------------------------------------------------------------ mapping
+
+    def _commitment_outcome(
+        self, event: SandboxEvent
+    ) -> tuple[ExperienceKind, str, float, dict[str, Any]]:
+        """§21/§32: a promise's ending is a lived episode; its birth is not."""
+        payload = event.payload
+        person = self.commitment_describe(str(payload.get("person_id", "")))
+        activity = str(payload.get("target_activity", "")) or str(payload.get("kind", ""))
+        kind = str(payload.get("kind", ""))
+        if event.event_type is ET.COMMITMENT_FULFILLED:
+            summary, importance, outcome = (
+                f"履行了与{person}的约定（{activity}）",
+                0.75,
+                "fulfilled",
+            )
+        elif event.event_type is ET.COMMITMENT_BROKEN:
+            summary, importance, outcome = f"没能履行与{person}的约定（{activity}）", 0.8, "broken"
+        else:
+            summary, importance, outcome = (
+                f"与{person}的约定改期了（{activity}）",
+                0.6,
+                "rescheduled",
+            )
+        return (
+            ExperienceKind.commitment_outcome,
+            summary,
+            importance,
+            {
+                "commitment_id": str(payload.get("commitment_id", "")),
+                "person_id": str(payload.get("person_id", "")),
+                "name": person,
+                "kind": kind,
+                "outcome": outcome,
+                "description": str(payload.get("description", "")),
+            },
+        )
+
+    def commitment_describe(self, person_id: str) -> str:
+        """Who the promise was with, in words the runtime already owns."""
+        manager = getattr(self._rt, "commitments", None)
+        if manager is None:
+            return person_id or "对方"
+        try:
+            return manager.person_label(person_id)
+        except Exception:  # noqa: BLE001 - a label must never break an experience
+            return person_id or "对方"
 
     def _build(  # noqa: PLR0911 - one branch per experience kind, flat by design
         self, event: SandboxEvent
@@ -245,6 +303,12 @@ class ExperienceBuilder:
                 importance,
                 {"project": event.target_entity_id, "name": name, "after": after},
             )
+        if event.event_type in (
+            ET.COMMITMENT_FULFILLED,
+            ET.COMMITMENT_BROKEN,
+            ET.COMMITMENT_RESCHEDULED,
+        ):
+            return self._commitment_outcome(event)
         if event.event_type is ET.KNOWLEDGE_CHANGED:
             previous = payload.get("before")
             key = str(payload.get("key", ""))

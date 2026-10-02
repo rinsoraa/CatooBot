@@ -571,6 +571,83 @@ class SandboxStore:
             result.append(data)
         return result
 
+    async def save_commitment(self, commitment: Any) -> bool:
+        """Persist one social commitment (Phase 9 §28); False = not written."""
+        if not self.available:
+            return False
+        try:
+            await self._db.execute(
+                """INSERT INTO sandbox_commitments
+                       (commitment_id, character_id, person_id, kind, status, strength,
+                        description, revision, priority, target_action, target_activity,
+                        time_hint, earliest_at, latest_at, due_at, created_at, updated_at,
+                        activated_at, resolved_at, source_interaction_id, source_event_id,
+                        correlation_id, causation_id, metadata)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                   ON CONFLICT(commitment_id) DO UPDATE SET
+                       status=excluded.status, strength=excluded.strength,
+                       description=excluded.description, revision=excluded.revision,
+                       priority=excluded.priority, target_action=excluded.target_action,
+                       target_activity=excluded.target_activity,
+                       time_hint=excluded.time_hint, earliest_at=excluded.earliest_at,
+                       latest_at=excluded.latest_at, due_at=excluded.due_at,
+                       updated_at=excluded.updated_at, activated_at=excluded.activated_at,
+                       resolved_at=excluded.resolved_at,
+                       source_interaction_id=excluded.source_interaction_id,
+                       metadata=excluded.metadata""",
+                (
+                    commitment.commitment_id,
+                    commitment.character_id,
+                    commitment.person_id,
+                    commitment.kind.value,
+                    commitment.status.value,
+                    commitment.strength.value,
+                    commitment.description,
+                    int(commitment.revision),
+                    float(commitment.priority),
+                    commitment.target_action,
+                    commitment.target_activity,
+                    commitment.time_hint,
+                    float(commitment.earliest_at),
+                    float(commitment.latest_at),
+                    float(commitment.due_at),
+                    float(commitment.created_at),
+                    float(commitment.updated_at),
+                    float(commitment.activated_at),
+                    float(commitment.resolved_at),
+                    commitment.source_interaction_id,
+                    commitment.source_event_id,
+                    commitment.correlation_id,
+                    commitment.causation_id,
+                    _json_dumps(commitment.metadata),
+                ),
+            )
+        except Exception:  # noqa: BLE001 - commitment bookkeeping never breaks the world
+            logger.debug("[Sandbox.Store] commitment write failed", exc_info=True)
+            return False
+        return True
+
+    async def list_commitments(self, *, character_id: str = "") -> list[dict[str, Any]]:
+        """Reload this character's commitments (§29); other characters' stay out."""
+        if not self.available:
+            return []
+        try:
+            rows = await self._db.fetchall(
+                "SELECT * FROM sandbox_commitments WHERE character_id = ?",
+                (character_id,),
+            )
+        except Exception:  # noqa: BLE001 - pre-migration database has no table
+            return []
+        result: list[dict[str, Any]] = []
+        for row in rows:
+            data = dict(row)
+            try:
+                data["metadata"] = _json_loads(data.get("metadata"), default={})
+            except ValueError:
+                data["metadata"] = {}
+            result.append(data)
+        return result
+
     async def state_get(self, key: str) -> str:
         if not self.available:
             return ""
