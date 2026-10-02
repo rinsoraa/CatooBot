@@ -3,6 +3,38 @@
 本文件记录 CatooBot 的版本演进。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号见 `pyproject.toml`；日期取自真实提交历史（本仓库 2026-09-30 起）。
 
+## [Unreleased] — v2.1 Phase 9.1 Remediation · Commitment Outcome Integrity
+
+- **履约必须收口到自己的目标（§2-§6）**：新增总线处理器
+  `GoalManager.on_commitment_fulfilled()`——`COMMITMENT_FULFILLED` → 按
+  `target_commitment == commitment_id` 找到**唯一**目标（不按 person/activity 猜、
+  不建新目标/新步骤、不重跑动作）→ `completed` + `progress=1` + 步骤 `completed`
+  → 发布 `GOAL_COMPLETED`，`causation_id = COMMITMENT_FULFILLED.event_id`，
+  仍用目标自己的 `goal_<id>` correlation。修掉了"成功履约反而被
+  `cancel_stale()` 取消"的语义错误（`cancel_stale` 现在只会看到已完成目标）。
+  处理器**按事件类型过滤**（总线是类型无关的，误响应其它带 commitment_id 的事件
+  会被修正为只响应 COMMITMENT_FULFILLED）。
+- **共享活动精确匹配（§9-§14）**：事实优先携带 `commitment_id`
+  （由承诺目标驱动的活动由 `_commitment_step_shared()` 写入；被接受的邀请若唯一
+  命中一条未完成承诺也会带上）。没有 id 时只允许严格回退：先按
+  （person + shared_activity + open + activity）取候选——**候选 > 1 直接拒绝并
+  WARNING**（同一活动两条承诺绝不猜）；候选 == 1 再用真实履约窗口校验
+  （`earliest_at ≤ now ≤ due_at + grace`，不用 `latest_at`）——太早、太晚都不履约。
+- **改期精确定位（§15-§19）**：`appointment_rescheduled` 同样优先
+  `commitment_id`；否则候选必须恰好 1 条，模糊则**零状态变更 + WARNING**。
+- **严格 ActionInstance（§20-§22）**：`_commitment_step_shared()` 现在要求
+  「目标 active + 步骤 active/completed（ACTION_COMPLETED 先发布，故允许刚完成）
+  + 步骤实例 id 非空且与完成实例精确相等」；空实例是 wildcard，直接拒绝——
+  不会再凭 action_id 猜出共同经历。
+- **持久化一致性（§27）**：履约后 `sandbox_commitments.status=completed`、
+  `sandbox_goals.status=completed`、`current_step.status=completed` 三者同时落库；
+  重启后已完成承诺/目标不会被重新加载或复活（历史行只留在库里）。
+- 新增 `tests/test_sandbox_commitments_integrity.py`（11 个测试：履约完成精确目标
+  且事件因果正确、履约不被 stale 取消、重启后三者一致且不复活、未来承诺不被提前
+  履行、同活动双承诺不猜（WARNING）、唯一匹配无 id 也可履约、显式 id 精确履约
+  （不受同活动双承诺影响）、改期只动指定承诺、模糊改期零变更、唯一承诺可无 id
+  改期、空实例步骤绝不产生共同活动事实），总测试 1248。
+
 ## [Unreleased] — v2.1 Phase 9 · Social Commitment & Obligation
 
 - **审计结论（§4）**：全仓 promise/commitment/obligation/appointment/pledge 能力为 **0**；

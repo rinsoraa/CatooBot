@@ -21,6 +21,7 @@ nothing at all; unparsable time is not guessed at (§13/§36).
 from __future__ import annotations
 
 import asyncio
+import logging
 import re
 import uuid
 from datetime import datetime, timedelta
@@ -33,6 +34,8 @@ from pydantic import BaseModel, Field
 from app.sandbox.events import SandboxEventType as ET
 from app.sandbox.mutations import StateMutation
 from app.sandbox.relations import InteractionSignificance, SocialInteractionFact
+
+logger = logging.getLogger("CatooBot.Sandbox")
 
 #: how long after ``due_at`` a missed promise is still recoverable (§24)
 DEFAULT_GRACE_MINUTES = 120.0
@@ -324,6 +327,17 @@ class CommitmentDetector:
         self.fulfilled = 0
         self.vague = 0
         self.skipped = 0
+        self.ambiguous = 0
+        self._warned: set[str] = set()
+
+    def _warn(self, key: str, message: str) -> None:
+        """One warning per situation — ambiguity must be visible, not noisy."""
+        self.ambiguous += 1
+        if key in self._warned:
+            return
+        self._warned.add(key)
+        log = getattr(self._manager.runtime, "_log", None) or logger
+        log.warning("[Sandbox] %s", message)
 
     def observe(self, event: Any) -> None:
         if event.event_type is not ET.SOCIAL_INTERACTION:
@@ -376,43 +390,93 @@ class CommitmentDetector:
             self.created += 1
 
     def _on_shared_activity(self, event: Any, payload: dict[str, Any]) -> None:
-        """A shared activity really ran → any matching promise is fulfilled (§20)."""
+        """A shared activity really ran → the *one* promise it keeps (§20/§9-§13).
+
+        Exact first: a fact produced by a commitment goal carries its
+        ``commitment_id``, so nothing is inferred. Only an informal shared
+        activity falls back to matching — and then only when exactly one open
+        promise fits both the activity and the real fulfilment window.
+        """
         duration = float(payload.get("duration_minutes", 0.0) or 0.0)
         if duration < MIN_FULFILL_DURATION_MINUTES:
             self.skipped += 1  # a two-minute dabble is not a kept promise
             return
         person_id = str(event.target_entity_id)
         activity = str(payload.get("target_activity", "") or "")
-        for commitment in self._manager.for_person(person_id):
-            if commitment.kind is not CommitmentKind.shared_activity or not commitment.open:
-                continue
-            if commitment.target_activity and activity and commitment.target_activity != activity:
-                continue
+        commitment_id = str(payload.get("commitment_id", "") or "")
+        if commitment_id:
+            commitment = self._manager.get(commitment_id)
+            if (
+                commitment is None
+                or not commitment.open
+                or commitment.person_id != person_id
+                or commitment.kind is not CommitmentKind.shared_activity
+            ):
+                self.skipped += 1
+                return
             if self._manager.fulfill(
                 commitment,
                 source_interaction_id=str(payload.get("interaction_id", "")),
                 duration_minutes=duration,
             ):
                 self.fulfilled += 1
+            return
+        commitment, why = self._manager.match_shared_activity(
+            person_id, activity, now=float(self._clock())
+        )
+        if commitment is None:
+            self.skipped += 1
+            if why == "ambiguous":
+                self._warn(
+                    f"ambiguous_shared:{person_id}",
+                    f"shared activity for {person_id} fits several open promises"
+                    " — none was fulfilled (no commitment_id to disambiguate)",
+                )
+            return
+        if self._manager.fulfill(
+            commitment,
+            source_interaction_id=str(payload.get("interaction_id", "")),
+            duration_minutes=duration,
+        ):
+            self.fulfilled += 1
 
     def _on_reschedule(self, event: Any, payload: dict[str, Any]) -> None:
-        """A verified reschedule fact moves the existing commitment (§25)."""
+        """A verified reschedule fact moves the *one* commitment it names (§25).
+
+        Exact first (``commitment_id`` in the fact); otherwise it is applied
+        only when exactly one open promise fits — ambiguity changes nothing.
+        """
         person_id = str(event.target_entity_id)
         hint = str(payload.get("time_hint", "") or "")
         window = parse_time_hint(hint, now=float(self._clock()))
         if window is None:
             self.skipped += 1
             return
-        for commitment in self._manager.for_person(person_id):
-            if not commitment.open:
-                continue
-            self._manager.reschedule(
-                commitment,
-                window=window,
-                reason="external_reschedule",
-                source_interaction_id=str(payload.get("interaction_id", "")),
+        commitment_id = str(payload.get("commitment_id", "") or "")
+        if commitment_id:
+            commitment = self._manager.get(commitment_id)
+            if commitment is None or not commitment.open:
+                self.skipped += 1
+                return
+        else:
+            commitment, why = self._manager.match_reschedule(
+                person_id, str(payload.get("target_activity", "") or "")
             )
-            return
+            if commitment is None:
+                self.skipped += 1  # §17/§19: never guess — nothing is modified
+                if why == "ambiguous":
+                    self._warn(
+                        f"ambiguous_reschedule:{person_id}",
+                        f"reschedule for {person_id} fits several open promises"
+                        " — nothing was changed (no commitment_id to disambiguate)",
+                    )
+                return
+        self._manager.reschedule(
+            commitment,
+            window=window,
+            reason="external_reschedule",
+            source_interaction_id=str(payload.get("interaction_id", "")),
+        )
 
 
 class CommitmentGoalBridge:
@@ -569,6 +633,57 @@ class CommitmentManager:
         items = [item for item in self.open() if item.due_at]
         items.sort(key=lambda item: (item.due_at, -item.priority, item.commitment_id))
         return items[:limit]
+
+    # ------------------------------------------------------- exact matching
+
+    def match_shared_activity(
+        self, person_id: str, activity: str, *, now: float | None = None
+    ) -> tuple[SocialCommitment | None, str]:
+        """The *single* open promise a shared activity can keep (§11).
+
+        Returns ``(commitment, why)`` with ``why`` ∈ matched / none /
+        ambiguous. Ambiguity never fulfils anything: two promises for the same
+        activity (tonight 20:00 and tonight 22:00) are not the same act.
+        """
+        stamp = float(now if now is not None else self._clock())
+        # §14 first: two open promises for the same activity are *not* the same
+        # act — the identity must come from the fact, never from a lucky window
+        candidates = [
+            commitment
+            for commitment in self.for_person(person_id)
+            if commitment.open
+            and commitment.kind is CommitmentKind.shared_activity
+            and not (
+                commitment.target_activity and activity and commitment.target_activity != activity
+            )
+        ]
+        if not candidates:
+            return None, "none"
+        if len(candidates) > 1:
+            return None, "ambiguous"
+        only = candidates[0]
+        if only.earliest_at and stamp < only.earliest_at:
+            return None, "early"  # §13: an arrangement is not kept before its window
+        if only.due_at and stamp > only.due_at + DEFAULT_GRACE_MINUTES * 60.0:
+            return None, "late"  # §12: past grace it is missed, not fulfilled
+        return only, "matched"
+
+    def match_reschedule(
+        self, person_id: str, activity: str = ""
+    ) -> tuple[SocialCommitment | None, str]:
+        """The *single* open promise a reschedule fact may move (§17/§19)."""
+        matches: list[SocialCommitment] = []
+        for commitment in self.for_person(person_id):
+            if not commitment.open:
+                continue
+            if activity and commitment.target_activity and commitment.target_activity != activity:
+                continue
+            matches.append(commitment)
+        if len(matches) == 1:
+            return matches[0], "matched"
+        if not matches:
+            return None, "none"
+        return None, "ambiguous"
 
     async def relationship_hint(self, person_id: str) -> float:
         """§17: closeness may nudge ordering — it never creates or executes."""

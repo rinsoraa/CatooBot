@@ -46,7 +46,13 @@ from app.sandbox.external import (
     InfluenceAction,
 )
 from app.sandbox.external_adapters import from_legacy_event, legacy_meaning
-from app.sandbox.goals import GoalDetector, GoalKind, GoalManager
+from app.sandbox.goals import (
+    GoalDetector,
+    GoalKind,
+    GoalManager,
+    GoalStatus,
+    StepStatus,
+)
 from app.sandbox.intent import (
     CandidateKind,
     DecisionCandidate,
@@ -292,6 +298,8 @@ class SandboxRuntime:
         self.goal_detector = GoalDetector(self.goals, clock=clock)
         self.events.subscribe(self.goal_detector.observe)
         self.events.subscribe(self._on_goal_facts)
+        # Phase 9.1 §3: COMMITMENT_FULFILLED → the exact goal completes
+        self.events.subscribe(self.goals.on_commitment_fulfilled)
         #: Phase 9 social commitment layer: what she promised whom (§5-§46)
         self.commitments = CommitmentManager(self, clock=clock)
         self.commitment_detector = CommitmentDetector(self.commitments, clock=clock)
@@ -1295,6 +1303,14 @@ class SandboxRuntime:
         if pending is not None and pending.get("action_id") == definition.id:
             self._accepted_invitation = None
             shared_with = dict(pending)
+            # §23: if exactly one open promise fits this activity, this *is* it
+            matched, _why = self.commitments.match_shared_activity(
+                str(shared_with.get("person_id", "")),
+                definition.activity,
+                now=float(self._clock()),
+            )
+            if matched is not None:
+                shared_with["commitment_id"] = matched.commitment_id
         else:
             # Phase 9 §20: a promise she keeps on her own initiative is still a
             # shared activity — the commitment supplies the other party, so the
@@ -1317,6 +1333,8 @@ class SandboxRuntime:
                         self.actions.elapsed_minutes(action, now=float(self._clock())), 2
                     ),
                     "time_hint": str(shared_with.get("time_hint", "") or ""),
+                    # Phase 9.1 §10: the exact promise, when one is known
+                    "commitment_id": str(shared_with.get("commitment_id", "") or ""),
                 },
             )
             task = asyncio.create_task(
@@ -1331,17 +1349,24 @@ class SandboxRuntime:
         await self._sync_state()
 
     def _commitment_step_shared(self, action: Any, definition: Any) -> dict[str, Any] | None:
-        """The open promise this completing action was honouring (Phase 9 §20).
+        """The promise this completing action was honouring (Phase 9.1 §20-§23).
 
-        Identity is the *step's action instance* — the same discipline as the
-        goal layer — so an unrelated action can never fulfil someone's promise.
+        Identity is the *step's action instance* — an empty instance id is a
+        wildcard and is refused (Phase 7.1 discipline). The step may already be
+        ``completed`` here because ACTION_COMPLETED is published first (§6), so
+        only failed / skipped / blocked steps are excluded.
         """
+        instance_id = str(getattr(action, "id", "") or "")
         for goal in self.goals.all():
             if goal.kind is not GoalKind.fulfill_commitment:
                 continue
-            step = goal.current_step
-            if step is None or (step.action_instance_id and step.action_instance_id != action.id):
+            if goal.status is not GoalStatus.active:
                 continue
+            step = goal.current_step
+            if step is None or step.status not in (StepStatus.active, StepStatus.completed):
+                continue
+            if not instance_id or step.action_instance_id != instance_id:
+                continue  # exact instance only — never a wildcard, never a guess
             commitment_id = str(goal.metadata.get("commitment_id", "") or goal.target_commitment)
             commitment = self.commitments.get(commitment_id)
             if commitment is None or not commitment.open:
@@ -1352,6 +1377,8 @@ class SandboxRuntime:
                 "activity": commitment.target_activity or definition.activity,
                 "time_hint": commitment.time_hint,
                 "correlation": commitment.correlation_id,
+                # §10: the exact promise — fulfilment needs no inference
+                "commitment_id": commitment.commitment_id,
             }
         return None
 
@@ -2668,6 +2695,7 @@ class SandboxRuntime:
                 "time_hint": str(fact.metadata.get("time_hint", "") or ""),
                 "target_activity": str(fact.metadata.get("target_activity", "") or ""),
                 "duration_minutes": float(fact.metadata.get("duration_minutes", 0.0) or 0.0),
+                "commitment_id": str(fact.metadata.get("commitment_id", "") or ""),
             },
             causation_id=causation_id,
             correlation_id=correlation_id,

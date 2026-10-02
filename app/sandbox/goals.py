@@ -699,6 +699,42 @@ class GoalManager:
             goal.current_step.status = StepStatus.completed
         self._publish(ET.GOAL_COMPLETED, goal, reason=reason, extra={"goal_kind": goal.kind.value})
 
+    def on_commitment_fulfilled(self, event: Any) -> None:
+        """Bus handler: a kept promise closes its *exact* goal (Phase 9.1 §2-§6).
+
+        Identity is the commitment id the goal was born on — never the person,
+        never the activity, never a guess. Completion here is pure state
+        closure: no new goal, no new step, no action, and the goal keeps its
+        own ``goal_<id>`` correlation (only the causation points at the fact
+        that fulfilled the promise).
+        """
+        if event.event_type is not ET.COMMITMENT_FULFILLED:
+            return  # the bus is type-agnostic: only a kept promise closes a goal
+        commitment_id = str(event.payload.get("commitment_id", "") or "")
+        if not commitment_id:
+            return
+        for goal in self._goals.values():
+            if goal.kind is not GoalKind.fulfill_commitment or goal.status.terminal:
+                continue
+            if (
+                goal.target_commitment != commitment_id
+                and str(goal.metadata.get("commitment_id", "") or "") != commitment_id
+            ):
+                continue
+            goal.status = GoalStatus.completed
+            goal.progress = 1.0
+            goal.updated_at = float(self._clock())
+            if goal.current_step is not None:
+                goal.current_step.status = StepStatus.completed
+            self._publish(
+                ET.GOAL_COMPLETED,
+                goal,
+                reason="commitment_fulfilled",
+                extra={"goal_kind": goal.kind.value, "commitment_id": commitment_id},
+                causation_id=event.event_id,
+            )
+            return  # one promise, one goal (§16)
+
     def cancel(self, goal: Goal, *, reason: str) -> None:
         """Cancel a live goal (Phase 9 §37: a stale commitment goal dies here)."""
         goal.status = GoalStatus.cancelled
@@ -747,6 +783,7 @@ class GoalManager:
         *,
         reason: str,
         extra: dict[str, Any] | None = None,
+        causation_id: str = "",
     ) -> Any:
         payload: dict[str, Any] = {
             "goal_id": goal.goal_id,
@@ -763,7 +800,7 @@ class GoalManager:
             source="character",
             target=goal.goal_id,
             payload=payload,
-            causation_id=goal.source_event_id,
+            causation_id=causation_id or goal.source_event_id,
             # a goal is its own ongoing thread: the originating fact is linked
             # through causation_id, but the chain (and therefore the resulting
             # experience) belongs to the goal, not to the trigger's action
