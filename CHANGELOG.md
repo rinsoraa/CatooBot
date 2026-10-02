@@ -3,6 +3,47 @@
 本文件记录 CatooBot 的版本演进。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号见 `pyproject.toml`；日期取自真实提交历史（本仓库 2026-09-30 起）。
 
+## [Unreleased] — v2.1 Phase 10 · Social Experience & Shared Memory Continuity
+
+- **审计与复用（§3/§33）**：没有新建任何 Experience/Memory/Relationship 基础设施——
+  全部扩展现有 `ExperienceBuilder`、`MemoryCandidateBuilder`、`SandboxMemoryStore`、
+  `CognitiveContext`（`MemoryRepository` 表结构未动，无新表、无新检索器）。
+- **共同经历（§4/§5/§6）**：新增 `ExperienceKind.shared_activity`——只由**已验证的**
+  `SOCIAL_INTERACTION(shared_activity)` 事实产生，且时长必须达到 Phase 9 的
+  `MIN_FULFILL_DURATION_MINUTES`（复用同一常量，未定义第二份阈值）；无 commitment
+  的临时共同活动同样成立（不因此创建承诺/目标/关系变化）。经历 metadata 完整保留
+  `person_id / activity / duration_minutes / commitment_id / action_id /
+  action_instance_id / interaction_id / significance`。
+- **一个真实行为 = 一个 episode（§7/§12/§24）**：ExperienceBuilder 新增 episode 索引
+  （ActionInstance > commitment > interaction fact），因此
+  `ACTION_COMPLETED + SOCIAL_INTERACTION(shared_activity) + COMMITMENT_FULFILLED`
+  即使来自不同 correlation 也会聚合成**一条**共同经历（kind 升级表把
+  shared_activity 排在最高），replay 同一事实也只有一个 episode、一条记忆；
+  两条真实活动（不同 ActionInstance）仍是两条不同的 episodic social memory。
+- **确定性重要性阶梯（§9/§21）**：`0.4` 基础 + 履约 `+0.25` + 长活动（≥60 分钟）
+  `+0.05` + major `+0.15`；普通短共同活动因此**只有 Experience、不进长期记忆**
+  （低于既有 promotion threshold 0.5），守约/重大/够长的才成为社会记忆。全程
+  无 LLM、无随机。
+- **记忆内容与溯源（§10/§11/§23）**：`MemoryCandidate` 新增 `provenance`，社会记忆
+  落库时写入 `person_id / name / activity / duration_minutes / commitment_id /
+  action_id / action_instance_id`（复用 `memories.provenance`，未加表）；记忆文案是
+  可核验的一句话（"和 X 约好的 gaming 活动完成了（约 35 分钟）"），identity 含
+  episode（`shared:<person>:<episode>`），重启后仍可按 person 召回。
+- **Person-aware 检索（§14-§17）**：`retrieve_relevant()` 新增 `person_id` 参数与
+  `person_match` 权重（四项权重等比重平衡，总和仍为 1.0）：当前对话者的共同经历获得
+  flat boost，其他话题事实仍按原分数参与；不按 person 过滤、不引入第二套检索。
+  `CognitiveContext` 在检索前把平台 handle 解析为 `person_id` 并暴露
+  `person{person_id, display_name, external_id}`。
+- **边界保持**：Memory 永不回写世界（§18/§20）、只有 SocialInteractionFact 能改
+  relationship（§19）、`character_id` 全隔离（§22）、`match_shared_activity` 与
+  Phase 8/9 语义未改动（§26/§27）。附带一处稳健性修正：candidate 插入改为
+  `INSERT OR IGNORE`，同一 candidate 重放不再可能中断 tick。
+- 新增 `tests/test_sandbox_shared_experience.py`（14 个测试：守约共同经历是一条完整
+  episode 且吸收 action 记录、无承诺的共同活动不产生承诺/目标、低于阈值不算共同
+  经历、长/major 的确定性加权与提升边界、两次真实活动两条记忆、replay 不堆积、
+  person boost 与无关者不借用、跨角色同人不串、当前世界仍权威、记忆读写不动关系、
+  重启后 person 链仍在、全链路无 LLM、social spec 显式），总测试 1263。
+
 ## [Unreleased] — v2.1 Phase 9.1.1 Remediation · Shared Activity Window Matching
 
 - **fallback 匹配先收窗口再判歧义（§11/§14 修正）**：`match_shared_activity()`

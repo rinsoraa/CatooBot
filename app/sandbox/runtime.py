@@ -1335,6 +1335,9 @@ class SandboxRuntime:
                     "time_hint": str(shared_with.get("time_hint", "") or ""),
                     # Phase 9.1 §10: the exact promise, when one is known
                     "commitment_id": str(shared_with.get("commitment_id", "") or ""),
+                    # Phase 10 §4: which ActionInstance this episode really was
+                    "action_id": definition.id,
+                    "action_instance_id": action.id,
                 },
             )
             task = asyncio.create_task(
@@ -2696,6 +2699,8 @@ class SandboxRuntime:
                 "target_activity": str(fact.metadata.get("target_activity", "") or ""),
                 "duration_minutes": float(fact.metadata.get("duration_minutes", 0.0) or 0.0),
                 "commitment_id": str(fact.metadata.get("commitment_id", "") or ""),
+                "action_id": str(fact.metadata.get("action_id", "") or ""),
+                "action_instance_id": str(fact.metadata.get("action_instance_id", "") or ""),
             },
             causation_id=causation_id,
             correlation_id=correlation_id,

@@ -27,6 +27,7 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
+from app.sandbox.commitments import MIN_FULFILL_DURATION_MINUTES
 from app.sandbox.events import SandboxEvent
 from app.sandbox.events import SandboxEventType as ET
 
@@ -45,6 +46,9 @@ EXPERIENCE_EVENTS: frozenset[ET] = frozenset(
         ET.SOCIAL_SPACE_CHANGED,
         #: §20: a completed goal may become a memory; creation never does
         ET.GOAL_COMPLETED,
+        #: Phase 10 §4/§5: a verified shared activity is a *shared episode* —
+        #: other social facts are handled by their own layers, never here
+        ET.SOCIAL_INTERACTION,
     }
 )
 
@@ -61,6 +65,16 @@ CONDITIONAL_SIGNIFICANCE: dict[ET, frozenset[str]] = {
 }
 #: kept for existing callers: every conditionally-experienced event
 CONDITIONAL_EXPERIENCE_EVENTS: frozenset[ET] = frozenset(CONDITIONAL_SIGNIFICANCE)
+
+#: §9 (Phase 10): a shared episode's importance is a fixed ladder —
+#: reaching the minimum duration makes it an *experience*; only social
+#: weight (a promise kept, a long session, major significance) makes it a
+#: long-term memory. No dice, no model, no hidden scoring system.
+SHARED_ACTIVITY_BASE_IMPORTANCE = 0.4
+SHARED_COMMITMENT_BONUS = 0.25  # this was a promise actually kept
+SHARED_LONG_MINUTES = 60.0  # a session this long is worth a little more
+SHARED_LONG_BONUS = 0.05
+SHARED_MAJOR_BONUS = 0.15  # the fact itself was verified as major
 
 #: project progress thresholds that count as milestones (§22/§28-6)
 PROJECT_MILESTONES = (0.5, 0.75, 1.0)
@@ -80,6 +94,8 @@ class ExperienceKind(str, Enum):  # noqa: UP042 - pydantic-friendly str enum
     relationship_changed = "relationship_changed"
     #: Phase 9 §32: a promise kept / missed / moved — never its mere creation
     commitment_outcome = "commitment_outcome"
+    #: Phase 10 §4: a real episode lived *with* someone (verified shared activity)
+    shared_activity = "shared_activity"
 
 
 class ExperienceRecord(BaseModel):
@@ -118,6 +134,8 @@ class ExperienceBuilder:
     #: higher rank wins when a chain produces several qualifying events
     _KIND_RANK = {
         ExperienceKind.social_contact: 1,
+        # §7: the shared episode absorbs the action/promise pieces of its chain
+        ExperienceKind.shared_activity: 20,
         ExperienceKind.action_resumed: 2,
         ExperienceKind.interaction_completed: 3,
         ExperienceKind.action_completed: 4,
@@ -135,6 +153,9 @@ class ExperienceBuilder:
         #: audit trail of everything emitted (replay/dedupe tests, continuity)
         self._emitted: deque[ExperienceRecord] = deque(maxlen=128)
         self._by_correlation: dict[str, ExperienceRecord] = {}
+        #: §7/§12: episode identity — the same real act (ActionInstance, or a
+        #: commitment) must stay *one* record even across different threads
+        self._by_episode: dict[str, ExperienceRecord] = {}
         self.ignored = 0
 
     # ------------------------------------------------------------------ bus
@@ -156,13 +177,20 @@ class ExperienceBuilder:
         kind, summary, importance, metadata = built
         key = event.correlation_id or event.event_id
         existing = self._by_correlation.get(key)
+        if existing is None:
+            # §7: the same ActionInstance / commitment is the same lived act,
+            # even when the events arrive on different threads
+            existing = next(
+                (
+                    self._by_episode[episode]
+                    for episode in self._episode_keys(metadata)
+                    if episode in self._by_episode
+                ),
+                None,
+            )
         if existing is not None:
-            existing.source_event_ids.append(event.event_id)
-            existing.importance = max(existing.importance, importance)
-            if self._KIND_RANK.get(kind, 0) > self._KIND_RANK.get(existing.kind, 0):
-                existing.kind = kind
-                existing.summary = summary
-            existing.metadata.update(metadata)
+            self._absorb(existing, event, kind, summary, importance, metadata)
+            self._by_correlation[key] = existing  # the new thread belongs to it too
             return
         record = ExperienceRecord(
             id=f"exp_{uuid.uuid4().hex[:12]}",
@@ -182,10 +210,96 @@ class ExperienceBuilder:
             metadata=metadata,
         )
         self._by_correlation[key] = record
+        for episode in self._episode_keys(metadata):
+            self._by_episode.setdefault(episode, record)
         self._pending.append(record)
         self._emitted.append(record)
 
+    @staticmethod
+    def _episode_keys(metadata: dict[str, Any]) -> list[str]:
+        """Episode identity for a built record: instance > commitment (§4/§12)."""
+        keys: list[str] = []
+        instance_id = str(metadata.get("action_instance_id", "") or "")
+        if instance_id:
+            keys.append(f"action:{instance_id}")
+        commitment_id = str(metadata.get("commitment_id", "") or "")
+        if commitment_id:
+            keys.append(f"commitment:{commitment_id}")
+        interaction_id = str(metadata.get("interaction_id", "") or "")
+        if interaction_id:
+            keys.append(f"interaction:{interaction_id}")  # replay of the same fact
+        return keys
+
+    def _absorb(
+        self,
+        record: ExperienceRecord,
+        event: SandboxEvent,
+        kind: ExperienceKind,
+        summary: str,
+        importance: float,
+        metadata: dict[str, Any],
+    ) -> None:
+        """Fold one more fact of the same episode into the existing record (§7)."""
+        if event.event_id not in record.source_event_ids:
+            record.source_event_ids.append(event.event_id)
+        record.importance = max(record.importance, importance)
+        if self._KIND_RANK.get(kind, 0) > self._KIND_RANK.get(record.kind, 0):
+            record.kind = kind
+            record.summary = summary
+        record.metadata.update(metadata)
+        if not record.action_id:
+            record.action_id = str(event.payload.get("action_id", "") or "")
+        instance_id = str(metadata.get("action_instance_id", "") or "")
+        if instance_id:
+            self._by_episode.setdefault(f"action:{instance_id}", record)
+
     # ------------------------------------------------------------ mapping
+
+    def _shared_activity(
+        self, event: SandboxEvent
+    ) -> tuple[ExperienceKind, str, float, dict[str, Any]] | None:
+        """§4/§5: a *verified* shared activity — never an inference.
+
+        Only a real, long-enough session becomes a shared episode; a two-minute
+        dabble is not a memory (the threshold is Phase 9's, reused, not
+        redefined), and a non-shared social fact belongs to other layers.
+        """
+        payload = event.payload
+        if str(payload.get("interaction_type", "")) != "shared_activity":
+            return None
+        duration = float(payload.get("duration_minutes", 0.0) or 0.0)
+        if duration < MIN_FULFILL_DURATION_MINUTES:
+            return None
+        person_id = str(event.target_entity_id)
+        activity = str(payload.get("target_activity", "") or "") or "活动"
+        name = self.commitment_describe(person_id)
+        commitment_id = str(payload.get("commitment_id", "") or "")
+        significance = str(payload.get("significance", "") or "")
+        importance = SHARED_ACTIVITY_BASE_IMPORTANCE
+        if commitment_id:
+            importance += SHARED_COMMITMENT_BONUS  # a promise actually kept (§9)
+        if duration >= SHARED_LONG_MINUTES:
+            importance += SHARED_LONG_BONUS
+        if significance == "major":
+            importance += SHARED_MAJOR_BONUS
+        importance = min(0.95, importance)
+        summary = f"和{name}一起{activity}了{round(duration)}分钟"
+        return (
+            ExperienceKind.shared_activity,
+            summary,
+            importance,
+            {
+                "interaction_id": str(payload.get("interaction_id", "") or ""),
+                "person_id": person_id,
+                "name": name,
+                "activity": activity,
+                "duration_minutes": round(duration, 2),
+                "commitment_id": commitment_id,
+                "action_id": str(payload.get("action_id", "") or ""),
+                "action_instance_id": str(payload.get("action_instance_id", "") or ""),
+                "significance": significance,
+            },
+        )
 
     def _commitment_outcome(
         self, event: SandboxEvent
@@ -248,7 +362,13 @@ class ExperienceBuilder:
                 ExperienceKind.action_completed,
                 summary,
                 importance,
-                {"action_name": name, "typical_minutes": typical},
+                {
+                    "action_name": name,
+                    "typical_minutes": typical,
+                    # §4: the ActionInstance is the episode identity Phase 10 needs
+                    "action_id": str(event.payload.get("action_id", "") or ""),
+                    "action_instance_id": str(payload.get("action_instance_id", "") or ""),
+                },
             )
         if event.event_type is ET.ACTION_INTERRUPTED:
             definition = self._rt.actions.definitions.get(event.target_entity_id)
@@ -309,6 +429,8 @@ class ExperienceBuilder:
             ET.COMMITMENT_RESCHEDULED,
         ):
             return self._commitment_outcome(event)
+        if event.event_type is ET.SOCIAL_INTERACTION:
+            return self._shared_activity(event)
         if event.event_type is ET.KNOWLEDGE_CHANGED:
             previous = payload.get("before")
             key = str(payload.get("key", ""))

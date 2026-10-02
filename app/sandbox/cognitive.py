@@ -47,6 +47,9 @@ class CognitiveContext(BaseModel):
     relevant_relationships: list[dict[str, Any]] = Field(default_factory=list)
     #: open promises with the current interlocutor (Phase 9 §31) — information only
     relevant_commitments: list[dict[str, Any]] = Field(default_factory=list)
+    #: the resolved identity behind ``relationship_target`` (Phase 10 §17):
+    #: platform handle → person_id (+ canonical name); memories always key on id
+    person: dict[str, Any] = Field(default_factory=dict)
 
     # ------------------------------------------------------------- prompt
 
@@ -115,6 +118,7 @@ class CognitiveContext(BaseModel):
                 }
                 for item in self.relevant_commitments
             ],
+            "person": dict(self.person),
         }
 
 
@@ -145,11 +149,26 @@ class CognitiveContextBuilder:
             entities.append(str(relationship_target))
         return [entity for entity in entities if entity]
 
+    def _resolve_person(self, relationship_target: str) -> dict[str, Any]:
+        """Handle → PersonIdentity (§17): the memory layer only ever sees the id."""
+        if not relationship_target:
+            return {}
+        try:
+            identity = self._rt.persons.for_qq(str(relationship_target))
+        except Exception:  # noqa: BLE001 - identity is an aid, never a blocker
+            return {}
+        return {
+            "person_id": identity.person_id,
+            "display_name": identity.display_name,
+            "external_id": str(identity.external_ids.get("qq", "") or ""),
+        }
+
     async def build(self, *, query: str = "", relationship_target: str = "") -> CognitiveContext:
         """Read world + snapshot + memories; never write anything (§14)."""
         rt = self._rt
         config = rt.config
         entities = self._entities(relationship_target)
+        person = self._resolve_person(relationship_target)
 
         memories: list[dict[str, Any]] = []
         retrieval: dict[str, Any] = {"query": query, "candidates": 0, "selected": 0}
@@ -161,6 +180,8 @@ class CognitiveContextBuilder:
                 min_score=config.memory_context_min_score,
                 max_chars=config.memory_context_max_chars,
                 require_evidence=config.memory_context_require_evidence,
+                # §14/§16: whoever is talking gets their shared memories boosted
+                person_id=str(person.get("person_id", "") or ""),
             )
 
         continuity: dict[str, Any] | None = None
@@ -218,6 +239,7 @@ class CognitiveContextBuilder:
         return CognitiveContext(
             relevant_relationships=relationships,
             relevant_commitments=commitments,
+            person=person,
             character_id=rt.character_id,
             query=query,
             current_world=world,

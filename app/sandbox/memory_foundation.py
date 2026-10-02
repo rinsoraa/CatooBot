@@ -68,6 +68,9 @@ class MemoryCandidate(BaseModel):
     dedupe_key: str = ""
     source_experience_ids: list[str] = Field(default_factory=list)
     source_event_ids: list[str] = Field(default_factory=list)
+    #: Phase 10 §10: extra provenance carried into the long-term row — for a
+    #: shared episode that means person_id / activity / commitment / instance
+    provenance: dict[str, Any] = Field(default_factory=dict)
     created_at: float = 0.0
     observed_at: float = 0.0
     reason_code: str = ""
@@ -88,6 +91,17 @@ class MemoryCandidateBuilder:
         if spec is None:
             return []
         memory_type, scope, content, identity, confidence = spec
+        provenance = {}
+        if experience.kind is ExperienceKind.shared_activity:
+            provenance = {
+                "person_id": str(experience.metadata.get("person_id", "")),
+                "name": str(experience.metadata.get("name", "")),
+                "activity": str(experience.metadata.get("activity", "")),
+                "duration_minutes": float(experience.metadata.get("duration_minutes", 0.0) or 0.0),
+                "commitment_id": str(experience.metadata.get("commitment_id", "")),
+                "action_id": str(experience.metadata.get("action_id", "")),
+                "action_instance_id": str(experience.metadata.get("action_instance_id", "")),
+            }
         candidate = MemoryCandidate(
             candidate_id=f"cand_{uuid.uuid4().hex[:12]}",
             character_id=experience.character_id,
@@ -103,6 +117,7 @@ class MemoryCandidateBuilder:
             created_at=now,
             observed_at=experience.timestamp,
             reason_code=experience.kind.value,
+            provenance=provenance,
         )
         return [candidate]
 
@@ -193,6 +208,34 @@ class MemoryCandidateBuilder:
                 if not meta.get("name")
                 else f"与{meta.get('name')}的关系发生了变化",
                 f"relationship:{person}",
+                0.85,
+            )
+        if kind is ExperienceKind.shared_activity:
+            # §11: a verifiable one-liner; §12: the *episode* is the identity,
+            # so two real sessions are two memories and a replay is one
+            person = str(meta.get("person_id", ""))
+            name = str(meta.get("name", "")) or "某人"
+            activity = str(meta.get("activity", "")) or "活动"
+            duration = float(meta.get("duration_minutes", 0.0) or 0.0)
+            commitment_id = str(meta.get("commitment_id", ""))
+            episode = (
+                commitment_id
+                or str(meta.get("action_instance_id", ""))
+                or str(meta.get("interaction_id", ""))
+                or chain
+            )
+            when = f"约{round(duration)}分钟" if duration else ""
+            if commitment_id:
+                content = f"和{name}约好的{activity}活动完成了"
+            else:
+                content = f"和{name}一起{activity}了"
+            if when:
+                content = f"{content}（{when}）"
+            return (
+                MemoryType.social,
+                MemoryScope.social,
+                content,
+                f"shared:{person}:{episode}",
                 0.85,
             )
         if kind is ExperienceKind.commitment_outcome:
@@ -318,7 +361,7 @@ class SandboxMemoryStore:
 
     async def _insert_candidate(self, candidate: MemoryCandidate) -> None:
         await self._db.execute(
-            """INSERT INTO sandbox_memory_candidates
+            """INSERT OR IGNORE INTO sandbox_memory_candidates
                    (candidate_id, character_id, memory_type, summary, content, scope,
                     importance, confidence, status, dedupe_key,
                     source_experience_ids, source_event_ids, created_at, observed_at)
@@ -380,6 +423,8 @@ class SandboxMemoryStore:
                         "source_experience_ids": candidate.source_experience_ids,
                         "source_event_ids": candidate.source_event_ids,
                         "reason_code": candidate.reason_code,
+                        # §10: the social context travels with the memory
+                        **(candidate.provenance or {}),
                     },
                     supersedes_id=supersedes_id,
                     event_at=int(candidate.observed_at) if candidate.observed_at else None,
@@ -428,12 +473,16 @@ class SandboxMemoryStore:
 
     # ---------------------------------------------------------- retrieval
 
-    #: scoring weights (sum = 1.0) — deterministic, documented, tunable here
+    #: scoring weights (sum = 1.0) — deterministic, documented, tunable here.
+    #: Phase 10 §16 rebalanced them to make room for ``person_match``: a shared
+    #: memory about *the person in this conversation* gets a flat, deterministic
+    #: boost — never a filter, so other world facts keep their say.
     RETRIEVAL_WEIGHTS = {
-        "keyword": 0.45,
-        "entity": 0.15,
-        "importance": 0.25,
-        "recency": 0.15,
+        "keyword": 0.36,
+        "entity": 0.12,
+        "importance": 0.2,
+        "recency": 0.12,
+        "person_match": 0.2,
     }
     #: candidate window: newest N active rows for this character (bounded, §34)
     RETRIEVAL_CANDIDATES = 200
@@ -449,6 +498,7 @@ class SandboxMemoryStore:
         min_score: float = 0.12,
         max_chars: int = 600,
         require_evidence: bool = True,
+        person_id: str = "",
     ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
         """Relevant active memories for a turn, plus retrieval bookkeeping (§7-§9).
 
@@ -466,6 +516,7 @@ class SandboxMemoryStore:
             "min_score": min_score,
             "limit": limit,
             "require_evidence": require_evidence,
+            "person_id": person_id,
             "reason": "",
         }
         if not self.available or limit <= 0 or max_chars <= 0:
@@ -495,11 +546,18 @@ class SandboxMemoryStore:
             importance = max(0.0, min(1.0, float(row["importance"] or 0.0)))
             age_days = max(0.0, (now - float(row["created_at"] or now)) / 86400.0)
             recency = 0.5 ** (age_days / self.RETRIEVAL_HALF_LIFE_DAYS)
+            # §16: a shared memory about the person being talked to gets a flat
+            # deterministic boost; unrelated people never borrow it (§15)
+            provenance = self._decode_provenance(row)
+            person_match = (
+                1.0 if person_id and str(provenance.get("person_id", "")) == person_id else 0.0
+            )
             score = (
                 self.RETRIEVAL_WEIGHTS["keyword"] * keyword
                 + self.RETRIEVAL_WEIGHTS["entity"] * entity_hit
                 + self.RETRIEVAL_WEIGHTS["importance"] * importance
                 + self.RETRIEVAL_WEIGHTS["recency"] * recency
+                + self.RETRIEVAL_WEIGHTS["person_match"] * person_match
             )
             # evidence gate (§8, mirrors the conversation-retrieval lesson):
             # importance + recency alone never pull an unrelated memory in.
@@ -515,7 +573,8 @@ class SandboxMemoryStore:
                     "importance": importance,
                     "score": round(score, 6),
                     "source": "sandbox",
-                    "provenance": self._decode_provenance(row),
+                    "person_match": person_match,
+                    "provenance": provenance,
                     "_budget_len": len(text),
                 }
             )
