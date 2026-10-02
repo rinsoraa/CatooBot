@@ -3,6 +3,20 @@
 本文件记录 CatooBot 的版本演进。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号见 `pyproject.toml`；日期取自真实提交历史（本仓库 2026-09-30 起）。
 
+## [Unreleased] — v2.1 Phase 5 Remediation · Context Prompt Character-Neutral
+
+- **Prompt 固定标签去性别化**：Phase 5 注入的三段固定文案改名——
+  【近期延续状态】（角色近期生活状态…）/【相关生活记忆】（过去的重要经历…）/
+  【最近发生的经历】（近期发生的重要经历…）；语义不变，不再假定角色性别，
+  角色口吻仍由 Persona/LLM 层决定。
+- **模块注释中性化**：cognitive.py 的 docstring/注释由 "what she may see /
+  her world / her life" 改为 "the character / the character's world/life"。
+- 新增 `tests/test_sandbox_neutral_context.py`（6 个测试：女性角色段落无
+  性别词、男性角色 Lin 端到端 prompt 标签中性且动态数据（木工）照常进入、
+  未标注性别角色正常工作、动态 seed 数据（项目/空间名）仍进 prompt、
+  AST 级源码 guard（只查非 docstring 字符串常量，放过「他人」这类普通词）、
+  旧标签确已退役），总测试 1124。
+
 ## [Unreleased] — v2.1 Phase 5 · Cognitive Context Bridge（Sandbox → 聊天上下文）
 
 - **CognitiveContext（§5/§25）**：`app/sandbox/cognitive.py` ——

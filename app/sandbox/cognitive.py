@@ -1,10 +1,10 @@
-"""Cognitive Context Bridge (v2.1 Phase 5): what she may *see* this turn.
+"""Cognitive Context Bridge (v2.1 Phase 5): what the character may see now.
 
 Three sources stay explicitly separated (§4/§6/§17):
 
 * **conversation memory** — the existing ``MemoryManager`` path (user history);
 * **sandbox memory** — Phase 4's long-term life memories (``SandboxMemoryStore``);
-* **continuity** — the v2.1 ``ContinuitySnapshot`` (her current life thread),
+* **continuity** — the v2.1 ``ContinuitySnapshot`` (the character's life thread),
   deliberately distinct from the v1.2 conversation continuity that travels in
   its own builder argument.
 
@@ -94,7 +94,7 @@ class CognitiveContextBuilder:
         self._clock = clock
 
     def _entities(self, relationship_target: str) -> list[str]:
-        """Query entities: what is true about her world *right now* (§19)."""
+        """Query entities: what is true about the character's world now (§19)."""
         rt = self._rt
         entities: list[str] = []
         if getattr(rt, "pet", None) is not None:

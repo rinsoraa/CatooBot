@@ -253,7 +253,8 @@ class CharacterContextBuilder:
 
         # 12b. Phase 5 cognitive bridge — sandbox life, in its own partitions.
         # Rendered *after* the current world facts so nothing here can outrank
-        # them (§10); each section says so explicitly (§12).
+        # them (§10); each section says so explicitly (§12). Labels stay
+        # character-neutral: the persona layer owns voice and pronouns.
         if sandbox_context:
             sandbox_parts, sandbox_layers = self._sandbox_blocks(sandbox_context)
             system_parts.extend(sandbox_parts)
@@ -320,7 +321,7 @@ class CharacterContextBuilder:
             continuity_lines.append(f"还有 {pending} 条外部消息待处理")
         if continuity_lines:
             parts.append(
-                "【近期延续状态】（她自己生活的近况，仅作参考；"
+                "【近期延续状态】（角色近期生活状态，仅作参考；"
                 "与【世界事实】冲突时以世界事实为准）\n" + "\n".join(continuity_lines)
             )
         layers.append(
@@ -336,7 +337,7 @@ class CharacterContextBuilder:
         memory_lines = [f"- {item.get('text', '')}" for item in memories if item.get("text")]
         if memory_lines:
             parts.append(
-                "【她自己经历过的相关往事】（长期生活记忆，仅作参考；"
+                "【相关生活记忆】（过去的重要经历，仅作参考；"
                 "与当前世界状态冲突时，以当前世界状态为准）\n" + "\n".join(memory_lines)
             )
         retrieval = sandbox.get("retrieval") or {}
@@ -357,7 +358,7 @@ class CharacterContextBuilder:
         experience_lines = [f"- {item.get('text', '')}" for item in experiences if item.get("text")]
         if experience_lines:
             parts.append(
-                "【最近发生的经历】（她刚经历过的事，仅作参考）\n" + "\n".join(experience_lines)
+                "【最近发生的经历】（近期发生的重要经历，仅作参考）\n" + "\n".join(experience_lines)
             )
         layers.append(
             (

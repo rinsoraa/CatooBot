@@ -100,7 +100,7 @@ class TestSandboxMemoryEntersChatContext:
 
             system = provider.calls[0]["messages"][0].content
             assert "图书馆屋顶" in system, "sandbox memory did not reach the prompt"
-            assert "【她自己经历过的相关往事】" in system
+            assert "【相关生活记忆】" in system
         finally:
             await bot.shutdown()
             await sandbox.shutdown()
@@ -130,7 +130,7 @@ class TestSandboxMemoryEntersChatContext:
             await bot.event_bus.emit(private_event("你好呀", user_id=777))
             await bot.conversation.wait_idle()
             system = provider.calls[0]["messages"][0].content
-            assert "【她自己经历过的相关往事】" not in system
+            assert "【相关生活记忆】" not in system
         finally:
             await bot.shutdown()
             await sandbox.shutdown()
@@ -156,7 +156,7 @@ class TestCurrentWorldPrecedence:
             )
             system = provider.calls[0]["messages"][0].content
             # the memory is present as *reference*…
-            assert "【她自己经历过的相关往事】" in system
+            assert "【相关生活记忆】" in system
             assert "冰箱里还有可乐" in system
             # …and the section explicitly defers to the current world
             assert "以当前世界状态为准" in system
@@ -419,7 +419,7 @@ class TestInitiativeReusesBridge:
             )
             assert text
             system = provider.calls[0]["messages"][0].content
-            assert "【她自己经历过的相关往事】" in system
+            assert "【相关生活记忆】" in system
             assert "屋顶" in system
             # no second retrieval implementation exists for initiative
             initiative_source = (
