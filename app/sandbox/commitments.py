@@ -639,16 +639,16 @@ class CommitmentManager:
     def match_shared_activity(
         self, person_id: str, activity: str, *, now: float | None = None
     ) -> tuple[SocialCommitment | None, str]:
-        """The *single* open promise a shared activity can keep (§11).
+        """The *single* open promise a shared activity can keep (§11/§14).
 
         Returns ``(commitment, why)`` with ``why`` ∈ matched / none /
-        ambiguous. Ambiguity never fulfils anything: two promises for the same
-        activity (tonight 20:00 and tonight 22:00) are not the same act.
+        ambiguous. Only promises whose **current** window is open compete:
+        a future promise is not yet this act, and one already past
+        ``due_at + grace`` is a miss — neither may make the fact ambiguous.
         """
         stamp = float(now if now is not None else self._clock())
-        # §14 first: two open promises for the same activity are *not* the same
-        # act — the identity must come from the fact, never from a lucky window
-        candidates = [
+        # build the candidate set *inside the real fulfilment window* first
+        qualified = [
             commitment
             for commitment in self.for_person(person_id)
             if commitment.open
@@ -656,17 +656,18 @@ class CommitmentManager:
             and not (
                 commitment.target_activity and activity and commitment.target_activity != activity
             )
+            and not (commitment.earliest_at and stamp < commitment.earliest_at)  # §13 not yet
+            and not (
+                commitment.due_at
+                and stamp > commitment.due_at + DEFAULT_GRACE_MINUTES * 60.0  # §12 past grace
+            )
         ]
-        if not candidates:
+        if not qualified:
             return None, "none"
-        if len(candidates) > 1:
+        if len(qualified) > 1:
+            # two promises are *both* open right now — the fact cannot choose
             return None, "ambiguous"
-        only = candidates[0]
-        if only.earliest_at and stamp < only.earliest_at:
-            return None, "early"  # §13: an arrangement is not kept before its window
-        if only.due_at and stamp > only.due_at + DEFAULT_GRACE_MINUTES * 60.0:
-            return None, "late"  # §12: past grace it is missed, not fulfilled
-        return only, "matched"
+        return qualified[0], "matched"
 
     def match_reschedule(
         self, person_id: str, activity: str = ""

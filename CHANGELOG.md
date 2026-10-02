@@ -3,6 +3,22 @@
 本文件记录 CatooBot 的版本演进。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号见 `pyproject.toml`；日期取自真实提交历史（本仓库 2026-09-30 起）。
 
+## [Unreleased] — v2.1 Phase 9.1.1 Remediation · Shared Activity Window Matching
+
+- **fallback 匹配先收窗口再判歧义（§11/§14 修正）**：`match_shared_activity()`
+  现在先构造「**当前真实履约窗口内**」的候选集
+  （person + shared_activity + open + activity 匹配 + `earliest_at ≤ now`（若有）
+  + `now ≤ due_at + 120min`（若有）），再判定：0 条不履约、1 条精确履约、
+  >1 条才算 ambiguous（不履约 + WARNING）。**未来**的承诺（窗口未开）与**已过期**
+  的承诺（超过 due+grace）都不再参与当前时刻的歧义判定——"今晚 20:00 的约定"不会
+  因为"明晚还有一条同活动约定"而被判歧义。
+- exact `commitment_id` 路径与 `_commitment_step_shared()` 的 ActionInstance 严格
+  规则保持不变；未重新引入按 person/activity 猜承诺的逻辑。
+- `tests/test_sandbox_commitments_integrity.py`：新增
+  `test_the_open_window_wins_over_a_future_twin`（C1 今晚在窗口内、C2 明晚 →
+  C1 completed、C2 open、fulfilled==1、ambiguous==0）；原歧义用例改为构造**真正
+  重叠的窗口**（同一晚 8 点与 9 点两条同活动约定）后验证仍不猜。总测试 1249。
+
 ## [Unreleased] — v2.1 Phase 9.1 Remediation · Commitment Outcome Integrity
 
 - **履约必须收口到自己的目标（§2-§6）**：新增总线处理器

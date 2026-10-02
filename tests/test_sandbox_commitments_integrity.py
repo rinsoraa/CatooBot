@@ -18,7 +18,7 @@ from pathlib import Path
 
 from app.config.settings import SandboxConfig
 from app.sandbox.bible import BibleCompiler
-from app.sandbox.commitments import MIN_FULFILL_DURATION_MINUTES
+from app.sandbox.commitments import DEFAULT_GRACE_MINUTES, MIN_FULFILL_DURATION_MINUTES
 from app.sandbox.events import SandboxEventType as ET
 from app.sandbox.goals import GoalKind, GoalSource, GoalStatus, GoalStep, StepStatus
 from app.sandbox.relations import InteractionSignificance, SocialInteractionFact
@@ -233,20 +233,55 @@ class TestSharedActivityMatching:
             await db.close()
 
     async def test_ambiguous_shared_activity_fulfils_nothing(self, tmp_path, caplog) -> None:  # type: ignore[no-untyped-def]
-        """§14: two promises for the same activity → the fact cannot pick one."""
+        """§14: two promises *both open right now* → the fact cannot pick one."""
         db = await make_db(tmp_path)
         clock = Clock()
         runtime = await make_sandbox(db=db, clock=clock)
         try:
-            first = await promise(runtime, "9105", "今晚一起打游戏")
-            second = await promise(runtime, "9105", "明天晚上一起打游戏")
+            # the two windows genuinely overlap at the moment of the fact —
+            # that is what ambiguity means (a future promise is simply not it)
+            first = await promise(runtime, "9105", "8点一起打游戏")
+            second = await promise(runtime, "9105", "9点一起打游戏")
             assert first.commitment_id != second.commitment_id
+            clock.advance(max(0.0, second.earliest_at + 300.0 - clock.now))
+            grace = DEFAULT_GRACE_MINUTES * 60.0
+            # both are inside their *real* fulfilment window right now
+            assert first.earliest_at <= clock.now <= first.due_at + grace
+            assert second.earliest_at <= clock.now <= second.due_at + grace
             with caplog.at_level(logging.WARNING, logger="CatooBot.Sandbox"):
                 await shared_activity(runtime, first.person_id, minutes=30.0)
             assert first.open and second.open  # neither was guessed
             assert runtime.commitment_detector.fulfilled == 0
             assert runtime.commitment_detector.ambiguous >= 1
             assert "fits several open promises" in caplog.text
+        finally:
+            await runtime.shutdown()
+            await db.close()
+
+    async def test_the_open_window_wins_over_a_future_twin(self, tmp_path) -> None:  # type: ignore[no-untyped-def]
+        """Phase 9.1.1: only promises *inside their window* compete (§11).
+
+        C1 is due now, C2 is tomorrow: a shared activity without a
+        ``commitment_id`` keeps C1 — the future twin neither blocks it nor
+        makes it ambiguous.
+        """
+        db = await make_db(tmp_path)
+        clock = Clock()
+        runtime = await make_sandbox(db=db, clock=clock)
+        try:
+            soon = await promise(runtime, "9112", "今晚一起打游戏")
+            later = await promise(runtime, "9112", "明天晚上一起打游戏")
+            assert soon.commitment_id != later.commitment_id
+            advance_to_window(clock, soon)  # C1 is live, C2 is still tomorrow
+            assert soon.in_window(clock.now)
+            assert not later.in_window(clock.now)
+
+            await shared_activity(runtime, soon.person_id, minutes=MIN_FULFILL_DURATION_MINUTES + 5)
+
+            assert soon.status.value == "completed"
+            assert later.open
+            assert runtime.commitment_detector.fulfilled == 1
+            assert runtime.commitment_detector.ambiguous == 0
         finally:
             await runtime.shutdown()
             await db.close()
