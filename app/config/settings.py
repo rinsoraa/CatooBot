@@ -673,6 +673,9 @@ class SandboxConfig(BaseModel):
     """
 
     enabled: bool = True
+    #: 已废弃的“十分钟世界刷新”语义（Phase 14.1 移除）。现在只作为
+    #: 手动 tick / 恢复时单次世界步进的**上限兜底**；世界时间由
+    #: RuntimeScheduler 按真实经过时间推进（见 runtime.tick_interval_seconds）。
     tick_seconds: int = Field(default=600, ge=30)
     simulation_seed: int = 0
     bible_path: str = "config/character_bible.md"
@@ -745,8 +748,9 @@ class ExpressionConfig(BaseModel):
 class RuntimeConfig(BaseModel):
     """Long-lived runtime scheduling (Phase 14 §63/§64).
 
-    The *world* step stays ``sandbox.tick_seconds``; this is only how often the
-    scheduler asks the world to advance.
+    The *world* step is the real elapsed time; this is only how often the
+    scheduler asks the world to advance (Phase 14.1: the scheduler is the sole
+    owner of ``SandboxRuntime.tick``).
     """
 
     enabled: bool = True

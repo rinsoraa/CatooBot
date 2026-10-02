@@ -42,7 +42,8 @@ onebot:
 # sandbox.tick_seconds 仍是世界步长（10 分钟）；这里是调度间隔（默认 1 秒）。
 runtime:
   enabled: true
-  # 调度间隔（秒）：多久调用一次沙箱 tick；不是每分钟都叫模型
+  # 调度频率（秒）：RuntimeScheduler 多久醒来一次；世界推进量=真实经过时间，
+  # 与这个数字无关（1 秒间隔 ≠ 1 分钟世界时间）。tick 也不等于每分钟都叫模型。
   tick_interval_seconds: 1.0
   # 停机后的追帧上限（秒）：超过也只走一次有界步进，绝不按秒重放
   max_catchup_seconds: 300.0
@@ -415,7 +416,9 @@ agent:
 # ============================================================
 sandbox:
   enabled: true
-  tick_seconds: 600          # 生活节奏：10 分钟一跳（确定性推进，不刷屏）
+  # 世界时间由 RuntimeScheduler 按真实经过时间推进（见下方 runtime 段）。
+  # tick_seconds 只作为手动 tick / 恢复单次步进的上限兜底，不再是“十分钟刷新”。
+  tick_seconds: 600
   simulation_seed: 0         # 可复现模拟种子
   bible_path: "config/character_bible.md"
   allow_ai_decisions: true   # 只在多个候选都合理时叫模型裁决；false = 纯规则

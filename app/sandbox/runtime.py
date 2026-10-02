@@ -785,6 +785,12 @@ class SandboxRuntime:
         return report
 
     def _tick_minutes(self) -> float:
+        """Fallback step for a caller that passed no step (Phase 14.1 §11).
+
+        Production never relies on it: the RuntimeScheduler always passes the
+        real elapsed time. The ``tick_seconds`` bound here only caps how far a
+        *manual* tick or a recovery step may move the world at once.
+        """
         if self._last_tick <= 0:
             return max(1.0, float(self.config.tick_seconds) / 60.0)
         elapsed = max(0.0, (float(self._clock()) - self._last_tick) / 60.0)

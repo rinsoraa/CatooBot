@@ -796,22 +796,21 @@ class Bot:
             self.log.exception("[Media.Indexer] startup scan failed")
 
     async def _start_sandbox_jobs(self) -> None:
-        """Sandbox tick on the shared scheduler (v2.0 §67) — no second loop."""
+        """Report the sandbox and leave world time to the RuntimeScheduler (14.1).
+
+        The legacy per-``tick_seconds`` world job is gone (Phase 14.1): from
+        Phase 14 the :class:`RuntimeScheduler` is the *only* owner of
+        ``SandboxRuntime.tick()`` and advances the world by real elapsed time.
+        The shared scheduler keeps its other jobs (memory, cleanup, feedback) but
+        never drives the world clock again.
+        """
         sandbox = self.sandbox
         if sandbox is None or not sandbox.enabled:
             return
-        self.scheduler.register_job(
-            ScheduledJob(
-                name="sandbox_tick",
-                handler=sandbox.tick,
-                interval_seconds=float(self.config.sandbox.tick_seconds),
-                run_immediately=False,  # start() already settled the gap
-                misfire_policy="skip",
-            )
-        )
         self.log.info(
-            "[Sandbox] active (tick=%ss, phase=%s, modes=%s, location=%s)",
-            self.config.sandbox.tick_seconds,
+            "[Sandbox] active (world tick=RuntimeScheduler every %ss)"
+            " phase=%s modes=%s location=%s",
+            getattr(self.config.runtime, "tick_interval_seconds", 1.0),
             sandbox.phase.value,
             "+".join(sandbox.modes.ids()) or "-",
             sandbox.character.location,

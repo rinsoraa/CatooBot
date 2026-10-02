@@ -3,6 +3,29 @@
 本文件记录 CatooBot 的版本演进。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号见 `pyproject.toml`；日期取自真实提交历史（本仓库 2026-09-30 起）。
 
+## [Unreleased] — v2.1 Phase 14.1 · World Tick Unification (Legacy Tick Removed)
+
+- **旧的“每 10 分钟刷新一次 Sandbox”正式退役（§2-§6）**：`Bot._start_sandbox_jobs()`
+  不再注册 `sandbox_tick` 作业（不是配置关闭，而是不再存在这条注册路径）；
+  共享 scheduler 继续跑它的记忆/清理/维护作业，但**不再拥有**
+  `SandboxRuntime.tick()` 的调用权。全仓审计确认再无该作业名。
+- **唯一世界时钟（§5/§9-§11/§26）**：`RuntimeScheduler` 是唯一 owner，每
+  `runtime.tick_interval_seconds`（默认 1s）醒一次，把**真实经过时间**作为步长传给
+  `SandboxRuntime.tick(minutes=elapsed/60)`——调度频率与世界推进量彻底分离
+  （1 秒间隔 ≠ 1 分钟世界时间）；不再走 `_tick_minutes()` 的 1 分钟下限。
+- **`sandbox.tick_seconds` 语义重定义（§8/§33）**：保留字段与既有测试兼容，但只作为
+  手动 tick / 恢复单次步进的**上限兜底**；示例配置与注释里“生活节奏：10 分钟一跳”的
+  旧说法已删除，改为说明新的时间模型。
+- **保留不变**：`tick`/`wakeup` 的世界锁（§28/§29）、有界 catch-up
+  （`max_catchup_seconds`，§23/§24；重启恢复仍由沙箱自身的有界 `_settle_gap` 完成）、
+  Goal/Action/Commitment/Experience/Memory 语义与 Phase 10/13/14 的 identity（§17-§22/§27）。
+- 新增 `tests/test_runtime_sole_tick.py`（13 个测试：代码中不再出现旧作业名、
+  共享 scheduler 不注册任何拥有 sandbox.tick 的作业（真实 Bot 构造）、真实 10 秒 →
+  世界 10 秒、真实 600 秒只处理一次、短 tick 逐秒累计不漂移、唯一 owner 计数、
+  重启后仍唯一、重复 tick 不产生第二个动作、目标/经历/记忆不重复、承诺按真实时间
+  激活与失约且只 settle 一次、100 tick < 10 次模型调用、自主 tick 绝不发 QQ、
+  停机重启后锚点=现在且无额外追帧），总测试 1393。
+
 ## [Unreleased] — v2.1 Phase 14 · Long-Lived Runtime & Autonomous Life Continuity
 
 - **审计优先（§84）**：世界时间锚点 `last_tick` 早已持久化（`sandbox_state`），
