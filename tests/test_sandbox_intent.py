@@ -138,7 +138,13 @@ class TestDeterministicPath:
                 await runtime.tick(minutes=10)
             assert provider.calls == []
             assert runtime.decisions.llm_calls == 0
-            assert runtime.events.last(ET.DECISION_REQUESTED) is None
+            # goal steps may be *requested* deterministically (§7/§28), but the
+            # model is never consulted: no proposal event exists
+            assert runtime.events.last(ET.DECISION_PROPOSED) is None
+            assert all(
+                event.payload.get("source") == "deterministic"
+                for event in runtime.events.of_type(ET.DECISION_ACCEPTED)
+            )
         finally:
             await runtime.shutdown()
             await db.close()

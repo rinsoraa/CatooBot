@@ -316,6 +316,14 @@ class CharacterContextBuilder:
             )
             if shown:
                 continuity_lines.append(f"手上没做完的：{shown}")
+        goals = continuity.get("goals") or []
+        goal_lines = [
+            f"{item.get('description', '')}（{round(float(item.get('progress', 0.0)) * 100)}%）"
+            for item in goals
+            if item.get("description")
+        ]
+        if goal_lines:
+            continuity_lines.append("未完成目标：" + "、".join(goal_lines))
         pending = int(continuity.get("pending_external", 0) or 0)
         if pending:
             continuity_lines.append(f"还有 {pending} 条外部消息待处理")

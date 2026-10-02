@@ -60,6 +60,16 @@ class SandboxEventType(str, Enum):  # noqa: UP042 - pydantic-friendly str enum
     INTERACTION_STARTED = "interaction_started"
     INTERACTION_COMPLETED = "interaction_completed"
     INTERACTION_REJECTED = "interaction_rejected"
+    # goal layer (Phase 7)
+    GOAL_CREATED = "goal_created"
+    GOAL_ACTIVATED = "goal_activated"
+    GOAL_PROGRESS = "goal_progress"
+    GOAL_BLOCKED = "goal_blocked"
+    GOAL_COMPLETED = "goal_completed"
+    GOAL_CANCELLED = "goal_cancelled"
+    GOAL_STEP_STARTED = "goal_step_started"
+    GOAL_STEP_COMPLETED = "goal_step_completed"
+    GOAL_STEP_FAILED = "goal_step_failed"
     # cognitive decision layer (Phase 6)
     DECISION_REQUESTED = "decision_requested"
     DECISION_PROPOSED = "decision_proposed"

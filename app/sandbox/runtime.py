@@ -39,6 +39,7 @@ from app.sandbox.external import (
     InfluenceAction,
 )
 from app.sandbox.external_adapters import from_legacy_event, legacy_meaning
+from app.sandbox.goals import GoalDetector, GoalManager
 from app.sandbox.intent import (
     CandidateKind,
     DecisionCandidate,
@@ -261,6 +262,11 @@ class SandboxRuntime:
         #: Phase 6 decision layer: gate → request → model → validate → events
         self.decisions = DecisionCoordinator(self)
         self.mutations.on_record = self._bump_world_revision
+        #: Phase 7 goal layer: why she keeps doing something (§4-§34)
+        self.goals = GoalManager(self, clock=clock)
+        self.goal_detector = GoalDetector(self.goals, clock=clock)
+        self.events.subscribe(self.goal_detector.observe)
+        self.events.subscribe(self._on_goal_facts)
         self._last_tick = float(clock())
         self._notes: list[str] = []  # micro-continuity feed
         self._restored = False
@@ -357,6 +363,11 @@ class SandboxRuntime:
             await self._seed_fresh()
         # §20: pending external events survive a restart; consumed ids too (§19)
         await self._restore_external_state()
+        # §34: goals survive a restart; each is re-checked against the world,
+        # and the world's existing open business is swept once
+        await self.goals.restore()
+        self.goal_detector.sweep()
+        await self.goals.flush()
         self.phase = SandboxPhase.running
         await self.store.state_set("phase", self.phase.value)
         self._derive_modes()
@@ -675,11 +686,15 @@ class SandboxRuntime:
                 await self._complete_action()
                 report["completed"] = True
 
-        # Critical needs / no action → decision point.
+        # Critical needs / no action → decision point. A goal with a legal
+        # next step drives first (§15); otherwise the existing engine decides.
         need_decision = self.current_action is None or self.needs.critical()
         if need_decision:
-            await self._decide_and_apply(space_id=self.character.location)
+            drove = await self.goals.advance(space_id=self.character.location)
+            if not drove:
+                await self._decide_and_apply(space_id=self.character.location)
             report["decided"] = True
+            report["goal_drove"] = drove
 
         self._derive_modes()
         # derived projection: `needs:energy` is the writer; this mirror is
@@ -689,6 +704,7 @@ class SandboxRuntime:
         if self._should_snapshot():
             await self._snapshot()
         await self._persist_deltas()
+        await self.goals.flush()
         await self.flush_experiences()
         if self.narrate_ticks:
             pressing = self.needs.summary_line() if self.needs.pressing() else ""
@@ -1428,6 +1444,53 @@ class SandboxRuntime:
 
     def _bump_world_revision(self, _mutation: Any) -> None:
         self.world_revision += 1
+
+    # ---------------------------------------------------- goal layer (§7)
+
+    def _on_goal_facts(self, event: Any) -> None:
+        """Bus handler: world facts advance/complete goals (sync; flushed later)."""
+        payload = event.payload
+        if event.event_type is SandboxEventType.ACTION_COMPLETED:
+            self.goals.on_action_completed(str(event.target_entity_id))
+        elif event.event_type is SandboxEventType.PET_FED:
+            self.goals.on_pet_fed(pet_id=str(event.target_entity_id))
+        elif event.event_type is SandboxEventType.ITEM_ACQUIRED:
+            self.goals.on_item_acquired(
+                inventory_key=str(event.target_entity_id).replace("inventory:", ""),
+                item=str(payload.get("item", "")),
+                total=int(payload.get("total", 0) or 0),
+            )
+
+    def restock_actions(self, inventory_key: str, item: str) -> list[Any]:
+        """Owned actions whose effects replenish (key, item) — seed-derived.
+
+        This is the whole definition of "restockable" (§10): if no action in
+        this world adds the item back, it simply is not a goal.
+        """
+        needle = f"inventory:{inventory_key}:{item}"
+        result = []
+        for action_id, definition in self.actions.definitions.items():
+            gain = float(definition.effects.get(needle, 0.0) or 0.0)
+            if gain > 0:
+                result.append((action_id, definition, int(gain)))
+        return result
+
+    def pet_care_actions(self) -> list[Any]:
+        """Owned actions that act on the pet (effects key ``pet:*``)."""
+        return [
+            (action_id, definition)
+            for action_id, definition in self.actions.definitions.items()
+            if any(key.startswith("pet:") for key in definition.effects)
+        ]
+
+    def project_actions(self, project_id: str) -> list[Any]:
+        """Owned actions that advance this project (effects key ``project:<id>``)."""
+        needle = f"project:{project_id}"
+        return [
+            (action_id, definition)
+            for action_id, definition in self.actions.definitions.items()
+            if needle in definition.effects
+        ]
 
     def _invitation_candidates(self, activity: str, *, from_core: bool) -> list[DecisionCandidate]:
         """The legal options for an activity invitation — world-derived (§5).

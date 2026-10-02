@@ -1072,6 +1072,61 @@ CREATE INDEX IF NOT EXISTS idx_memories_dedupe
     ON memories(character_id, dedupe_key);
 """,
     ),
+    (
+        23,
+        "sandbox goals + goal steps (Phase 7)",
+        """
+-- Persistent intentions: why the character keeps doing something even when
+-- nothing external happened. One row per goal; only the *current* step is
+-- materialized (the layer re-plans instead of storing whole plan trees).
+CREATE TABLE IF NOT EXISTS sandbox_goals (
+    goal_id          TEXT PRIMARY KEY,
+    character_id     TEXT NOT NULL DEFAULT '',
+    kind             TEXT NOT NULL DEFAULT 'restock_resource',
+    status           TEXT NOT NULL DEFAULT 'pending',
+    priority         REAL NOT NULL DEFAULT 0.5,
+    reason           TEXT NOT NULL DEFAULT '',
+    source           TEXT NOT NULL DEFAULT 'unfinished_task',
+    source_event_id  TEXT NOT NULL DEFAULT '',
+    causation_id     TEXT NOT NULL DEFAULT '',
+    correlation_id   TEXT NOT NULL DEFAULT '',
+    target_entity    TEXT NOT NULL DEFAULT '',
+    target_space     TEXT NOT NULL DEFAULT '',
+    target_item      TEXT NOT NULL DEFAULT '',
+    target_project   TEXT NOT NULL DEFAULT '',
+    metadata         TEXT NOT NULL DEFAULT '{}',
+    progress         REAL NOT NULL DEFAULT 0.0,
+    current_step     TEXT NOT NULL DEFAULT '{}',
+    retry_count      INTEGER NOT NULL DEFAULT 0,
+    last_attempt_at  REAL NOT NULL DEFAULT 0,
+    next_eligible_at REAL NOT NULL DEFAULT 0,
+    created_at       REAL NOT NULL DEFAULT 0,
+    updated_at       REAL NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS idx_sandbox_goals_char_status
+    ON sandbox_goals(character_id, status);
+CREATE INDEX IF NOT EXISTS idx_sandbox_goals_char_kind_target
+    ON sandbox_goals(character_id, kind, target_item);
+CREATE INDEX IF NOT EXISTS idx_sandbox_goals_eligible
+    ON sandbox_goals(character_id, next_eligible_at);
+
+CREATE TABLE IF NOT EXISTS sandbox_goal_steps (
+    step_id      TEXT PRIMARY KEY,
+    goal_id      TEXT NOT NULL,
+    kind         TEXT NOT NULL DEFAULT 'action',
+    status       TEXT NOT NULL DEFAULT 'pending',
+    action_id    TEXT NOT NULL DEFAULT '',
+    target       TEXT NOT NULL DEFAULT '',
+    step_order   INTEGER NOT NULL DEFAULT 0,
+    requirements TEXT NOT NULL DEFAULT '[]',
+    result       TEXT NOT NULL DEFAULT '{}',
+    created_at   REAL NOT NULL DEFAULT 0,
+    updated_at   REAL NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS idx_sandbox_goal_steps_goal
+    ON sandbox_goal_steps(goal_id, step_order);
+""",
+    ),
 ]
 
 

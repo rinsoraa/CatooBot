@@ -33,6 +33,8 @@ class ContinuitySnapshot(BaseModel):
     pending_external_events: list[dict[str, Any]] = Field(default_factory=list)
     #: stage/interaction counts from the existing relationship model (§23)
     relationship_context: dict[str, Any] = Field(default_factory=dict)
+    #: important open goals (Phase 7 §19) — never the full list
+    active_goals: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class ContinuitySnapshotBuilder:
@@ -88,8 +90,28 @@ class ContinuitySnapshotBuilder:
                 for event in rt.external_queue.pending()
             ],
             relationship_context=self._relationship_context(),
+            active_goals=self._active_goal_lines(),
         )
         return snapshot
+
+    def _active_goal_lines(self) -> list[dict[str, Any]]:
+        """Important open goals only (never the whole list, §19)."""
+        goals = getattr(self._rt, "goals", None)
+        if goals is None:
+            return []
+        open_goals = [goal for goal in goals.all() if not goal.status.terminal]
+        open_goals.sort(key=lambda goal: (-goal.priority, goal.created_at, goal.goal_id))
+        return [
+            {
+                "goal_id": goal.goal_id,
+                "kind": goal.kind.value,
+                "description": goals.describe(goal),
+                "priority": round(goal.priority, 3),
+                "progress": round(goal.progress, 3),
+                "status": goal.status.value,
+            }
+            for goal in open_goals[:3]
+        ]
 
     async def _recent_experiences(self) -> list[dict[str, Any]]:
         rt = self._rt

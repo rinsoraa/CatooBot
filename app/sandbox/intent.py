@@ -43,6 +43,10 @@ class DecisionTrigger(str, Enum):  # noqa: UP042 - pydantic-friendly str enum
     conflicting_goals = "conflicting_goals"
     action_interrupt = "action_interrupt"
     scheduled_event = "scheduled_event"
+    # Phase 7: goal-driven steps
+    goal_step = "goal_step"
+    goal_conflict = "goal_conflict"
+    goal_blocked = "goal_blocked"
 
 
 class CandidateKind(str, Enum):  # noqa: UP042

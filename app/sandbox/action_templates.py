@@ -288,10 +288,10 @@ ACTION_TEMPLATES: dict[str, dict[str, Any]] = {
         "interruptibility": 0.2,
         "priority": 0.5,
         "tags": ["shopping", "outdoor"],
-        "effects": {"inventory:fridge:{drink}": 2},
+        "effects": {"inventory:fridge:{snack}": 2},
         "modes": ["outdoor"],
         "detail_pool": ["在便利店补货"],
-        "requires_anchor": "drink",
+        "requires_anchor": "snack",
     },
     "buy_sweets": {
         "activity": "out",

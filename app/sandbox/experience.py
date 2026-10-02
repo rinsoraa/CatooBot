@@ -43,6 +43,8 @@ EXPERIENCE_EVENTS: frozenset[ET] = frozenset(
         ET.KNOWLEDGE_CHANGED,
         ET.WORLD_EXTERNAL_INFLUENCE,
         ET.SOCIAL_SPACE_CHANGED,
+        #: §20: a completed goal may become a memory; creation never does
+        ET.GOAL_COMPLETED,
     }
 )
 
@@ -60,6 +62,7 @@ class ExperienceKind(str, Enum):  # noqa: UP042 - pydantic-friendly str enum
     knowledge_learned = "knowledge_learned"
     external_influence = "external_influence"
     social_contact = "social_contact"
+    goal_completed = "goal_completed"
 
 
 class ExperienceRecord(BaseModel):
@@ -253,6 +256,18 @@ class ExperienceBuilder:
                 {
                     "actor": actor,
                     "semantic_kind": payload.get("semantic_kind", ""),
+                },
+            )
+        if event.event_type is ET.GOAL_COMPLETED:
+            description = str(payload.get("description", "") or payload.get("goal_kind", ""))
+            return (
+                ExperienceKind.goal_completed,
+                f"完成目标：{description}",
+                0.65,
+                {
+                    "goal_id": str(payload.get("goal_id", "")),
+                    "goal_kind": str(payload.get("goal_kind", "")),
+                    "description": description,
                 },
             )
         if event.event_type is ET.SOCIAL_SPACE_CHANGED:

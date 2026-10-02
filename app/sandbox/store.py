@@ -26,11 +26,12 @@ def _json_dumps(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False, default=str)
 
 
-def _json_loads(value: Any) -> Any:
+def _json_loads(value: Any, *, default: Any = None) -> Any:
     import json
 
-    text = value if isinstance(value, str) else "[]"
-    return json.loads(text)
+    if not isinstance(value, str) or not value.strip():
+        return default if default is not None else []
+    return json.loads(value)
 
 
 logger = logging.getLogger("CatooBot.Sandbox.Store")
@@ -494,6 +495,78 @@ class SandboxStore:
         except Exception:  # noqa: BLE001
             return 0
         return int(row["n"]) if row else 0
+
+    # ------------------------------------------------- goals (Phase 7)
+
+    async def save_goal(self, goal: Any) -> None:
+        if not self.available:
+            return
+        try:
+            await self._db.execute(
+                """INSERT INTO sandbox_goals
+                       (goal_id, character_id, kind, status, priority, reason, source,
+                        source_event_id, causation_id, correlation_id, target_entity,
+                        target_space, target_item, target_project, metadata, progress,
+                        current_step, retry_count, last_attempt_at, next_eligible_at,
+                        created_at, updated_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                   ON CONFLICT(goal_id) DO UPDATE SET
+                       status=excluded.status, priority=excluded.priority,
+                       progress=excluded.progress, current_step=excluded.current_step,
+                       retry_count=excluded.retry_count,
+                       last_attempt_at=excluded.last_attempt_at,
+                       next_eligible_at=excluded.next_eligible_at,
+                       metadata=excluded.metadata, updated_at=excluded.updated_at""",
+                (
+                    goal.goal_id,
+                    goal.character_id,
+                    goal.kind.value if hasattr(goal.kind, "value") else str(goal.kind),
+                    goal.status.value if hasattr(goal.status, "value") else str(goal.status),
+                    float(goal.priority),
+                    goal.reason,
+                    goal.source.value if hasattr(goal.source, "value") else str(goal.source),
+                    goal.source_event_id,
+                    goal.causation_id,
+                    goal.correlation_id,
+                    goal.target_entity,
+                    goal.target_space,
+                    goal.target_item,
+                    goal.target_project,
+                    _json_dumps(goal.metadata),
+                    float(goal.progress),
+                    _json_dumps(
+                        goal.current_step.model_dump(mode="json") if goal.current_step else {}
+                    ),
+                    int(goal.retry_count),
+                    float(goal.last_attempt_at),
+                    float(goal.next_eligible_at),
+                    float(goal.created_at),
+                    float(goal.updated_at),
+                ),
+            )
+        except Exception:  # noqa: BLE001 - goal bookkeeping never breaks the world
+            logger.debug("[Sandbox.Store] goal write failed", exc_info=True)
+
+    async def list_goals(self, *, character_id: str = "") -> list[dict[str, Any]]:
+        if not self.available:
+            return []
+        try:
+            rows = await self._db.fetchall(
+                "SELECT * FROM sandbox_goals WHERE character_id = ?",
+                (character_id,),
+            )
+        except Exception:  # noqa: BLE001 - pre-migration database has no table
+            return []
+        result: list[dict[str, Any]] = []
+        for row in rows:
+            data = dict(row)
+            for field in ("metadata", "current_step"):
+                try:
+                    data[field] = _json_loads(data.get(field), default={})
+                except ValueError:
+                    data[field] = {}
+            result.append(data)
+        return result
 
     async def state_get(self, key: str) -> str:
         if not self.available:

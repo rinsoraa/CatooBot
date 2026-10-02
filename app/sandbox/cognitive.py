@@ -64,6 +64,13 @@ class CognitiveContext(BaseModel):
                 "summary": str(continuity.get("current_world_state_summary", "") or ""),
                 "projects": projects,
                 "pending_external": len(pending),
+                "goals": [
+                    {
+                        "description": str(item.get("description", "")),
+                        "progress": float(item.get("progress", 0.0)),
+                    }
+                    for item in (continuity.get("active_goals") or [])[:2]
+                ],
             },
             "memories": [
                 {

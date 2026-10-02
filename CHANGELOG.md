@@ -3,6 +3,44 @@
 本文件记录 CatooBot 的版本演进。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号见 `pyproject.toml`；日期取自真实提交历史（本仓库 2026-09-30 起）。
 
+## [Unreleased] — v2.1 Phase 7 · Autonomous Life Loop & Goal Layer（她为什么会一直做下去）
+
+- **目标层（§4-§9/§27）**：新增 `app/sandbox/goals.py` ——
+  `Goal`（goal_id/character_id/kind/status/priority/reason/source/
+  source_event_id/causation/correlation/target_*/progress/metadata/
+  retry_count/next_eligible_at/current_step）+ `GoalStep`（只物化"当前下一步"，
+  不预生成计划树）+ `GoalDetector`（事件驱动：INVENTORY_DEPLETED→补给、
+  PET_HUNGRY→照顾宠物、PROJECT_PROGRESS_CHANGED→继续项目；启动再扫一次）
+  + `GoalManager`（去重键 = character+kind+target，存在即更新不重建；
+  单一"执行目标"（优先级：照顾宠物 0.8 > 补给 0.6 > 项目 0.4）；
+  阻塞→冷却→再评估，重试上限后取消——绝不每 tick 空转）。
+- **可补给性完全由 Seed 决定（§10/§11/§41）**：`restock_actions()` 从
+  `ActionDefinition.effects` 的 `inventory:<key>:<item>` 反查——世界里没有
+  任何动作能补回该物品，它就不是目标；无物品名/角色名硬编码。
+  顺手修正模板语义：`buy_snacks` 补货对象从饮料改为零食（原为 Phase 1 笔误）。
+- **Goal → Decision → Action（§15/§16/§28/§32）**：目标步先经 Phase 6
+  `DecisionCoordinator`（新 trigger：goal_step / goal_conflict / goal_blocked），
+  候选来自 Seed 且带规则/物件/库存前置；单候选→确定性（无 LLM），
+  多候选→才用模型；执行前经 validator 重读世界（world_revision 过期即
+  拒绝——有测试）。
+- **持久化与恢复（§18/§33/§34）**：迁移 23 新增 `sandbox_goals` /
+  `sandbox_goal_steps`（含 character+status、character+kind+target、
+  next_eligible_at 索引）；重启后恢复目标并逐条复核世界——失效的步骤被
+  丢弃重新规划，不盲信旧计划。
+- **事件与因果（§21/§22）**：GOAL_CREATED / ACTIVATED / PROGRESS / BLOCKED /
+  COMPLETED / CANCELLED / STEP_STARTED / STEP_COMPLETED 进入既有
+  `SandboxEventType`；目标事件自成一条 correlation（`goal_<id>`），
+  用 causation 指回触发事实（喝掉最后一瓶 → 目标链）。
+- **与 Continuity / Memory 的边界（§19/§20/§42）**：`ContinuitySnapshot`
+  新增 `active_goals`（最多 3 条），聊天上下文以「未完成目标」中性行呈现；
+  只有 GOAL_COMPLETED 进入 Experience→Memory 候选（GOAL_CREATED 不会）；
+  Memory 不反向生成目标。
+- **打断与恢复（§30/§31）**：目标步执行中的动作被外部紧急事件打断后，
+  经 Phase 3 的 interrupt/resume 机制继续——目标保持未完成并在动作恢复后
+  接着推进（有测试）。
+- 新增 `tests/test_sandbox_goals.py`（23 个测试覆盖 §36 的 20 项 +
+  24 小时自主模拟 + 同种子可复现），总测试 1164。
+
 ## [Unreleased] — v2.1 Phase 6 · Cognitive Decision & Intent Layer（LLM 可提议，沙盒才决定）
 
 - **决策层（§5-§20）**：新增 `app/sandbox/intent.py` ——

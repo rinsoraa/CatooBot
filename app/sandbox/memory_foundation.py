@@ -184,6 +184,15 @@ class MemoryCandidateBuilder:
                 f"external:{actor}:{chain}",
                 0.75,
             )
+        if kind is ExperienceKind.goal_completed:
+            description = str(meta.get("description", ""))
+            return (
+                MemoryType.episodic,
+                MemoryScope.self_,
+                f"完成目标：{description}",
+                f"goal:{meta.get('goal_id', chain)}",
+                0.9,
+            )
         if kind is ExperienceKind.interaction_completed:
             return (
                 MemoryType.episodic,
