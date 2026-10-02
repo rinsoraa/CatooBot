@@ -3,6 +3,29 @@
 本文件记录 CatooBot 的版本演进。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号见 `pyproject.toml`；日期取自真实提交历史（本仓库 2026-09-30 起）。
 
+## [Unreleased] — v2.1 Phase 10.1 Remediation · Persistent Episode Idempotency
+
+- **episode identity 落库（§4-§7/§12）**：迁移 **26** 给 `sandbox_experiences` 增加
+  `episode_key TEXT` 与 `UNIQUE(character_id, episode_key)` 索引（SQLite 中 NULL 互不
+  相等 → 历史行天然不受影响，未回填、未删除）。canonical key 沿用 Phase 10 的优先级
+  （`action:<ActionInstance>` > `commitment:<id>` > `interaction:<fact id>`，只存一个），
+  另外写入 `metadata["episode_key"]` 便于审计。
+- **数据库是幂等边界（§7/§9）**：`SandboxStore.save_experience()` 改为
+  `INSERT … ON CONFLICT DO NOTHING` 并返回 `inserted / existing / unavailable`——
+  幂等保证来自数据库唯一约束，不使用「先查后写」作为唯一保障；Runtime 的 flush 记录
+  `duplicate_episodes_skipped` 计数。重启后重放同一事实不再产生第二条经历行。
+- **内存聚合保持（§8）**：`ExperienceBuilder` 的 `_by_correlation` / `_by_episode`
+  原样保留，两层各司其职（实时链 + 持久化幂等）。
+- **不误合并（§21）**：同一 commitment、**不同 ActionInstance** 的两条事实现在
+  各自成 episode（instance 优先于 promise）；同一 commitment 且都没有实例时仍是
+  一条（一个承诺一次履行 = 一个 episode）。非 shared 的既有经历类型不带 episode key
+  （NULL），语义不变（§14）。
+- `tests/test_sandbox_shared_experience.py` 新增 `TestPersistentEpisodeIdentity`
+  （8 个测试：跨重启重放仍只有一条经历行且 memory 不增、同 episode key 在两个角色
+  世界各得一条、同实例两条事实合一条、无实例时以 fact id 兜底且跨重启幂等、
+  两条不同事实是两条 episode、同承诺无实例仍一条、同承诺不同实例必须是两条、
+  历史 NULL 行可共存不被误并），总测试 1271。
+
 ## [Unreleased] — v2.1 Phase 10 · Social Experience & Shared Memory Continuity
 
 - **审计与复用（§3/§33）**：没有新建任何 Experience/Memory/Relationship 基础设施——

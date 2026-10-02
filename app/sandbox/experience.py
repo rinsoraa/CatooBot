@@ -115,6 +115,9 @@ class ExperienceRecord(BaseModel):
     correlation_id: str = ""
     action_id: str = ""
     interaction_type: str = ""
+    #: §10.1: the persisted episode identity (ActionInstance > commitment >
+    #: interaction fact); empty for kinds without a stable identity
+    episode_key: str = ""
     external_source: str = ""
     metadata: dict[str, Any] = Field(default_factory=dict)
 
@@ -179,15 +182,25 @@ class ExperienceBuilder:
         existing = self._by_correlation.get(key)
         if existing is None:
             # §7: the same ActionInstance / commitment is the same lived act,
-            # even when the events arrive on different threads
-            existing = next(
-                (
-                    self._by_episode[episode]
-                    for episode in self._episode_keys(metadata)
-                    if episode in self._by_episode
-                ),
-                None,
-            )
+            # even when the events arrive on different threads. §10.1 §21: a
+            # *commitment* never merges two different ActionInstances — the
+            # instance outranks the promise, so a differently-bound fact starts
+            # its own episode.
+            incoming_instance = str(metadata.get("action_instance_id", "") or "")
+            for episode in self._episode_keys(metadata):
+                candidate = self._by_episode.get(episode)
+                if candidate is None:
+                    continue
+                bound = str(candidate.metadata.get("action_instance_id", "") or "")
+                if (
+                    episode.startswith("commitment:")
+                    and incoming_instance
+                    and bound
+                    and incoming_instance != bound
+                ):
+                    continue
+                existing = candidate
+                break
         if existing is not None:
             self._absorb(existing, event, kind, summary, importance, metadata)
             self._by_correlation[key] = existing  # the new thread belongs to it too
@@ -212,8 +225,26 @@ class ExperienceBuilder:
         self._by_correlation[key] = record
         for episode in self._episode_keys(metadata):
             self._by_episode.setdefault(episode, record)
+        record.episode_key = self._canonical_episode_key(metadata)
         self._pending.append(record)
         self._emitted.append(record)
+
+    @staticmethod
+    def _episode_rank(key: str) -> int:
+        """Priority of an episode key: ActionInstance > commitment > fact (§3)."""
+        if key.startswith("action:"):
+            return 0
+        if key.startswith("commitment:"):
+            return 1
+        if key.startswith("interaction:"):
+            return 2
+        return 3
+
+    @classmethod
+    def _canonical_episode_key(cls, metadata: dict[str, Any]) -> str:
+        """The *one* episode key stored on the record and in the database (§5)."""
+        keys = cls._episode_keys(metadata)
+        return keys[0] if keys else ""
 
     @staticmethod
     def _episode_keys(metadata: dict[str, Any]) -> list[str]:
@@ -252,6 +283,15 @@ class ExperienceBuilder:
         instance_id = str(metadata.get("action_instance_id", "") or "")
         if instance_id:
             self._by_episode.setdefault(f"action:{instance_id}", record)
+        # a later fact may supply a *stronger* identity for the same act (§3):
+        # an interaction-keyed record becomes the ActionInstance-keyed episode
+        candidate = self._canonical_episode_key(metadata)
+        if candidate and self._episode_rank(candidate) < self._episode_rank(
+            record.episode_key or "zzz"
+        ):
+            record.episode_key = candidate
+        if record.episode_key:
+            record.metadata.setdefault("episode_key", record.episode_key)
 
     # ------------------------------------------------------------ mapping
 

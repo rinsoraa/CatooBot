@@ -425,18 +425,26 @@ class SandboxStore:
         """The shared Database handle (memory foundation reuses the same store)."""
         return self._db
 
-    async def save_experience(self, record: Any) -> None:
-        """One ExperienceRecord row (provenance for sandbox memories)."""
+    async def save_experience(self, record: Any) -> str:
+        """One ExperienceRecord row; idempotent per (character, episode) (§10.1 §7).
+
+        Returns ``"inserted" | "existing" | "unavailable"``. The idempotency
+        guarantee is the database's unique index on ``(character_id,
+        episode_key)`` — the read-back afterwards only *reports* which side of
+        it this call landed on, it never decides whether to write.
+        """
         if not self.available:
-            return
+            return "unavailable"
+        episode_key = str(getattr(record, "episode_key", "") or "")
         try:
             await self._db.execute(
                 """INSERT INTO sandbox_experiences
                        (id, character_id, kind, summary, importance, location, actors,
                         source_event_ids, causation_id, correlation_id, action_id,
-                        interaction_type, external_source, metadata, created_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                   ON CONFLICT(id) DO NOTHING""",
+                        interaction_type, external_source, metadata, created_at,
+                        episode_key)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                   ON CONFLICT DO NOTHING""",
                 (
                     record.id,
                     record.character_id,
@@ -453,10 +461,23 @@ class SandboxStore:
                     record.external_source,
                     _json_dumps(record.metadata),
                     float(record.timestamp),
+                    episode_key or None,
                 ),
             )
         except Exception:  # noqa: BLE001 - memory bookkeeping must never break the world
             logger.debug("[Sandbox.Store] experience write failed", exc_info=True)
+            return "unavailable"
+        if not episode_key:
+            # no episode identity: the id is the only key, so this call either
+            # wrote its own row or found it already there
+            return "inserted"
+        row = await self._db.fetchone(
+            "SELECT id FROM sandbox_experiences WHERE character_id = ? AND episode_key = ?",
+            (record.character_id, episode_key),
+        )
+        if row is None:
+            return "unavailable"
+        return "inserted" if str(row["id"]) == str(record.id) else "existing"
 
     async def recent_experiences(
         self, *, character_id: str = "", limit: int = 20, min_importance: float = 0.0

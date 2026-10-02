@@ -1200,6 +1200,20 @@ CREATE INDEX IF NOT EXISTS idx_sandbox_commitments_char_status_person
     ON sandbox_commitments(character_id, status, person_id);
 """,
     ),
+    (
+        26,
+        "persistent episode identity (Phase 10.1)",
+        """
+-- One real behaviour = one persisted episode (§10.1 §2/§4). The key is derived
+-- from the episode identity the runtime already uses (ActionInstance >
+-- commitment > interaction fact) so a restart can no longer mint a second row
+-- for the same act. Historical rows keep NULL — SQLite treats NULLs as
+-- distinct, so they are never deduped against each other.
+ALTER TABLE sandbox_experiences ADD COLUMN episode_key TEXT;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_sandbox_experiences_episode
+    ON sandbox_experiences(character_id, episode_key);
+""",
+    ),
 ]
 
 

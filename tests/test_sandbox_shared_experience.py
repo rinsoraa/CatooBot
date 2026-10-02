@@ -572,3 +572,210 @@ class TestCandidateSpec:
         again.metadata["commitment_id"] = "cm_2"
         other = MemoryCandidateBuilder()._spec(again)  # noqa: SLF001
         assert other is not None and other[3] != identity
+
+
+# ------------------------------------------------ §10.1 persistent episode identity
+
+
+async def episode_rows(db, character_id: str, episode_key: str = "") -> list[dict]:  # type: ignore[no-untyped-def]
+    if episode_key:
+        return await db.fetchall(
+            "SELECT id, character_id, episode_key FROM sandbox_experiences"
+            " WHERE character_id = ? AND episode_key = ?",
+            (character_id, episode_key),
+        )
+    return await db.fetchall(
+        "SELECT id, character_id, episode_key FROM sandbox_experiences WHERE character_id = ?",
+        (character_id,),
+    )
+
+
+class TestPersistentEpisodeIdentity:
+    async def test_cross_runtime_replay_keeps_one_persisted_episode(self, tmp_path) -> None:  # type: ignore[no-untyped-def]
+        """§10.1 §9: the run that knows the episode is the *database*, not memory."""
+        db = await make_db(tmp_path)
+        clock = Clock()
+        runtime = await make_sandbox(db=db, clock=clock)
+        try:
+            await share(
+                runtime,
+                "9301",
+                minutes=40.0,
+                instance_id="act_persist",
+                significance=InteractionSignificance.major,  # promotion-worthy
+            )
+            await runtime.flush_experiences()
+            character_id = runtime.character_id
+            rows = await episode_rows(db, character_id, "action:act_persist")
+            assert len(rows) == 1
+            original_id = rows[0]["id"]
+            await runtime.shutdown()
+        finally:
+            pass
+
+        restored = await make_sandbox(db=db, clock=clock)
+        try:
+            # the very same verified fact arrives again after the restart
+            await share(
+                restored,
+                "9301",
+                minutes=40.0,
+                instance_id="act_persist",
+                significance=InteractionSignificance.major,
+            )
+            await restored.flush_experiences()
+            rows = await episode_rows(db, character_id, "action:act_persist")
+            assert len(rows) == 1  # §10.1 §2: never a second row for one act
+            assert rows[0]["id"] == original_id  # the original episode owns it
+            assert restored.duplicate_episodes_skipped == 1
+            shared_memories = [
+                row
+                for row in await restored.memory.active_memories(limit=10)
+                if str(row.get("provenance", {}).get("action_instance_id", "")) == "act_persist"
+            ]
+            assert len(shared_memories) == 1  # memory stays one too
+        finally:
+            await restored.shutdown()
+            await db.close()
+
+    async def test_the_same_episode_key_in_two_worlds_is_two_experiences(self, tmp_path) -> None:  # type: ignore[no-untyped-def]
+        """§10.1 §6/§10 E: the unique identity is (character_id, episode_key)."""
+        db = await make_db(tmp_path)
+        clock = Clock()
+        first = await make_sandbox(db=db, clock=clock)
+        second = await make_sandbox(db=db, clock=clock, bible_path=OTHER_BIBLE_PATH)
+        try:
+            assert first.character_id != second.character_id
+            await share(first, "9302", minutes=40.0, instance_id="act_shared_key")
+            await share(second, "9302", minutes=40.0, instance_id="act_shared_key")
+            await first.flush_experiences()
+            await second.flush_experiences()
+            assert len(await episode_rows(db, first.character_id, "action:act_shared_key")) == 1
+            assert len(await episode_rows(db, second.character_id, "action:act_shared_key")) == 1
+        finally:
+            await first.shutdown()
+            await second.shutdown()
+            await db.close()
+
+    async def test_action_instance_beats_the_interaction_fact(self, tmp_path) -> None:  # type: ignore[no-untyped-def]
+        """§10.1 §3/§5: two facts about one instance are one episode."""
+        db = await make_db(tmp_path)
+        clock = Clock()
+        runtime = await make_sandbox(db=db, clock=clock)
+        try:
+            await share(runtime, "9303", minutes=40.0, instance_id="act_win")
+            await share(runtime, "9303", minutes=35.0, instance_id="act_win")  # new fact id
+            await runtime.flush_experiences()
+            rows = await episode_rows(db, runtime.character_id, "action:act_win")
+            assert len(rows) == 1
+            # in-memory aggregation still holds as well (§10.1 §8)
+            assert len(shared_experiences(runtime)) == 1
+        finally:
+            await runtime.shutdown()
+            await db.close()
+
+    async def test_interaction_fact_is_the_fallback_identity(self, tmp_path) -> None:  # type: ignore[no-untyped-def]
+        """§10.1 §10 C/D: without instance or promise the fact itself identifies."""
+        db = await make_db(tmp_path)
+        clock = Clock()
+        runtime = await make_sandbox(db=db, clock=clock)
+        fact = shared_fact(runtime, "9304", minutes=40.0)
+        fact.metadata.pop("action_instance_id")  # nothing better than the fact
+        try:
+            await runtime.apply_social_interaction(fact)
+            await runtime.flush_experiences()
+            key = f"interaction:{fact.interaction_id}"
+            assert len(await episode_rows(db, runtime.character_id, key)) == 1
+        finally:
+            await runtime.shutdown()
+
+        restored = await make_sandbox(db=db, clock=clock)
+        try:
+            replay = shared_fact(restored, "9304", minutes=40.0)
+            replay.metadata.pop("action_instance_id")
+            replay.interaction_id = fact.interaction_id  # the same verified fact
+            await restored.apply_social_interaction(replay)
+            await restored.flush_experiences()
+            key = f"interaction:{fact.interaction_id}"
+            assert len(await episode_rows(db, restored.character_id, key)) == 1
+        finally:
+            await restored.shutdown()
+            await db.close()
+
+    async def test_two_different_interactions_are_two_episodes(self, tmp_path) -> None:  # type: ignore[no-untyped-def]
+        db = await make_db(tmp_path)
+        clock = Clock()
+        runtime = await make_sandbox(db=db, clock=clock)
+        try:
+            for minutes in (40.0, 45.0):
+                fact = shared_fact(runtime, "9305", minutes=minutes)
+                fact.metadata.pop("action_instance_id")
+                await runtime.apply_social_interaction(fact)
+            await runtime.flush_experiences()
+            rows = await episode_rows(db, runtime.character_id)
+            shared_rows = [
+                row for row in rows if str(row["episode_key"] or "").startswith("interaction:")
+            ]
+            assert len(shared_rows) == 2  # §25 E: two real sessions, two episodes
+        finally:
+            await runtime.shutdown()
+            await db.close()
+
+    async def test_one_commitment_without_instances_stays_one_episode(self, tmp_path) -> None:  # type: ignore[no-untyped-def]
+        """§10.1 §21: the commitment key holds when no instance identifies the act."""
+        db = await make_db(tmp_path)
+        clock = Clock()
+        runtime = await make_sandbox(db=db, clock=clock)
+        try:
+            for _ in range(2):
+                fact = shared_fact(runtime, "9306", minutes=40.0, commitment_id="cm_single")
+                fact.metadata.pop("action_instance_id")
+                await runtime.apply_social_interaction(fact)
+            await runtime.flush_experiences()
+            rows = await episode_rows(db, runtime.character_id, "commitment:cm_single")
+            assert len(rows) == 1  # one promise, one fulfilment episode
+        finally:
+            await runtime.shutdown()
+            await db.close()
+
+    async def test_one_commitment_two_instances_stay_two_episodes(self, tmp_path) -> None:  # type: ignore[no-untyped-def]
+        """§10.1 §21: a commitment must never merge two different ActionInstances."""
+        db = await make_db(tmp_path)
+        clock = Clock()
+        runtime = await make_sandbox(db=db, clock=clock)
+        try:
+            await share(
+                runtime, "9307", minutes=40.0, commitment_id="cm_many", instance_id="act_one"
+            )
+            await share(
+                runtime, "9307", minutes=40.0, commitment_id="cm_many", instance_id="act_two"
+            )
+            await runtime.flush_experiences()
+            rows = await episode_rows(db, runtime.character_id)
+            keys = sorted(str(row["episode_key"]) for row in rows if row["episode_key"])
+            assert keys == ["action:act_one", "action:act_two"]
+        finally:
+            await runtime.shutdown()
+            await db.close()
+
+    async def test_historical_rows_without_an_episode_key_are_untouched(self, tmp_path) -> None:  # type: ignore[no-untyped-def]
+        """§10.1 §13: NULL keys coexist — old rows are never deduped or deleted."""
+        db = await make_db(tmp_path)
+        clock = Clock()
+        runtime = await make_sandbox(db=db, clock=clock)
+        try:
+            for index in (1, 2):
+                await db.execute(
+                    "INSERT INTO sandbox_experiences"
+                    " (id, character_id, kind, summary, importance, location, actors,"
+                    "  source_event_ids, causation_id, correlation_id, action_id,"
+                    "  interaction_type, external_source, metadata, created_at, episode_key)"
+                    " VALUES (?, ?, 'action_completed', ?, 0.5, '', '[]', '[]', '', '', '',"
+                    "  '', '', '{}', 0, NULL)",
+                    (f"exp_legacy_{index}", runtime.character_id, f"旧经历{index}"),
+                )
+            rows = await episode_rows(db, runtime.character_id)
+            assert len([row for row in rows if row["episode_key"] is None]) == 2
+        finally:
+            await runtime.shutdown()
+            await db.close()

@@ -277,6 +277,8 @@ class SandboxRuntime:
         self.events.subscribe(self.experiences.observe)
         #: Experience → candidate → memories row (existing table, no embedding)
         self.candidates = MemoryCandidateBuilder()
+        #: §10.1 §7: episodes whose row already existed (restart replay)
+        self.duplicate_episodes_skipped = 0
         self.memory = SandboxMemoryStore(
             store.database, character_id=self.character_id, clock=clock, logger=self._log
         )
@@ -2660,7 +2662,11 @@ class SandboxRuntime:
         if not records:
             return []
         for record in records:
-            await self.store.save_experience(record)
+            status = await self.store.save_experience(record)
+            if status == "existing":
+                # §10.1 §7: the episode was already persisted (restart replay) —
+                # the database owns idempotency, this is just the runtime's count
+                self.duplicate_episodes_skipped += 1
         candidates = [
             candidate
             for record in records
