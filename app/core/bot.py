@@ -254,6 +254,35 @@ class Bot:
                 self.log.exception("Sandbox initialization failed; continuing without it")
                 self.sandbox = None
 
+        # Phase 13 §57: the real external gateway is opt-in; when it is on, the
+        # sandbox answers QQ messages (the v1.2 chat path keeps non-message
+        # events), and when it is off nothing about the old behaviour changes.
+        self.onebot_gateway: Any = None
+        if (
+            self.sandbox is not None
+            and config.onebot.enabled
+            and bool(getattr(config.onebot, "gateway_enabled", False))
+        ):
+            try:
+                from app.integrations.onebot.gateway import OneBotGateway
+                from app.integrations.onebot.transport import ServerTransport
+
+                self.onebot_gateway = OneBotGateway(
+                    self.sandbox,
+                    transport=ServerTransport(
+                        self.adapter, logger=self.log, fallback=self.handle_event
+                    ),
+                    config=config.onebot,
+                    clock=self._clock,
+                )
+                self.log.warning(
+                    "[OneBot] gateway enabled: inbound QQ messages are answered by the"
+                    " sandbox conversation runtime (the v1.2 chat reply path is bypassed)"
+                )
+            except Exception:  # noqa: BLE001 - gateway trouble must not stop startup
+                self.log.exception("OneBot gateway initialization failed; continuing without it")
+                self.onebot_gateway = None
+
         self.lifecycle = Lifecycle(self)
         self.router = CommandRouter(self, self.commands, prefix=config.bot.command_prefix)
         self.core_router = CoreRouter(self)
@@ -657,6 +686,10 @@ class Bot:
         except Exception:  # noqa: BLE001
             self.log.exception("Failed to restore behaviour overrides")
 
+        if self.onebot_gateway is not None:
+            # registers the gateway as the message handler; the bot still owns
+            # the socket below (server mode)
+            await self.onebot_gateway.start()
         await self.adapter.start()
         story.boot_step("OneBot 适配器已监听", detail=self.config.onebot.url)
         if self.watchdog is not None:
@@ -795,6 +828,8 @@ class Bot:
         await self.tools.close()
         await self.ai.close()
         try:
+            if self.onebot_gateway is not None:
+                await self.onebot_gateway.stop()
             await self.adapter.stop()
         except Exception:  # noqa: BLE001
             self.log.exception("Adapter stop raised (ignored during shutdown)")

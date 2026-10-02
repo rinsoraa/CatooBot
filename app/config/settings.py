@@ -70,6 +70,21 @@ class OneBotConfig(BaseModel):
     access_token: str = ""
     api_timeout: float = 10.0
 
+    # ---------- Phase 13: real external gateway (transport → sandbox) ----------
+    #: 是否启用真实外部网关（默认关，避免影响既有启动路径）
+    gateway_enabled: bool = False
+    #: 本 runtime 服务的 bot 账号（self_id）；未列出的账号事件一律丢弃（§54/§56）
+    self_ids: list[str] = Field(default_factory=list)
+    #: 入站去重：TTL（秒）与容量上限（有界内存，§17）
+    dedupe_ttl: float = Field(default=600.0, gt=0)
+    dedupe_max_size: int = Field(default=2048, ge=16)
+    #: 每个 social lane 的待处理上限（§29）
+    max_pending_per_lane: int = Field(default=20, ge=1)
+    #: 出站发送的最大重试次数（§46）
+    outbound_max_retries: int = Field(default=3, ge=0, le=10)
+    #: 重连退避上限（秒，§50）
+    reconnect_max_seconds: float = Field(default=30.0, ge=1)
+
     @property
     def url(self) -> str:
         return f"ws://{self.host}:{self.port}{self.path}"

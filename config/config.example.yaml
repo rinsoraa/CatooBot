@@ -19,6 +19,22 @@ onebot:
   # 调用 OneBot API 的超时时间（秒）
   api_timeout: 10.0
 
+  # ---- Phase 13：真实外部网关（transport → Sandbox → 回复）----
+  # 开启后由 Sandbox 对话运行时回答 QQ 消息（v1.2 聊天回复路径让位；notice/meta 等仍走原路径）。
+  # 仍使用同一套反向 WS（NapCat 主动连本机），无需第二个端口。
+  gateway_enabled: false
+  # 本 runtime 服务的 bot 账号（self_id）；列出的账号之外的流量一律丢弃，绝不乱接
+  self_ids: []
+  # 入站去重（有界内存）：TTL 秒 + 容量上限；重启后缓存为空（不假装永久幂等）
+  dedupe_ttl: 600.0
+  dedupe_max_size: 2048
+  # 每个社交空间（群/私聊）的待处理上限；溢出时丢弃最旧的未开始回复，但其世界事实仍会入库
+  max_pending_per_lane: 20
+  # 出站发送的最大重试次数（0 = 不重试）；重试只重发同一条已提交回复
+  outbound_max_retries: 3
+  # 断线重连的退避上限（秒，1/2/4/8/16 递增后封顶）
+  reconnect_max_seconds: 30.0
+
 logging:
   level: INFO              # DEBUG / INFO / WARNING / ERROR
   color: true              # 终端彩色日志（管道/重定向时自动变纯文本，NO_COLOR 优先）

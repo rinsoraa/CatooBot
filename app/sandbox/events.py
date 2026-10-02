@@ -91,6 +91,13 @@ class SandboxEventType(str, Enum):  # noqa: UP042 - pydantic-friendly str enum
     CONVERSATION_RESPONSE_EMITTED = "conversation_response_emitted"
     #: the send-boundary re-check (Phase 12.1 §14) — trace only, no revisions
     CONVERSATION_RESPONSE_COMMITTED = "conversation_response_committed"
+    # real external transport (Phase 13 §64) — trace only, never world facts
+    EXTERNAL_TRANSPORT_RECEIVED = "external_transport_received"
+    EXTERNAL_TRANSPORT_DEDUPED = "external_transport_deduped"
+    EXTERNAL_TRANSPORT_DROPPED = "external_transport_dropped"
+    OUTBOUND_RESPONSE_QUEUED = "outbound_response_queued"
+    OUTBOUND_RESPONSE_SENT = "outbound_response_sent"
+    OUTBOUND_RESPONSE_FAILED = "outbound_response_failed"
     # state authority closure (Phase 3.5)
     PROJECT_PROGRESS_CHANGED = "project_progress_changed"
     KNOWLEDGE_CHANGED = "knowledge_changed"

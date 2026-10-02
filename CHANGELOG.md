@@ -3,6 +3,52 @@
 本文件记录 CatooBot 的版本演进。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号见 `pyproject.toml`；日期取自真实提交历史（本仓库 2026-09-30 起）。
 
+## [Unreleased] — v2.1 Phase 13 · Real External Runtime Integration & OneBot Event Gateway
+
+- **审计优先（§75 Step 1）**：传输层已存在并全部复用——`OneBotV11Server`（反向 WS、
+  token 校验、单连接、`get_login_info` 解析 self_id）、`BotApi`（`send_msg` 等）、
+  `parse_event`、`adapt_qq_message`（QQ 原语 → ExternalWorldEvent）。**没有第二套
+  运行架构**；新建的只有网关与规范化层 `app/integrations/onebot/`。
+- **入站规范化（§7-§9/§35-§38）**：`NormalizedMessageEvent`（transport_event_id /
+  self_id / message_type / message_id / user_id / group_id / display_name /
+  raw_message / plain_text / segments / mentioned_self / reply_to_bot /
+  raw_time / ingest_time / ingest_seq / social_space_id），支持 raw OneBot JSON 与
+  既有 typed `MessageEvent` 两种入口；未知字段与未知 segment **原样保留**（§93），
+  只有真正无法成型的事件才拒绝（§92）。Sandbox 只见 `ExternalWorldEvent`。
+- **身份与门禁（§10-§16/§19/§20/§54）**：`person_id` 只由 `persons.for_qq()` 解析
+  （nickname 绝不绑定身份）；self-message 守卫与"非本账号 self_id 一律丢弃"双保险；
+  去重键 = `self_id + transport_event_id`（`message:<self_id>:<message_id>`，无
+  message_id 时用规范字段 digest，**绝不是随机 UUID**），有界 TTL+容量去重缓存
+  （重启即空，不假装跨进程幂等）。
+- **排序与背压（§21-§31）**：`character_id:social_space_id` 一条 lane，lane 内 FIFO、
+  lane 间并发；每 lane 有 `max_pending_per_lane`，溢出时**确定性丢弃最旧的未开始
+  回复**，但该消息的世界事实会立即单独入库（§31：绝不静默丢失已验证事实）。
+- **对话链（§32/§39-§48）**：lane worker 先 ingest（`submit_external` + `wakeup`），
+  再由既有 `ConversationRuntime` 生成回复 → `commit_conversation_response()` **先
+  提交后入队** → outbound worker 用既有 `BotApi` 发送；`silent` 绝不触网；同一
+  turn 只发一次；失败有界重试（`outbound_max_retries`，默认 3）且重发的是同一条
+  已提交回复，耗尽后记录 `delivery_status=failed`，不无限重试、不重新跑模型。
+- **连接生命周期（§49-§53/§60/§61）**：CONNECTING/CONNECTED/DISCONNECTED/
+  RECONNECTING/STOPPED；断线重连走 1/2/4/8/16 秒封顶退避；连接状态**永不进入
+  Sandbox**；`stop()` 先停收件、等 lane/出站收尾、再关传输，不留 orphan task；
+  `drain()` 作为统一的"空闲点"。
+- **trace-only 事件（§64/§65）**：`EXTERNAL_TRANSPORT_RECEIVED / DEDUPED / DROPPED /
+  OUTBOUND_RESPONSE_QUEUED / SENT / FAILED`，只记传输事实（turn_id / mode / status /
+  attempts），不推进任何 revision、不存聊天历史、不落库。
+- **配置（§57/§58）**：扩展现有 `onebot` 段（不另起一套）：`gateway_enabled`（默认
+  false，opt-in）、`self_ids`、`dedupe_ttl`、`dedupe_max_size`、
+  `max_pending_per_lane`、`outbound_max_retries`、`reconnect_max_seconds`；
+  example 里 token 恒为 `""`，真实 token 仍只在本地 config/.env。
+- **接线**：`Bot` 在 `gateway_enabled=true` 且 Sandbox 启用时构建网关——消息交给
+  沙箱回复（v1.2 聊天回复路径让位并告警），notice/meta/request 仍走原处理路径；
+  关闭时行为与之前完全一致。
+- 新增 `tests/test_onebot_gateway.py`（25 个测试：私聊全链回复、群聊字段与身份分离、
+  @ 与非 @ 策略、self-message 守卫、重复事件只入沙箱一次、跨账号同 message_id、
+  未知账号/未知人、lane 内 FIFO、跨 lane 并发、溢出丢弃但保事实、静默不触网、
+  stale 不入队、重试成功/耗尽、重连与退避封顶、stop 无 orphan、无直连捷径、
+  100 次重放仍一次 turn、畸形事件与未知字段、单 turn 异常隔离、端到端
+  QQ→回复、传输适配器映射与事件分流）+ `tests/fake_onebot.py`；总测试 1349。
+
 ## [Unreleased] — v2.1 Phase 12.1 Remediation · Response Commit Guard & Proposal Protocol
 
 - **响应提交守卫（§2-§8/§13）**：新增 `ConversationRuntime.commit(response)` 与
