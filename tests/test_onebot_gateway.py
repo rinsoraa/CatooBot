@@ -324,15 +324,20 @@ class TestOrdering:
         gateway, transport = await make_gateway(runtime=runtime)
         try:
             order: list[str] = []
+            a_started = asyncio.Event()
+            b_done = asyncio.Event()
 
             async def slow_first(request):  # type: ignore[no-untyped-def]
                 text = request.messages[0].content
                 if "slow" in text:
                     order.append("slow-start")
-                    await asyncio.sleep(0.05)
+                    a_started.set()
+                    await b_done.wait()  # A waits for B — concurrency, no clock
                     order.append("slow-end")
                 else:
+                    await a_started.wait()
                     order.append("fast")
+                    b_done.set()
                 from types import SimpleNamespace
 
                 return SimpleNamespace(content=proposal(text="好"))
@@ -343,13 +348,12 @@ class TestOrdering:
                     message_id="g1", user_id="21002", group_id="901", text="slow", at_self=True
                 )
             )
-            await asyncio.sleep(0.005)
             await transport.receive(
                 qq_message(
                     message_id="g2", user_id="21003", group_id="902", text="fast", at_self=True
                 )
             )
-            await settle(gateway, rounds=60)
+            await settle(gateway)
             assert order == ["slow-start", "fast", "slow-end"]  # B finished while A waited
             assert len(transport.sent_messages) == 2
         finally:
@@ -366,7 +370,10 @@ class TestOrdering:
         try:
             blocker = asyncio.Event()
 
+            m1_started = asyncio.Event()
+
             async def stalled(_request):  # type: ignore[no-untyped-def]
+                m1_started.set()
                 await blocker.wait()
                 from types import SimpleNamespace
 
@@ -375,11 +382,10 @@ class TestOrdering:
             stub = _StubEngine(stalled)
             runtime.ai_engine = stub
             await transport.receive(qq_message(message_id="o1", user_id="21004", text="一"))
-            await asyncio.sleep(0.005)  # the worker picks up #1 and stalls
+            await asyncio.wait_for(m1_started.wait(), timeout=2.0)  # #1 is inside its turn
             await transport.receive(qq_message(message_id="o2", user_id="21004", text="二"))
             await transport.receive(qq_message(message_id="o3", user_id="21004", text="三"))
-            for _ in range(20):  # the first turn is deliberately stalled: no drain here
-                await asyncio.sleep(0.005)
+            await asyncio.sleep(0)  # the degradations happen synchronously on submit
             assert gateway.dropped == 1  # o2 was dropped, deterministically the oldest
             dropped = runtime.events.last(ET.EXTERNAL_TRANSPORT_DROPPED)
             assert dropped is not None and dropped.payload["reason"] == "lane_full"
@@ -819,10 +825,13 @@ class TestLaneOrderingUnderOverflow:
         try:
             blocker = asyncio.Event()
 
+            m1_started = asyncio.Event()
+
             async def stalled(request):  # type: ignore[no-untyped-def]
                 message = request.messages[0].content.rsplit("对方的消息：", 1)[-1]
                 message = message.splitlines()[0].strip()
                 if message == "一":
+                    m1_started.set()
                     await blocker.wait()
                 from types import SimpleNamespace
 
@@ -831,11 +840,10 @@ class TestLaneOrderingUnderOverflow:
             stub = _StubEngine(stalled)
             runtime.ai_engine = stub
             await transport.receive(qq_message(message_id="q1", user_id="26001", text="一"))
-            await asyncio.sleep(0.01)  # M1 is now inside the turn and stalled
+            await asyncio.wait_for(m1_started.wait(), timeout=2.0)
             await transport.receive(qq_message(message_id="q2", user_id="26001", text="二"))
             await transport.receive(qq_message(message_id="q3", user_id="26001", text="三"))
-            for _ in range(20):
-                await asyncio.sleep(0.005)
+            await asyncio.sleep(0)
             assert gateway.dropped == 1  # M2 traded its reply away
             order = [
                 str(event.payload.get("content", ""))
@@ -871,10 +879,13 @@ class TestLaneOrderingUnderOverflow:
         try:
             blocker = asyncio.Event()
 
+            m1_started = asyncio.Event()
+
             async def stalled(request):  # type: ignore[no-untyped-def]
                 message = request.messages[0].content.rsplit("对方的消息：", 1)[-1]
                 message = message.splitlines()[0].strip()
                 if message == "一":
+                    m1_started.set()
                     await blocker.wait()
                 from types import SimpleNamespace
 
@@ -883,13 +894,12 @@ class TestLaneOrderingUnderOverflow:
             stub = _StubEngine(stalled)
             runtime.ai_engine = stub
             await transport.receive(qq_message(message_id="p1", user_id="26002", text="一"))
-            await asyncio.sleep(0.01)
+            await asyncio.wait_for(m1_started.wait(), timeout=2.0)
             for index, text in enumerate(("二", "三", "四", "五"), start=2):
                 await transport.receive(
                     qq_message(message_id=f"p{index}", user_id="26002", text=text)
                 )
-            for _ in range(20):
-                await asyncio.sleep(0.005)
+            await asyncio.sleep(0)
             assert gateway.dropped == 3  # 二/三/四 lost only their replies
             blocker.set()
             await settle(gateway)
@@ -914,13 +924,19 @@ class TestLaneOrderingUnderOverflow:
         gateway, transport = await make_gateway(runtime=runtime)
         try:
             order: list[str] = []
+            a_started = asyncio.Event()
+            b_done = asyncio.Event()
 
             async def slow(request):  # type: ignore[no-untyped-def]
                 prompt = request.messages[0].content
                 message = prompt.rsplit("对方的消息：", 1)[-1].splitlines()[0].strip()
                 order.append(f"start:{message}")
                 if message.startswith("A"):
-                    await asyncio.sleep(0.05)
+                    a_started.set()
+                    await b_done.wait()  # lane A waits for lane B — no clock
+                else:
+                    await a_started.wait()
+                    b_done.set()
                 order.append(f"end:{message}")
                 from types import SimpleNamespace
 
@@ -947,7 +963,7 @@ class TestLaneOrderingUnderOverflow:
                         at_self=True,
                     )
                 )
-            await settle(gateway)
+            assert await gateway.drain(timeout=5.0)
             a_starts = [item for item in order if item.startswith("start:A")]
             a_ends = [item for item in order if item.startswith("end:A")]
             b_starts = [item for item in order if item.startswith("start:B")]

@@ -44,4 +44,19 @@ jobs:
         run: uv run --frozen mypy app
 
       - name: Tests (pytest tests)
-        run: uv run --frozen pytest tests -q
+        # Failures are surfaced as workflow annotations: the job log is not
+        # always reachable, the annotations API is.
+        run: |
+          status=0
+          uv run --frozen pytest tests -q --tb=line -rf > /tmp/pytest.log 2>&1 || status=$?
+          if [ "$status" -ne 0 ]; then
+            grep -E '^(FAILED|ERROR)' /tmp/pytest.log | head -25 | while IFS= read -r line; do
+              echo "::error title=pytest::${line}"
+            done
+            tail -20 /tmp/pytest.log | while IFS= read -r line; do
+              echo "::warning::${line}"
+            done
+          else
+            tail -3 /tmp/pytest.log
+          fi
+          exit "$status"
