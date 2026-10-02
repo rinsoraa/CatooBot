@@ -3,6 +3,39 @@
 本文件记录 CatooBot 的版本演进。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号见 `pyproject.toml`；日期取自真实提交历史（本仓库 2026-09-30 起）。
 
+## [Unreleased] — v2.1 Phase 4 · Sandbox Experience → Memory → Continuity Foundation
+
+- **Experience 层（§5-§7）**：`app/sandbox/experience.py` ——
+  `ExperienceRecord`（character_id/kind/summary/importance/location/actors/
+  source_event_ids/causation/correlation/action_id/metadata）+ 订阅事件总线的
+  `ExperienceBuilder`：只接受业务事件（动作完成/中断/恢复、交互、喂宠物、
+  项目里程碑、首次知识、外部影响、社交露面），NEED_CHANGED/REQUESTED/
+  STARTED/移动请求等噪音被过滤；同一条行为链（correlation）归并为**一条**
+  Experience（喂猫链不会产生 5 条近似记录）；importance 为确定性评分。
+- **Memory 候选（§8/§16/§19-§22）**：`MemoryType`（episodic/semantic/
+  social/world_fact）+ `MemoryCandidate`（含 importance/confidence/scope/
+  dedupe_key/provenance 字段）+ 确定性 `MemoryCandidateBuilder`；候选先落
+  `sandbox_memory_candidates`（status: candidate/promoted/rejected/
+  duplicate），importance ≥ 0.5 才晋升为长期记忆。
+- **Memory Store（§10/§11/§15/§17）**：`SandboxMemoryStore` 复用**既有**
+  `memories` 表与 `MemoryRepository`（无第二套存储、无 embedding 路径）：
+  `character_id` 为隔离边界（同库双角色互不可见）、`provenance` JSON 记录
+  memory→experience→event 全链、`dedupe_key` 幂等去重（同链重复处理不增行；
+  不同日期的真实重复事件因 episodic 键含 correlation 而不被误并）、
+  world_fact 语义身份变化时旧行 `superseded` + supersedes 关系。
+- **迁移 22**：`memories` 增 character_id/provenance/dedupe_key（旧行默认空，
+  向后兼容）+ 两个新表 `sandbox_experiences` / `sandbox_memory_candidates`
+  + 索引；`SOURCES` 增 "sandbox"。
+- **Continuity 读模型（§23-§25）**：`ContinuitySnapshot` +
+  `ContinuitySnapshotBuilder`（world 摘要/当前动作与位置/知识/重要经历/
+  活跃记忆/未完成项目/待处理外部事件/关系上下文），生成后写入
+  `sandbox_state`；**只读**——不进入 Decision/Persona/Speech/Relationship，
+  也不修改世界状态（有测试钉死）。
+- 新增 `tests/test_sandbox_memory_foundation.py`（19 个测试：动作→记忆溯源、
+  tick/需求漂移不污染、最后一瓶可乐、喂猫单条、邀请经历、项目里程碑、
+  去重、跨角色隔离、重启持久化、Continuity 组合与只读、Knowledge≠Memory、
+  provenance 全链、低分候选拒绝），总测试 1096。
+
 ## [Unreleased] — v2.1 Phase 3.5 · State Authority Closure（Need / Project / Knowledge 收口）
 
 - **Need（§3）**：新增 canonical `adjust_need(key, delta=, relieve=, source,

@@ -19,6 +19,20 @@ from app.sandbox.models import (
     SandboxSnapshot,
 )
 
+
+def _json_dumps(value: Any) -> str:
+    import json
+
+    return json.dumps(value, ensure_ascii=False, default=str)
+
+
+def _json_loads(value: Any) -> Any:
+    import json
+
+    text = value if isinstance(value, str) else "[]"
+    return json.loads(text)
+
+
 logger = logging.getLogger("CatooBot.Sandbox.Store")
 
 
@@ -402,6 +416,84 @@ class SandboxStore:
         return {row["key"]: dict(row) for row in rows}
 
     # ------------------------------------------------------------ runtime kv
+
+    # ------------------------------------------------- experiences (Phase 4)
+
+    @property
+    def database(self) -> Any:
+        """The shared Database handle (memory foundation reuses the same store)."""
+        return self._db
+
+    async def save_experience(self, record: Any) -> None:
+        """One ExperienceRecord row (provenance for sandbox memories)."""
+        if not self.available:
+            return
+        try:
+            await self._db.execute(
+                """INSERT INTO sandbox_experiences
+                       (id, character_id, kind, summary, importance, location, actors,
+                        source_event_ids, causation_id, correlation_id, action_id,
+                        interaction_type, external_source, metadata, created_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                   ON CONFLICT(id) DO NOTHING""",
+                (
+                    record.id,
+                    record.character_id,
+                    record.kind.value if hasattr(record.kind, "value") else str(record.kind),
+                    record.summary,
+                    float(record.importance),
+                    record.location,
+                    _json_dumps(record.actors),
+                    _json_dumps(record.source_event_ids),
+                    record.causation_id,
+                    record.correlation_id,
+                    record.action_id,
+                    record.interaction_type,
+                    record.external_source,
+                    _json_dumps(record.metadata),
+                    float(record.timestamp),
+                ),
+            )
+        except Exception:  # noqa: BLE001 - memory bookkeeping must never break the world
+            logger.debug("[Sandbox.Store] experience write failed", exc_info=True)
+
+    async def recent_experiences(
+        self, *, character_id: str = "", limit: int = 20, min_importance: float = 0.0
+    ) -> list[dict[str, Any]]:
+        if not self.available:
+            return []
+        try:
+            rows = await self._db.fetchall(
+                "SELECT id, character_id, kind, summary, importance, location, actors,"
+                " source_event_ids, correlation_id, created_at FROM sandbox_experiences"
+                " WHERE character_id = ? AND importance >= ?"
+                " ORDER BY created_at DESC LIMIT ?",
+                (character_id, float(min_importance), int(limit)),
+            )
+        except Exception:  # noqa: BLE001 - pre-migration database has no table
+            return []
+        result: list[dict[str, Any]] = []
+        for row in rows:
+            data = dict(row)
+            for field in ("actors", "source_event_ids"):
+                try:
+                    data[field] = _json_loads(data.get(field))
+                except ValueError:
+                    data[field] = []
+            result.append(data)
+        return result
+
+    async def count_experiences(self, *, character_id: str = "") -> int:
+        if not self.available:
+            return 0
+        try:
+            row = await self._db.fetchone(
+                "SELECT COUNT(*) AS n FROM sandbox_experiences WHERE character_id = ?",
+                (character_id,),
+            )
+        except Exception:  # noqa: BLE001
+            return 0
+        return int(row["n"]) if row else 0
 
     async def state_get(self, key: str) -> str:
         if not self.available:

@@ -23,7 +23,8 @@ _INSERT_COLUMNS = (
     "scope_key, user_id, group_id, category, content, content_hash, importance,"
     " confidence, use_count, created_at, updated_at, last_used_at,"
     " layer, summary, source, status, supersedes_id, conflicts_with_id,"
-    " valid_from, valid_until, event_at, search_text"
+    " valid_from, valid_until, event_at, search_text,"
+    " character_id, provenance, dedupe_key"
 )
 
 
@@ -78,6 +79,9 @@ class MemoryRepository:
                 memory.valid_until,
                 memory.event_at,
                 index_text(memory.content, memory.summary),
+                memory.character_id,
+                json.dumps(memory.provenance, ensure_ascii=False),
+                memory.dedupe_key,
             ),
         )
         row = await self._db.fetchone(

@@ -17,6 +17,10 @@ from typing import Any
 
 from app.sandbox.actions import ActionSystem
 from app.sandbox.bible import CharacterBible
+from app.sandbox.continuity_snapshot import (
+    ContinuitySnapshot,
+    ContinuitySnapshotBuilder,
+)
 from app.sandbox.decision import (
     InterruptEvaluator,
     ProposalValidator,
@@ -25,6 +29,7 @@ from app.sandbox.decision import (
 from app.sandbox.definition import CharacterDefinition
 from app.sandbox.entities import PetSystem
 from app.sandbox.events import EventBus, SandboxEventType
+from app.sandbox.experience import ExperienceBuilder
 from app.sandbox.external import (
     ExternalEventQueue,
     ExternalInfluenceEvaluator,
@@ -34,6 +39,10 @@ from app.sandbox.external import (
 )
 from app.sandbox.external_adapters import from_legacy_event, legacy_meaning
 from app.sandbox.interactions import InteractionResolver
+from app.sandbox.memory_foundation import (
+    MemoryCandidateBuilder,
+    SandboxMemoryStore,
+)
 from app.sandbox.models import (
     ActionDefinition,
     ActionInstance,
@@ -218,6 +227,19 @@ class SandboxRuntime:
         self._last_pet_hungry: Any = None
         # §6: reactions subscribe to facts — a begging pet raises pet_care.
         self.events.subscribe(self._on_pet_approached)
+        # --------------------------------------------- memory foundation (§4)
+        #: the isolation boundary a memory belongs to (bible-content stable)
+        self.character_id = f"{seed.character.name}@{bible.source_hash[:8]}"
+        #: SandboxEvent → Experience (noise-filtered, one per behaviour chain)
+        self.experiences = ExperienceBuilder(self, clock=clock)
+        self.events.subscribe(self.experiences.observe)
+        #: Experience → candidate → memories row (existing table, no embedding)
+        self.candidates = MemoryCandidateBuilder()
+        self.memory = SandboxMemoryStore(
+            store.database, character_id=self.character_id, clock=clock, logger=self._log
+        )
+        #: read model only — never feeds decision/persona/speech (§25)
+        self.continuity_snapshot = ContinuitySnapshotBuilder(self, clock=clock)
         self._last_tick = float(clock())
         self._notes: list[str] = []  # micro-continuity feed
         self._restored = False
@@ -317,6 +339,8 @@ class SandboxRuntime:
 
     async def shutdown(self) -> None:
         self.phase = SandboxPhase.stopped
+        await self.flush_experiences()
+        await self.build_continuity()
         await self._persist_all()
         await self.store.state_set("phase", self.phase.value)
 
@@ -640,6 +664,7 @@ class SandboxRuntime:
         if self._should_snapshot():
             await self._snapshot()
         await self._persist_deltas()
+        await self.flush_experiences()
         if self.narrate_ticks:
             pressing = self.needs.summary_line() if self.needs.pressing() else ""
             detail = "沙盒心跳" + (f"（{pressing}）" if pressing else "")
@@ -1153,6 +1178,7 @@ class SandboxRuntime:
                 )
 
         await self._transaction(apply, label=f"complete:{action.definition_id}")
+        # the completion's experiences reach the store right away (§28-1)
         self.events.publish(
             SandboxEventType.ACTION_COMPLETED,
             source="character",
@@ -1573,6 +1599,7 @@ class SandboxRuntime:
             )
         )
         await self._persist_deltas()
+        await self.flush_experiences()
 
     def _touch_social_space(self, space_id: str, group_id: str) -> None:
         """A QQ message marks presence where it landed (generic, id-driven)."""
@@ -2084,6 +2111,39 @@ class SandboxRuntime:
             )
         await self.store.state_set("last_tick", str(self._last_tick))
         await self.store.state_set("projects", _json(self.projects))
+
+    # ------------------------------------------------- memory foundation (§4)
+
+    async def flush_experiences(self) -> list[Any]:
+        """Drain buffered experiences → rows, then candidates → memories.
+
+        Runs on the existing flush cadence (tick / external / completion) so
+        the world never blocks on memory bookkeeping; the pipeline is strictly
+        downstream — nothing here writes world state (§29).
+        """
+        records = self.experiences.sample()
+        if not records:
+            return []
+        for record in records:
+            await self.store.save_experience(record)
+        candidates = [
+            candidate
+            for record in records
+            for candidate in self.candidates.from_experience(record, now=float(self._clock()))
+        ]
+        if candidates and self.memory.available:
+            await self.memory.ingest_all(candidates)
+        return records
+
+    async def build_continuity(self) -> ContinuitySnapshot:
+        """Generate (and persist) the read-model continuity snapshot (§23).
+
+        Named apart from ``self.continuity`` (the v1.2 ContinuityManager feed),
+        which this read model deliberately does not touch.
+        """
+        snapshot = await self.continuity_snapshot.build()
+        await self.continuity_snapshot.persist(snapshot)
+        return snapshot
 
     async def _persist_deltas(self) -> None:
         await self.store.save_entity(

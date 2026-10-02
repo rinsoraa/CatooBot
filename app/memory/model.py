@@ -8,6 +8,7 @@ instead of deleting it — a superseded memory stays readable in the WebUI.
 from __future__ import annotations
 
 import json
+from typing import Any
 
 from pydantic import BaseModel, Field, field_validator
 
@@ -28,7 +29,7 @@ LAYERS = ("semantic", "episodic")
 
 STATUSES = ("active", "archived", "superseded", "expired", "deleted")
 
-SOURCES = ("explicit", "conversation", "inferred", "imported", "system", "vision")
+SOURCES = ("explicit", "conversation", "inferred", "imported", "system", "vision", "sandbox")
 
 TEMPORAL_SCOPES = ("long_term", "short_term", "event")
 
@@ -70,12 +71,34 @@ class Memory(BaseModel):
     valid_until: int | None = None
     event_at: int | None = None
 
+    # Phase 4 (sandbox experience → memory): ownership + provenance + dedupe.
+    #: isolation boundary — memories belong to exactly one character
+    character_id: str = ""
+    #: where this memory came from (candidate/experience/event ids) — §10
+    provenance: dict[str, Any] = Field(default_factory=dict)
+    #: deterministic identity for de-duplication (§15)
+    dedupe_key: str = ""
+
     @field_validator("category")
     @classmethod
     def _valid_category(cls, value: str) -> str:
         if value not in CATEGORIES:
             raise ValueError(f"Invalid memory category: {value!r} (expected one of {CATEGORIES})")
         return value
+
+    @field_validator("provenance", mode="before")
+    @classmethod
+    def _decode_provenance(cls, value: Any) -> dict[str, Any]:
+        """Rows carry the provenance as JSON text; the model exposes a dict."""
+        if isinstance(value, str):
+            try:
+                decoded = json.loads(value) if value.strip() else {}
+            except ValueError:
+                return {}
+            return decoded if isinstance(decoded, dict) else {}
+        if value is None:
+            return {}
+        return dict(value)
 
     @field_validator("layer")
     @classmethod

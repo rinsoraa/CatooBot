@@ -153,7 +153,9 @@ class TestExtendedReset:
         db = await make_db(tmp_path)
         try:
             applied = await db.fetchall("SELECT version FROM schema_migrations ORDER BY version")
-            assert [row["version"] for row in applied][-1] == 21
+            versions = [row["version"] for row in applied]
+            assert 21 in versions  # sticker scope backfill
+            assert versions[-1] >= 22  # Phase 4 memory-foundation migration
             # seeded rows already carried scope; verify the column + index exist
             columns = await db.fetchall("PRAGMA table_info(sticker_assets)")
             assert any(col["name"] == "scope" for col in columns)

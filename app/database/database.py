@@ -1005,6 +1005,73 @@ UPDATE sticker_assets SET scope = 'character' WHERE origin = 'user_message';
 CREATE INDEX IF NOT EXISTS idx_sticker_assets_scope ON sticker_assets(scope);
 """,
     ),
+    (
+        22,
+        "sandbox experience → memory foundation (Phase 4)",
+        """
+-- Experiences: what the character actually lived through, derived from
+-- sandbox events (never LLM-generated). Provenance root for sandbox memories.
+CREATE TABLE IF NOT EXISTS sandbox_experiences (
+    id                TEXT PRIMARY KEY,
+    character_id      TEXT NOT NULL DEFAULT '',
+    kind              TEXT NOT NULL DEFAULT 'world_note',
+    summary           TEXT NOT NULL DEFAULT '',
+    importance        REAL NOT NULL DEFAULT 0.3,
+    location          TEXT NOT NULL DEFAULT '',
+    actors            TEXT NOT NULL DEFAULT '[]',
+    source_event_ids  TEXT NOT NULL DEFAULT '[]',
+    causation_id      TEXT NOT NULL DEFAULT '',
+    correlation_id    TEXT NOT NULL DEFAULT '',
+    action_id         TEXT NOT NULL DEFAULT '',
+    interaction_type  TEXT NOT NULL DEFAULT '',
+    external_source   TEXT NOT NULL DEFAULT '',
+    metadata          TEXT NOT NULL DEFAULT '{}',
+    created_at        REAL NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS idx_sandbox_experiences_char
+    ON sandbox_experiences(character_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_sandbox_experiences_corr
+    ON sandbox_experiences(correlation_id);
+
+-- Memory candidates: the pre-promotion form (§16). Only validated, deduped
+-- candidates become long-term memories; the rest stay auditable here.
+CREATE TABLE IF NOT EXISTS sandbox_memory_candidates (
+    candidate_id         TEXT PRIMARY KEY,
+    character_id         TEXT NOT NULL DEFAULT '',
+    memory_type          TEXT NOT NULL DEFAULT 'episodic',
+    summary              TEXT NOT NULL DEFAULT '',
+    content              TEXT NOT NULL DEFAULT '',
+    scope                TEXT NOT NULL DEFAULT 'self',
+    importance           REAL NOT NULL DEFAULT 0.0,
+    confidence           REAL NOT NULL DEFAULT 0.0,
+    status               TEXT NOT NULL DEFAULT 'candidate',
+    dedupe_key           TEXT NOT NULL DEFAULT '',
+    source_experience_ids TEXT NOT NULL DEFAULT '[]',
+    source_event_ids     TEXT NOT NULL DEFAULT '[]',
+    memory_id            INTEGER,
+    reason_code          TEXT NOT NULL DEFAULT '',
+    created_at           REAL NOT NULL DEFAULT 0,
+    observed_at          REAL NOT NULL DEFAULT 0,
+    decided_at           REAL NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS idx_sandbox_candidates_char
+    ON sandbox_memory_candidates(character_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_sandbox_candidates_dedupe
+    ON sandbox_memory_candidates(character_id, dedupe_key);
+
+-- The existing memories table becomes character-aware (§11): old rows keep
+-- an empty character_id (conversation-era memories, still valid), sandbox
+-- memories carry the owner id so two characters sharing one store cannot
+-- read each other's rows.
+ALTER TABLE memories ADD COLUMN character_id TEXT NOT NULL DEFAULT '';
+ALTER TABLE memories ADD COLUMN provenance TEXT NOT NULL DEFAULT '{}';
+ALTER TABLE memories ADD COLUMN dedupe_key TEXT NOT NULL DEFAULT '';
+CREATE INDEX IF NOT EXISTS idx_memories_character
+    ON memories(character_id, status);
+CREATE INDEX IF NOT EXISTS idx_memories_dedupe
+    ON memories(character_id, dedupe_key);
+""",
+    ),
 ]
 
 
