@@ -34,7 +34,7 @@ from pathlib import Path
 SOURCE = Path(__file__).resolve().parent
 TARGET = SOURCE.parent / "CatooBot_github"
 
-MIRRORED_DIRS = ("app", "plugins", "tests", "docs", ".github", "webui", "scripts")
+MIRRORED_DIRS = ("app", "plugins", "tests", "docs", ".github", "webui")
 ROOT_FILES = (
     "pyproject.toml",
     "uv.lock",

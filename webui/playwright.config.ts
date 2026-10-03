@@ -24,7 +24,7 @@ export default defineConfig({
     trace: 'retain-on-failure',
   },
   webServer: {
-    command: `${python} ../scripts/webui_e2e_server.py`,
+    command: `${python} ../tests/webui_e2e_server.py`,
     url: 'http://127.0.0.1:8611/login',
     reuseExistingServer: false,
     timeout: 180_000,

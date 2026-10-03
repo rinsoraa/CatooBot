@@ -3,8 +3,8 @@
 
 Run by Playwright's ``webServer`` block (see ``webui/playwright.config.ts``):
 
-    .venv/Scripts/python.exe scripts/webui_e2e_server.py   # Windows
-    python scripts/webui_e2e_server.py                     # Linux/macOS
+    .venv/Scripts/python.exe tests/webui_e2e_server.py   # Windows
+    python tests/webui_e2e_server.py                     # Linux/macOS
 
 Everything runs in a throwaway temp directory (DB, logs, stickers, WebUI
 overrides), so the suite never touches the operator's data or config. The
