@@ -14,6 +14,7 @@ import logging
 import os
 import time
 from abc import ABC, abstractmethod
+from collections.abc import Sequence
 from typing import TYPE_CHECKING, Any
 
 import httpx
@@ -84,7 +85,22 @@ class OpenAICompatibleEmbeddingProvider(EmbeddingProvider):
             raise EmbeddingError(f"embedding transport error: {exc.__class__.__name__}") from exc
 
         if response.status_code != 200:
-            raise EmbeddingError(f"embedding HTTP {response.status_code}: {response.text[:160]}")
+            detail = response.text[:160]
+            hint = ""
+            lowered = detail.lower()
+            if "does not exist" in lowered or "model not found" in lowered:
+                hint = (
+                    "（该名称在提供商侧不存在：若你填的是模型别名，请确认它确实在 ai.models 里，"
+                    "或直接填提供商模型 id，例如 BAAI/bge-m3）"
+                )
+            elif "dimensions" in lowered or (
+                response.status_code == 400 and "parameter is invalid" in lowered
+            ):
+                hint = (
+                    "（该模型可能不接受 dimensions 参数：SiliconFlow 的 BAAI/bge-m3 固定 1024 维，"
+                    "请把 memory.semantic.embedding.dimensions 留空）"
+                )
+            raise EmbeddingError(f"embedding HTTP {response.status_code}: {detail}{hint}")
 
         try:
             data = response.json()
@@ -103,6 +119,21 @@ class OpenAICompatibleEmbeddingProvider(EmbeddingProvider):
 
     async def close(self) -> None:
         await self._client.aclose()
+
+
+def resolve_model_alias(name: str, ai_models: Sequence[Any] | None) -> tuple[str, str] | None:
+    """把 ``ai.models`` 里的 **别名** 解析为 ``(真实 model id, provider 名)``。
+
+    不是别名（或没有模型表）时返回 ``None``，调用方按原样把该值当模型 id 使用。
+    """
+    if not name:
+        return None
+    for item in ai_models or ():
+        if str(getattr(item, "name", "")) == name:
+            model_id = str(getattr(item, "model", "") or name)
+            provider = str(getattr(item, "provider", "") or "")
+            return model_id, provider
+    return None
 
 
 class EmbeddingService:
@@ -141,6 +172,7 @@ class EmbeddingService:
         config: MemoryEmbeddingConfig,
         database: Database | None = None,
         ai_providers: dict[str, Any] | None = None,
+        ai_models: Sequence[Any] | None = None,
         logger: logging.Logger | None = None,
         provider: EmbeddingProvider | None = None,
     ) -> EmbeddingService:
@@ -153,10 +185,28 @@ class EmbeddingService:
         if provider is not None:
             return cls(config, database, provider, logger=log)
 
+        # 「模型用途 → 向量检索」绑定的值可能是一个模型别名：其他角色都经 AI Router
+        # 按别名寻址，而嵌入不走 Router，必须在这里把别名解析成提供商侧的模型 id，
+        # 并继承该别名所属 provider 的 base_url / 凭据（与 UI 语义保持一致）。
+        model_id = config.model
+        provider_name = config.provider
+        resolved = resolve_model_alias(config.model, ai_models)
+        if resolved is not None:
+            model_id, alias_provider = resolved
+            provider_name = alias_provider or provider_name
+            log.info(
+                "[Memory.Embedding] model alias %r resolved to %r (provider=%s)",
+                config.model,
+                model_id,
+                provider_name or "embedding",
+            )
+        elif config.model and ai_models:
+            log.info("[Memory.Embedding] using %r as a provider model id", config.model)
+
         base_url = config.base_url
         api_key_env = config.api_key_env
-        if config.provider:
-            entry = (ai_providers or {}).get(config.provider)
+        if provider_name:
+            entry = (ai_providers or {}).get(provider_name)
             if entry is not None:
                 base_url = base_url or getattr(entry, "base_url", "")
                 api_key_env = api_key_env or getattr(entry, "api_key_env", "")
@@ -176,10 +226,11 @@ class EmbeddingService:
             return cls(config, database, None, logger=log)
 
         built = OpenAICompatibleEmbeddingProvider(
-            name=config.provider or "embedding",
+            name=provider_name or "embedding",
             base_url=base_url,
             api_key=api_key,
-            model=config.model,
+            # 解析后的提供商模型 id（别名已在上面换掉）
+            model=model_id,
             timeout=config.timeout,
             dimensions=config.dimensions,
             logger=log,

@@ -108,6 +108,8 @@ class Bot:
                 config.memory.semantic.embedding,
                 self.database,
                 ai_providers=config.ai.providers,
+                # 角色绑定可能是别名（模型用途页的下拉就是别名）：交给嵌入层解析
+                ai_models=config.ai.models,
             )
             if config.memory.enabled and config.memory.semantic.enabled
             else None

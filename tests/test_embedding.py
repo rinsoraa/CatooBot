@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import httpx
 import pytest
 
@@ -270,3 +272,85 @@ class TestVectorStore:
         store = SqliteVectorStore(database)
         assert (await store.stats())["coverage"] == 0.0
         await database.close()
+
+
+class TestModelAliasResolution:
+    """W6 后续：向量检索角色绑定的可能是「模型别名」，必须解析成提供商模型 id。"""
+
+    @staticmethod
+    def _model(name: str, model: str, provider: str) -> SimpleNamespace:
+        return SimpleNamespace(name=name, model=model, provider=provider)
+
+    def test_alias_resolves_to_the_provider_model_id(self) -> None:
+        from app.memory.embedding import resolve_model_alias
+
+        models = [self._model("Embedding", "BAAI/bge-m3", "SiliconFlow")]
+        assert resolve_model_alias("Embedding", models) == ("BAAI/bge-m3", "SiliconFlow")
+        # 已经是真实 id / 空值 / 无模型表 → 不做替换
+        assert resolve_model_alias("BAAI/bge-m3", models) is None
+        assert resolve_model_alias("", models) is None
+        assert resolve_model_alias("Embedding", None) is None
+
+    def test_from_config_resolves_the_alias_and_inherits_the_provider(self, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+        monkeypatch.setenv("FAKE_EMB_KEY", "k")
+        provider = SimpleNamespace(
+            base_url="http://embed.example/v1", api_key_env="FAKE_EMB_KEY", type="openai_compatible"
+        )
+        service = EmbeddingService.from_config(
+            MemoryEmbeddingConfig(provider="SiliconFlow", model="Embedding"),
+            None,
+            ai_providers={"SiliconFlow": provider},
+            ai_models=[self._model("Embedding", "BAAI/bge-m3", "SiliconFlow")],
+        )
+        assert service.available is True
+        built = service._provider  # noqa: SLF001 - the built provider is the subject under test
+        assert built is not None
+        assert built.model == "BAAI/bge-m3"  # 真实 id，而不是别名
+        assert built.name == "SiliconFlow"
+
+    def test_a_raw_model_id_still_passes_through(self, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+        monkeypatch.setenv("FAKE_EMB_KEY", "k")
+        provider = SimpleNamespace(base_url="http://embed.example/v1", api_key_env="FAKE_EMB_KEY")
+        service = EmbeddingService.from_config(
+            MemoryEmbeddingConfig(provider="SiliconFlow", model="Qwen/Qwen3-Embedding-0.6B"),
+            None,
+            ai_providers={"SiliconFlow": provider},
+            ai_models=[self._model("Embedding", "BAAI/bge-m3", "SiliconFlow")],
+        )
+        assert service.available is True
+        assert service._provider is not None  # noqa: SLF001
+        assert service._provider.model == "Qwen/Qwen3-Embedding-0.6B"  # noqa: SLF001
+
+    async def test_error_message_explains_unknown_model(self) -> None:
+        async def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(
+                400,
+                json={"code": 20012, "message": "Model does not exist. Please check it carefully."},
+            )
+
+        provider = make_provider(handler)
+        with pytest.raises(EmbeddingError) as raised:
+            await provider.embed(["hi"])
+        assert "does not exist" in str(raised.value)
+        assert "模型别名" in str(raised.value)
+        await provider.close()
+
+    async def test_error_message_explains_rejected_dimensions(self) -> None:
+        async def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(
+                400,
+                json={"code": 20015, "message": "The parameter is invalid. Please check again."},
+            )
+
+        provider = OpenAICompatibleEmbeddingProvider(
+            name="test",
+            base_url="https://api.test/v1",
+            api_key="sk-test",
+            model="BAAI/bge-m3",
+            timeout=5.0,
+            transport=httpx.MockTransport(handler),
+        )
+        with pytest.raises(EmbeddingError) as raised:
+            await provider.embed(["hi"])
+        assert "dimensions" in str(raised.value)
+        await provider.close()
