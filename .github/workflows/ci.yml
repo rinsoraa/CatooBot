@@ -60,3 +60,52 @@ jobs:
             tail -3 /tmp/pytest.log
           fi
           exit "$status"
+
+  webui:
+    name: webui · typecheck · tests · build
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: webui
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: webui/package-lock.json
+
+      - name: Install (npm ci)
+        run: npm ci --no-audit --no-fund
+
+      - name: Typecheck (vue-tsc)
+        run: npm run typecheck
+
+      - name: Tests (vitest)
+        run: npm test
+
+      - name: Build (vite)
+        run: npm run build
+
+      # webui/dist is committed on purpose: the aiohttp server serves it and no
+      # Node toolchain is needed at runtime. This proves the committed bundle is
+      # the one these sources produce — file names carry the content hashes, so
+      # a stale bundle fails hard; a byte-level diff (platform-specific
+      # minifier output) is reported as a warning instead of a false failure.
+      - name: Verify the committed bundle matches the build
+        working-directory: .
+        run: |
+          committed=$(git ls-files webui/dist | sed 's#webui/dist/##' | sort)
+          built=$(cd webui/dist && find . -type f | sed 's#^\./##' | sort)
+          if [ "$committed" != "$built" ]; then
+            echo "::error title=webui dist::committed webui/dist does not match a fresh build"
+            diff <(echo "$committed") <(echo "$built") || true
+            exit 1
+          fi
+          if ! git diff --quiet -- webui/dist; then
+            echo "::warning title=webui dist::webui/dist differs byte-wise from a fresh build (platform minifier output); names and hashes match"
+          fi
+          echo "committed bundle matches the build ($(echo "$built" | wc -l) files)"

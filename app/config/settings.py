@@ -326,6 +326,9 @@ class WebConfig(BaseModel):
     username: str = "admin"
     password: str = ""  # initial password only; bootstrap via .env recommended
     password_env: str = "CATOOBOT_WEB_PASSWORD"
+    #: WebUI v1.0 rollback switch: "v1" serves the Vue SPA at /, "v0.8" hands
+    #: / and /login back to the legacy SSR console (which stays at /legacy).
+    version: str = "v1"
 
 
 class BehaviorReplyTimingConfig(BaseModel):

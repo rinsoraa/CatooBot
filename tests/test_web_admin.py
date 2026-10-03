@@ -142,11 +142,11 @@ async def test_webui_http_gate(tmp_path, unused_tcp_port) -> None:
                 assert resp.status == 302
                 assert resp.headers["Location"] == "/login"
 
-            login_page = ""
+            # v1.0 (W3): /login is the SPA shell; the form POST below stays the
+            # legacy endpoint both front ends authenticate with.
             async with session.get(base + "/login") as resp:
                 assert resp.status == 200
-                login_page = await resp.text()
-                assert 'action="/login"' in login_page
+                assert 'id="app"' in await resp.text()
 
             # wrong password → not logged in
             async with session.post(
@@ -172,13 +172,19 @@ async def test_webui_http_gate(tmp_path, unused_tcp_port) -> None:
             bot.metrics.inc("ai_requests", 812)
             bot.metrics.inc("memories_extracted", 719)
 
-            # authenticated dashboard: page-specific stats, not the login form
+            # v1.0 (W3): / is the Vue shell …
             async with session.get(base + "/") as resp:
+                assert resp.status == 200
+                body = await resp.text()
+                assert 'id="app"' in body
+                assert 'action="/login"' not in body
+
+            # … and the v0.8 dashboard keeps its content at /legacy.
+            async with session.get(base + "/legacy") as resp:
                 assert resp.status == 200
                 body = await resp.text()
                 assert "限流 429" in body and "NapCat" in body
                 assert "新增记忆" in body and "812" in body and "719" in body
-                assert 'action="/login"' not in body
 
             # every management page renders its own content
             async with session.get(base + "/character") as resp:
@@ -324,17 +330,17 @@ async def test_memory_health_page_banners_extraction_failure(tmp_path, unused_tc
             # Task 25 ⑤: AI enabled with nothing usable is a startup-level
             # problem, so the dashboard must say it too (this test config has
             # AI off, hence no banner until it is switched on).
-            async with session.get(base + "/") as resp:
+            async with session.get(base + "/legacy") as resp:
                 assert "<div class='flash flash-error'>" not in await resp.text()
             bot.config.ai.enabled = True
             bot.ai.enabled = False
-            async with session.get(base + "/") as resp:
+            async with session.get(base + "/legacy") as resp:
                 body = await resp.text()
                 assert resp.status == 200
                 assert "AI 已启用，但没有任何可用模型" in body
                 assert "<div class='flash flash-error'>" in body
             bot.ai.enabled = True
-            async with session.get(base + "/") as resp:
+            async with session.get(base + "/legacy") as resp:
                 assert "<div class='flash flash-error'>" not in await resp.text()
     finally:
         await web_server.stop()

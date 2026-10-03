@@ -62,6 +62,7 @@ from app.web.services.memory import MemoryAdminService
 from app.web.services.memory_correction import MemoryCorrectionService
 from app.web.services.social import SocialAdminService
 from app.web.services.tools import ToolAdminService
+from app.web.spa import SpaRoutes
 
 if TYPE_CHECKING:
     from app.config.settings import WebConfig
@@ -73,6 +74,7 @@ log = logging.getLogger("CatooBot.Web")
 
 class WebServer(
     ApiRoutes,
+    SpaRoutes,
     OpsRoutes,
     ModelRoutes,
     MediaRoutes,
@@ -113,7 +115,8 @@ class WebServer(
         # Task 17: stream narration lines to logged-in browsers.
         self._narration_feed = attach_narration_feed(self._hub)
         app = web.Application(middlewares=[self._auth_middleware])
-        app.router.add_get("/login", self._login_page)
+        # `/` and `/login` are dispatch points now (SPA in v1, SSR in v0.8);
+        # the form POST stays the legacy login endpoint for both.
         app.router.add_post("/login", self._login_submit)
         app.router.add_post("/logout", self._logout)
         # v0.9 UI: in-browser configuration + prompt-driven memory correction
@@ -127,11 +130,13 @@ class WebServer(
         self.register_memory(app)
         self.register_config(app)
         self.register_prompts(app)
-        self.register_dashboard(app)
         self.register_tools(app)
         self.register_agent(app)
         # WebUI v1.0 (W2): JSON API under /api/v1, alongside the SSR pages.
         self.register_v1(app)
+        # WebUI v1.0 (W3): SPA hosting + /legacy + the catch-all. Registered
+        # last on purpose so it never shadows a real route.
+        self.register_spa(app)
 
         self._runner = web.AppRunner(app, access_log=None)
         await self._runner.setup()

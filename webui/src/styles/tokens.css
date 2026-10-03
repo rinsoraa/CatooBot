@@ -1,0 +1,95 @@
+/**
+ * Design tokens（WebUI v1.0 · W3 §20-§22）。
+ *
+ * 组件里只允许使用 `--cb-*` 变量，不写死颜色。Soft dark / soft light：
+ * 低对比边框、柔和紫蓝主色、柔和语义色；可读性优先于装饰性。
+ */
+
+:root {
+  /* ---------- 排版 ---------- */
+  --cb-font-sans: Inter, ui-sans-serif, system-ui, -apple-system, 'Segoe UI',
+    'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', sans-serif;
+  --cb-font-mono: ui-monospace, SFMono-Regular, 'JetBrains Mono', Menlo, Consolas,
+    'Liberation Mono', monospace;
+  --cb-text-xs: 12px;
+  --cb-text-sm: 13px;
+  --cb-text-md: 14px;
+  --cb-text-lg: 16px;
+  --cb-text-xl: 20px;
+  --cb-text-2xl: 26px;
+  --cb-line: 1.6;
+
+  /* ---------- 形状 ---------- */
+  --cb-radius-sm: 6px;
+  --cb-radius-md: 10px;
+  --cb-radius-lg: 16px;
+  --cb-space-1: 4px;
+  --cb-space-2: 8px;
+  --cb-space-3: 12px;
+  --cb-space-4: 16px;
+  --cb-space-5: 24px;
+  --cb-space-6: 32px;
+  --cb-sidebar-width: 232px;
+  --cb-sidebar-width-collapsed: 64px;
+  --cb-topbar-height: 56px;
+  --cb-layout-max: 1440px;
+}
+
+/* ---------- Soft Dark（默认） ---------- */
+:root,
+:root[data-theme='dark'] {
+  --cb-bg: #14151a;
+  --cb-bg-soft: #191b21;
+  --cb-surface: #1d1f26;
+  --cb-surface-raised: #24262f;
+  --cb-border: #2e313b;
+  --cb-border-strong: #3a3e4a;
+  --cb-text: #e8e9ee;
+  --cb-text-muted: #a2a6b3;
+  --cb-text-faint: #767b8a;
+
+  --cb-primary: #8b93e8;
+  --cb-primary-strong: #a3aaf0;
+  --cb-primary-soft: rgba(139, 147, 232, 0.16);
+  --cb-success: #7cc6a6;
+  --cb-success-soft: rgba(124, 198, 166, 0.16);
+  --cb-warning: #dcc07f;
+  --cb-warning-soft: rgba(220, 192, 127, 0.16);
+  --cb-danger: #e08c84;
+  --cb-danger-soft: rgba(224, 140, 132, 0.16);
+  --cb-info: #8ab4d8;
+  --cb-info-soft: rgba(138, 180, 216, 0.16);
+
+  --cb-shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.3);
+  --cb-shadow-md: 0 6px 20px rgba(0, 0, 0, 0.35);
+  --cb-focus: 0 0 0 2px var(--cb-bg), 0 0 0 4px var(--cb-primary);
+}
+
+/* ---------- Soft Light ---------- */
+:root[data-theme='light'] {
+  --cb-bg: #f6f6f9;
+  --cb-bg-soft: #f0f1f5;
+  --cb-surface: #ffffff;
+  --cb-surface-raised: #fbfbfd;
+  --cb-border: #e2e3ea;
+  --cb-border-strong: #d2d4de;
+  --cb-text: #23242b;
+  --cb-text-muted: #5f6371;
+  --cb-text-faint: #8b8f9d;
+
+  --cb-primary: #6169d6;
+  --cb-primary-strong: #4d55c4;
+  --cb-primary-soft: rgba(97, 105, 214, 0.12);
+  --cb-success: #3f9c74;
+  --cb-success-soft: rgba(63, 156, 116, 0.12);
+  --cb-warning: #a9812c;
+  --cb-warning-soft: rgba(169, 129, 44, 0.14);
+  --cb-danger: #c25a50;
+  --cb-danger-soft: rgba(194, 90, 80, 0.12);
+  --cb-info: #3d7ba8;
+  --cb-info-soft: rgba(61, 123, 168, 0.12);
+
+  --cb-shadow-sm: 0 1px 2px rgba(28, 30, 40, 0.06);
+  --cb-shadow-md: 0 8px 24px rgba(28, 30, 40, 0.1);
+  --cb-focus: 0 0 0 2px var(--cb-surface), 0 0 0 4px var(--cb-primary);
+}

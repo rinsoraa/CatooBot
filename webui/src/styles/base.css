@@ -1,0 +1,107 @@
+/** 基础样式：只做重置与排版基线，组件样式各自 scoped。 */
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#app {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  background: var(--cb-bg);
+  color: var(--cb-text);
+  font-family: var(--cb-font-sans);
+  font-size: var(--cb-text-md);
+  line-height: var(--cb-line);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+h1,
+h2,
+h3,
+h4 {
+  margin: 0;
+  font-weight: 600;
+  line-height: 1.35;
+}
+
+h1 {
+  font-size: var(--cb-text-2xl);
+}
+
+h2 {
+  font-size: var(--cb-text-xl);
+}
+
+h3 {
+  font-size: var(--cb-text-lg);
+}
+
+p {
+  margin: 0;
+}
+
+a {
+  color: var(--cb-primary-strong);
+  text-decoration: none;
+}
+
+a:hover {
+  text-decoration: underline;
+}
+
+code,
+pre,
+.cb-code {
+  font-family: var(--cb-font-mono);
+  font-size: var(--cb-text-sm);
+}
+
+/* 可见焦点（§37）：键盘用户必须能看清焦点在哪 */
+:focus-visible {
+  outline: none;
+  box-shadow: var(--cb-focus);
+  border-radius: var(--cb-radius-sm);
+}
+
+.cb-muted {
+  color: var(--cb-text-muted);
+}
+
+.cb-faint {
+  color: var(--cb-text-faint);
+}
+
+.cb-caption {
+  font-size: var(--cb-text-xs);
+  color: var(--cb-text-muted);
+}
+
+.cb-visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}

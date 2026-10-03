@@ -151,6 +151,3 @@ class DashboardRoutes(WebContext):
             ),
             content_type="text/html",
         )
-
-    def register_dashboard(self, app: web.Application) -> None:
-        app.router.add_get("/", self._dashboard)

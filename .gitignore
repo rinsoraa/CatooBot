@@ -17,6 +17,11 @@ logs/*.log*
 config/config.yaml
 config/character_bible.md
 
+# WebUI frontend (deps are never committed; dist IS committed — the
+# aiohttp server serves it, and no Node toolchain is required at runtime)
+node_modules/
+webui/.vite/
+
 # OS / IDE
 .DS_Store
 Thumbs.db

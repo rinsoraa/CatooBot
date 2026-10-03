@@ -34,7 +34,7 @@ from pathlib import Path
 SOURCE = Path(__file__).resolve().parent
 TARGET = SOURCE.parent / "CatooBot_github"
 
-MIRRORED_DIRS = ("app", "plugins", "tests", "docs", ".github")
+MIRRORED_DIRS = ("app", "plugins", "tests", "docs", ".github", "webui")
 ROOT_FILES = (
     "pyproject.toml",
     "uv.lock",
@@ -54,7 +54,15 @@ ROOT_FILES = (
 )
 CONFIG_DIR_FILES = ("config.example.yaml", "character_bible.example.md")
 
-EXCLUDED_DIR_PATTERNS = ("__pycache__", "*.egg-info", ".mypy_cache", ".pytest_cache", ".ruff_cache")
+EXCLUDED_DIR_PATTERNS = (
+    "__pycache__",
+    "*.egg-info",
+    ".mypy_cache",
+    ".pytest_cache",
+    ".ruff_cache",
+    "node_modules",
+    ".vite",
+)
 
 
 def _excluded(name: str) -> bool:
