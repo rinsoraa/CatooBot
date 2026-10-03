@@ -105,7 +105,10 @@ v0.4 行为引擎（回复延迟/分段/作息，规格不在 docs/specs/）标 
 | [V3_EXPRESSION_LEARNING.md](V3_EXPRESSION_LEARNING.md) | Task 22 口癖学习：学用词/句式、按群限额注入、可停用可删除可追溯（附录 A 原文置顶） | 设计待确认 |
 | [V3_IMAGE_MEMORY.md](V3_IMAGE_MEMORY.md) | 图片记忆：哪些图值得记、记成什么、里程碑 ③ 的触发条件与硬约束 | ①② 已实现 |
 | [V3_DATA_EXPORT.md](V3_DATA_EXPORT.md) | 角色数据导出/导入：范围、格式、导入安全流程、验收 | 里程碑 1 已实现 |
-| [bible_source_罐头.txt](bible_source_罐头.txt) | 内置角色的人物档案源文件（Bible 编译器输入） | 内容资产 |
+| [WEBUI_V1_AUDIT.md](WEBUI_V1_AUDIT.md) | WebUI v1.0 W1 现状审计：页面/路由/服务/实时/安全与迁移阻碍 | W1 已完成 |
+| [WEBUI_CONFIG_MATRIX.md](WEBUI_CONFIG_MATRIX.md) | WebUI v1.0 W1 配置矩阵：来源、优先级、逐键状态与迁移级别 | W1 已完成 |
+| [WEBUI_API_CONTRACT.md](WEBUI_API_CONTRACT.md) | WebUI v1.0 API 契约：会话/配置/凭据/AI/领域/WS 与验收清单 | W1 已完成 |
+| bible_source_罐头.txt | 内置角色的人物档案源文件（Bible 编译器输入） | **本地内容资产**：按「Character Bible 不得上传」约束，已移至 `config/bible_source_罐头.txt`（`config/` 不在发布镜像内） |
 
 ## 运维速查
 
