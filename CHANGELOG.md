@@ -3,6 +3,30 @@
 本文件记录 CatooBot 的版本演进。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号见 `pyproject.toml`；日期取自真实提交历史（本仓库 2026-09-30 起）。
 
+## [Unreleased] — v2.1 · Console World Log: Change-Driven Reporting
+
+- **审计结论**：刷屏来自 `SandboxRuntime.tick()` 末尾的 `narrate().world(...)`
+  （`narrate_ticks` 打开时每 tick 一行）——Phase 14 把 tick 变成每秒一次之后，
+  同一行世界状态被每秒重复打印。
+- **只改终端日志（§2/§3/§13）**：新增 `app/runtime/console_world.py` ——
+  `ConsoleWorldSnapshot`（frozen dataclass，只含**终端可见语义**：动作名 / 地点 /
+  模式 / 渲染后的需求条目）+ `console_world_snapshot(runtime)`（只读投影，复用
+  原来的 `status_line`/`modes.ids`/`needs.summary_line`）+ `ConsoleWorldReporter`
+  （与上一次输出比较，相同则完全静默）。`tick()` 的世界推进、Need 演化、
+  Goal/Action/Decision/Influence/世界锁**一行未改**，调度频率仍是 1 秒
+  （测试断言 ticks == 60 时世界日志只 1 行）。
+- **比较的是显示值，不是内部值（§4-§7）**：需求按渲染后的 band 文本比较（排序归一化），
+  同一 band 内的 float 漂移不触发输出，跨 band（如"想喝点冰的"→"想喝点冰的（很强烈）"）
+  才输出一次；计数器/时间戳/revision 等内部变化一律不触发。状态只在 runtime 内存，
+  重启后首次状态照常输出一次（§14）。
+- **其余日志不受影响（§12）**：QQ/决策/打断/恢复/关系/承诺等事件型日志链路未动；
+  配置项 `logging.narrate_world_ticks` 语义更新为"可见状态变化时播报"，
+  WebUI 配置页标签同步更新。
+- 新增 `tests/test_console_world_log.py`（9 个测试：60 次 tick 只打印 1 次且世界照常推进、
+  内部变化不打印、同 band 漂移不打印、动作变化打印一次后继续安静、需求跨 band 打印一次、
+  外部事件改变可见状态打印一次、重启后首次再打印、快照字段仅显示语义、
+  Reporter 仅在变化时输出），总测试 1430。
+
 ## [Unreleased] — v2.1 Phase 16 · Live Social Influence & Autonomous Interaction Continuity
 
 - **审计优先（§4）**：影响判定、打断/恢复、社交事实、会话、Commit Guard 全部已存在

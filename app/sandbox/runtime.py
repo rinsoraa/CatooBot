@@ -16,6 +16,7 @@ import uuid
 from collections.abc import Callable
 from typing import Any
 
+from app.runtime.console_world import ConsoleWorldReporter, console_world_snapshot
 from app.sandbox.actions import ActionSystem
 from app.sandbox.bible import CharacterBible
 from app.sandbox.cognitive import CognitiveContext, CognitiveContextBuilder
@@ -288,6 +289,10 @@ class SandboxRuntime:
         self.candidates = MemoryCandidateBuilder()
         #: §10.1 §7: episodes whose row already existed (restart replay)
         self.duplicate_episodes_skipped = 0
+        #: change-driven console world log (observability only, runtime memory)
+        self.console_world = ConsoleWorldReporter(
+            emit=lambda snapshot: narrate().world(snapshot.line(), detail=snapshot.detail())
+        )
         self.memory = SandboxMemoryStore(
             store.database, character_id=self.character_id, clock=clock, logger=self._log
         )
@@ -831,9 +836,9 @@ class SandboxRuntime:
         await self.goals.flush()
         await self.flush_experiences()
         if self.narrate_ticks:
-            pressing = self.needs.summary_line() if self.needs.pressing() else ""
-            detail = "沙盒心跳" + (f"（{pressing}）" if pressing else "")
-            narrate().world(f"{self.status_line()}  ·  {'+'.join(self.modes.ids())}", detail=detail)
+            # change-driven (§2/§9): the tick still runs every second, the world
+            # line is printed only when what the terminal shows actually changed
+            self.console_world.observe(console_world_snapshot(self))
         return report
 
     # ------------------------------------------------- social session (§46-§49)

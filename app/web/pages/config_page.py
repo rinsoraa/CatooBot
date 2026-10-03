@@ -137,7 +137,7 @@ def _basic(service: Any, snapshot: dict[str, Any]) -> str:
         ui.switch(
             "log_narrate_ticks",
             logging_cfg["narrate_world_ticks"],
-            "每次沙盒心跳都播报",
+            "世界可见状态变化时播报（心跳本身不再刷屏）",
             tip_text="默认只在状态变化时播报；打开后每 tick 都会打印一行（信息较密）",
         )
     }

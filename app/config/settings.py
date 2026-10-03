@@ -101,7 +101,8 @@ class LoggingConfig(BaseModel):
     # Narration: print the character's inner life (state / thinking / flow /
     # what she says / what her world is doing) to the console. File keeps it too.
     narrate: bool = True
-    # Also narrate every world tick (noisy; off by default — changes are always shown)
+    # Print the 🌍 world line when the *visible* state changes (the world itself
+    # still ticks every second; off by default — changes are always shown)
     narrate_world_ticks: bool = False
     #: Show the model's thinking excerpt in the terminal (console only — never
     #: written to the log file, and never saved to the database).
