@@ -227,11 +227,13 @@ class ModelRouter:
         raise AllModelsFailedError([f"{a.model_name}: {a.error}" for a in attempts])
 
     def _resolve_pinned(self, model_name: str | None) -> ModelState | None:
-        """``request.model`` may pin a specific configured model by its name.
+        """``request.model`` may pin a preferred configured model by its name.
 
-        A pin is explicit configuration, so a disabled model fails the request
-        with a clear reason instead of being called (or silently swapped for
-        another model, which would hide the mistake).
+        The pin is explicit configuration, so an unknown or disabled model
+        fails the request with a clear reason instead of being silently swapped
+        for another one. An enabled pin is the first routing candidate; if it
+        fails with a switchable error the request still fails over down the
+        configured chain (``provider_model`` reports who actually answered).
         """
         if model_name is None:
             return None
@@ -251,7 +253,11 @@ class ModelRouter:
     def _candidates(self, pinned: ModelState | None) -> list[ModelState]:
         now = self._clock()
         if pinned is not None:
+            # The pin is the preferred candidate, not the only one: the rest of
+            # the enabled chain stays available for failover (the WebUI's model
+            # test relies on the router — never on the caller — to switch).
             pool = [pinned]
+            pool.extend(s for s in self.states.values() if s is not pinned and s.enabled)
         else:
             pool = [s for s in self.states.values() if s.enabled]
         return [s for s in pool if not s.in_cooldown(now)]

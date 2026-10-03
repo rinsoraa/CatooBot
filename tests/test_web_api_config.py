@@ -174,6 +174,28 @@ class TestEffectiveConfig:
             assert row["value"] == 1.5
 
 
+class TestHyphenatedKeys:
+    async def test_a_hyphenated_provider_name_resolves_in_effective_config(self, tmp_path) -> None:
+        """W6：Provider 名允许连字符（W2 校验规则），点号键解析必须同样接受它。"""
+        overrides = {
+            "ai": {
+                "providers": {
+                    "my-provider": {"base_url": "http://127.0.0.1:9/v1", "api_key_env": ""}
+                },
+                "models": [{"name": "m1", "provider": "my-provider", "model": "m1"}],
+            }
+        }
+        async with api_server(tmp_path, config_overrides=overrides) as (client, _bot, _server):
+            await client.login()
+            status, payload = await client.get(
+                "/api/v1/config/effective?keys=ai.providers.my-provider.base_url"
+            )
+            assert status == 200
+            row = payload["data"]["items"][0]
+            assert row["key"] == "ai.providers.my-provider.base_url"
+            assert row["value"] == "http://127.0.0.1:9/v1"
+
+
 class TestConfigApply:
     async def test_hot_reload_really_applies(self, tmp_path) -> None:  # type: ignore[no-untyped-def]
         async with api_server(tmp_path) as (client, bot, _server):  # type: ignore[no-untyped-def]

@@ -225,8 +225,30 @@ const conflict = ref<{ name: string; message: string; count: number } | null>(nu
 const forceConfirm = ref(false)
 const deleting = ref(false)
 
-async function removeProvider(provider: ProviderItem): Promise<void> {
+const deleteTarget = ref<ProviderItem | null>(null)
+const deleteConfirm = ref(false)
+
+/** 站内确认（§37）：删除不可恢复；有模型时说明受影响的模型。 */
+const deleteMessage = computed(() => {
+  const target = deleteTarget.value
+  if (!target) return ''
+  const models = modelsOf(target.name)
+  const affected = models.length
+    ? `该 Provider 下仍有 ${models.length} 个模型（${models.join('、')}），需先删除这些模型，或强制删除时连带移除。`
+    : ''
+  return `删除后无法恢复。该 Provider 将从配置中移除。${affected}`
+})
+
+function requestRemove(provider: ProviderItem): void {
   if (deleting.value) return
+  deleteTarget.value = provider
+  deleteConfirm.value = true
+}
+
+async function removeProvider(): Promise<void> {
+  const provider = deleteTarget.value
+  deleteTarget.value = null
+  if (!provider || deleting.value) return
   deleting.value = true
   const ok = await aiStore.deleteProvider(provider.name)
   deleting.value = false
@@ -316,7 +338,7 @@ onMounted(() => {
               type="button"
               class="ai-btn ai-btn--danger"
               data-test="delete-provider"
-              @click="removeProvider(provider)"
+              @click="requestRemove(provider)"
             >
               删除
             </button>
@@ -485,6 +507,17 @@ onMounted(() => {
         </div>
       </div>
     </div>
+
+    <!-- 首次删除必须先经站内确认（§37/§38） -->
+    <ConfirmDialog
+      v-model="deleteConfirm"
+      title="删除 Provider"
+      :message="deleteMessage"
+      detail="此操作不可恢复，确定继续吗？"
+      confirm-text="删除"
+      danger
+      @confirm="removeProvider"
+    />
 
     <ConfirmDialog
       v-model="forceConfirm"

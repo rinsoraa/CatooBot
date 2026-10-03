@@ -143,7 +143,8 @@ class TestHttpGate:
 
     async def _login(self, session, base: str) -> str:  # type: ignore[no-untyped-def]
         await session.post(base + "/login", data={"username": "admin", "password": "pw123"})
-        async with session.get(base + "/character") as resp:
+        # W6: CSSRF-bearing SSR forms live on the legacy pages now (/character is v1)
+        async with session.get(base + "/legacy/character") as resp:
             page = await resp.text()
         match = re.search(r'name="csrf_token" value="([^"]+)"', page)
         assert match is not None

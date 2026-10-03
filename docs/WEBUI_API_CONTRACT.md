@@ -155,10 +155,10 @@ W2 需在 `AdminService` 增只读方法；`runtime/tick` 复用 `RuntimeSchedul
 |---|---|---|---|
 | `GET /api/v1/ai/providers` | Provider 列表（含 Key 状态） | — | `{"items": [{"name", "type", "base_url", "api_key_env", "has_key", "restart_required"}]}` |
 | `PUT /api/v1/ai/providers/{name}` | 新增/修改 Provider（upsert） | `{"type", "base_url", "api_key_env"}` | 同单项；`type` 目前仅 `openai_compatible`，未知类型 → `400 ai.provider_unknown` |
-| `DELETE /api/v1/ai/providers/{name}` | 删除（其下模型必须为空或 `?force=true` 连带删除） | — | `{"deleted": true, "models_removed": 2}` |
+| `DELETE /api/v1/ai/providers/{name}` | 删除（须带 `confirm` 防误删；其下模型必须为空或 `?force=true` 连带删除） | `{"confirm": "<name>"}`；`?force=true` 时为 `{"confirm": "force"}` | `{"deleted": true, "models_removed": 2}`；`confirm` 缺失/不符 → `409 ai.confirm_required`（不可恢复，级联时连同模型一起删除）；未知 → `404 ai.provider_unknown`；被模型引用（未 force）→ `409 ai.provider_in_use`（带 `models`）；来自 config.yaml → `409 config.base_defined` |
 | `GET /api/v1/ai/models` | 模型列表（含路由器实时状态 + 7 天用量） | — | `{"items": [{"name", "provider", "model", "enabled", "order", "roles": ["chat"], "in_cooldown", "cooldown_until", "cooldown_remaining_seconds", "failure_count", "usage": {"calls", "failures", "avg_latency_ms", "tokens"}}]}` |
 | `PUT /api/v1/ai/models/{name}` | 新增/修改模型 | `{"provider", "model", "enabled"}` | 同单项 |
-| `DELETE /api/v1/ai/models/{name}` | 删除（若被角色引用 → `409 ai.model_in_use`，带 `roles`） | — | `{"deleted": true}` |
+| `DELETE /api/v1/ai/models/{name}` | 删除（须带 `confirm` 防误删；若被角色引用 → `409 ai.model_in_use`，带 `roles`） | `{"confirm": "<name>"}`；`?force=true` 时为 `{"confirm": "force"}` | `{"deleted": true, "roles_cleared": [...]}`；`confirm` 缺失/不符 → `409 ai.confirm_required`（不可恢复，force 时解除用途绑定）；未知 → `404 ai.model_unknown` |
 | `PUT /api/v1/ai/models/order` | 失败转移顺序（**持久化**，修复今日 priority 不重放的问题） | `{"order": ["fast", "smart", "vision"]}` | `{"order": [...]}` |
 | `POST /api/v1/ai/models/{name}/test` | 单模型测试（走完整路由，含失败转移） | `{"prompt"?: "ping"}` | `{"ok", "model", "requested_model", "provider", "provider_model", "latency_ms", "http_status", "http_status_source", "error_type", "message", "response"}` |
 | `GET /api/v1/ai/status` | AI 概览的一屏数据（W4）：健康状态 + 计数 + fallback 链 + 429/5xx + cooldown | — | `{"status", "enabled", "configured", "checks{has_provider,has_credential,has_model,chat_bound}", "providers{total,with_key,missing_key}", "models{total,enabled,disabled,usable,cooldown}", "chat_model", "fallback_chain", "errors{rate_limited,server_errors}", "cooldown_models"}` |

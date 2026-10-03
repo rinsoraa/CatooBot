@@ -187,7 +187,7 @@ async def test_webui_http_gate(tmp_path, unused_tcp_port) -> None:
                 assert "新增记忆" in body and "812" in body and "719" in body
 
             # every management page renders its own content
-            async with session.get(base + "/character") as resp:
+            async with session.get(base + "/legacy/character") as resp:
                 body = await resp.text()
                 assert resp.status == 200
                 assert "Identity" in body and "行为规则" in body
@@ -202,7 +202,7 @@ async def test_webui_http_gate(tmp_path, unused_tcp_port) -> None:
                 exported = await resp.json()
                 assert exported["format"] == "catoobot-character-export"
 
-            async with session.get(base + "/memory") as resp:
+            async with session.get(base + "/legacy/memory") as resp:
                 body = await resp.text()
                 assert resp.status == 200
                 assert "记忆" in body and "记忆修正" in body
@@ -223,12 +223,12 @@ async def test_webui_http_gate(tmp_path, unused_tcp_port) -> None:
                     assert resp.status == 200, path
             # persona is editable through the WebUI form — with the CSRF token
             # the page injects (a real browser submits it back verbatim)
-            async with session.get(base + "/character") as resp:
+            async with session.get(base + "/legacy/character") as resp:
                 page = await resp.text()
             csrf = re.search(r'name="csrf_token" value="([^"]+)"', page)
             assert csrf is not None, "the page must ship a CSRF token"
             async with session.post(
-                base + "/character",
+                base + "/legacy/character",
                 data={
                     "name": "小夜",
                     "traits": "安静",
@@ -314,7 +314,7 @@ async def test_memory_health_page_banners_extraction_failure(tmp_path, unused_tc
                 assert resp.status == 302
 
             bot.extractor = StubExtractor("最近连续 5 次记忆抽取零入库——见日志 [Memory.Extract]")
-            async with session.get(base + "/memory/health") as resp:
+            async with session.get(base + "/legacy/memory/health") as resp:
                 body = await resp.text()
                 assert resp.status == 200
                 assert "连续 5 次记忆抽取零入库" in body
@@ -322,7 +322,7 @@ async def test_memory_health_page_banners_extraction_failure(tmp_path, unused_tc
                 assert "抽取模型" in body
 
             bot.extractor = StubExtractor(None)
-            async with session.get(base + "/memory/health") as resp:
+            async with session.get(base + "/legacy/memory/health") as resp:
                 body = await resp.text()
                 assert resp.status == 200
                 assert "<div class='flash flash-error'>" not in body

@@ -224,15 +224,37 @@ async function submit(): Promise<void> {
 const conflict = ref<{ name: string; message: string; roles: string[] } | null>(null)
 const forceConfirm = ref(false)
 
-async function removeModel(model: ModelItem): Promise<void> {
-  const ok = await aiStore.deleteModel(model.name)
+const deleteTarget = ref<ModelItem | null>(null)
+const deleteConfirm = ref(false)
+
+/** 站内确认（§37）：删除不可恢复；有用途时说明受影响的绑定。 */
+const deleteMessage = computed(() => {
+  const target = deleteTarget.value
+  if (!target) return ''
+  const labels = roleLabels(target.roles)
+  const affected = labels.length
+    ? `该模型绑定了 ${labels.length} 个用途（${labels.join('、')}），需先改绑，或强制删除时解除绑定。`
+    : ''
+  return `删除后无法恢复。该模型将从配置中移除。${affected}`
+})
+
+function requestRemove(model: ModelItem): void {
+  deleteTarget.value = model
+  deleteConfirm.value = true
+}
+
+async function removeModel(): Promise<void> {
+  const target = deleteTarget.value
+  deleteTarget.value = null
+  if (!target) return
+  const ok = await aiStore.deleteModel(target.name)
   if (ok) {
-    toast.success(`已删除模型「${model.name}」`)
+    toast.success(`已删除模型「${target.name}」`)
     return
   }
-  const roles = aiStore.models.find((item) => item.name === model.name)?.roles ?? []
+  const roles = aiStore.models.find((item) => item.name === target.name)?.roles ?? target.roles
   if (roles.length > 0) {
-    conflict.value = { name: model.name, message: aiStore.error, roles }
+    conflict.value = { name: target.name, message: aiStore.error, roles }
   } else {
     toast.error('删除失败', aiStore.error)
   }
@@ -373,7 +395,7 @@ onBeforeUnmount(() => {
             <div class="ai-models__row-actions">
               <button type="button" class="ai-btn" data-test="test-model" @click="openTest(model)">测试模型</button>
               <button type="button" class="ai-btn" data-test="edit-model" @click="openEdit(model)">编辑</button>
-              <button type="button" class="ai-btn ai-btn--danger" data-test="delete-model" @click="removeModel(model)">
+              <button type="button" class="ai-btn ai-btn--danger" data-test="delete-model" @click="requestRemove(model)">
                 删除
               </button>
             </div>
@@ -412,7 +434,7 @@ onBeforeUnmount(() => {
           </button>
           <button type="button" class="ai-btn" @click="openTest(model)">测试模型</button>
           <button type="button" class="ai-btn" @click="openEdit(model)">编辑</button>
-          <button type="button" class="ai-btn ai-btn--danger" @click="removeModel(model)">删除</button>
+          <button type="button" class="ai-btn ai-btn--danger" @click="requestRemove(model)">删除</button>
         </div>
       </article>
     </div>
@@ -537,6 +559,17 @@ onBeforeUnmount(() => {
         </div>
       </div>
     </div>
+
+    <!-- 首次删除必须先经站内确认（§37/§38） -->
+    <ConfirmDialog
+      v-model="deleteConfirm"
+      title="删除模型"
+      :message="deleteMessage"
+      detail="此操作不可恢复，确定继续吗？"
+      confirm-text="删除"
+      danger
+      @confirm="removeModel"
+    />
 
     <ConfirmDialog
       v-model="forceConfirm"

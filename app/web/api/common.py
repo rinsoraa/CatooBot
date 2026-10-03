@@ -162,9 +162,9 @@ def read_query_int(
 
 #: ``ai.models[0].name`` / ``ai.providers.<n>.base_url`` / ``runtime.tick_seconds``
 _KEY_RE = re.compile(
-    r"([A-Za-z_][A-Za-z0-9_]*)(?:\[(\d+)\]|\.<[a-z_]+>|\.([A-Za-z_][A-Za-z0-9_]*))*"
+    r"([A-Za-z_][A-Za-z0-9_-]*)(?:\[(\d+)\]|\.<[a-z_]+>|\.([A-Za-z_][A-Za-z0-9_-]*))*"
 )
-_SEGMENT_RE = re.compile(r"\.?([A-Za-z_][A-Za-z0-9_]*)|\[(\d+)\]|\.<[a-z_]+>")
+_SEGMENT_RE = re.compile(r"\.?([A-Za-z_][A-Za-z0-9_-]*)|\[(\d+)\]|\.<[a-z_]+>")
 
 
 def split_key(key: str) -> list[str | int]:

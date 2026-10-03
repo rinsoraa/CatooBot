@@ -171,11 +171,7 @@ function formatDuration(seconds: number): string {
   return `${minutes}分 ${total % 60}秒`
 }
 
-const uptimeSeconds = computed(() => {
-  const detail = runtime.runtime?.uptime_seconds
-  if (detail !== null && detail !== undefined) return detail
-  return runtime.overview?.runtime?.uptime_seconds ?? null
-})
+const uptimeSeconds = computed(() => runtime.uptimeSeconds)
 const uptimeText = computed(() =>
   uptimeSeconds.value === null ? '—' : formatDuration(uptimeSeconds.value),
 )

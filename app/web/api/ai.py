@@ -80,7 +80,23 @@ class AiApiRoutes(WebContext):
         return ok(item, request=request)
 
     async def _v1_ai_provider_delete(self, request: web.Request) -> web.Response:
-        result = await self._ai().delete_provider(request.match_info["name"], force=_force(request))
+        name = request.match_info["name"]
+        force = _force(request)
+        body = await read_json(request, required=False)
+        expected = "force" if force else name
+        if body.get("confirm") != expected:
+            if force:
+                message = (
+                    f"删除 Provider「{name}」不可恢复：该 Provider 及其下全部模型与相关绑定"
+                    "都将从配置中移除；请带 confirm=force"
+                )
+            else:
+                message = (
+                    f"删除 Provider「{name}」不可恢复：该 Provider 及其 API Key 引用"
+                    f"将从配置中移除；请带 confirm={name}"
+                )
+            raise conflict(message, code="ai.confirm_required")
+        result = await self._ai().delete_provider(name, force=force)
         return ok(result, request=request)
 
     # --------------------------------------------------------------------- model
@@ -112,7 +128,23 @@ class AiApiRoutes(WebContext):
         return ok(item, request=request)
 
     async def _v1_ai_model_delete(self, request: web.Request) -> web.Response:
-        result = await self._ai().delete_model(request.match_info["name"], force=_force(request))
+        name = request.match_info["name"]
+        force = _force(request)
+        body = await read_json(request, required=False)
+        expected = "force" if force else name
+        if body.get("confirm") != expected:
+            if force:
+                message = (
+                    f"删除模型「{name}」不可恢复：该模型及其承担的全部用途绑定"
+                    "都将从配置中移除；请带 confirm=force"
+                )
+            else:
+                message = (
+                    f"删除模型「{name}」不可恢复：该模型将从配置与失败转移顺序中移除；"
+                    f"请带 confirm={name}"
+                )
+            raise conflict(message, code="ai.confirm_required")
+        result = await self._ai().delete_model(name, force=force)
         return ok(result, request=request)
 
     async def _v1_ai_model_order(self, request: web.Request) -> web.Response:

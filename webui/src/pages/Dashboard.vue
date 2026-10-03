@@ -98,7 +98,7 @@ const worldHint = computed(() => {
 
 // ------------------------------------------------------------ 运行时指标
 const uptimeValue = computed(() => {
-  const seconds = runtime.runtime?.uptime_seconds
+  const seconds = runtime.uptimeSeconds
   if (seconds == null) return null
   return formatDuration(seconds)
 })

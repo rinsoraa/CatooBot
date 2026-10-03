@@ -31,7 +31,7 @@
 | `GET /memory` | `GET /memory` | dispatched | `/memory`（浏览） | 旧页面 → `/legacy/memory` |
 | `GET /memory/health` | `GET /memory/health` | dispatched | `/memory/health` | 旧页面 → `/legacy/memory/health` |
 | `GET /memory/detail/{id}` | `GET /memory/{id}` | migrated | 记忆详情 | 旧路径仍可用 |
-| `GET /memory/timeline` | `GET /memory/timeline` | migrated | 时间线 | 旧 `/memory/timeline` 未被遮蔽（无冲突） |
+| `GET /memory/timeline` | `GET /memory/timeline` | dispatched | 时间线（v1） | W6 修复：此前被旧 SSR 页面遮蔽；旧页面在 `/legacy/memory/timeline` |
 | `GET/POST /memory/search` | `/memory?q=`（URL 状态） | migrated | 浏览页过滤器 | v1 用 query 参数 |
 | `GET /memory/retrieval-debug` | — | legacy | 仅旧版 | 诊断能力保留在旧控制台 |
 | `POST /memory/embeddings/{action}`、`/memory/consolidation/run` | — | legacy | 仅旧版 | 重型运维操作不迁移 |
@@ -61,7 +61,8 @@
 | `/social` | SPA 社交 | 旧社交面板 |
 | `/memory` | SPA 记忆 | 旧记忆浏览 |
 | `/memory/health` | SPA 记忆健康度 | 旧记忆健康页 |
-| `/legacy`、`/legacy/character`、`/legacy/social`、`/legacy/memory`、`/legacy/memory/health` | 始终旧 SSR | 同左 |
+| `/memory/timeline` | SPA 时间线（W6 加入分流） | 旧时间线页 |
+| `/legacy`、`/legacy/character`（GET+POST）、`/legacy/social`、`/legacy/memory`、`/legacy/memory/health`、`/legacy/memory/timeline` | 始终旧 SSR | 同左 |
 
 未列出的旧路径（`/users`、`/groups`、`/sessions`、`/tools`、`/stickers`、`/expressions`、`/agent`、`/logs`、`/runtime`、`/sandbox*`、`/behavior`、`/config*`、`/prompts`、`/conversation*`、`/topics`、`/credentials`、`/models` 等）在任何版本下都保持旧 SSR 行为，未被 W5 改动。
 
@@ -70,3 +71,14 @@
 W5 只**新增**四个分流点与四个 `/legacy/*` 别名，`GET /`、`GET /login` 的分流沿用 W3。
 旧 SSR 全部路由（含 `/tools/{name}` 这类既有通配）保持注册顺序与行为不变，`/api/v1`
 与 `/ws` 命名空间从未被 SPA fallback 影响。
+
+
+---
+
+## W6 final status（2026-10-03）
+
+- `web.version = "v1"` 为**出货默认**；`v0.8` 为 legacy/rollback（一个配置项即可切换，API 不受影响）。
+- 分流点从 4 个增至 **5 个**（新增 `/memory/timeline`），legacy 直达别名 **7 条**（新增 `/legacy/memory/timeline` 与 `POST /legacy/character`）。
+- W6 审计发现的 P0（匿名登录页资源被会话拦截）与 P1（分流点失效、CSRF 豁免过宽、钉住模型无法故障转移、`/memory/timeline` 遮蔽、重启横幅 401、uptime 字段、连字符键、删除无确认、测试环境污染、7 个过期断言）**全部修复并带测试**；详见 `WEBUI_V1_W6_AUDIT.md`。
+- 未删除任何旧路由；`/api/v1` 与 `/ws/*` 全程未被 SPA fallback 影响。
+- 最终路由总表见 `WEBUI_V1_ROUTE_MATRIX.md`，架构见 `WEBUI_V1_FINAL_ARCHITECTURE.md`，测试矩阵见 `WEBUI_V1_FINAL_TEST_MATRIX.md`。

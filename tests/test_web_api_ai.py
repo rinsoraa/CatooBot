@@ -183,13 +183,19 @@ class TestAiProviders:
         async with ai_server(tmp_path) as (client, _bot, _server):
             await client.login()
             status, payload = await client.delete("/api/v1/ai/providers/ghost")
+            assert status == 409 and error_code(payload) == "ai.confirm_required"
+            status, payload = await client.delete(
+                "/api/v1/ai/providers/ghost", body={"confirm": "ghost"}
+            )
             assert status == 404 and error_code(payload) == "ai.provider_unknown"
 
     async def test_delete_base_defined_provider_is_conflict(self, tmp_path: Path) -> None:
         overrides = {"ai": {"providers": {"basep": {"base_url": "http://x.test/v1"}}, "models": []}}
         async with ai_server(tmp_path, config_overrides=overrides) as (client, _bot, _server):
             await client.login()
-            status, payload = await client.delete("/api/v1/ai/providers/basep")
+            status, payload = await client.delete(
+                "/api/v1/ai/providers/basep", body={"confirm": "basep"}
+            )
             assert status == 409
             assert error_code(payload) == "config.base_defined"
             assert "config.yaml" in payload["error"]["message"]
@@ -205,8 +211,18 @@ class TestAiProviders:
                 "/api/v1/ai/models/inuse-model", body={"provider": "inuse", "model": "m"}
             )
             status, payload = await client.delete("/api/v1/ai/providers/inuse")
+            assert status == 409 and error_code(payload) == "ai.confirm_required"
+            status, payload = await client.delete(
+                "/api/v1/ai/providers/inuse?force=1", body={"confirm": "inuse"}
+            )
+            assert status == 409 and error_code(payload) == "ai.confirm_required"
+            status, payload = await client.delete(
+                "/api/v1/ai/providers/inuse", body={"confirm": "inuse"}
+            )
             assert status == 409 and error_code(payload) == "ai.provider_in_use"
-            status, payload = await client.delete("/api/v1/ai/providers/inuse?force=1")
+            status, payload = await client.delete(
+                "/api/v1/ai/providers/inuse?force=1", body={"confirm": "force"}
+            )
             assert status == 200 and payload["data"]["models_removed"] == 1
             _status, models = await client.get("/api/v1/ai/models")
             assert all(row["name"] != "inuse-model" for row in models["data"]["items"])
@@ -253,6 +269,10 @@ class TestAiModels:
         async with ai_server(tmp_path, config_overrides=fake_ai_block()) as (client, _bot, _s):
             await client.login()
             status, payload = await client.delete("/api/v1/ai/models/ghost")
+            assert status == 409 and error_code(payload) == "ai.confirm_required"
+            status, payload = await client.delete(
+                "/api/v1/ai/models/ghost", body={"confirm": "ghost"}
+            )
             assert status == 404 and error_code(payload) == "ai.model_unknown"
             status, payload = await client.post("/api/v1/ai/models/ghost/test", body={})
             assert status == 404 and error_code(payload) == "ai.model_unknown"
@@ -286,9 +306,17 @@ class TestAiModels:
             await client.login()
             await client.put("/api/v1/ai/roles/vision", body={"model": "m1"})
             status, payload = await client.delete("/api/v1/ai/models/m1")
+            assert status == 409 and error_code(payload) == "ai.confirm_required"
+            status, payload = await client.delete("/api/v1/ai/models/m1", body={"confirm": "m1"})
             assert status == 409 and error_code(payload) == "ai.model_in_use"
             assert "vision" in payload["error"]["detail"]["roles"]
-            status, _payload = await client.delete("/api/v1/ai/models/m1?force=1")
+            status, payload = await client.delete(
+                "/api/v1/ai/models/m1?force=1", body={"confirm": "m1"}
+            )
+            assert status == 409 and error_code(payload) == "ai.confirm_required"
+            status, _payload = await client.delete(
+                "/api/v1/ai/models/m1?force=1", body={"confirm": "force"}
+            )
             assert status == 200
             assert [m.name for m in bot.config.ai.models] == ["m2"]
 

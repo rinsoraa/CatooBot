@@ -14,6 +14,7 @@ import type {
   OverviewData,
   QqSnapshot,
   RuntimeData,
+  RuntimeSnapshot,
   SchedulerSnapshot,
   WorldSnapshot,
 } from '@/types/runtime'
@@ -31,6 +32,19 @@ export const useRuntimeStore = defineStore('runtime', () => {
 
   const counts = computed<CountsSnapshot>(() => overview.value?.counts ?? {})
   const online = computed<boolean>(() => Boolean(overview.value?.qq?.online))
+
+  /** 进程运行时长：`/runtime` 把它放在 `process.uptime_seconds`（W2 契约）。 */
+  function uptimeOf(snapshot: RuntimeSnapshot | null | undefined): number | null {
+    if (!snapshot) return null
+    const fromProcess = snapshot.process?.uptime_seconds
+    if (typeof fromProcess === 'number') return fromProcess
+    const legacy = snapshot.uptime_seconds
+    return typeof legacy === 'number' ? legacy : null
+  }
+
+  const uptimeSeconds = computed<number | null>(
+    () => uptimeOf(runtime.value) ?? uptimeOf(overview.value?.runtime),
+  )
 
   /** 首屏快照：两个 GET，然后交给 WebSocket 增量（§16）。 */
   async function loadInitial(): Promise<void> {
@@ -106,6 +120,7 @@ export const useRuntimeStore = defineStore('runtime', () => {
     qq,
     counts,
     online,
+    uptimeSeconds,
     loading,
     error,
     lastLoadedAt,

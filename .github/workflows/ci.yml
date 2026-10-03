@@ -61,6 +61,29 @@ jobs:
           fi
           exit "$status"
 
+
+      # W6: real browser E2E against a real Bot (Chromium + the WebUI built above)
+      - name: Set up Node 22 (for the browser E2E)
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: webui/package-lock.json
+
+      - name: Install WebUI deps (for the browser E2E)
+        working-directory: webui
+        run: npm ci --no-audit --no-fund
+
+      - name: Install Chromium
+        working-directory: webui
+        run: npx playwright install --with-deps chromium
+
+      - name: Browser E2E (login → domains → mutation → gates → logout)
+        working-directory: webui
+        env:
+          CATOOBOT_E2E_PASSWORD: e2e-test-password
+        run: npm run test:e2e
+
   webui:
     name: webui · typecheck · tests · build
     runs-on: ubuntu-latest

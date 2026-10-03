@@ -321,7 +321,7 @@ describe('AiProviders', () => {
     wrapper.unmount()
   })
 
-  it('surfaces the 409 provider_in_use conflict and only deletes with force', async () => {
+  it('gates deletion behind a confirm dialog and surfaces the 409 provider_in_use conflict', async () => {
     const state = makeState()
     const { wrapper, calls } = await mountProviders(state)
     state.failDelete = PROVIDER_IN_USE
@@ -329,20 +329,38 @@ describe('AiProviders', () => {
     await wrapper.get('[data-test="provider-alpha"] [data-test="delete-provider"]').trigger('click')
     await settle()
 
+    // §37/§38: 确认框先出现，确认前一个请求都不发
+    expect(calls.filter((c) => c.method === 'DELETE')).toHaveLength(0)
+    expect(wrapper.find('[data-test="confirm"]').exists()).toBe(true)
+    expect(wrapper.text()).toContain('删除后无法恢复')
+    expect(wrapper.text()).toContain('1 个模型（fast）')
+
+    await wrapper.get('[data-test="confirm"]').trigger('click')
+    await settle()
+
     const conflict = wrapper.get('[data-test="provider-conflict"]')
     expect(conflict.text()).toContain('仍被 1 个模型使用：fast')
     expect(conflict.text()).toContain('仍有 1 个模型')
     expect(conflict.get('[data-test="conflict-message"]').text()).toBe(PROVIDER_IN_USE.error?.message)
 
+    let deletes = calls.filter((c) => c.method === 'DELETE' && c.path === '/api/v1/ai/providers/alpha')
+    expect(deletes).toHaveLength(1)
+    expect(deletes[0]?.query.get('force')).toBeNull()
+    expect(deletes[0]?.body).toEqual({ confirm: 'alpha' })
+
+    // 强制删除同样要过确认框（confirm 必须是 force）
     state.failDelete = null
     await conflict.get('[data-test="conflict-force"]').trigger('click')
+    await settle()
+    expect(calls.filter((c) => c.method === 'DELETE')).toHaveLength(1)
+
     await wrapper.get('[data-test="confirm"]').trigger('click')
     await settle()
 
-    const deletes = calls.filter((c) => c.method === 'DELETE' && c.path === '/api/v1/ai/providers/alpha')
+    deletes = calls.filter((c) => c.method === 'DELETE' && c.path === '/api/v1/ai/providers/alpha')
     expect(deletes).toHaveLength(2)
-    expect(deletes[0]?.query.get('force')).toBeNull()
     expect(deletes[1]?.query.get('force')).toBe('1')
+    expect(deletes[1]?.body).toEqual({ confirm: 'force' })
     expect(wrapper.find('[data-test="provider-conflict"]').exists()).toBe(false)
     wrapper.unmount()
   })

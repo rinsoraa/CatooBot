@@ -101,8 +101,12 @@ class TestSpaServing:
                     assert response.status == 200
                     body = await response.text()
                     assert "限流 429" in body and "NapCat" in body
-                # the old pages keep their own URLs untouched
+                # W6: in v1 mode the four dispatched paths serve the SPA; the old
+                # pages stay reachable through their /legacy aliases.
                 async with session.get(base + "/character") as response:
+                    assert response.status == 200
+                    assert 'id="app"' in await response.text()
+                async with session.get(base + "/legacy/character") as response:
                     assert response.status == 200
                     assert "行为规则" in await response.text()
         finally:

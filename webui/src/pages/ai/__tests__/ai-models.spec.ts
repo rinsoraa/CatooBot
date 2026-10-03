@@ -276,7 +276,7 @@ describe('AiModels', () => {
     wrapper.unmount()
   })
 
-  it('blocks deletion when a role references the model and only forces after confirmation', async () => {
+  it('gates deletion behind a confirm dialog and blocks when a role references the model', async () => {
     const state = makeState()
     const { wrapper, calls } = await mountModels(state)
     state.failDelete = MODEL_IN_USE
@@ -284,19 +284,37 @@ describe('AiModels', () => {
     await wrapper.get('[data-test="model-row-fast"] [data-test="delete-model"]').trigger('click')
     await settle()
 
+    // §37/§38: 确认框先出现，确认前一个请求都不发
+    expect(calls.filter((c) => c.method === 'DELETE')).toHaveLength(0)
+    expect(wrapper.find('[data-test="confirm"]').exists()).toBe(true)
+    expect(wrapper.text()).toContain('删除后无法恢复')
+    expect(wrapper.text()).toContain('1 个用途（聊天回复）')
+
+    await wrapper.get('[data-test="confirm"]').trigger('click')
+    await settle()
+
     const conflict = wrapper.get('[data-test="model-conflict"]')
     expect(conflict.get('[data-test="conflict-message"]').text()).toBe(MODEL_IN_USE.error?.message)
     expect(conflict.text()).toContain('绑定的用途：聊天回复')
 
+    let deletes = calls.filter((c) => c.method === 'DELETE' && c.path === '/api/v1/ai/models/fast')
+    expect(deletes).toHaveLength(1)
+    expect(deletes[0]?.query.get('force')).toBeNull()
+    expect(deletes[0]?.body).toEqual({ confirm: 'fast' })
+
+    // 强制删除同样要过确认框（confirm 必须是 force）
     state.failDelete = null
     await conflict.get('[data-test="conflict-force"]').trigger('click')
+    await settle()
+    expect(calls.filter((c) => c.method === 'DELETE')).toHaveLength(1)
+
     await wrapper.get('[data-test="confirm"]').trigger('click')
     await settle()
 
-    const deletes = calls.filter((c) => c.method === 'DELETE' && c.path === '/api/v1/ai/models/fast')
+    deletes = calls.filter((c) => c.method === 'DELETE' && c.path === '/api/v1/ai/models/fast')
     expect(deletes).toHaveLength(2)
-    expect(deletes[0]?.query.get('force')).toBeNull()
     expect(deletes[1]?.query.get('force')).toBe('1')
+    expect(deletes[1]?.body).toEqual({ confirm: 'force' })
     wrapper.unmount()
   })
 

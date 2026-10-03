@@ -33,6 +33,9 @@ class TestOverridesFile:
         assert read_overrides(tmp_path / "nope.yaml") == {}
 
     def test_load_config_merges_overrides(self, tmp_path, monkeypatch) -> None:
+        # the real .env must never leak into the test process (W6 §126)
+        monkeypatch.setattr("app.config.settings.load_dotenv", lambda *a, **k: None)
+
         from app.config.settings import PROJECT_ROOT
 
         overrides = tmp_path / "ov.yaml"

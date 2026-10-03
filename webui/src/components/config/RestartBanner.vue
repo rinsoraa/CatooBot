@@ -5,19 +5,27 @@
  * 挂在系统分区的每一页顶部；没有待重启项时什么都不渲染，
  * 也绝不提供「自动重启」之类的动作（§53）。
  */
-import { computed, onMounted } from 'vue'
+import { computed, watch } from 'vue'
 import { RouterLink } from 'vue-router'
 
+import { useAuthStore } from '@/stores/auth'
 import { useConfigStore } from '@/stores/config'
 
 const store = useConfigStore()
+const auth = useAuthStore()
 
 const count = computed(() => store.restartPending.pending.length)
 const keysText = computed(() => store.restartPending.pending.join('、'))
 
-onMounted(() => {
-  void store.loadRestartPending()
-})
+// Only fetch once a session exists: the shell mounts before the router
+// resolves /login, and an anonymous GET here would be a pointless 401.
+watch(
+  () => auth.isAuthenticated,
+  (authenticated) => {
+    if (authenticated) void store.loadRestartPending()
+  },
+  { immediate: true },
+)
 </script>
 
 <template>

@@ -72,6 +72,14 @@ export interface RuntimeSnapshot {
   watchdog?: { last_lag_ms?: number | null; max_lag_ms?: number | null; lag_events?: number | null } | null
   database?: { connected?: boolean | null } | null
   hub?: { subscribers?: number | null; published?: number | null; dropped?: number | null } | null
+  //: real process facts live under `process` in the API payload; the flat
+  //: `uptime_seconds` stays for older payloads/unit fixtures.
+  process?: {
+    uptime_seconds?: number | null
+    started_at?: number | null
+    version?: string
+    python?: string
+  } | null
   uptime_seconds?: number | null
 }
 

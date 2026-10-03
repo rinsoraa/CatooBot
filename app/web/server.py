@@ -119,6 +119,9 @@ class WebServer(
         # the form POST stays the legacy login endpoint for both.
         app.router.add_post("/login", self._login_submit)
         app.router.add_post("/logout", self._logout)
+        # WebUI v1.0 (W6): the four shared entry paths must be claimed before
+        # the legacy route modules, or the old SSR handlers shadow the SPA.
+        self.register_page_dispatch(app)
         # v0.9 UI: in-browser configuration + prompt-driven memory correction
         self.register_ops(app)
         self.register_models(app)
@@ -159,6 +162,13 @@ class WebServer(
     async def _auth_middleware(self, request: web.Request, handler: Any) -> Any:
         ui.set_preferences(ui.preferences_from(request.cookies))
         path = request.path
+        # The v1 login page is a module-script SPA: its bundle under /assets/*
+        # (and the favicon) must load before any session exists, or the login
+        # view can never mount. These paths serve only the built static shell —
+        # they contain no data and are the same files /login already returns
+        # to anonymous visitors.
+        if path.startswith("/assets/") or path == "/favicon.ico":
+            return await handler(request)
         # JSON login lives at the same path as the session bootstrap, so the
         # exemption is method-scoped; the SSR login keeps its two forms.
         if (
@@ -175,9 +185,13 @@ class WebServer(
                 return fail(unauthorized(), request=request)
             raise web.HTTPFound("/login")
         set_csrf_token(token)
-        if request.method in MUTATING_METHODS and path not in CSRF_EXEMPT_PATHS | {
-            f"{API_PREFIX}/session"
-        }:
+        # The exemption is method-scoped: only the JSON login
+        # POST /api/v1/session may skip the token. DELETE (logout) and PATCH
+        # (preferences) on the same path are ordinary writes and still need it.
+        csrf_exempt = path in CSRF_EXEMPT_PATHS or (
+            path == f"{API_PREFIX}/session" and request.method == "POST"
+        )
+        if request.method in MUTATING_METHODS and not csrf_exempt:
             supplied = request.headers.get(CSRF_HEADER, "")
             if not supplied and request.content_type.startswith(
                 ("application/x-www-form-urlencoded", "multipart/form-data")

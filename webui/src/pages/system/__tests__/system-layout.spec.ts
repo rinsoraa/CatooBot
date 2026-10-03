@@ -4,6 +4,7 @@ import { mount, type VueWrapper } from '@vue/test-utils'
 import { describe, expect, it } from 'vitest'
 
 import SystemLayout from '../SystemLayout.vue'
+import { useAuthStore } from '@/stores/auth'
 import { fail, flushAll, installFetch, makeRouter, ok, useFreshPinia, type MockRequest } from './helpers'
 
 function child(test: string) {
@@ -23,6 +24,8 @@ function routes() {
 
 async function mountLayout(pending: string[]): Promise<VueWrapper> {
   const pinia = useFreshPinia()
+  // 横幅只在已登录会话下加载（匿名时先 GET 是白费 401）
+  useAuthStore().$patch({ status: 'authenticated' })
   installFetch((request: MockRequest) =>
     request.url.includes('/config/restart-pending')
       ? ok({ pending, since: pending.length ? 1700000000 : null })

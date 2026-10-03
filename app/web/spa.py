@@ -124,9 +124,11 @@ class SpaRoutes:
     _login_page: Any
     #: handlers owned by the legacy SSR route modules (W5 dispatchers)
     _character_page: Any
+    _character_save: Any
     _social_page: Any
     _memory_page: Any
     _memory_health_page: Any
+    _memory_timeline_page: Any
 
     def _v1_frontend(self) -> bool:
         version = str(getattr(self._config, "version", V1) or V1)
@@ -172,21 +174,40 @@ class SpaRoutes:
             return await self._memory_health_page(request)
         return await spa_index()
 
+    async def _spa_memory_timeline(self, request: web.Request) -> web.StreamResponse:
+        """`/memory/timeline` is a v1 SPA route; without this dispatcher the
+        legacy SSR timeline (registered by MemoryRoutes later) shadows it."""
+        if not self._v1_frontend():
+            return await self._memory_timeline_page(request)
+        return await spa_index()
+
+    def register_page_dispatch(self, app: web.Application) -> None:
+        """W5/W6 切换点：这四个路径在 v1 交给 SPA，在 v0.8 交回旧页面。
+
+        必须在旧路由模块（identity / social / memory）之前调用：aiohttp 按
+        注册顺序匹配，旧 handler 一旦先注册就永远抢先，v1 前端拿不到这四个
+        入口（W5 的 dispatcher 会变成死代码）。
+        """
+        app.router.add_get("/character", self._spa_character)
+        app.router.add_get("/social", self._spa_social)
+        app.router.add_get("/memory", self._spa_memory)
+        app.router.add_get("/memory/health", self._spa_memory_health)
+        app.router.add_get("/memory/timeline", self._spa_memory_timeline)
+
     def register_spa(self, app: web.Application) -> None:
         # Registered last: the catch-all only sees paths no domain claimed.
         app.router.add_get("/", self._spa_root)
         app.router.add_get("/login", self._spa_login_page)
         app.router.add_get("/legacy", self._spa_legacy)
-        # W5: the v1 IA reuses four legacy paths; in v1 they serve the SPA and
-        # the old console keeps its own copy under /legacy (registered below).
-        app.router.add_get("/character", self._spa_character)
-        app.router.add_get("/social", self._spa_social)
-        app.router.add_get("/memory", self._spa_memory)
-        app.router.add_get("/memory/health", self._spa_memory_health)
+        # The four shared paths are claimed early (register_page_dispatch); the
+        # old console keeps its own copy under /legacy (registered below).
         app.router.add_get("/legacy/character", self._character_page)
+        # the legacy persona form posts back to the same legacy URL
+        app.router.add_post("/legacy/character", self._character_save)
         app.router.add_get("/legacy/social", self._social_page)
         app.router.add_get("/legacy/memory", self._memory_page)
         app.router.add_get("/legacy/memory/health", self._memory_health_page)
+        app.router.add_get("/legacy/memory/timeline", self._memory_timeline_page)
         app.router.add_get("/assets/{tail:.*}", spa_asset)
         app.router.add_get("/favicon.ico", self._spa_favicon)
         app.router.add_get("/{tail:.*}", spa_fallback)

@@ -39,6 +39,7 @@ export const aiApi = {
   deleteProvider(name: string, force = false): Promise<{ deleted: boolean; models_removed?: number }> {
     return api.del(`/ai/providers/${encodeURIComponent(name)}`, {
       query: force ? { force: 1 } : undefined,
+      body: { confirm: force ? 'force' : name },
     })
   },
 
@@ -53,6 +54,7 @@ export const aiApi = {
   deleteModel(name: string, force = false): Promise<{ deleted: boolean }> {
     return api.del(`/ai/models/${encodeURIComponent(name)}`, {
       query: force ? { force: 1 } : undefined,
+      body: { confirm: force ? 'force' : name },
     })
   },
 
