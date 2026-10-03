@@ -476,6 +476,9 @@ class SocialConfig(BaseModel):
     fatigue: SocialFeatureConfig = Field(default_factory=SocialFeatureConfig)
     topic: SocialFeatureConfig = Field(default_factory=SocialFeatureConfig)
     observation_retention_days: int = Field(default=30, ge=1)
+    #: Phase 16 §46-§48: 一次连续社交互动的静默上限（秒）。会话进行中，重复消息
+    #: 只在同一条社交会话里处理，不再制造嵌套打断；超时视为会话结束、恢复自主生活。
+    interaction_episode_timeout_seconds: float = Field(default=900.0, gt=0)
     #: Task 20: settled reply-outcome rows older than this are pruned
     feedback_retention_days: int = Field(default=30, ge=1)
 

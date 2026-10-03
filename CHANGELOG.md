@@ -3,6 +3,33 @@
 本文件记录 CatooBot 的版本演进。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号见 `pyproject.toml`；日期取自真实提交历史（本仓库 2026-09-30 起）。
 
+## [Unreleased] — v2.1 Phase 16 · Live Social Influence & Autonomous Interaction Continuity
+
+- **审计优先（§4）**：影响判定、打断/恢复、社交事实、会话、Commit Guard 全部已存在
+  （Phase 3/7/8/9/12/13/14），本轮只补会话连续性缺口，未新建任何社交系统。
+- **社交会话（§28/§29/§46-§49/§87/§90）**：新增 runtime-only 的
+  `_social_session`（person / social_space / started_at / last_activity_at / turns /
+  interrupted，只存计数与时间，**绝不保存聊天正文**），超时由
+  `social.interaction_episode_timeout_seconds`（默认 900s）控制。会话进行中，
+  同一人/同一空间的后续消息**不再制造嵌套打断**（发布 trace-only 的
+  `SOCIAL_INTERRUPT_SUPPRESSED`）：事实照记、回复照出，她的生活只有一层暂停。
+- **单层暂停（§8/§28）**：`_interrupt_action` 现在拒绝覆盖已存在的
+  `InterruptedActionContext`（第二次打断按不可恢复处理），暂停身份永不丢失。
+- **会话结束即恢复生活（§91/§92）**：会话静默超时后，下一次 tick 会先把暂停的
+  生活接回（同一 `InterruptedActionContext`、同一暂停身份、诚实的新生命周期），
+  再考虑新决策。
+- **保持不动**：`ExternalInfluenceEvaluator` 仍是唯一影响入口且确定性（无 LLM）、
+  InterruptEvaluator/Goal/Commitment/Relationship/Memory/Experience/Conversation
+  语义与身份、Commit Guard 的 stale 判定、Phase 13/13.1 的 lane 与策略、Phase 14 的
+  世界锁；无主动 QQ（§44/§86）。
+- 新增 `tests/test_live_social_influence.py`（14 个测试：NO_EFFECT 不碰她的生活、
+  OBSERVE 边聊边继续、WAKE 不重启动作、INTERRUPT 暂停精确实例并记录原因与剩余时长、
+  会话结束后同一暂停身份恢复、重复消息不嵌套打断（一层 + trace）、20 条消息仍是一个
+  会话且只存计数、空闲时无暂停、同一 transport 事件只产生一次关系/承诺副作用、
+  影响判定 20 条消息 0 次模型调用、回复思考期间会话变化 → stale 静默不发送、
+  打断中重启不产生第二个实例也不自动完成、社交路径绝不主动发 QQ、OneBot 端到端
+  （收到消息→社交事实→回复→出站，她的动作不受影响）），总测试 1421。
+
 ## [Unreleased] — v2.1 Phase 15 · Autonomous Behavior Stability & Need-Driven Life Coherence
 
 - **先审计、再最小修复（§2/§23/§69）**：实测 3 小时无人聊天模拟——0 次 LLM 调用、

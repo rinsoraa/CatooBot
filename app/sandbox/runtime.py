@@ -304,6 +304,11 @@ class SandboxRuntime:
         self.social = RelationshipUpdateEngine(self)
         #: an accepted invitation waiting for its shared-activity outcome (§19)
         self._accepted_invitation: dict[str, Any] | None = None
+        #: Phase 16 §46-§49: the *current* social interaction session (runtime
+        #: only — person/space/timing/counts, never message bodies) while a real
+        #: conversation is in progress; repeat messages stay inside it instead of
+        #: creating nested interruptions (§28/§29)
+        self._social_session: dict[str, Any] | None = None
         #: Phase 7 goal layer: why she keeps doing something (§4-§34)
         self.goals = GoalManager(self, clock=clock)
         self.goal_detector = GoalDetector(self.goals, clock=clock)
@@ -765,6 +770,15 @@ class SandboxRuntime:
         self.commitment_bridge.cancel_stale()
         report["commitment_goals"] = len(await self.commitment_bridge.evaluate())
         await self.commitments.flush()
+        if (
+            self.current_action is None
+            and self._interrupted is not None
+            and not self.social_session_active()
+        ):
+            # Phase 16 §91: the conversation session ended (inactivity) — the
+            # paused life continues as the same paused instance, before any new
+            # decision is taken
+            await self._resume_interrupted()
         need_decision = self.current_action is None or self.needs.critical()
         if need_decision:
             signature = self.decision_opportunity()
@@ -821,6 +835,67 @@ class SandboxRuntime:
             detail = "沙盒心跳" + (f"（{pressing}）" if pressing else "")
             narrate().world(f"{self.status_line()}  ·  {'+'.join(self.modes.ids())}", detail=detail)
         return report
+
+    # ------------------------------------------------- social session (§46-§49)
+
+    @property
+    def session_timeout_seconds(self) -> float:
+        return float(getattr(self.config, "interaction_episode_timeout_seconds", 900.0))
+
+    def social_session_active(
+        self, *, person_id: str = "", social_space_id: str = "", now: float | None = None
+    ) -> bool:
+        """Is a conversation session still running for this person/space (§47/§48)?"""
+        session = self._social_session
+        if session is None:
+            return False
+        stamp = float(self._clock()) if now is None else float(now)
+        if stamp - float(session.get("last_activity_at", 0.0)) >= self.session_timeout_seconds:
+            self._social_session = None  # inactivity closes it (§91/§92)
+            return False
+        if person_id and str(session.get("person_id", "")) != person_id:
+            return False
+        if social_space_id:
+            return str(session.get("social_space_id", "")) == social_space_id
+        return True
+
+    def touch_social_session(
+        self, *, person_id: str, social_space_id: str, interrupted: bool = False
+    ) -> dict[str, Any]:
+        """Open or refresh the current session (counts only, no transcripts)."""
+        now = float(self._clock())
+        if not self.social_session_active(person_id=person_id, social_space_id=social_space_id):
+            self._social_session = {
+                "person_id": person_id,
+                "social_space_id": social_space_id,
+                "started_at": now,
+                "turns": 0,
+                "interrupted": False,
+            }
+        current = self._social_session
+        assert current is not None  # just created above when it was absent
+        session: dict[str, Any] = current
+        session["last_activity_at"] = now
+        session["turns"] = int(session.get("turns", 0)) + 1
+        session["interrupted"] = bool(session.get("interrupted")) or interrupted
+        return session
+
+    def _social_session_blocks(self, event: Any) -> bool:
+        """Should this interrupt be folded into the open session (Phase 16 §29)?
+
+        True only while a session with the *same* person and social space is
+        open: the first interaction establishes the pause, the rest of the
+        conversation happens inside it.
+        """
+        person = self.persons.for_qq(str(event.actor_id)).person_id
+        space = str(event.metadata.get("social_space_id", "") or "")
+        return self.social_session_active(person_id=person, social_space_id=space)
+
+    def close_social_session(self) -> str:
+        """End the session explicitly (inactivity also ends it); returns the person."""
+        session = self._social_session or {}
+        self._social_session = None
+        return str(session.get("person_id", ""))
 
     def decision_opportunity(self) -> str:
         """A deterministic identity for "this decision situation" (§8).
@@ -2067,7 +2142,25 @@ class SandboxRuntime:
             # the only ordering that makes the context true)
             await asyncio.gather(*pending_social, return_exceptions=True)
 
-        if decision.action is InfluenceAction.INTERRUPT:
+        if decision.action is InfluenceAction.INTERRUPT and self._social_session_blocks(event):
+            # Phase 16 §29/§90: a conversation session is already open with this
+            # person/space — the message is handled *inside* it (facts + reply)
+            # instead of pausing the world again (no nested interruptions §28)
+            self.events.publish(
+                SandboxEventType.SOCIAL_INTERRUPT_SUPPRESSED,
+                source=event.source.value,
+                target=event.actor_id,
+                payload={
+                    "reason": "social_session_active",
+                    "semantic_kind": event.semantic_kind,
+                    "space": str(event.metadata.get("social_space_id", "") or ""),
+                },
+                causation_id=received.event_id if received else "",
+                correlation_id=correlation,
+            )
+            result["interrupt"] = False
+            result["reason"] = "social_session_active"
+        elif decision.action is InfluenceAction.INTERRUPT:
             # §14: the influence layer says "this matters"; the decision layer
             # (candidates → gate → model → validator) decides what happens.
             outcome = await self._run_invitation_decision(
@@ -2083,6 +2176,12 @@ class SandboxRuntime:
             result["decision"] = outcome.get("decision")
             if outcome.get("action"):
                 result["action"] = outcome["action"]
+            if result["interrupt"]:
+                self.touch_social_session(
+                    person_id=self.persons.for_qq(str(event.actor_id)).person_id,
+                    social_space_id=str(event.metadata.get("social_space_id", "") or ""),
+                    interrupted=True,
+                )
         elif (
             decision.action is InfluenceAction.WAKE
             and self.current_action is None
@@ -2259,6 +2358,10 @@ class SandboxRuntime:
         # §14: remember just enough to resume — never a runtime snapshot
         remaining = max(0.0, (action.planned_end_at - float(self._clock())) / 60.0)
         progress = self.actions.progress(action)
+        # Phase 16 §28: a pause is a single layer — an existing paused context is
+        # never overwritten by a second interruption (that would lose the first)
+        if self._interrupted is not None:
+            resumable = False
         if resumable and definition is not None and progress < 1.0 and remaining >= 1.0:
             self._interrupted = InterruptedActionContext(
                 action_id=action.id,

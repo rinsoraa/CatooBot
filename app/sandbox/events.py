@@ -104,6 +104,8 @@ class SandboxEventType(str, Enum):  # noqa: UP042 - pydantic-friendly str enum
     # autonomous behavior stability (Phase 15 §34) — trace only, never a mutation
     AUTONOMOUS_DECISION = "autonomous_decision"
     AUTONOMOUS_ACTION_SUPPRESSED = "autonomous_action_suppressed"
+    # live social influence (Phase 16 §29/§90) — trace only
+    SOCIAL_INTERRUPT_SUPPRESSED = "social_interrupt_suppressed"
     # state authority closure (Phase 3.5)
     PROJECT_PROGRESS_CHANGED = "project_progress_changed"
     KNOWLEDGE_CHANGED = "knowledge_changed"
