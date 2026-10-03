@@ -101,6 +101,9 @@ class SandboxEventType(str, Enum):  # noqa: UP042 - pydantic-friendly str enum
     # long-lived runtime (Phase 14 §65) — trace only, never a world mutation
     RUNTIME_TICK = "runtime_tick"
     RUNTIME_CATCHUP = "runtime_catchup"
+    # autonomous behavior stability (Phase 15 §34) — trace only, never a mutation
+    AUTONOMOUS_DECISION = "autonomous_decision"
+    AUTONOMOUS_ACTION_SUPPRESSED = "autonomous_action_suppressed"
     # state authority closure (Phase 3.5)
     PROJECT_PROGRESS_CHANGED = "project_progress_changed"
     KNOWLEDGE_CHANGED = "knowledge_changed"

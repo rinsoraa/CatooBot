@@ -214,6 +214,11 @@ class SandboxRuntime:
         #: Phase 14 §34-§36: the unified ordering point — a tick and an external
         #: wakeup never interleave inside the world (no half-updated reads)
         self._world_lock = asyncio.Lock()
+        #: Phase 15 §8-§11: the identity of the decision situation the last
+        #: autonomous decision was taken for. Pure runtime control state — never
+        #: persisted, never world truth: an unchanged opportunity is not re-asked
+        self._last_decision_signature = ""
+        self.suppressed_decisions = 0
         #: monotonic counter bumped by every *applied* mutation — a proposal
         #: built against an older revision is stale and must be re-validated (§20)
         self.world_revision = 0
@@ -762,11 +767,44 @@ class SandboxRuntime:
         await self.commitments.flush()
         need_decision = self.current_action is None or self.needs.critical()
         if need_decision:
-            drove = await self.goals.advance(space_id=self.character.location)
-            if not drove:
-                await self._decide_and_apply(space_id=self.character.location)
+            signature = self.decision_opportunity()
+            suppressed = signature == self._last_decision_signature
+            drove = False
+            if suppressed:
+                # §7/§8/§11 (Phase 15): the *same* unchanged situation is not
+                # decided again — no repeated engine run and certainly no
+                # repeated model call. Any real change (revision, running
+                # instance, a critical band, the active goal) yields a new
+                # signature and re-opens the opportunity.
+                self.suppressed_decisions += 1
+                self.events.publish(
+                    SandboxEventType.AUTONOMOUS_ACTION_SUPPRESSED,
+                    source="character",
+                    payload={"reason": "same_opportunity", "signature": signature},
+                )
+            else:
+                self._last_decision_signature = signature
+                drove = await self.goals.advance(space_id=self.character.location)
+                if not drove:
+                    await self._decide_and_apply(space_id=self.character.location)
+                self.events.publish(
+                    SandboxEventType.AUTONOMOUS_DECISION,
+                    source="character",
+                    payload={
+                        "goal_drove": drove,
+                        "action": (
+                            self.current_action.definition_id if self.current_action else ""
+                        ),
+                        "reason": "decision_taken",
+                    },
+                )
             report["decided"] = True
             report["goal_drove"] = drove
+            report["decision_opportunity"] = signature
+            report["decision_suppressed"] = suppressed
+            report["action_selected"] = (
+                self.current_action.definition_id if self.current_action else ""
+            )
 
         self._derive_modes()
         # derived projection: `needs:energy` is the writer; this mirror is
@@ -783,6 +821,22 @@ class SandboxRuntime:
             detail = "沙盒心跳" + (f"（{pressing}）" if pressing else "")
             narrate().world(f"{self.status_line()}  ·  {'+'.join(self.modes.ids())}", detail=detail)
         return report
+
+    def decision_opportunity(self) -> str:
+        """A deterministic identity for "this decision situation" (§8).
+
+        Built from state the world already owns: the revision, the running
+        instance, the critical need bands and the active goal. It is *control*
+        state, not a fact — nothing is persisted and nothing reads it back into
+        the world (§10).
+        """
+        goal = self.goals.active_goal()
+        critical = ",".join(sorted(need.key for need in self.needs.critical()))
+        instance = self.current_action.id if self.current_action is not None else ""
+        # the goal's *dedupe key* (character|kind|target), never its uuid: the
+        # signature must be reproducible for the same world (§49)
+        goal_key = goal.dedupe_key if goal is not None else ""
+        return f"{self.world_revision}|{instance}|{critical}|{goal_key}"
 
     def _tick_minutes(self) -> float:
         """Fallback step for a caller that passed no step (Phase 14.1 §11).

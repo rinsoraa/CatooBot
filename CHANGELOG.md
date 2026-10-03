@@ -3,6 +3,28 @@
 本文件记录 CatooBot 的版本演进。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号见 `pyproject.toml`；日期取自真实提交历史（本仓库 2026-09-30 起）。
 
+## [Unreleased] — v2.1 Phase 15 · Autonomous Behavior Stability & Need-Driven Life Coherence
+
+- **先审计、再最小修复（§2/§23/§69）**：实测 3 小时无人聊天模拟——0 次 LLM 调用、
+  1 个目标、动作实例数远小于 tick 数、需求有界（无抖动、无饥饿、无 runaway）。
+  结论：既有确定性环路本身是稳的，本阶段只补一处真正的缺口。
+- **决策机会守卫（§7-§11/§26）**：新增 `SandboxRuntime.decision_opportunity()`——
+  由世界已有的状态（world_revision / 运行中的实例 / critical 需求 band / 活动目标的
+  **dedupe key**）算出的确定性身份；`tick()` 只在身份变化时进入决策点，同一未改变的
+  处境不再重复决策（更不会重复问模型），并发布 trace-only 的
+  `AUTONOMOUS_ACTION_SUPPRESSED(reason=same_opportunity)`；正常决策发布
+  `AUTONOMOUS_DECISION`。守卫纯粹是运行时控制状态：不落库、不进世界、不进记忆（§10）。
+  tick 报告新增 `decision_opportunity` / `decision_suppressed` / `action_selected`（§33/§75）。
+- **保持不动**：Goal 优先级档位、Commitment → Goal 桥、Relationship/Memory/Experience
+  identity、Conversation/OneBot/Clock 语义（§25/§69-§74）；无主动 QQ（§40/§90）。
+- 新增 `tests/test_autonomous_behavior_stability.py`（14 个测试：同一处境不重复决策且
+  不重复问模型、真实世界变化会重新打开机会、需求只在真实完成后被缓解且只一次、
+  需求始终在 0..1、平静 tick 不换动作不重启实例、无可行步骤的目标进入冷却而非每秒重试、
+  不可能的需求不会启动非法动作、多压力下选择确定（同种子两次一致）、低优先级目标不被
+  丢失且无重复目标、打断/恢复不产生第二个实例、重启后需求/目标/实例连续、
+  6 小时与 24 小时空聊天模拟有界（动作≠tick 数、LLM 调用有界、记忆不爆炸、承诺不被凭空
+  创建）、同种子重放序列一致（不同种子各自确定）），总测试 1407。
+
 ## [Unreleased] — v2.1 Phase 14.1 · World Tick Unification (Legacy Tick Removed)
 
 - **旧的“每 10 分钟刷新一次 Sandbox”正式退役（§2-§6）**：`Bot._start_sandbox_jobs()`
