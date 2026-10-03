@@ -1,0 +1,1 @@
+const E={env:"环境变量",overrides:"WebUI 覆盖",models:"models 段",yaml:"配置文件",default:"默认值"},e={ACTIVE:"运行期使用",ACTIVE_WITH_RESTART:"仅启动时使用",CONDITIONALLY_USED:"条件生效",DEFINED_BUT_UNUSED:"当前未使用",LEGACY:"旧语义（已废弃）"};export{E as S,e as U};

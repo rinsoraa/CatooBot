@@ -10,6 +10,7 @@ import { useRoute } from 'vue-router'
 
 import AppSidebar from '@/components/AppSidebar.vue'
 import AppTopbar from '@/components/AppTopbar.vue'
+import RestartBanner from '@/components/config/RestartBanner.vue'
 import { useAppStore } from '@/stores/app'
 
 const app = useAppStore()
@@ -68,6 +69,8 @@ onBeforeUnmount(() => {
       <AppTopbar @toggle-sidebar="handleToggle" />
       <main id="cb-main" class="cb-shell__main">
         <div class="cb-shell__inner">
+          <!-- 全局重启提醒（§52/§90）：有 pending 时才渲染 -->
+          <RestartBanner />
           <slot />
         </div>
       </main>

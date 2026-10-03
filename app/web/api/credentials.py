@@ -349,6 +349,8 @@ class CredentialApiRoutes(WebContext):
                 "error_type": type(exc).__name__,
                 "message": redact(str(exc)),
                 "reply": "",
+                "http_status": _status_for(exc),
+                "http_status_source": _status_source(exc),
             }
         else:
             result = {
@@ -359,6 +361,8 @@ class CredentialApiRoutes(WebContext):
                 "error_type": "",
                 "message": "",
                 "reply": redact(response.content)[:200],
+                "http_status": 200,
+                "http_status_source": "upstream",
             }
         finally:
             await provider.close()
@@ -380,3 +384,15 @@ class CredentialApiRoutes(WebContext):
                 code="credential.invalid_name",
                 field="ref",
             )
+
+
+def _status_for(exc: BaseException) -> int | None:
+    from app.web.services.ai_admin import http_status_for
+
+    return http_status_for(exc)[0]
+
+
+def _status_source(exc: BaseException) -> str:
+    from app.web.services.ai_admin import http_status_for
+
+    return http_status_for(exc)[1]

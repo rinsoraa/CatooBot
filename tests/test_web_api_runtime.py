@@ -133,6 +133,8 @@ class TestOverviewAndRuntime:
                 "sessions",
                 "last_event_at",
             }
+            assert "status" in data["ai"]
+            assert data["ai"]["status"] in {"ready", "degraded", "unavailable", "not_configured"}
             assert set(data["ai"]) == {
                 "enabled",
                 "current_model",
@@ -141,6 +143,7 @@ class TestOverviewAndRuntime:
                 "requests",
                 "errors",
                 "rate_limited",
+                "status",
             }
             assert set(data["world"]) == {
                 "phase",

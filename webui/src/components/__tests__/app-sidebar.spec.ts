@@ -1,4 +1,4 @@
-/** AppSidebar（§24-§25）：七个入口、六个「即将开放」占位、当前项与折叠模式。 */
+/** AppSidebar（§24-§25 / W4）：七个入口、四个「即将开放」占位、三条真实路由、当前项与折叠模式。 */
 import { mount } from '@vue/test-utils'
 import { createMemoryHistory, createRouter } from 'vue-router'
 import { describe, expect, it } from 'vitest'
@@ -28,18 +28,20 @@ describe('AppSidebar', () => {
     expect(labels).toEqual(['总览', '角色', 'AI 与模型', '社交', '记忆', '媒体与能力', '系统'])
   })
 
-  it('renders six disabled placeholders showing 即将开放 and never a dead link', async () => {
+  it('keeps four placeholders disabled and links only to real routes', async () => {
     const { wrapper } = await mountSidebar(false)
     const disabled = wrapper.findAll('button[aria-disabled="true"]')
-    expect(disabled).toHaveLength(6)
+    // W4 wired /ai and /system/settings; the W5 sections stay placeholders.
+    expect(disabled).toHaveLength(4)
     for (const item of disabled) {
       expect(item.text()).toContain('即将开放')
     }
 
     const links = wrapper.findAll('a')
-    expect(links).toHaveLength(1)
-    expect(links[0]?.attributes('href')).toBe('/')
-    expect(links[0]?.attributes('aria-disabled')).toBeUndefined()
+    expect(links.map((link) => link.attributes('href'))).toEqual(['/', '/ai', '/system/settings'])
+    for (const link of links) {
+      expect(link.attributes('aria-disabled')).toBeUndefined()
+    }
   })
 
   it('marks the active route with aria-current=page', async () => {

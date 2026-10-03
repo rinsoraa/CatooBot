@@ -302,7 +302,8 @@ class TestAiModels:
             assert status == 200
             data = payload["data"]
             assert data["ok"] is True and data["model"] == "fast"
-            assert data["error_type"] == "" and "pong" in data["message"]
+            assert data["error_type"] == "" and "pong" in data["response"]
+            assert data["http_status"] == 200 and data["http_status_source"] == "upstream"
             assert "sk-ok-123456" not in json.dumps(payload)
 
     async def test_model_test_reports_failure(self, tmp_path: Path) -> None:

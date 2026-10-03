@@ -23,7 +23,7 @@ from app.ai.provider import _PROVIDER_FACTORIES
 from app.config.settings import load_config, write_overrides
 from app.utils.logger import redact
 from app.web import config_registry as registry
-from app.web.api.common import bad_request, conflict, not_found
+from app.web.api_errors import bad_request, conflict, not_found
 
 if TYPE_CHECKING:
     from app.core.bot import Bot
@@ -68,6 +68,72 @@ _EMPTY_USAGE: dict[str, Any] = {
     "avg_latency_ms": 0.0,
     "max_latency_ms": 0.0,
 }
+
+
+#: 错误分类 → Provider 本会返回的 HTTP 状态。``ServerError`` 带真实 status，
+#: 其余是无法从异常里读到的规范值；来源在响应用 ``http_status_source`` 标明。
+_ERROR_HTTP_STATUS: dict[str, int] = {
+    "AuthenticationError": 401,
+    "InvalidRequestError": 400,
+    "ModelNotFoundError": 404,
+    "RateLimitError": 429,
+}
+
+
+def http_status_for(exc: BaseException) -> tuple[int | None, str]:
+    """``(status, source)`` —— upstream 优先，其次错误分类的规范值。"""
+    upstream = getattr(exc, "status", 0)
+    if isinstance(upstream, int) and upstream >= 100:
+        return upstream, "upstream"
+    mapped = _ERROR_HTTP_STATUS.get(type(exc).__name__, 0)
+    return (mapped or None), ("error_class" if mapped else "")
+
+
+def _cooldown_remaining(bot: Any, state: dict[str, Any]) -> float:
+    """Seconds left on the router's own clock (0.0 when not cooling down)."""
+    if not state.get("in_cooldown"):
+        return 0.0
+    router = getattr(getattr(bot, "ai", None), "router", None)
+    clock = getattr(router, "_clock", time.monotonic)
+    try:
+        now = float(clock())
+    except Exception:  # noqa: BLE001 - a broken clock must not break the read path
+        now = time.monotonic()
+    return max(0.0, round(float(state.get("cooldown_until") or 0.0) - now, 3))
+
+
+def derive_ai_status(bot: Any) -> str:
+    """AI 健康状态（W4 §63）：由真实配置 + 引擎 + 路由器内存态推导。
+
+    ``ready`` / ``degraded`` / ``unavailable`` / ``not_configured`` 四态，
+    前端不再用 "provider 数量 > 0" 之类的猜测。
+    """
+    config = getattr(bot, "config", None)
+    config_ai = getattr(config, "ai", None)
+    configured = bool(getattr(config_ai, "enabled", False))
+    providers = dict(getattr(config_ai, "providers", {}) or {})
+    models = list(getattr(config_ai, "models", []) or [])
+    if not configured or not providers or not models:
+        return "not_configured"
+    engine = getattr(bot, "ai", None)
+    if engine is None or not bool(getattr(engine, "enabled", False)):
+        return "unavailable"
+    enabled_models = [model for model in models if getattr(model, "enabled", False)]
+    if not enabled_models:
+        return "unavailable"
+    router = getattr(engine, "router", None)
+    states = {row["name"]: row for row in (router.snapshot() if router is not None else [])}
+    usable = [m for m in enabled_models if not states.get(m.name, {}).get("in_cooldown", False)]
+    missing_key = [
+        model.provider
+        for model in enabled_models
+        if (entry := providers.get(model.provider)) is not None
+        and entry.api_key_env
+        and not os.environ.get(entry.api_key_env)
+    ]
+    if not usable or missing_key:
+        return "degraded"
+    return "ready"
 
 
 class AIAdminService:
@@ -125,7 +191,10 @@ class AIAdminService:
                     "roles": sorted(pinned.get(model.name, []), key=ROLE_ORDER.index),
                     "live": model.name in states,
                     "in_cooldown": bool(state.get("in_cooldown", False)),
+                    # the router's clock is monotonic: expose it for fidelity and a
+                    # remaining-seconds value the UI can actually count down.
                     "cooldown_until": float(state.get("cooldown_until") or 0.0),
+                    "cooldown_remaining_seconds": _cooldown_remaining(self.bot, state),
                     "failure_count": int(state.get("failure_count") or 0),
                     "last_error": state.get("last_error"),
                     "usage": dict(usage.get(model.model, _EMPTY_USAGE)),
@@ -385,7 +454,13 @@ class AIAdminService:
         }
 
     async def test_model(self, name: str, *, prompt: str = "ping") -> dict[str, Any]:
-        """走完整路由器实测一个模型；失败也返回结果（不抛 5xx）。"""
+        """走完整路由器实测一个模型；失败也返回结果（不抛 5xx）。
+
+        这是 W4 统一后的**唯一**测试结果形状（docs/WEBUI_API_CONTRACT.md §6）：
+        ``ok / model / requested_model / latency_ms / http_status /
+        http_status_source / error_type / message / response``。
+        诊断请求不写 Memory / Conversation / Experience。
+        """
         if not any(m.name == name for m in self._ai.models):
             raise not_found(f"模型「{name}」不存在", code="ai.model_unknown")
         request = AIRequest(
@@ -398,19 +473,82 @@ class AIAdminService:
         try:
             response = await self.bot.ai.router.chat(request)
         except Exception as exc:  # noqa: BLE001 - the test's whole job is to report failures
+            status, source = http_status_for(exc)
             return {
                 "ok": False,
-                "latency_ms": _elapsed_ms(started),
+                "requested_model": name,
                 "model": name,
+                "provider": "",
+                "provider_model": "",
+                "latency_ms": _elapsed_ms(started),
+                "http_status": status,
+                "http_status_source": source,
                 "error_type": type(exc).__name__,
-                "message": redact(str(exc)),
+                "message": redact(str(exc))[:400],
+                "response": "",
             }
         return {
             "ok": True,
-            "latency_ms": _elapsed_ms(started),
+            "requested_model": name,
+            # the alias the operator configured …
             "model": name,
+            # … and who actually answered (they differ after a failover)
+            "provider": response.provider,
+            "provider_model": response.model,
+            "latency_ms": _elapsed_ms(started),
+            "http_status": 200,
+            "http_status_source": "upstream",
             "error_type": "",
-            "message": redact(response.content)[:200],
+            "message": "",
+            "response": redact(response.content)[:400],
+        }
+
+    async def status(self) -> dict[str, Any]:
+        """AI 概览的一屏数据（W4 §6）：全部来自真实配置与路由器状态。"""
+        providers = self.providers()
+        models = await self.models()
+        error_rows = {row["key"]: row for row in await self.usage(group_by="error_type")}
+        enabled_models = [m for m in models if m["enabled"]]
+        usable = [m for m in enabled_models if not m["in_cooldown"]]
+        cooldown = [m for m in models if m["in_cooldown"]]
+        with_key = [p for p in providers if p["has_key"]]
+        missing_key = [p["name"] for p in providers if p["models"] and not p["has_key"]]
+        return {
+            "status": derive_ai_status(self.bot),
+            "enabled": bool(self.bot.ai.enabled),
+            "configured": bool(self._ai.enabled),
+            "checks": {
+                "has_provider": bool(providers),
+                "has_credential": bool(with_key),
+                "has_model": bool(models),
+                "chat_bound": bool(models),
+            },
+            "providers": {
+                "total": len(providers),
+                "with_key": len(with_key),
+                "missing_key": missing_key,
+            },
+            "models": {
+                "total": len(models),
+                "enabled": len(enabled_models),
+                "disabled": len(models) - len(enabled_models),
+                "usable": len(usable),
+                "cooldown": len(cooldown),
+            },
+            "chat_model": models[0]["name"] if models else "",
+            "fallback_chain": [m["name"] for m in enabled_models],
+            "errors": {
+                "rate_limited": int(error_rows.get("RateLimitError", {}).get("calls", 0)),
+                "server_errors": int(error_rows.get("ServerError", {}).get("calls", 0)),
+            },
+            "cooldown_models": [
+                {
+                    "name": m["name"],
+                    "cooldown_until": m["cooldown_until"],
+                    "remaining_seconds": m["cooldown_remaining_seconds"],
+                }
+                for m in cooldown
+            ],
         }
 
     async def usage(self, *, days: int = 7, group_by: str = "model") -> list[dict[str, Any]]:

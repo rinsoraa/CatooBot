@@ -85,7 +85,7 @@
 | 方法与路径 | 说明 | 响应 `data`（键为契约） |
 |---|---|---|
 | `GET /api/v1/meta` | 版本/构建信息 | `{"api", "app_version", "webui_version", "core_behavior_phase", "python", "started_at", "uptime_seconds"}` |
-| `GET /api/v1/overview` | **总览仪表盘一屏数据**（聚合，单请求） | `{"qq": {"online", "self_id", "messages_received", "users", "groups", "sessions", "last_event_at"}, "ai": {"enabled", "current_model", "models_ok", "models_total", "requests", "errors", "rate_limited"}, "world": {"phase", "location", "action": {"name", "progress", "started_at", "planned_end_at"}, "modes": [], "needs": {"critical": [], "pressing": []}, "world_revision", "cognitive_revision", "session": {"active", "person_id"}, "interrupted": bool}, "runtime": {"scheduler": {"running", "interval_seconds", "ticks", "catchups", "last_tick_at"}, "watchdog": {"last_lag_ms", "max_lag_ms", "lag_events"}, "database": {"connected"}, "hub": {"subscribers", "published", "dropped"}}, "counts": {"memories", "experiences", "goals_open", "commitments_open"}}` |
+| `GET /api/v1/overview` | **总览仪表盘一屏数据**（聚合，单请求） | `{"qq": {"online", "self_id", "messages_received", "users", "groups", "sessions", "last_event_at"}, "ai": {"enabled", "current_model", "models_ok", "models_total", "requests", "errors", "rate_limited", "status"}, "world": {"phase", "location", "action": {"name", "progress", "started_at", "planned_end_at"}, "modes": [], "needs": {"critical": [], "pressing": []}, "world_revision", "cognitive_revision", "session": {"active", "person_id"}, "interrupted": bool}, "runtime": {"scheduler": {"running", "interval_seconds", "ticks", "catchups", "last_tick_at"}, "watchdog": {"last_lag_ms", "max_lag_ms", "lag_events"}, "database": {"connected"}, "hub": {"subscribers", "published", "dropped"}}, "counts": {"memories", "experiences", "goals_open", "commitments_open"}}` |
 | `GET /api/v1/runtime/status` | 运行时细项（`overview` 的 runtime 段独立化，供轮询） | 同上 `runtime` 段 |
 | `GET /api/v1/runtime/scheduler` | 世界调度器 | `{"running", "interval_seconds", "ticks", "catchups", "last_tick_at", "last_report"}` |
 | `POST /api/v1/runtime/tick` | 手动跑一次世界 tick（**新增 admin 动作**，限流 1 次/秒） | `{"ran": true, "minutes": 1.0, "report": {...}}`；冲突 `409 world.busy` |
@@ -156,17 +156,27 @@ W2 需在 `AdminService` 增只读方法；`runtime/tick` 复用 `RuntimeSchedul
 | `GET /api/v1/ai/providers` | Provider 列表（含 Key 状态） | — | `{"items": [{"name", "type", "base_url", "api_key_env", "has_key", "restart_required"}]}` |
 | `PUT /api/v1/ai/providers/{name}` | 新增/修改 Provider（upsert） | `{"type", "base_url", "api_key_env"}` | 同单项；`type` 目前仅 `openai_compatible`，未知类型 → `400 ai.provider_unknown` |
 | `DELETE /api/v1/ai/providers/{name}` | 删除（其下模型必须为空或 `?force=true` 连带删除） | — | `{"deleted": true, "models_removed": 2}` |
-| `GET /api/v1/ai/models` | 模型列表（含路由器实时状态 + 7 天用量） | — | `{"items": [{"name", "provider", "model", "enabled", "order", "roles": ["chat"], "in_cooldown", "cooldown_until", "failure_count", "usage": {"calls", "failures", "avg_latency_ms", "tokens"}}]}` |
+| `GET /api/v1/ai/models` | 模型列表（含路由器实时状态 + 7 天用量） | — | `{"items": [{"name", "provider", "model", "enabled", "order", "roles": ["chat"], "in_cooldown", "cooldown_until", "cooldown_remaining_seconds", "failure_count", "usage": {"calls", "failures", "avg_latency_ms", "tokens"}}]}` |
 | `PUT /api/v1/ai/models/{name}` | 新增/修改模型 | `{"provider", "model", "enabled"}` | 同单项 |
 | `DELETE /api/v1/ai/models/{name}` | 删除（若被角色引用 → `409 ai.model_in_use`，带 `roles`） | — | `{"deleted": true}` |
 | `PUT /api/v1/ai/models/order` | 失败转移顺序（**持久化**，修复今日 priority 不重放的问题） | `{"order": ["fast", "smart", "vision"]}` | `{"order": [...]}` |
-| `POST /api/v1/ai/models/{name}/test` | 单模型测试（走完整路由，含失败转移） | `{"prompt"?: "ping"}` | `{"ok", "latency_ms", "attempts": [...], "final_model"}` |
+| `POST /api/v1/ai/models/{name}/test` | 单模型测试（走完整路由，含失败转移） | `{"prompt"?: "ping"}` | `{"ok", "model", "requested_model", "provider", "provider_model", "latency_ms", "http_status", "http_status_source", "error_type", "message", "response"}` |
+| `GET /api/v1/ai/status` | AI 概览的一屏数据（W4）：健康状态 + 计数 + fallback 链 + 429/5xx + cooldown | — | `{"status", "enabled", "configured", "checks{has_provider,has_credential,has_model,chat_bound}", "providers{total,with_key,missing_key}", "models{total,enabled,disabled,usable,cooldown}", "chat_model", "fallback_chain", "errors{rate_limited,server_errors}", "cooldown_models"}` |
 | `GET /api/v1/ai/roles` | 角色绑定现状（chat/vision/decision/conversation/extraction/planner/evaluator/social/embedding） | — | `{"items": [{"role", "key", "model", "source"}]}` |
 | `PUT /api/v1/ai/roles/{role}` | 绑定角色模型（写 `sandbox.decision_model` 等对应键；embedding 走专属字段并标注需重启） | `{"model": "smart" \| ""}` | 同 `roles` 单项 + `restart_required` 标记 |
 | `GET /api/v1/ai/usage?days=7&group_by=model\|provider\|purpose` | 用量聚合（补齐今日只按 model 聚合的缺口） | — | `{"items": [{"key", "calls", "failures", "rate_limited", "server_errors", "tokens", "avg_latency_ms", "max_latency_ms"}]}` |
 | `POST /api/v1/ai/router/reset` | 清空冷却/失败计数（只影响内存态） | `{"confirm": "reset"}` | `{"reset": true}` |
 
 要点：
+- **测试结果只有一个形状**（W4 统一，替换了本节早前示例中的 `attempts/final_model`）：
+  `ok / model / requested_model / provider / provider_model / latency_ms / http_status / http_status_source / error_type / message / response`，
+  其中 `model` 是配置里的别名、`provider_model` 是真正作答的服务商模型 id（故障转移后两者可能不同）。
+  `http_status_source` ∈ `upstream`（Provider 真的回了状态）/ `error_class`（由错误分类推导的规范状态）/ `""`（无 HTTP 语义，如超时/连接失败）。
+  成功时 `response` 是模型回复文本且 `message` 为空，失败时相反。
+  若整条故障转移链都被尝试过（例如唯一的模型返回 5xx），路由器抛出 `AllModelsFailedError`：
+  此时 `http_status` 为 `null`、`http_status_source` 为 `""`，上游细节（含真实状态码文本）保留在 `message` 里。
+测试是**诊断请求**：不写 Memory / Conversation / Experience，也不改 Relationship。
+- AI 健康状态由后端推导（`ready / degraded / unavailable / not_configured`），同时出现在本端点与 `GET /api/v1/overview` 的 `ai.status`；前端不得自行猜测状态。
 - 「默认聊天模型」= `order[0]`（显式化，不再靠隐式插入序）；`chat` 角色可单独钉选。
 - 一次新装配置闭环（W4 验收）：**加 Provider（接口地址+Key）→ 加模型 → 设默认 → 测试**，全程不碰 YAML/.env。
 - 保存 AI 配置会重建 `AIEngine`（`ai/engine.py:128`），冷却态被重置 —— v1 前端在保存后清空冷却列并提示。

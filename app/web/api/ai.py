@@ -6,7 +6,7 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from aiohttp import web
 
@@ -20,7 +20,9 @@ from app.web.api.common import (
     read_query_int,
 )
 from app.web.routes.base import WebContext
-from app.web.services.ai_admin import AIAdminService
+
+if TYPE_CHECKING:
+    from app.web.services.ai_admin import AIAdminService
 
 
 class AiApiRoutes(WebContext):
@@ -31,14 +33,21 @@ class AiApiRoutes(WebContext):
     def _ai(self) -> AIAdminService:
         admin = getattr(self, "_ai_admin", None)
         if admin is None:
+            from app.web.services.ai_admin import AIAdminService
+
             admin = AIAdminService(self._bot, self._config_admin)
             self._ai_admin = admin
         return admin
 
     def _register_v1_ai(self, app: web.Application) -> None:
+        # imported here on purpose: ai_admin needs api.common, and a module-level
+        # import would close a cycle through the api package initializer
+        from app.web.services.ai_admin import AIAdminService
+
         self._ai_admin = AIAdminService(self._bot, self._config_admin)
         wrap = json_endpoint
         prefix = f"{API_PREFIX}/ai"
+        app.router.add_get(f"{prefix}/status", wrap(self._v1_ai_status))
         app.router.add_get(f"{prefix}/providers", wrap(self._v1_ai_providers))
         app.router.add_put(f"{prefix}/providers/{{name}}", wrap(self._v1_ai_provider_put))
         app.router.add_delete(f"{prefix}/providers/{{name}}", wrap(self._v1_ai_provider_delete))
@@ -51,6 +60,9 @@ class AiApiRoutes(WebContext):
         app.router.add_put(f"{prefix}/roles/{{role}}", wrap(self._v1_ai_role_put))
         app.router.add_get(f"{prefix}/usage", wrap(self._v1_ai_usage))
         app.router.add_post(f"{prefix}/router/reset", wrap(self._v1_ai_router_reset))
+
+    async def _v1_ai_status(self, request: web.Request) -> web.Response:
+        return ok(await self._ai().status(), request=request)
 
     # ------------------------------------------------------------------ provider
 

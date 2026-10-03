@@ -2,8 +2,8 @@
 /**
  * 侧栏（§24-§25）：v1.0 的七个信息入口。
  *
- * 只有「总览」有真实路由；其余六项按计划以 aria-disabled 的占位项渲染
- * 「即将开放」，绝不指向尚未存在的路由。
+ * 「总览 / AI 与模型 / 系统」有真实路由（W4）；其余四项按计划以
+ * aria-disabled 的占位项渲染「即将开放」，绝不指向尚未存在的路由。
  */
 import type { Component } from 'vue'
 import { RouterLink } from 'vue-router'
@@ -29,11 +29,11 @@ defineProps<{ collapsed: boolean }>()
 const entries: NavEntry[] = [
   { key: 'dashboard', label: '总览', icon: IconHome, to: '/', enabled: true },
   { key: 'character', label: '角色', icon: IconCharacter, enabled: false },
-  { key: 'ai', label: 'AI 与模型', icon: IconAi, enabled: false },
+  { key: 'ai', label: 'AI 与模型', icon: IconAi, to: '/ai', enabled: true },
   { key: 'social', label: '社交', icon: IconSocial, enabled: false },
   { key: 'memory', label: '记忆', icon: IconMemory, enabled: false },
   { key: 'media', label: '媒体与能力', icon: IconMedia, enabled: false },
-  { key: 'system', label: '系统', icon: IconSystem, enabled: false },
+  { key: 'system', label: '系统', icon: IconSystem, to: '/system/settings', enabled: true },
 ]
 
 function accessibleLabel(entry: NavEntry): string {

@@ -26,6 +26,7 @@ ROUTES = [
     "GET /api/v1/ai/models",
     "GET /api/v1/ai/providers",
     "GET /api/v1/ai/roles",
+    "GET /api/v1/ai/status",
     "GET /api/v1/ai/usage",
     "GET /api/v1/character",
     "GET /api/v1/character/state",

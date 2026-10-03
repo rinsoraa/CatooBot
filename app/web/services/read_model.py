@@ -27,6 +27,7 @@ import time
 from typing import TYPE_CHECKING, Any
 
 from app.config.settings import PROJECT_ROOT, project_path
+from app.web.services.ai_admin import derive_ai_status
 
 if TYPE_CHECKING:
     from app.core.bot import Bot
@@ -111,6 +112,8 @@ class RuntimeReadService:
                 "requests": int(metrics.get("ai_requests") or 0),
                 "errors": int(metrics.get("ai_errors") or 0),
                 "rate_limited": int(metrics.get("rate_limited") or 0),
+                # §63: the health word comes from the backend, never from the UI
+                "status": derive_ai_status(self._bot),
             },
             "world": self._world_core(),
             "runtime": self._runtime_block(include_report=False),
