@@ -857,6 +857,11 @@ def write_overrides(payload: dict[str, Any], path: str | Path | None = None) -> 
     return target
 
 
+def resolve_models_block(data: dict[str, Any]) -> dict[str, Any]:
+    """Public, side-effect-free view of the ``models:`` expansion (WebUI W2)."""
+    return _resolve_models(data)
+
+
 def _resolve_models(data: dict[str, Any]) -> dict[str, Any]:
     """Expand the consolidated ``models:`` section into the runtime sections.
 

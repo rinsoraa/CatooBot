@@ -45,6 +45,9 @@ class AdminService:
             except Exception:  # noqa: BLE001 - a status snapshot must never raise
                 sandbox = ""
         watchdog = getattr(bot, "watchdog", None)
+        gateway = getattr(bot, "onebot_gateway", None)
+        database = getattr(bot, "database", None)
+        scheduler = getattr(bot, "runtime_scheduler", None)
         return {
             "online": bot.is_connected,
             "sandbox": sandbox,
@@ -60,7 +63,78 @@ class AdminService:
             "metrics": bot.metrics.snapshot(),
             "watchdog": watchdog.stats() if watchdog is not None else {},
             "plugins": bot.plugins.failure_counts,
+            # ---- v1 additive blocks (契约 §8 的 status 轻量版) ----------------
+            # 旧键全部保留：旧客户端只读 online/sandbox/models/metrics/watchdog。
+            "qq": {
+                "online": bot.is_connected,
+                "self_id": bot.self_id,
+                "last_event_at": self._last_event_at(gateway),
+            },
+            "world": self._world_live(sandbox_engine),
+            "runtime": {
+                "scheduler": self._scheduler_live(scheduler),
+                "database": {
+                    "connected": bool(
+                        database is not None and getattr(database, "_conn", None) is not None
+                    )
+                },
+            },
         }
+
+    @staticmethod
+    def _last_event_at(gateway: Any) -> float | None:
+        """Last accepted inbound event time (None when the gateway is off)."""
+        if gateway is None:
+            return None
+        try:
+            return float(getattr(gateway, "last_event_at", 0.0) or 0.0) or None
+        except (TypeError, ValueError):  # noqa: BLE001 - a status snapshot never raises
+            return None
+
+    @staticmethod
+    def _scheduler_live(scheduler: Any) -> dict[str, Any]:
+        if scheduler is None:
+            return {
+                "running": False,
+                "interval_seconds": None,
+                "ticks": None,
+                "catchups": None,
+                "last_tick_at": None,
+            }
+        return {
+            "running": bool(scheduler.running),
+            "interval_seconds": float(scheduler.interval),
+            "ticks": int(scheduler.ticks),
+            "catchups": int(scheduler.catchups),
+            "last_tick_at": float(scheduler.last_tick_at) or None,
+        }
+
+    @staticmethod
+    def _world_live(sandbox: Any) -> dict[str, Any]:
+        """Read-only world snapshot for the v1 status/world topics (never raises)."""
+        block: dict[str, Any] = {
+            "phase": None,
+            "location": None,
+            "action": None,
+            "world_revision": None,
+            "cognitive_revision": None,
+        }
+        if sandbox is None:
+            return block
+        try:
+            definition = sandbox.actions.definition(sandbox.current_action)
+            block.update(
+                {
+                    "phase": sandbox.phase.value,
+                    "location": sandbox.context().get("location"),
+                    "action": definition.name if definition is not None else None,
+                    "world_revision": int(getattr(sandbox, "world_revision", 0) or 0),
+                    "cognitive_revision": int(getattr(sandbox, "cognitive_revision", 0) or 0),
+                }
+            )
+        except Exception:  # noqa: BLE001 - a status snapshot must never raise
+            pass
+        return block
 
     async def dashboard(self) -> dict[str, Any]:
         bot = self.bot

@@ -171,18 +171,39 @@ class OpsRoutes(WebContext):
             return
 
     async def _ws_status_loop(self, ws: web.WebSocketResponse) -> None:
+        """Push contract §8 topics additively (Task 17 kept intact).
+
+        ``status`` every :data:`STATUS_INTERVAL` (unchanged), ``world`` only
+        when the phase/location/action/revision snapshot changes, and
+        ``scheduler`` every second tick (= 10s at the default 5s cadence).
+        Unknown topics are ignored by the legacy page JavaScript.
+        """
+        tick = 0
+        last_world = ""
         while not ws.closed:
             await asyncio.sleep(STATUS_INTERVAL)
             if ws.closed:
                 return
             try:
-                await ws.send_json(
-                    {
-                        "topic": "status",
-                        "ts": int(time.time()),
-                        "data": await self._admin.live_status(),
-                    }
-                )
+                data = await self._admin.live_status()
+                stamp = int(time.time())
+                await ws.send_json({"topic": "status", "ts": stamp, "data": data})
+                world = data.get("world") if isinstance(data, dict) else None
+                if isinstance(world, dict) and world.get("phase") is not None:
+                    signature = "|".join(
+                        str(world.get(key))
+                        for key in ("phase", "location", "action", "world_revision")
+                    )
+                    if signature != last_world:  # 变化才推（ConsoleWorld 语义）
+                        last_world = signature
+                        await ws.send_json({"topic": "world", "ts": stamp, "data": world})
+                tick += 1
+                if tick % 2:
+                    continue  # scheduler 每 10s（默认 5s 心跳的每两拍）
+                runtime = data.get("runtime") if isinstance(data, dict) else None
+                scheduler = runtime.get("scheduler") if isinstance(runtime, dict) else None
+                if scheduler is not None:
+                    await ws.send_json({"topic": "scheduler", "ts": stamp, "data": scheduler})
             except (ConnectionResetError, RuntimeError):
                 return
 

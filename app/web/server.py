@@ -13,6 +13,8 @@ from typing import TYPE_CHECKING, Any
 from aiohttp import web
 
 from app.web import ui
+from app.web.api import ApiRoutes
+from app.web.api.common import API_PREFIX, fail, forbidden, unauthorized
 from app.web.auth import AuthService
 from app.web.realtime import (
     NarrationFeed,
@@ -70,6 +72,7 @@ log = logging.getLogger("CatooBot.Web")
 
 
 class WebServer(
+    ApiRoutes,
     OpsRoutes,
     ModelRoutes,
     MediaRoutes,
@@ -127,6 +130,8 @@ class WebServer(
         self.register_dashboard(app)
         self.register_tools(app)
         self.register_agent(app)
+        # WebUI v1.0 (W2): JSON API under /api/v1, alongside the SSR pages.
+        self.register_v1(app)
 
         self._runner = web.AppRunner(app, access_log=None)
         await self._runner.setup()
@@ -148,15 +153,26 @@ class WebServer(
     @web.middleware
     async def _auth_middleware(self, request: web.Request, handler: Any) -> Any:
         ui.set_preferences(ui.preferences_from(request.cookies))
-        if request.path in ("/login",) or (request.path == "/api/login"):
+        path = request.path
+        # JSON login lives at the same path as the session bootstrap, so the
+        # exemption is method-scoped; the SSR login keeps its two forms.
+        if (
+            path == "/login"
+            or path == "/api/login"
+            or (path == f"{API_PREFIX}/session" and request.method == "POST")
+        ):
             return await handler(request)
         token = request.cookies.get(SESSION_COOKIE)
         if not self._auth.validate(token):
-            if request.path.startswith("/ws/"):
+            if path.startswith("/ws/"):
                 raise web.HTTPUnauthorized()  # an upgrade cannot follow a redirect
+            if path.startswith(API_PREFIX):
+                return fail(unauthorized(), request=request)
             raise web.HTTPFound("/login")
         set_csrf_token(token)
-        if request.method in MUTATING_METHODS and request.path not in CSRF_EXEMPT_PATHS:
+        if request.method in MUTATING_METHODS and path not in CSRF_EXEMPT_PATHS | {
+            f"{API_PREFIX}/session"
+        }:
             supplied = request.headers.get(CSRF_HEADER, "")
             if not supplied and request.content_type.startswith(
                 ("application/x-www-form-urlencoded", "multipart/form-data")
@@ -165,6 +181,11 @@ class WebServer(
             if supplied != csrf_token(token):
                 self._bot.metrics.inc("csrf_rejected")
                 log.warning("[Web.Security] CSRF 校验失败：%s %s", request.method, request.path)
+                if path.startswith(API_PREFIX):
+                    return fail(
+                        forbidden("CSRF 校验失败：token 无效或缺失", code="auth.csrf"),
+                        request=request,
+                    )
                 raise web.HTTPForbidden(
                     text="CSRF 校验失败：token 无效或缺失（表单未注入安全令牌字段）"
                 )

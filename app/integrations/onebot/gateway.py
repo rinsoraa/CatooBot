@@ -233,6 +233,9 @@ class OneBotGateway:
         self.responses = 0
         self.sent = 0
         self.failed = 0
+        #: clock of the last *accepted* inbound event (0.0 = never) — a
+        #: read-only WebUI signal, never a world fact (W2 status topic)
+        self.last_event_at: float = 0.0
 
     # ------------------------------------------------------------- lifecycle
 
@@ -389,6 +392,7 @@ class OneBotGateway:
                 ET.EXTERNAL_TRANSPORT_DROPPED, self._ids(degraded.event), reason="lane_full"
             )
         self.accepted += 1
+        self.last_event_at = float(self._clock())
         return {"accepted": True, "lane": lane.key, "transport_event_id": event.transport_event_id}
 
     def _normalize(self, payload: Any) -> NormalizedMessageEvent | None:

@@ -90,6 +90,60 @@ class UsageRecorder:
             self._log.warning("[AI.Usage] prune failed (%s)", exc)
             return 0
 
+    #: whitelisted group_by values -> real column (never interpolate raw input)
+    _GROUP_COLUMNS: dict[str, str] = {
+        "model": "model",
+        "provider": "provider",
+        "purpose": "purpose",
+        "error_type": "error_type",
+    }
+
+    async def summary_by(self, *, days: int = 7, group_by: str = "model") -> list[dict[str, Any]]:
+        """Flexible rollup for the WebUI (model / provider / purpose / error_type).
+
+        Same ``ai_usage`` table as :meth:`summary` — this is a read-only view,
+        no second store. ``group_by`` is whitelisted; anything else raises so a
+        caller cannot smuggle SQL through the column name.
+        """
+        column = self._GROUP_COLUMNS.get(group_by)
+        if column is None:
+            raise ValueError(
+                f"unsupported group_by: {group_by!r} "
+                f"(expected one of: {', '.join(sorted(self._GROUP_COLUMNS))})"
+            )
+        since = int(self._clock()) - max(1, days) * 86400
+        try:
+            rows = await self._db.fetchall(
+                f"""SELECT {column}                      AS bucket,
+                          COUNT(*)                        AS calls,
+                          SUM(ok)                         AS ok_calls,
+                          SUM(CASE WHEN error_type = 'RateLimitError' THEN 1 ELSE 0 END)
+                                                          AS rate_limited,
+                          SUM(CASE WHEN error_type = 'ServerError' THEN 1 ELSE 0 END)
+                                                          AS server_errors,
+                          SUM(total_tokens)               AS tokens,
+                          ROUND(AVG(latency_ms), 1)       AS avg_latency_ms,
+                          ROUND(MAX(latency_ms), 1)       AS max_latency_ms
+                     FROM ai_usage WHERE ts >= ?
+                     GROUP BY bucket ORDER BY calls DESC""",
+                (since,),
+            )
+        except Exception:  # noqa: BLE001 - a pre-migration database has no table
+            return []
+        return [
+            {
+                "key": str(row["bucket"] or ""),
+                "calls": int(row["calls"] or 0),
+                "failures": int(row["calls"] or 0) - int(row["ok_calls"] or 0),
+                "rate_limited": int(row["rate_limited"] or 0),
+                "server_errors": int(row["server_errors"] or 0),
+                "tokens": int(row["tokens"] or 0),
+                "avg_latency_ms": float(row["avg_latency_ms"] or 0.0),
+                "max_latency_ms": float(row["max_latency_ms"] or 0.0),
+            }
+            for row in rows
+        ]
+
     async def summary(self, *, days: int = 7) -> list[dict[str, Any]]:
         """Per-model rollup for the WebUI: calls, tokens, latency, failures."""
         since = int(self._clock()) - max(1, days) * 86400

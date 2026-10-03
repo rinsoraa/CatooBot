@@ -119,14 +119,15 @@ class NarrationFeed(logging.Handler):
     def emit(self, record: logging.LogRecord) -> None:
         try:
             channel = str(getattr(record, "channel", "") or "")
-            self._hub.publish(
-                "narration",
-                {
-                    "channel": channel,
-                    "level": record.levelname,
-                    "message": redact(record.getMessage()),
-                },
-            )
+            payload = {
+                "channel": channel,
+                "level": record.levelname,
+                "message": redact(record.getMessage()),
+            }
+            self._hub.publish("narration", payload)
+            # 契约 §8：`log` 与 `narration` 同源同载荷（同一份 redact），
+            # 供 v1 前端按 level 过滤；旧消费者继续读 `narration`。
+            self._hub.publish("log", payload)
         except Exception:  # noqa: BLE001 - pushing must never break logging
             return
 
