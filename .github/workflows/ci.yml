@@ -100,8 +100,8 @@ jobs:
         working-directory: .
         run: |
           strip_hash() { sed -E 's/-[A-Za-z0-9_-]{8}\././' ; }
-          committed=$(git ls-files webui/dist | sed 's#webui/dist/##' | grep -v '^index.html$' | sort | strip_hash)
-          built=$(cd webui/dist && find . -type f | sed 's#^\./##' | grep -v '^index.html$' | sort | strip_hash)
+          committed=$(git ls-files webui/dist | sed 's#webui/dist/##' | grep -v '^index.html$' | strip_hash | sort -u)
+          built=$(cd webui/dist && find . -type f | sed 's#^\./##' | grep -v '^index.html$' | strip_hash | sort -u)
           if [ "$committed" != "$built" ]; then
             echo "::error title=webui dist::committed webui/dist has a different module graph than a fresh build"
             diff <(echo "$committed") <(echo "$built") || true
