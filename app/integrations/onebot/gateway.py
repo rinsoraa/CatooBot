@@ -540,6 +540,35 @@ class OneBotGateway:
 
     # -------------------------------------------------------------- outbound
 
+    def stats(self) -> dict[str, Any]:
+        """Read-only counter + lane snapshot for the WebUI (W5 §7.4).
+
+        Pure projection: it never mutates a counter, a lane or the schedule,
+        so polling it changes nothing about delivery behaviour.
+        """
+        self_ids = [str(item) for item in (getattr(self.config, "self_ids", []) or [])]
+        lanes = [
+            {"lane": lane.key, "pending": int(lane.pending), "busy": bool(lane.busy)}
+            for lane in sorted(self._lanes.values(), key=lambda item: item.key)
+        ]
+        return {
+            "state": self.state.value,
+            "connected": self.state is ConnectionState.connected,
+            "self_id": self_ids[0] if self_ids else None,
+            "last_event_at": float(self.last_event_at) or None,
+            "received": int(self.received),
+            "accepted": int(self.accepted),
+            "deduped": int(self.deduped),
+            "dropped": int(self.dropped),
+            "self_ignored": int(self.self_ignored),
+            "responses": int(self.responses),
+            "sent": int(self.sent),
+            "failed": int(self.failed),
+            "pending_outbound": int(self.pending_outbound()),
+            "busy": bool(self.busy()),
+            "lanes": lanes,
+        }
+
     def pending_outbound(self) -> int:
         return len(self._outbound)
 

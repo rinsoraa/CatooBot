@@ -82,6 +82,21 @@ class ToolAdminService:
     async def metrics(self) -> dict[str, Any]:
         return await self.runtime.executor.metrics()
 
+    async def last_used(self) -> dict[str, float]:
+        """Per-tool last execution time (W5 list column); ``{}`` without a DB."""
+        database = getattr(self.bot, "database", None)
+        if database is None:
+            return {}
+        try:
+            rows = await database.fetchall(
+                "SELECT tool_name, MAX(created_at) AS last_at FROM tool_executions"
+                " GROUP BY tool_name"
+            )
+        except Exception:  # noqa: BLE001 - a missing column must not break the page
+            self._log.debug("Failed to read tool last-used times", exc_info=True)
+            return {}
+        return {str(row["tool_name"]): float(row["last_at"]) for row in rows if row["last_at"]}
+
     async def reasoning_modes(self) -> list[str]:
         """Documented argument sources, shown in the trace view (v0.6 §56)."""
         from app.tools.models import ARGUMENT_SOURCES
@@ -97,6 +112,7 @@ class ToolAdminService:
         self,
         name: str,
         *,
+        settings: dict[str, Any] | None = None,
         timeout: float | None = None,
         cache_ttl_seconds: float | None = None,
         provider: str = "",
@@ -105,25 +121,29 @@ class ToolAdminService:
         api_key_env: str = "",
         api_key_value: str = "",
     ) -> dict[str, Any]:
-        """Apply + persist a tool's configuration; secrets go to the store."""
-        settings: dict[str, Any] = {}
+        """Apply + persist a tool's configuration; secrets go to the store.
+
+        ``settings`` is the free-form bag the v1 API forwards; the named
+        parameters remain the legacy form fields (they win on conflict).
+        """
+        payload: dict[str, Any] = dict(settings or {})
         if provider:
-            settings["provider"] = provider
+            payload["provider"] = provider
             # remember the other known providers as fallbacks (v0.6 §108)
-            settings["fallback_providers"] = [
-                name for name in KNOWN_PROVIDERS.get(name, []) if name != provider
+            payload["fallback_providers"] = [
+                item for item in KNOWN_PROVIDERS.get(name, []) if item != provider
             ]
         if default_location:
-            settings["default_location"] = default_location
+            payload["default_location"] = default_location
         if max_results is not None:
-            settings["max_results"] = max(1, min(10, max_results))
+            payload["max_results"] = max(1, min(10, max_results))
         if api_key_env:
-            settings["api_key_env"] = api_key_env
+            payload["api_key_env"] = api_key_env
             if api_key_value:
                 self.runtime.credentials.set_secret(api_key_env, api_key_value)
 
         await self.runtime.update_tool_settings(
-            name, settings=settings or None, timeout=timeout, cache_ttl_seconds=cache_ttl_seconds
+            name, settings=payload or None, timeout=timeout, cache_ttl_seconds=cache_ttl_seconds
         )
         return {
             "ok": True,

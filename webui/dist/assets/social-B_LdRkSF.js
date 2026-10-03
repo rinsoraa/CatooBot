@@ -1,0 +1,1 @@
+const n={pending:"待确认",scheduled:"已排期",active:"进行中",in_progress:"进行中",rescheduled:"已改期",completed:"已完成",cancelled:"已取消",declined:"已拒绝",expired:"已过期",broken:"未履行"};function c(e){return n[e]??e}const r={stranger:"陌生",acquaintance:"认识",familiar:"熟悉",friend:"朋友",close_friend:"亲密朋友",core_friend:"核心好友"};function i(e){return r[e]??e}export{c,i as r};

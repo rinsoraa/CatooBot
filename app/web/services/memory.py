@@ -16,6 +16,13 @@ if TYPE_CHECKING:
 SETTINGS_KEY = "memory_overrides"
 
 
+def _memory_row(memory: Any) -> dict[str, Any]:
+    """The API row: ``memory_id`` is the v1 contract name (``id`` stays for the SSR page)."""
+    row = memory.model_dump()
+    row["memory_id"] = memory.id
+    return row
+
+
 class MemoryAdminService:
     def __init__(self, bot: Bot) -> None:
         self.bot = bot
@@ -43,7 +50,79 @@ class MemoryAdminService:
             status=status,
             limit=limit,
         )
-        return [m.model_dump() for m in memories]
+        return [_memory_row(m) for m in memories]
+
+    async def count(
+        self,
+        *,
+        keyword: str = "",
+        scope_key: str = "",
+        category: str = "",
+        layer: str = "",
+        status: str = "active",
+    ) -> int | None:
+        """Total rows for the v1 browse filters (None when memory is disabled).
+
+        Delegates to ``MemoryRepository.count`` — the existing SQL layer; the
+        web layer never issues its own queries.
+        """
+        if self.bot.memory is None:
+            return None
+        return await self.bot.memory.repository.count(
+            scope_key,
+            status=status,
+            layer=layer,
+            keyword=keyword,
+            category=category,
+        )
+
+    async def list_page(
+        self,
+        *,
+        keyword: str = "",
+        scope_key: str = "",
+        category: str = "",
+        layer: str = "",
+        status: str = "active",
+        limit: int = 20,
+        offset: int = 0,
+    ) -> dict[str, Any]:
+        """One page of browsed memories plus the offset-based cursor fields.
+
+        ``next_cursor`` is the next ``offset`` as a string (the repository
+        pages by ``LIMIT/OFFSET``); it is null on the last page. ``total`` is
+        null when memory is disabled.
+        """
+        page: dict[str, Any] = {
+            "items": [],
+            "total": None,
+            "next_cursor": None,
+            "limit": limit,
+            "offset": offset,
+        }
+        if self.bot.memory is None:
+            return page
+        rows = await self.bot.memory.repository.search(
+            keyword=keyword,
+            scope_key=scope_key,
+            category=category,
+            layer=layer,
+            status=status,
+            limit=limit,
+            offset=offset,
+        )
+        total = await self.count(
+            keyword=keyword,
+            scope_key=scope_key,
+            category=category,
+            layer=layer,
+            status=status,
+        )
+        page["items"] = [_memory_row(memory) for memory in rows]
+        page["total"] = total
+        if total is not None and offset + limit < total:
+            page["next_cursor"] = str(offset + limit)
+        return page
 
     async def search(
         self, query: str, *, mode: str = "hybrid", scope_key: str = "", limit: int = 10
@@ -59,6 +138,7 @@ class MemoryAdminService:
             results = [
                 {
                     "id": m.id,
+                    "memory_id": m.id,
                     "content": m.display_text,
                     "final": None,
                     "layer": m.layer,
@@ -113,7 +193,7 @@ class MemoryAdminService:
             if previous is not None:
                 superseded_by.append(previous.model_dump())
         return {
-            "memory": memory.model_dump(),
+            "memory": _memory_row(memory),
             "relations": relations,
             "supersedes": superseded_by,
         }

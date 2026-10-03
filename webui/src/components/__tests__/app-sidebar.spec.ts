@@ -28,17 +28,22 @@ describe('AppSidebar', () => {
     expect(labels).toEqual(['总览', '角色', 'AI 与模型', '社交', '记忆', '媒体与能力', '系统'])
   })
 
-  it('keeps four placeholders disabled and links only to real routes', async () => {
+  it('links every entry to a real v1 route after W5', async () => {
     const { wrapper } = await mountSidebar(false)
-    const disabled = wrapper.findAll('button[aria-disabled="true"]')
-    // W4 wired /ai and /system/settings; the W5 sections stay placeholders.
-    expect(disabled).toHaveLength(4)
-    for (const item of disabled) {
-      expect(item.text()).toContain('即将开放')
-    }
+    // W5 wired the remaining domains: no 「即将开放」 placeholders are left.
+    expect(wrapper.findAll('button[aria-disabled="true"]')).toHaveLength(0)
 
     const links = wrapper.findAll('a')
-    expect(links.map((link) => link.attributes('href'))).toEqual(['/', '/ai', '/system/settings'])
+    // §24/§142 的信息架构顺序：总览 → 角色 → AI → 社交 → 记忆 → 能力 → 系统
+    expect(links.map((link) => link.attributes('href'))).toEqual([
+      '/',
+      '/character',
+      '/ai',
+      '/social',
+      '/memory',
+      '/abilities/tools',
+      '/system/settings',
+    ])
     for (const link of links) {
       expect(link.attributes('aria-disabled')).toBeUndefined()
     }
@@ -63,6 +68,7 @@ describe('AppSidebar', () => {
       expect(item.attributes('title')).toBeTruthy()
     }
     expect(items[0]?.attributes('aria-label')).toBe('总览')
-    expect(items[1]?.attributes('aria-label')).toBe('角色（即将开放）')
+    // 所有入口都是真实路由，因此可访问名就是入口名（不再有「即将开放」后缀）
+    expect(items[1]?.attributes('aria-label')).toBe('角色')
   })
 })

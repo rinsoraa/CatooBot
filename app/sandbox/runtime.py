@@ -864,6 +864,28 @@ class SandboxRuntime:
             return str(session.get("social_space_id", "")) == social_space_id
         return True
 
+    def social_session_snapshot(self) -> dict[str, Any] | None:
+        """Read-only *copy* of the open interaction session (§46-§49), or None.
+
+        A copy on purpose: WebUI read models must never be able to mutate the
+        live session dict (that path belongs to ``touch_social_session`` /
+        ``close_social_session``). ``person_name`` is resolved through the
+        existing commitment label accessor — the session itself stores ids only.
+        """
+        session = self._social_session
+        if session is None:
+            return None
+        person_id = str(session.get("person_id", ""))
+        return {
+            "person_id": person_id,
+            "person_name": self.commitments.person_label(person_id) if person_id else "",
+            "social_space_id": str(session.get("social_space_id", "")),
+            "started_at": float(session.get("started_at", 0.0)),
+            "last_activity_at": float(session.get("last_activity_at", 0.0)),
+            "turns": int(session.get("turns", 0)),
+            "interrupted": bool(session.get("interrupted", False)),
+        }
+
     def touch_social_session(
         self, *, person_id: str, social_space_id: str, interrupted: bool = False
     ) -> dict[str, Any]:

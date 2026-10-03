@@ -18,11 +18,15 @@ import SectionHeader from '@/components/SectionHeader.vue'
 import StatusBadge from '@/components/StatusBadge.vue'
 import { useRealtimeStore } from '@/stores/realtime'
 import { useRuntimeStore } from '@/stores/runtime'
+import { useWorldStore } from '@/stores/world'
 
 const runtime = useRuntimeStore()
 const realtime = useRealtimeStore()
+const world = useWorldStore()
 
 onMounted(() => {
+  // 世界的详细信息（needs/goals/interrupted）走一次快照，之后由 world 主题触发刷新
+  void world.loadWorld()
   // 首屏由 App.vue 触发；直接进入本页（例如刷新）时补一次快照。
   if (!runtime.overview && !runtime.loading) void runtime.refresh()
 })
@@ -119,17 +123,47 @@ const worldModes = computed(() => {
   const modes = runtime.world?.modes
   return modes && modes.length > 0 ? modes.join('、') : '—'
 })
-const worldNeeds = computed(() => {
-  const pressing = runtime.world?.needs?.pressing
-  return pressing && pressing.length > 0 ? pressing.join('、') : '—'
-})
-
 // ------------------------------------------------------------ 实时事件
 const connectionState = computed<'ok' | 'warn' | 'off'>(() => {
   if (realtime.state === 'connected') return 'ok'
   if (realtime.state === 'connecting' || realtime.state === 'reconnecting') return 'warn'
   return 'off'
 })
+
+// W5：世界摘要（真实数据，缺失一律 "—"）
+const worldGoal = computed(() => world.goals[0] ?? null)
+const worldGoalText = computed(() => {
+  const goal = worldGoal.value
+  if (!goal) return '—'
+  const percent = Math.round((goal.progress ?? 0) * 100)
+  return `${goal.title || goal.goal_id}（${percent}%）`
+})
+const worldNeedsText = computed(() => {
+  const pressing = world.needsPressing
+  if (pressing.length > 0) return pressing.join('、')
+  const critical = runtime.world?.needs?.critical ?? []
+  return critical.length > 0 ? critical.join('、') : '—'
+})
+const worldStale = computed(() => world.stale || !realtime.connected)
+
+// W5 §107：社交上下文（当前会话 + 开放承诺数，全部来自后端）
+const socialPerson = computed(() => world.world?.session?.person_id ?? runtime.world?.session?.person_id ?? '')
+const socialActive = computed(() => Boolean(world.world?.session?.active ?? runtime.world?.session?.active))
+const socialValue = computed(() => (socialActive.value ? socialPerson.value || '交互中' : '空闲'))
+const socialHint = computed(() => {
+  const counts = runtime.counts
+  const open = counts.commitments_open
+  return open === null || open === undefined ? '开放承诺 —' : `开放承诺 ${open}`
+})
+
+// W5 §60：只放高价值入口，不做按钮墙
+const quickLinks = [
+  { to: { name: 'ai-overview' }, label: '配置 AI' },
+  { to: { name: 'character-world' }, label: '查看世界' },
+  { to: { name: 'system-logs' }, label: '查看日志' },
+  { to: { name: 'social-users' }, label: '查看社交' },
+  { to: { name: 'memory' }, label: '查看记忆' },
+]
 
 function formatDuration(seconds: number): string {
   const total = Math.max(0, Math.floor(seconds))
@@ -173,7 +207,17 @@ function formatTime(ts: number): string {
         <MetricCard label="AI" :value="aiValue" :hint="aiHint" :state="aiState" />
         <MetricCard label="世界" :value="worldValue" :hint="worldHint" />
         <MetricCard label="运行时" :value="uptimeValue" :hint="runtimeHint" />
+        <MetricCard label="社交" :value="socialValue" :hint="socialHint" />
       </div>
+
+      <section class="cb-card dash__section" data-testid="dashboard-quick-actions">
+        <SectionHeader title="快捷入口" description="最常用的五件事" />
+        <div class="dash__quick">
+          <RouterLink v-for="link in quickLinks" :key="link.label" class="dash__quick-link" :to="link.to">
+            {{ link.label }}
+          </RouterLink>
+        </div>
+      </section>
 
       <section class="cb-card dash__section" data-testid="dashboard-world">
         <SectionHeader title="当前世界" description="沙箱正在做什么、在哪里" />
@@ -197,9 +241,19 @@ function formatTime(ts: number): string {
           </div>
           <div class="dash__fact">
             <dt class="cb-caption">需求</dt>
-            <dd>{{ worldNeeds }}</dd>
+            <dd>{{ worldNeedsText }}</dd>
+          </div>
+          <div class="dash__fact">
+            <dt class="cb-caption">当前目标</dt>
+            <dd>{{ worldGoalText }}</dd>
           </div>
         </dl>
+        <p v-if="worldStale" class="cb-caption" data-testid="dashboard-world-stale">
+          数据可能不是最新（实时连接已断开）
+        </p>
+        <p class="cb-caption">
+          <RouterLink :to="{ name: 'character-world' }">查看世界详情 →</RouterLink>
+        </p>
       </section>
 
       <section class="cb-card dash__section" data-testid="dashboard-events">
@@ -227,6 +281,27 @@ function formatTime(ts: number): string {
 </template>
 
 <style scoped>
+.dash__quick {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--cb-space-2);
+}
+
+.dash__quick-link {
+  padding: var(--cb-space-2) var(--cb-space-4);
+  border: 1px solid var(--cb-border);
+  border-radius: var(--cb-radius-md);
+  background: var(--cb-surface-raised);
+  color: var(--cb-text);
+  text-decoration: none;
+  font-size: var(--cb-text-sm);
+}
+
+.dash__quick-link:hover {
+  border-color: var(--cb-primary);
+  color: var(--cb-primary-strong);
+}
+
 .dash {
   display: flex;
   flex-direction: column;

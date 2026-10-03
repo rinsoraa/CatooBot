@@ -11,13 +11,16 @@ from __future__ import annotations
 
 from aiohttp import web
 
+from app.web.api.agent_api import AgentApiRoutes
 from app.web.api.ai import AiApiRoutes
 from app.web.api.common import API_PREFIX, json_endpoint
 from app.web.api.config_api import ConfigApiRoutes
 from app.web.api.credentials import CredentialApiRoutes
 from app.web.api.domain import DomainApiRoutes
+from app.web.api.media_api import MediaApiRoutes
 from app.web.api.runtime import RuntimeApiRoutes
 from app.web.api.session import SessionRoutes
+from app.web.api.tools_api import ToolsApiRoutes
 from app.web.routes.base import WebContext
 
 
@@ -28,6 +31,9 @@ class ApiRoutes(
     AiApiRoutes,
     RuntimeApiRoutes,
     DomainApiRoutes,
+    ToolsApiRoutes,
+    MediaApiRoutes,
+    AgentApiRoutes,
     WebContext,
 ):
     """Composes every `/api/v1` domain module (W2)."""
@@ -55,7 +61,16 @@ class ApiRoutes(
 
         # Domain modules keep their own registration; each one is independently
         # testable and the whole namespace is one revertible unit.
-        self._register_v1_credentials(app)
-        self._register_v1_ai(app)
-        self._register_v1_runtime(app)
-        self._register_v1_domain(app)
+        for name in (
+            "_register_v1_credentials",
+            "_register_v1_ai",
+            "_register_v1_runtime",
+            "_register_v1_domain",
+            "_register_v1_social",
+            "_register_v1_tools",
+            "_register_v1_media",
+            "_register_v1_agent",
+        ):
+            register = getattr(self, name, None)
+            if register is not None:
+                register(app)

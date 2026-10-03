@@ -10,14 +10,19 @@
 * ``qq.last_event_at`` —— 读 ``OneBotGateway.last_event_at``（W2 新增属性）；
   gateway 未启用时为 ``None``；
 * ``runtime.database.connected`` —— ``Database`` 没有公开属性，只读 ``_conn``；
+  ``runtime.database.size_bytes`` 只在配置指向真实存在的 sqlite 文件时给出；
+* ``runtime.process.started_at/uptime_seconds`` —— ``Bot.started_at`` 未启动时为 None；
+* ``runtime.onebot`` —— 网关未启用时 ``state="disabled"``、计数为 None、lanes 为空
+  （``OneBotGateway.stats()`` 是纯只读投影，W5 新增）；
 * ``world.session.person_id`` —— ``SandboxRuntime`` 只有 ``social_session_active()``，
   person_id 只读运行时 ``_social_session`` 字典；
 * ``runtime.hub.*`` —— 由 WebServer 注入的 ``RealtimeHub``；没有 hub 时为 ``None``；
 * goals 的 ``title`` 投影自 ``Goal.reason``（模型没有 title 字段）；
   relationships 的 ``stage`` 投影自 ``RelationshipState.relation_type``；
 * ``logs_tail`` 的 ``ts`` 恒为 ``None``（文件行只有 ``HH:MM:SS``，无法诚实换算 Unix 秒），
-  其余字段用正则解析 ``[HH:MM:SS] [LEVEL] [logger] message``，解析不了的行退化为
-  ``{"message": line}``。
+  其余字段用正则解析 ``[HH:MM:SS] [LEVEL] [logger] message``；叙述行消息开头的
+  ``[channel]`` 前缀（``_PlainFilter`` 注入）会被解析成显式 ``channel`` 字段，
+  解析不了的行退化为 ``{"message": line}``。
 """
 
 from __future__ import annotations
@@ -28,6 +33,11 @@ from typing import TYPE_CHECKING, Any
 
 from app.config.settings import PROJECT_ROOT, project_path
 from app.web.services.ai_admin import derive_ai_status
+from app.web.services.runtime_snapshot import (
+    database_size_bytes,
+    onebot_block,
+    process_block,
+)
 
 if TYPE_CHECKING:
     from app.core.bot import Bot
@@ -39,6 +49,12 @@ if TYPE_CHECKING:
 _LOG_LINE = re.compile(
     r"^\[(?P<time>\d{1,2}:\d{2}:\d{2})\]\s+\[(?P<level>[A-Z]+)\]\s+\[(?P<logger>[^\]]+)\]\s?(?P<message>.*)$"
 )
+
+#: 叙述行在消息开头的频道前缀：``[world] 🌍 世界 │ …``（_PlainFilter 注入）
+_CHANNEL_PREFIX = re.compile(r"^\[(?P<channel>[a-z][a-z0-9_]*)\]\s+(?P<rest>.*)$")
+
+#: AdminService 只读文件尾的最大行数（LOG_TAIL_LINES）
+_LOG_TAIL_MAX = 400
 
 LOG_FILE_NAME = "catoobot.log"
 
@@ -116,7 +132,7 @@ class RuntimeReadService:
                 "status": derive_ai_status(self._bot),
             },
             "world": self._world_core(),
-            "runtime": self._runtime_block(include_report=False),
+            "runtime": self._runtime_block(),
             "counts": await self._counts(),
         }
 
@@ -265,9 +281,9 @@ class RuntimeReadService:
 
     async def runtime(self) -> dict[str, Any]:
         """``GET /api/v1/runtime``：契约 §3 的 runtime 段 + 调度器 last_report。"""
-        return self._runtime_block(include_report=True)
+        return self._runtime_block()
 
-    def _runtime_block(self, *, include_report: bool) -> dict[str, Any]:
+    def _runtime_block(self) -> dict[str, Any]:
         scheduler = getattr(self._bot, "runtime_scheduler", None)
         if scheduler is None:
             block: dict[str, Any] = {
@@ -285,8 +301,7 @@ class RuntimeReadService:
                 "catchups": int(scheduler.catchups),
                 "last_tick_at": float(scheduler.last_tick_at) or None,
             }
-        if include_report:
-            block["last_report"] = dict(getattr(scheduler, "last_report", {}) or {}) or None
+        block["last_report"] = dict(getattr(scheduler, "last_report", {}) or {}) or None
         watchdog = getattr(self._bot, "watchdog", None)
         stats = watchdog.stats() if watchdog is not None else {}
         hub_stats = self._hub.stats() if self._hub is not None else {}
@@ -297,12 +312,30 @@ class RuntimeReadService:
                 "max_lag_ms": stats.get("max_lag_ms"),
                 "lag_events": stats.get("lag_events"),
             },
-            "database": {"connected": self.database_connected()},
+            "database": self._database_block(),
             "hub": {
                 "subscribers": hub_stats.get("subscribers"),
                 "published": hub_stats.get("published"),
                 "dropped": hub_stats.get("dropped"),
+                "queue_size": hub_stats.get("queue_size"),
             },
+            "process": self._process_block(),
+            "onebot": self._onebot_block(),
+        }
+
+    def _process_block(self) -> dict[str, Any]:
+        """进程事实：版本/Python/启动时间（拆出的纯投影，见 runtime_snapshot）。"""
+        return process_block(self._bot)
+
+    def _onebot_block(self) -> dict[str, Any]:
+        """QQ 网关只读计数 + lane 深度（网关未启用时计数为 null、lanes 空）。"""
+        return onebot_block(self._bot)
+
+    def _database_block(self) -> dict[str, Any]:
+        connected = self.database_connected()
+        return {
+            "connected": connected,
+            "size_bytes": database_size_bytes(self._bot, connected=connected),
         }
 
     def database_connected(self) -> bool:
@@ -370,40 +403,65 @@ class RuntimeReadService:
     # ------------------------------------------------------------------ logs
 
     async def logs_tail(
-        self, level: str = "", keyword: str = "", lines: int = 200
+        self, level: str = "", keyword: str = "", lines: int = 200, channel: str = ""
     ) -> dict[str, Any]:
         """``GET /api/v1/logs/tail``：把 AdminService 的格式化行解析成字段。
 
         能解析的行给出 ``level``/``logger``/``message``（``ts`` 恒为 None，
-        文件格式只有时刻没有日期）；解析不了的行退化为 ``{"message": line}``。
+        文件格式只有时刻没有日期）；叙述行消息以 ``[channel] `` 开头时，
+        该前缀会被取出放进显式 ``channel`` 字段（消息本身保留其余文本）。
+        ``channel`` 过滤在服务端完成：多取几行再筛，避免只筛到尾部的窗口。
         """
+        fetch = lines
+        if channel:
+            fetch = min(_LOG_TAIL_MAX, max(lines * 4, 100))
         raw: list[str] = []
         if self._admin is not None:
-            raw = await self._admin.logs(level=level, keyword=keyword, lines=lines)
+            raw = await self._admin.logs(level=level, keyword=keyword, lines=fetch)
+        known = self._channel_keys()
         items: list[dict[str, Any]] = []
         parsed = 0
         for line in raw:
             match = _LOG_LINE.match(line)
             if match is None:
-                items.append({"ts": None, "level": "", "logger": "", "message": line})
+                items.append(
+                    {"ts": None, "level": "", "logger": "", "channel": None, "message": line}
+                )
                 continue
             parsed += 1
+            message = match.group("message")
+            channel_key: str | None = None
+            prefix = _CHANNEL_PREFIX.match(message)
+            if prefix is not None and prefix.group("channel") in known:
+                channel_key = prefix.group("channel")
+                message = prefix.group("rest")
             items.append(
                 {
                     "ts": None,
                     "time": match.group("time"),
                     "level": match.group("level"),
                     "logger": match.group("logger"),
-                    "message": match.group("message"),
+                    "channel": channel_key,
+                    "message": message,
                 }
             )
+        if channel:
+            items = [item for item in items if item.get("channel") == channel]
+        items = items[:lines]
         return {
             "items": items,
             "file": self.log_file_display(),
-            "truncated": bool(raw) and len(raw) >= lines,
+            "truncated": bool(raw) and len(raw) >= fetch,
             "parsed": parsed,
             "total": len(raw),
         }
+
+    @staticmethod
+    def _channel_keys() -> set[str]:
+        """已知的叙述频道 key（app/utils/narrator.py 是唯一事实源）。"""
+        from app.utils.narrator import CHANNELS
+
+        return set(CHANNELS)
 
     def log_file_display(self) -> str:
         """相对项目根的日志路径（契约示例：``logs/catoobot.log``）。"""

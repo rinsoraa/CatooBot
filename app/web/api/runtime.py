@@ -105,10 +105,14 @@ class RuntimeApiRoutes(WebContext):
     # ------------------------------------------------------------------ logs
 
     async def _v1_logs_tail(self, request: web.Request) -> web.Response:
-        limit = read_query_int(request, "limit", default=200, minimum=1, maximum=1000)
+        # 契约 §3 的 limit=400 默认；W5 起上限收紧到 500，并支持 channel 过滤
+        limit = read_query_int(request, "limit", default=400, minimum=1, maximum=500)
         level = request.query.get("level", "")
         keyword = request.query.get("q", "") or request.query.get("keyword", "")
-        data = await self._read().logs_tail(level=level, keyword=keyword, lines=limit)
+        channel = request.query.get("channel", "")
+        data = await self._read().logs_tail(
+            level=level, keyword=keyword, lines=limit, channel=channel
+        )
         return ok(data, request=request)
 
     async def _v1_logs_channels(self, request: web.Request) -> web.Response:

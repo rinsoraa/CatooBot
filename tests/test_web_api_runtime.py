@@ -169,10 +169,11 @@ class TestOverviewAndRuntime:
                 "ticks",
                 "catchups",
                 "last_tick_at",
+                "last_report",
             }
             assert set(runtime["watchdog"]) == {"last_lag_ms", "max_lag_ms", "lag_events"}
             assert isinstance(runtime["database"]["connected"], bool)
-            assert set(runtime["hub"]) == {"subscribers", "published", "dropped"}
+            assert set(runtime["hub"]) == {"subscribers", "published", "dropped", "queue_size"}
             assert isinstance(data["qq"]["messages_received"], int)
 
     async def test_runtime_status_and_scheduler_shapes(self, tmp_path) -> None:  # type: ignore[no-untyped-def]
@@ -180,7 +181,14 @@ class TestOverviewAndRuntime:
             await client.login()
             status, payload = await client.get("/api/v1/runtime/status")
             assert status == 200
-            assert set(payload["data"]) == {"scheduler", "watchdog", "database", "hub"}
+            assert set(payload["data"]) == {
+                "scheduler",
+                "watchdog",
+                "database",
+                "hub",
+                "process",
+                "onebot",
+            }
             status, payload = await client.get("/api/v1/runtime/scheduler")
             assert status == 200
             assert set(payload["data"]) == {

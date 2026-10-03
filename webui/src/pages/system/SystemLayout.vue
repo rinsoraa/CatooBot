@@ -17,6 +17,8 @@ const tabs = [
   { name: 'system-settings', label: '设置' },
   { name: 'system-credentials', label: '凭据' },
   { name: 'system-advanced', label: '高级 YAML' },
+  { name: 'system-logs', label: '日志' },
+  { name: 'system-runtime', label: 'Runtime' },
   { name: 'system-restart-pending', label: '等待重启' },
 ] as const
 

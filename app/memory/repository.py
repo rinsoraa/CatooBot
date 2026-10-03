@@ -286,12 +286,21 @@ class MemoryRepository:
         scope_key_filter: str = "",
         status: str = "active",
         layer: str = "",
+        *,
+        keyword: str = "",
+        category: str = "",
     ) -> int:
         sql = "SELECT COUNT(*) AS n FROM memories WHERE 1=1"
         params: list[Any] = []
+        if keyword:
+            sql += " AND (content LIKE ? OR summary LIKE ?)"
+            params.extend([f"%{keyword}%", f"%{keyword}%"])
         if scope_key_filter:
             sql += " AND scope_key = ?"
             params.append(scope_key_filter)
+        if category:
+            sql += " AND category = ?"
+            params.append(category)
         if status:
             sql += " AND status = ?"
             params.append(status)

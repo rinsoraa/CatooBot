@@ -272,6 +272,22 @@ class AdminService:
         )
         return [dict(row) for row in rows]
 
+    async def set_group_participation(self, group_id: str, enabled: bool) -> None:
+        """The single write path for a group's participation switch (W5).
+
+        Both the legacy ``POST /groups/toggle`` form and the v1
+        ``PATCH /api/v1/social/groups/{group_id}`` call this method, so the
+        upsert semantics cannot drift apart.
+        """
+        now = int(time.time())
+        await self.bot.database.execute(
+            """INSERT INTO group_profiles (group_id, participation_enabled, last_seen)
+               VALUES (?, ?, ?)
+               ON CONFLICT(group_id) DO UPDATE SET
+                   participation_enabled=excluded.participation_enabled""",
+            (str(group_id), 1 if enabled else 0, now),
+        )
+
     # -------------------------------------------------------------- sessions
 
     async def list_sessions(self) -> list[dict[str, Any]]:

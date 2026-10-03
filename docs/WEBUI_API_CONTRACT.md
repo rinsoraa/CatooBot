@@ -85,12 +85,12 @@
 | 方法与路径 | 说明 | 响应 `data`（键为契约） |
 |---|---|---|
 | `GET /api/v1/meta` | 版本/构建信息 | `{"api", "app_version", "webui_version", "core_behavior_phase", "python", "started_at", "uptime_seconds"}` |
-| `GET /api/v1/overview` | **总览仪表盘一屏数据**（聚合，单请求） | `{"qq": {"online", "self_id", "messages_received", "users", "groups", "sessions", "last_event_at"}, "ai": {"enabled", "current_model", "models_ok", "models_total", "requests", "errors", "rate_limited", "status"}, "world": {"phase", "location", "action": {"name", "progress", "started_at", "planned_end_at"}, "modes": [], "needs": {"critical": [], "pressing": []}, "world_revision", "cognitive_revision", "session": {"active", "person_id"}, "interrupted": bool}, "runtime": {"scheduler": {"running", "interval_seconds", "ticks", "catchups", "last_tick_at"}, "watchdog": {"last_lag_ms", "max_lag_ms", "lag_events"}, "database": {"connected"}, "hub": {"subscribers", "published", "dropped"}}, "counts": {"memories", "experiences", "goals_open", "commitments_open"}}` |
-| `GET /api/v1/runtime/status` | 运行时细项（`overview` 的 runtime 段独立化，供轮询） | 同上 `runtime` 段 |
+| `GET /api/v1/overview` | **总览仪表盘一屏数据**（聚合，单请求） | `{"qq": {"online", "self_id", "messages_received", "users", "groups", "sessions", "last_event_at"}, "ai": {"enabled", "current_model", "models_ok", "models_total", "requests", "errors", "rate_limited", "status"}, "world": {"phase", "location", "action": {"name", "progress", "started_at", "planned_end_at"}, "modes": [], "needs": {"critical": [], "pressing": []}, "world_revision", "cognitive_revision", "session": {"active", "person_id"}, "interrupted": bool}, "runtime": {"scheduler": {"running", "interval_seconds", "ticks", "catchups", "last_tick_at", "last_report"}, "watchdog": {"last_lag_ms", "max_lag_ms", "lag_events"}, "database": {"connected", "size_bytes"}, "hub": {"subscribers", "published", "dropped", "queue_size"}, "process": {"uptime_seconds", "started_at", "version", "python"}, "onebot": {"state", "connected", "self_id", "last_event_at", "received", "accepted", "deduped", "dropped", "self_ignored", "responses", "sent", "failed", "pending_outbound", "busy", "lanes": []}}, "counts": {"memories", "experiences", "goals_open", "commitments_open"}}`（W5 扩展见 §7.4 末） |
+| `GET /api/v1/runtime/status` | 运行时细项（`overview` 的 runtime 段独立化，供轮询） | 同上 `runtime` 段；W5 起另含 `process` / `onebot`，见 §7.4 末 |
 | `GET /api/v1/runtime/scheduler` | 世界调度器 | `{"running", "interval_seconds", "ticks", "catchups", "last_tick_at", "last_report"}` |
 | `POST /api/v1/runtime/tick` | 手动跑一次世界 tick（**新增 admin 动作**，限流 1 次/秒） | `{"ran": true, "minutes": 1.0, "report": {...}}`；冲突 `409 world.busy` |
 | `POST /api/v1/runtime/actions/{name}` | 现有运行时动作 JSON 化：`reload_persona / reload_plugins / reload_models / restore_model_overrides` | `{"done": true, "action": name, "detail": "…"}` |
-| `GET /api/v1/logs/tail?limit=400&level=&q=` | 日志尾读（服务端过滤，替代页面内过滤） | `{"items": [{"ts", "level", "logger", "message"}], "file": "logs/catoobot.log", "truncated": bool}` |
+| `GET /api/v1/logs/tail?limit=400&level=&q=&channel=` | 日志尾读（服务端过滤；`limit` ≤500，W5 增 `channel`） | `{"items": [{"ts", "time", "level", "logger", "channel", "message"}], "file": "logs/catoobot.log", "truncated": bool, "parsed": int, "total": int}`；`channel` 从叙述前缀解析，非叙述行为 `null`（详见 §7.4） |
 | `GET /api/v1/logs/channels` | 叙述频道字典（图标/标签，前端图例） | `{"channels": [{"key": "world", "icon": "🌍", "label": "世界"}]}` |
 
 说明：`last_event_at`、`database.connected` 今日无公开访问器（见 `WEBUI_V1_AUDIT.md` §5），
@@ -192,11 +192,18 @@ W2 需在 `AdminService` 增只读方法；`runtime/tick` 复用 `RuntimeSchedul
 | `GET /api/v1/character` | persona（identity/personality/speaking_style/behavior_rules/system_prompt）+ 来源（DB persona vs config） |
 | `PATCH /api/v1/character` | 更新 persona（热生效，沿用 `AdminService.persona`） |
 | `GET /api/v1/character/state` | mood/energy/activity/阶段 |
+| `PATCH /api/v1/character/state` | 更新状态字段（Body 允许 `mood/energy/activity/current_focus/location/social_state/schedule_state/current_goal/current_project/reason`）；未知字段/类型错误 → `422 validation.failed`（带 `field`），成功返回新 state |
 | `POST /api/v1/character/export` / `POST /api/v1/character/import` (`confirm`) | 导出/导入（在今日 export/import 基础上 JSON 化；导入返回 diff 预览，二次确认才应用） |
-| `GET /api/v1/world` | 沙盒总览：phase、位置、当前动作+进度、modes、needs（含 bands）、goals、commitments（含 due）、relationships（top）、world/cognitive revision、session/interrupt |
+| `GET /api/v1/world` | 沙盒总览：phase、位置、当前动作+进度、modes、needs（含 bands）、goals、commitments（含 due）、relationships（top）、world/cognitive revision、session/interrupt；**W5 追加块**：`needs_full[]`、`spaces[]`、`objects[]`、`inventories{}`、`pet{}`、`social_spaces[]`、`action_defs[]`、`modes_defs[]`、`goals_full[]`；`action` 增加 `definition_id/detail/reason_code/space_id/goal_id/goal_step`；`interrupted` 由 bool 改为 `{active, definition_id, remaining_minutes, reason, progress}` 或 `null`（无打断时；`/overview` 的 `world.interrupted` 仍是 bool） |
 | `GET /api/v1/world/trace?limit=` | 结构化事件轨迹（`sandbox.store.recent_events/timeline`） |
+| `GET /api/v1/world/timeline?limit=` | 变更驱动事件时间线（同 `store.timeline` 粒度，升序）：`{enabled, items: [{ts, event_type, summary, location, action, revisions}], count}` |
+| `GET /api/v1/world/topics?scope_key=&status=` | 未闭环话题列表：`{items: [TopicThread…], count}` |
+| `POST /api/v1/world/topics/{topic_id}/{action}` | 话题动作 `resolve/forget/delete`；未知动作 → `400 topic.action_unknown`，话题不存在 → `404 topic.not_found`，动作未生效 → `409 topic.action_failed`；成功 `{done, action, topic_id}` |
 | `POST /api/v1/world/control/{action}` | `pause / resume / reset / reinitialize`（沿用 `routes/sandbox.py:451-474`；`reset`/`reinitialize` 需 `confirm`） |
 | `POST /api/v1/world/simulate` | 干跑 N 小时（沿用 `routes/sandbox.py:430-449` 的备份/恢复；需 `confirm`，单次限时） |
+
+只读保证：`/world`、`/world/timeline`、`/world/topics`、`/social/*` 的 GET 均不移动
+`sandbox.world_revision` / `cognitive_revision`（W5 测试断言）。
 
 ### 7.2 对话与社交
 
@@ -213,28 +220,93 @@ W2 需在 `AdminService` 增只读方法；`runtime/tick` 复用 `RuntimeSchedul
 | `GET /api/v1/topics` / `POST /api/v1/topics/{id}/{action}` | 未闭环话题（resolve/forget/delete） |
 | `GET /api/v1/expressions` / `PATCH /api/v1/expressions/{id}` / `DELETE` | 口癖学习管理 |
 
+#### 7.2.1 W5 社交域具体接口（`app/web/api/social_api.py`）
+
+| 方法与路径 | 请求 | 响应 `data` / 错误 |
+|---|---|---|
+| `GET /api/v1/social/users?q=&limit=≤200&offset=` | — | `{items: [{person_id, display_name, qq, nickname, nickname_override, interaction_count, stage, initiative_enabled, notes, tags, last_seen, relationship{…}\|null, open_commitments, recent_experience\|null, spaces[]}], total, limit, offset, next_cursor}`；`person_id` 来自 `PersonIdentityResolver.for_qq`（无沙盒时退化为 QQ id），绝不暴露 DB 主键 |
+| `GET /api/v1/social/users/{person_id}` | — | `{person, relationship\|null, commitments[], experiences[]≤20, memories[]≤20\|null, spaces[]}`；未知人物 → `404 social.user_not_found` |
+| `PATCH /api/v1/social/users/{person_id}` | `{nickname_override?, notes?, tags?: [str], initiative_enabled?: bool}` | 缺省字段保留现值；写 `AdminService.save_user_profile`；未知字段/类型错误 → `422`，未知人物 → `404 social.user_not_found`；返回 `{person}` |
+| `GET /api/v1/social/groups` | — | `{items: [list_groups 行], count}` |
+| `PATCH /api/v1/social/groups/{group_id}` | `{participation_enabled: bool}` | 写 `AdminService.set_group_participation`（与旧 `POST /groups/toggle` 同一写路径，upsert 语义）；非布尔 → `422`；返回更新后的群行（无群行时回显 `{group_id, participation_enabled}`） |
+| `GET /api/v1/social/sessions` | — | `{active: bool, items: [{person_id, person_name, social_space_id, started_at, last_activity_at, turns, interrupted}]}`（运行期最多一条；`social_session_snapshot()` 返回副本） |
+| `GET /api/v1/social/relationships?limit=≤200` | — | `{items: [{person_id, display_name, relation_type, trust, familiarity, closeness, social_comfort, interaction_count, last_interaction_at}], count}`（只读 `RelationshipStore.important`） |
+| `GET /api/v1/social/commitments?status=&person=` | — | `{items: [{commitment_id, person_id, person_name, kind, status, strength, priority, summary, target_activity, time_hint, earliest_at, due_at, created_at, goal_id, goal_status}], count}`；open 在前、再按 `due_at`；未知 status → `400 social.status_unknown` |
+| `GET /api/v1/social/commitments/{commitment_id}` | — | 同上行 + `{goal{…}\|null, action{…}\|null, outcome{status, resolved_at, updated_at, revision, result}\|null}`；未知 id → `404 social.commitment_not_found` |
+| `GET /api/v1/social/spaces` | — | `{items: [{space_id, kind, qq_group_id, name, participants, character_presence, interest}], map: {qq_group_id: space_id}}`（map 来自 `sandbox.social_space_map`） |
+| `GET /api/v1/social/overview` | — | `SocialAdminService.dashboard()` 薄转发（社交未启用时 `{enabled: false}`） |
+
+社交域全部写操作需 CSRF；未登录一律 401。
+
 ### 7.3 记忆
 
 | 方法与路径 | 说明 |
 |---|---|
-| `GET /api/v1/memories?q=&kind=&limit=&cursor=` | 浏览/检索（含检索调试参数 `debug=true` 时返回逐条打分） |
+| `GET /api/v1/memories?q=&mode=&scope_key=&category=&layer=&status=&person=&limit=≤200&offset=` | 有 `q` 时沿用检索语义（`mode=keyword/semantic/hybrid`；keyword 是 SQL LIKE，semantic/hybrid 走召回管线，`total` 为 `null`）；无 `q` 时为浏览（`mode="browse"`）。`person` 在未给 `scope_key` 时映射为 `scope_key="user:<person>"`；`status` 缺省 `active`，显式空串 = 全部。响应保持 W2 键并补分页：`{items, next_cursor, total(int\|null), count, mode, semantic_available, error}`（`next_cursor` 是下一页 `offset` 的字符串，最后一页 `null`） |
+| `GET /api/v1/memories/timeline?limit=≤500&scope_key=` | 记忆时间线：`{items, count, scope_key}` |
 | `GET /api/v1/memories/{id}` | 详情（出处/关联/时间线） |
-| `POST /api/v1/memories/{id}/{action}` | activate/archive/reembed/delete（沿用 `MemoryAdminService.action`） |
+| `POST /api/v1/memories/{id}/{action}` | `activate` / `archive` / `reembed` / `edit`（Body `{content, category?, importance?, status?, summary?}`，缺 `content` → `400 memory.content_required`）/ **`delete` 必须带 `{"confirm": "delete"}`**，否则 `409 memory.confirm_required`（W5 变更，防误删）；目标不存在 → `404 memory.not_found` |
 | `GET /api/v1/memories/health` | 计数/向量覆盖/保留 |
 | `POST /api/v1/memories/consolidation/run` | 手动巩固 |
 | `POST /api/v1/memories/embeddings/{action}` | rebuild/retry/clear-cache |
 | `POST /api/v1/memories/correction/plan` / `POST /api/v1/memories/correction/apply` | 自然语言纠错（两步：计划 → `confirm` 应用） |
 
-### 7.4 媒体与能力
+### 7.4 媒体与能力（W5 实施）
 
-| 方法与路径 | 说明 |
-|---|---|
-| `GET /api/v1/stickers` / `POST /api/v1/stickers/{id}/{action}` / `POST /api/v1/stickers/reindex` | 贴纸库 |
-| `GET /api/v1/tools` / `GET /api/v1/tools/{name}` / `PATCH /api/v1/tools/{name}` / `POST /api/v1/tools/{name}/test` | 工具注册表/配置/测试 |
-| `GET /api/v1/tools/executions` / `GET /api/v1/tools/decision-debug` | 执行记录/选择打分 |
-| `GET /api/v1/tools/permissions` / `PUT/DELETE /api/v1/tools/permissions` | 权限规则 |
-| `GET /api/v1/agent` / `GET /api/v1/agent/tasks` / `GET /api/v1/agent/tasks/{id}` / `POST /api/v1/agent/tasks/{id}/{action}` | Agent 面板/任务/控制（pause/resume/cancel/retry） |
-| `POST /api/v1/agent/simulate` | 模拟（dry run） |
+错误码：`tools.*`（`tools.unknown` / `tools.confirm_required` / `tools.unknown_field` /
+`tools.nothing_to_update` / `tools.scope_unknown` / `tools.store_unavailable`）、
+`media.*`（`media.action_unknown` / `media.confirm_required` / `media.sticker_unknown` /
+`media.pattern_unknown` / `media.unavailable`）、`agent.*`（`agent.task_unknown` /
+`agent.action_unknown` / `agent.action_failed`）。未登录一律 401；写操作缺 CSRF → 403 `auth.csrf`。
+
+#### 工具（`app/web/api/tools_api.py`，委托 `ToolAdminService`）
+
+| 方法与路径 | 说明 | 请求 / 查询 | 响应 `data` |
+|---|---|---|---|
+| `GET /api/v1/tools` | 注册表 + 策略 + 统计一屏 | — | `{items: [{name, display_name, description, category, risk_level, enabled, requires_credentials, has_credential, timeout, cache_ttl_seconds, calls, failures, last_used_at}], policy: {allowed_risk_levels, rate_limit, max_calls_per_turn, ...}, stats: {enabled, decision_mode, total, enabled_count, disabled_count, calls, success, failure, cache_hits}}`。`has_credential`：无凭据要求时为 `null`（不适用），否则「全部就绪」才 `true`；缺失数据一律 `null` |
+| `GET /api/v1/tools/{name}` | 详情：schema/文档/设置/指标/最近执行/权限摘要 | — | 单项 + `input_schema` / `output_schema` / `when_to_use` / `when_not_to_use` / `limitations` / `settings`（凭据只回 masked）/ `metrics` / `recent_executions` / `permissions_summary: {count, rules}`；未知工具 404 `tools.unknown` |
+| `PATCH /api/v1/tools/{name}` | 热更新启用/设置/超时/缓存 TTL | `{enabled?, settings?, timeout?, cache_ttl_seconds?}` | 详情 + `applied: [...]` + `restart_required`。ToolRuntime 对以上字段全部热应用（v0.6 §73），故事实值为 `false`；未知字段 400 `tools.unknown_field`，空 body 400 `tools.nothing_to_update`，类型错误 400（带 `field`） |
+| `POST /api/v1/tools/{name}/test` | 管理端测试（可能真的发起外部请求；不会发 QQ 消息） | `{"arguments"?: {...}, "confirm": "<name>"}` | `{ok, result\|error, duration_ms, may_have_called_external: true, note}`。缺/错 `confirm` → 409 `tools.confirm_required`（**确认门 1**） |
+| `GET /api/v1/tools/executions?limit=&name=` | 执行记录（永不回显原始参数） | `limit` ≤500 | `{items, total}` |
+| `GET /api/v1/tools/metrics` | 执行器指标 | — | `ToolExecutor.metrics()` 原样 |
+| `GET /api/v1/tools/permissions` | 权限规则 | — | `{items: [{scope, ref, tool_name, allowed, created_at}], total}` |
+| `PUT /api/v1/tools/permissions` | 新增/更新规则（拒绝优先） | `{scope: "user"\|"group", scope_id, tool, allowed}` | `{saved: true, scope, scope_id, tool, allowed}`；`scope` 非法 400 `tools.scope_unknown`，未知工具 404 |
+| `DELETE /api/v1/tools/permissions?scope=&scope_id=&tool=` | 删除规则 | query 三参必填 | `{cleared: true, ...}` |
+| `POST /api/v1/tools/cache/clear` | 清空缓存 | `{"confirm": "clear", "name"?: "..."}` | `{cleared: <int>, tool}`；缺 `confirm` → 409 `tools.confirm_required`（**确认门 2**） |
+| `GET /api/v1/tools/decision-debug?text=&mode=` | 选择打分预览，**只读、绝不执行** | `text` 必填 | `{query, candidates, rejected, selected, decision_mode, instruction_preview}`；缺 `text` 400 |
+
+#### 贴纸与口癖（`app/web/api/media_api.py`）
+
+| 方法与路径 | 说明 | 请求 / 查询 | 响应 `data` |
+|---|---|---|---|
+| `GET /api/v1/stickers?q=&emotion=&intent=&status=&limit=&offset=` | 贴纸库（服务端过滤 + 分页） | `limit` ≤500 | `{items: [{sticker_id, file, file_name, preview_url, emotion, emotion_tags, intent, intent_tags, status, origin, origin_user, usage_count, last_used_at, created_at, safety_status, valid}], stats, total}`。`preview_url` 无真实静态路由 → 恒 `null`；`valid` = 文件引用可解析 |
+| `POST /api/v1/stickers/{sticker_id}/{action}` | `enable`→active / `disable`→disabled / `delete`→archived | delete 需 `{"confirm": "delete"}` | `{sticker_id, action, status, applied: true}`；未知 id 404 `media.sticker_unknown`，未知动作 400，缺确认 409 `media.confirm_required` |
+| `POST /api/v1/stickers/reindex` | 全量重扫贴纸目录 | — | `{scanned, added, updated, removed, state}`；`scan()` 无法区分新增/重扫 → `added`/`updated` 为 `null`，`removed` 恒 0（扫描从不删除记录） |
+| `GET /api/v1/expressions?status=&group_id=&limit=` | 口癖列表 | `limit` ≤500 | `{items: [{pattern_id, pattern, kind, status, group_id, scope_key, occurrences, speakers, use_count, first_seen, last_seen}], stats}` |
+| `POST /api/v1/expressions/{pattern_id}/{action}` | `enable`→active / `disable`→disabled / `delete`（删来源+向量） | delete 需 `{"confirm": "delete"}` | `{pattern_id, action, status}` / `{..., deleted: true}`；未知 id 404 `media.pattern_unknown`，缺确认 409 `media.confirm_required` |
+
+#### Agent（`app/web/api/agent_api.py`，委托 `AgentAdminService`）
+
+| 方法与路径 | 说明 | 请求 / 查询 | 响应 `data` |
+|---|---|---|---|
+| `GET /api/v1/agent` | 面板一屏 | — | `{status, health, active_tasks, recent_tasks, policy, budget, planner_model, evaluator_model}`。`status` 由真实运行时推导：无 `bot.agent` → `unavailable`；`agent.enabled=false` → `disabled`；否则 `ready`（不猜） |
+| `GET /api/v1/agent/tasks?status=&limit=&offset=` | 任务列表 | `limit` ≤500 | `{items, total}`；`total` 只在取完整个窗口时给出，否则 `null` |
+| `GET /api/v1/agent/tasks/{task_id}` | 任务详情（计划/步骤/观察/trace，JSON 字段已解码） | — | `{task, goal, plans, steps, observations, traces}`；未知 404 `agent.task_unknown` |
+| `POST /api/v1/agent/tasks/{task_id}/{action}` | `pause / resume / cancel / retry / replay` | — | `{task_id, action, ok, detail, ...}`；未知动作 400 `agent.action_unknown`，未知任务 404 `agent.task_unknown`，状态机拒绝 409 `agent.action_failed` |
+| `POST /api/v1/agent/simulate` | 干跑：只分类 + 规划，不执行工具、不发 QQ 消息 | `{"text": "..."}` | `runtime.simulate()` 原样 + `dry_run: true`；缺 `text` 400 |
+
+#### 运行时与日志扩展（`runtime.py` + `services/read_model.py`，契约 §3 加强）
+
+- `GET /api/v1/runtime`（及 `/runtime/status`、`/overview.runtime`）新增：
+  - `process: {uptime_seconds, started_at, version, python}`（未启动时前两项 `null`）；
+  - `onebot: {state, connected, self_id, last_event_at, received, accepted, deduped, dropped, self_ignored, responses, sent, failed, pending_outbound, busy, lanes: [{lane, pending, busy}]}`，
+    来自 `OneBotGateway.stats()`（纯只读投影）；网关未启用时 `state="disabled"`、计数 `null`、`lanes=[]`；
+  - `scheduler.last_report`、`hub.queue_size` 两个既有访问器的键补齐；
+  - `database: {connected, size_bytes}`（`size_bytes` 仅在配置指向真实存在的 sqlite 文件时给出，否则 `null`）。
+- `GET /api/v1/logs/tail?limit=&level=&q=&channel=`：`limit` 默认 400、上限 500；叙述行消息开头的
+  `[channel] ` 前缀（`_PlainFilter` 注入）解析成显式 `channel` 字段并从消息中移除；`channel` 过滤在服务端
+  完成（多取行再筛）。响应保持 `{items, file, truncated, parsed, total}`，`items[]` 每项含
+  `{ts, level, logger, channel, message}`（非叙述行 `channel=null`）。
 
 ---
 

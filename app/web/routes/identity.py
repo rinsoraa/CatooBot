@@ -288,13 +288,7 @@ class IdentityRoutes(WebContext):
         form = await request.post()
         group_id = str(form.get("group_id", ""))
         enabled = str(form.get("enabled", "1")) == "1"
-        now = int(time.time())
-        await self._bot.database.execute(
-            """INSERT INTO group_profiles (group_id, participation_enabled, last_seen)
-               VALUES (?, ?, ?)
-               ON CONFLICT(group_id) DO UPDATE SET participation_enabled=excluded.participation_enabled""",
-            (group_id, 1 if enabled else 0, now),
-        )
+        await self._admin.set_group_participation(group_id, enabled)
         raise web.HTTPFound("/groups")
 
     async def _sessions_page(self, request: web.Request) -> web.Response:

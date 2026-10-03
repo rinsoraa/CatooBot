@@ -122,6 +122,11 @@ class SpaRoutes:
     _config: Any
     _dashboard: Any
     _login_page: Any
+    #: handlers owned by the legacy SSR route modules (W5 dispatchers)
+    _character_page: Any
+    _social_page: Any
+    _memory_page: Any
+    _memory_health_page: Any
 
     def _v1_frontend(self) -> bool:
         version = str(getattr(self._config, "version", V1) or V1)
@@ -147,11 +152,41 @@ class SpaRoutes:
             return web.Response(status=204)
         return _immutable(resolved)
 
+    async def _spa_character(self, request: web.Request) -> web.StreamResponse:
+        if not self._v1_frontend():
+            return await self._character_page(request)
+        return await spa_index()
+
+    async def _spa_social(self, request: web.Request) -> web.StreamResponse:
+        if not self._v1_frontend():
+            return await self._social_page(request)
+        return await spa_index()
+
+    async def _spa_memory(self, request: web.Request) -> web.StreamResponse:
+        if not self._v1_frontend():
+            return await self._memory_page(request)
+        return await spa_index()
+
+    async def _spa_memory_health(self, request: web.Request) -> web.StreamResponse:
+        if not self._v1_frontend():
+            return await self._memory_health_page(request)
+        return await spa_index()
+
     def register_spa(self, app: web.Application) -> None:
         # Registered last: the catch-all only sees paths no domain claimed.
         app.router.add_get("/", self._spa_root)
         app.router.add_get("/login", self._spa_login_page)
         app.router.add_get("/legacy", self._spa_legacy)
+        # W5: the v1 IA reuses four legacy paths; in v1 they serve the SPA and
+        # the old console keeps its own copy under /legacy (registered below).
+        app.router.add_get("/character", self._spa_character)
+        app.router.add_get("/social", self._spa_social)
+        app.router.add_get("/memory", self._spa_memory)
+        app.router.add_get("/memory/health", self._spa_memory_health)
+        app.router.add_get("/legacy/character", self._character_page)
+        app.router.add_get("/legacy/social", self._social_page)
+        app.router.add_get("/legacy/memory", self._memory_page)
+        app.router.add_get("/legacy/memory/health", self._memory_health_page)
         app.router.add_get("/assets/{tail:.*}", spa_asset)
         app.router.add_get("/favicon.ico", self._spa_favicon)
         app.router.add_get("/{tail:.*}", spa_fallback)

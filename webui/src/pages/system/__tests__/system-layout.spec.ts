@@ -1,4 +1,4 @@
-/** 系统分区外壳（§30）：PageHeader、四个 Tab、RouterView 与重启横幅。 */
+/** 系统分区外壳（§30）：PageHeader、六个 Tab、RouterView 与重启横幅。 */
 
 import { mount, type VueWrapper } from '@vue/test-utils'
 import { describe, expect, it } from 'vitest'
@@ -15,6 +15,8 @@ function routes() {
     { path: '/system/settings', name: 'system-settings', component: child('child-settings') },
     { path: '/system/credentials', name: 'system-credentials', component: child('child-credentials') },
     { path: '/system/settings/advanced', name: 'system-advanced', component: child('child-advanced') },
+    { path: '/system/logs', name: 'system-logs', component: child('child-logs') },
+    { path: '/system/runtime', name: 'system-runtime', component: child('child-runtime') },
     { path: '/system/settings/restart-pending', name: 'system-restart-pending', component: child('child-restart') },
   ]
 }
@@ -33,12 +35,12 @@ async function mountLayout(pending: string[]): Promise<VueWrapper> {
 }
 
 describe('SystemLayout', () => {
-  it('渲染系统标题、四个 Tab 与当前子路由', async () => {
+  it('渲染系统标题、六个 Tab 与当前子路由', async () => {
     const wrapper = await mountLayout([])
 
     expect(wrapper.get('h1').text()).toBe('系统')
     const tabs = wrapper.findAll('.cb-system__tab')
-    expect(tabs.map((tab) => tab.text())).toEqual(['设置', '凭据', '高级 YAML', '等待重启'])
+    expect(tabs.map((tab) => tab.text())).toEqual(['设置', '凭据', '高级 YAML', '日志', 'Runtime', '等待重启'])
     expect(wrapper.find('[data-test="child-settings"]').exists()).toBe(true)
     expect(wrapper.get('[data-test="system-tab-system-settings"]').attributes('aria-current')).toBe('page')
     expect(wrapper.find('[data-test="restart-banner"]').exists()).toBe(false)
