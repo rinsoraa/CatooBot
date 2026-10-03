@@ -18,7 +18,7 @@ import logging
 from pathlib import Path
 from types import SimpleNamespace
 
-from app.config.settings import SandboxConfig
+from app.config.settings import CoreFriendRelationshipConfig, SandboxConfig
 from app.sandbox.bible import BibleCompiler
 from app.sandbox.events import SandboxEventType as ET
 from app.sandbox.external import ExternalSource, ExternalUrgency, ExternalWorldEvent
@@ -374,3 +374,87 @@ class _ChattyEngine:
         if self.runtime is not None:  # someone else's message lands mid-thought
             await fact(self.runtime, person_id_for(kind="qq", value="7020"), "shared_activity")
         return SimpleNamespace(content=self.payload)
+
+
+class TestCoreFriendRelationshipValues:
+    """core 好友的初始关系数值可配置；缺省时与档案的 core 档完全一致（回归护栏）。"""
+
+    async def test_max_values_apply_and_the_qq_mapping_resolves(self, tmp_path) -> None:  # type: ignore[no-untyped-def]
+        db = await make_db(tmp_path)
+        runtime = await make_sandbox(
+            db=db,
+            clock=Clock(),
+            core_friend_identities={"2731431246": "空凛"},
+            core_friend_relationship=CoreFriendRelationshipConfig(
+                trust=1.0, familiarity=1.0, closeness=1.0, social_comfort=1.0
+            ),
+        )
+        try:
+            state = runtime.relationships_dyn.initial_for_name("空凛")
+            assert state is not None
+            assert (
+                state.trust,
+                state.familiarity,
+                state.closeness,
+                state.social_comfort,
+            ) == (1.0, 1.0, 1.0, 1.0)
+            # 映射命中：这个 QQ 就是档案里的空凛（而不是陌生人 person_qq_*）
+            identity = runtime.persons.for_qq("2731431246")
+            assert identity.person_id == state.person_id
+            assert identity.person_id.startswith("person_bible_")
+            assert identity.display_name == "空凛"
+            # 没被映射的 QQ 仍然是陌生人
+            assert runtime.persons.for_qq("999999999").person_id.startswith("person_qq_")
+        finally:
+            await runtime.shutdown()
+            await db.close()
+
+    async def test_defaults_stay_at_the_bible_core_tier(self, tmp_path) -> None:  # type: ignore[no-untyped-def]
+        db = await make_db(tmp_path)
+        runtime = await make_sandbox(db=db, clock=Clock())
+        try:
+            state = runtime.relationships_dyn.initial_for_name("空凛")
+            assert state is not None
+            assert (
+                state.trust,
+                state.familiarity,
+                state.closeness,
+                state.social_comfort,
+            ) == (0.7, 0.5, 0.6, 0.8)
+        finally:
+            await runtime.shutdown()
+            await db.close()
+
+    def test_only_core_entries_are_overridden_and_values_are_clamped(self) -> None:
+        from app.sandbox.relations import initial_states
+
+        definition = SimpleNamespace(
+            relationships=[
+                SimpleNamespace(name="核心", type="core_friend", core=True),
+                SimpleNamespace(name="路人", type="acquaintance", core=False),
+            ]
+        )
+        overrides = SimpleNamespace(trust=2.0, familiarity=None, closeness=0.9, social_comfort=None)
+        states = {
+            state.metadata["name"]: state
+            for state in initial_states(
+                definition, character_id="c", clock=lambda: 0.0, core_relationship=overrides
+            )
+        }
+        core = states["核心"]
+        assert core.trust == 1.0  # 2.0 被夹到上限
+        assert core.familiarity == 0.5  # 未配置 → 档案 core 档
+        assert core.closeness == 0.9
+        assert core.social_comfort == 0.8
+        stranger = states["路人"]
+        assert (
+            stranger.trust,
+            stranger.familiarity,
+            stranger.closeness,
+            stranger.social_comfort,
+        ) == (
+            0.3,
+            0.1,
+            0.1,
+            0.3,
+        )

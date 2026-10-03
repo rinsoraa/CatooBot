@@ -286,8 +286,22 @@ class PersonIdentityResolver:
         log.warning("[Sandbox] %s", message)
 
 
-def initial_states(definition: Any, *, character_id: str, clock: Any) -> list[RelationshipState]:
-    """Bible relationships → initial dynamic states (§28, no name matching)."""
+def _initial_value(configured: Any, field: str, default: float) -> float:
+    """配置里的初始值优先（None = 用档案默认），并夹在 0..1。"""
+    value = getattr(configured, field, None)
+    if value is None:
+        return default
+    return max(0.0, min(1.0, float(value)))
+
+
+def initial_states(
+    definition: Any, *, character_id: str, clock: Any, core_relationship: Any = None
+) -> list[RelationshipState]:
+    """Bible relationships → initial dynamic states (§28, no name matching).
+
+    ``core_relationship``（``sandbox.core_friend_relationship``）只覆盖
+    **core 好友**的起始数值；留空即档案默认档位。
+    """
     now = float(clock())
     states: list[RelationshipState] = []
     for relationship in getattr(definition, "relationships", []) or []:
@@ -296,15 +310,23 @@ def initial_states(definition: Any, *, character_id: str, clock: Any) -> list[Re
             continue
         relation_type = str(getattr(relationship, "type", "acquaintance") or "acquaintance")
         core = bool(getattr(relationship, "core", False))
+        if core:
+            # 起始数值：core 档默认 0.7/0.5/0.6/0.8，可被 sandbox.core_friend_relationship 覆盖
+            trust = _initial_value(core_relationship, "trust", 0.7)
+            familiarity = _initial_value(core_relationship, "familiarity", 0.5)
+            closeness = _initial_value(core_relationship, "closeness", 0.6)
+            social_comfort = _initial_value(core_relationship, "social_comfort", 0.8)
+        else:
+            trust, familiarity, closeness, social_comfort = 0.3, 0.1, 0.1, 0.3
         states.append(
             RelationshipState(
                 character_id=character_id,
                 person_id=person_id_for(kind="bible", value=name),
                 relation_type=relation_type,
-                trust=0.7 if core else 0.3,
-                familiarity=0.5 if core else 0.1,
-                closeness=0.6 if core else 0.1,
-                social_comfort=0.8 if core else 0.3,
+                trust=trust,
+                familiarity=familiarity,
+                closeness=closeness,
+                social_comfort=social_comfort,
                 source="character_bible",
                 metadata={"name": name},
                 created_at=now,
@@ -448,7 +470,12 @@ class RelationshipStore:
     def seed_initial(self) -> list[RelationshipState]:
         """Bible relationships → canonical starting states (§28)."""
         self._initial = initial_states(
-            self._rt.definition, character_id=self._rt.character_id, clock=self._rt._clock
+            self._rt.definition,
+            character_id=self._rt.character_id,
+            clock=self._rt._clock,
+            core_relationship=getattr(
+                getattr(self._rt, "config", None), "core_friend_relationship", None
+            ),
         )
         return list(self._initial)
 

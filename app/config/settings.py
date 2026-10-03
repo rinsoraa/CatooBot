@@ -673,6 +673,18 @@ class ContinuityConfig(BaseModel):
     shared_experience_min_confidence: float = Field(default=0.60, ge=0.0, le=1.0)
 
 
+class CoreFriendRelationshipConfig(BaseModel):
+    """核心好友的初始关系数值（留空 = 档案默认的 core 档：0.7/0.5/0.6/0.8）。
+
+    只影响**起始值**；之后的增减仍由真实互动按既有规则决定。取值 0..1。
+    """
+
+    trust: float | None = Field(default=None, ge=0.0, le=1.0)
+    familiarity: float | None = Field(default=None, ge=0.0, le=1.0)
+    closeness: float | None = Field(default=None, ge=0.0, le=1.0)
+    social_comfort: float | None = Field(default=None, ge=0.0, le=1.0)
+
+
 class SandboxConfig(BaseModel):
     """Character Life Sandbox (v2.0 §16/§67/§202): the character *lives* here.
 
@@ -703,6 +715,10 @@ class SandboxConfig(BaseModel):
     core_friend_identities: dict[str, str] = Field(default_factory=dict)
     #: QQ 群号 → SocialSpace id（游戏群/猫图群…）；未映射的群自动成为 qq:<gid>
     social_space_map: dict[str, str] = Field(default_factory=dict)
+    #: 核心好友的初始关系数值（留空 = 档案默认）；例如全部拉满：{trust: 1.0, ...}
+    core_friend_relationship: CoreFriendRelationshipConfig = Field(
+        default_factory=CoreFriendRelationshipConfig
+    )
 
     # ---------- Cognitive Context Bridge（Phase 5）：注入聊天上下文的预算 ----------
     #: 相关 Sandbox 记忆最多注入几条（0 = 关闭该层）
