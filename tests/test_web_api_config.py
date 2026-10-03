@@ -115,12 +115,17 @@ class TestConfigSchema:
             assert "DEFINED_BUT_UNUSED" in legends["usage_status"]
             assert legends["source"]["models"]
 
-    async def test_secret_fields_never_carry_a_value(self, tmp_path) -> None:  # type: ignore[no-untyped-def]
+    async def test_secret_fields_never_carry_a_value(self, tmp_path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+        # W6 修复：这个测试曾经把 token 写进操作者的真实 .env（导致 NapCat 401）——
+        # 现在必须把 .env 指向临时文件。
+        monkeypatch.setattr("app.web.services.config_admin.env_path", lambda: tmp_path / ".env")
         async with api_server(tmp_path) as (client, bot, server):  # type: ignore[no-untyped-def]
             await client.login()
             server._config_admin.set_env_secret(
                 "CATOOBOT_ONEBOT_ACCESS_TOKEN", "super-secret-token"
             )
+            written = (tmp_path / ".env").read_text(encoding="utf-8")
+            assert "CATOOBOT_ONEBOT_ACCESS_TOKEN=super-secret-token" in written
             status, payload = await client.get("/api/v1/config/effective?keys=onebot.access_token")
             assert status == 200
             row = payload["data"]["items"][0]

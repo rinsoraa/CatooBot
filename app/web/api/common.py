@@ -35,7 +35,10 @@ log = logging.getLogger("CatooBot.Web.API")
 API_PREFIX = "/api/v1"
 
 #: per-request id, stored on the request so every response can echo it
-REQUEST_ID_KEY: web.RequestKey[str] = web.RequestKey("api_request_id", str)
+#: aiohttp >= 3.14 才有 RequestKey；旧构建只有 AppKey。两者都接受，避免用错解释器时
+#: 整个 WebUI 在 import 阶段就崩，而是给出可运行的降级路径。
+_RequestKey: Any = getattr(web, "RequestKey", None) or web.AppKey
+REQUEST_ID_KEY: web.RequestKey[str] = _RequestKey("api_request_id", str)
 
 #: 单个 JSON 请求体的上限（配置/YAML 编辑也远小于此）
 MAX_BODY_BYTES = 1 << 20

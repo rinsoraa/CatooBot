@@ -155,20 +155,11 @@ class ConfigAdminService:
             raise ValueError("环境变量名不合法（只允许字母数字下划线，不能以数字开头）")
         if not value:
             return False
-        path = env_path()
-        lines: list[str] = []
-        if path.exists():
-            lines = path.read_text(encoding="utf-8").splitlines()
-        replaced = False
-        for index, line in enumerate(lines):
-            match = ENV_LINE.match(line)
-            if match and match.group(1) == name:
-                lines[index] = f"{name}={value}"
-                replaced = True
-                break
-        if not replaced:
-            lines.append(f"{name}={value}")
-        path.write_text("\n".join(lines).rstrip("\n") + "\n", encoding="utf-8")
+        # 走 env_store 的原子替换（temp + fsync + os.replace），并自动获得
+        # 「测试不得写真实 .env」的隔离护栏；其余行原样保留。
+        from app.config.env_store import write_env_secret as _write_env_secret
+
+        _write_env_secret(name, value, path=env_path())
         os.environ[name] = value
         self._log.info("[Config] .env updated: %s (value hidden)", name)
         return True

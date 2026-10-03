@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sqlite3
+from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
@@ -238,3 +239,23 @@ def group_message_event() -> GroupMessageEvent:
 @pytest.fixture
 def private_message_event() -> PrivateMessageEvent:
     return private_event()
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _real_env_untouched() -> Iterator[None]:
+    """整套测试不得改动操作者的真实 ``.env``（W6 隔离护栏）。
+
+    历史事故：一个测试把 ``CATOOBOT_ONEBOT_ACCESS_TOKEN`` 写进真实 .env，
+    使 OneBot WS 服务器开始强制校验 Token，NapCat 全部连接 401。
+    """
+    from app.config.settings import PROJECT_ROOT
+
+    env_file = PROJECT_ROOT / ".env"
+    before = env_file.read_bytes() if env_file.exists() else None
+    yield
+    after = env_file.read_bytes() if env_file.exists() else None
+    assert before == after, (
+        "测试改动了真实 .env：请让测试显式传入临时路径"
+        "（monkeypatch app.config.env_store.env_path 或 "
+        "app.web.services.config_admin.env_path）"
+    )
