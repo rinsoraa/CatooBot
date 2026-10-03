@@ -1,16 +1,22 @@
+import { existsSync } from 'node:fs'
+
 import { defineConfig } from '@playwright/test'
 
 /**
  * W6 browser E2E: a real Chromium session against a real CatooBot.
  *
- * `webServer` boots scripts/webui_e2e_server.py (temp DB/logs/overrides, no
+ * `webServer` boots tests/webui_e2e_server.py (temp DB/logs/overrides, no
  * OneBot port, no AI keys) and waits until /login answers. The suite is
  * deliberately serial: one worker, no parallel tests, so the shared server
  * state stays deterministic.
  */
-// cmd.exe needs the executable path quoted (it treats `/` in an unquoted
+// The E2E server needs the *project* dependencies: locally and in CI they live
+// in the uv venv, never in whatever `python` happens to be first on PATH.
+// cmd.exe additionally needs the path quoted (it treats `/` in an unquoted
 // relative path as a switch separator); POSIX shells are happy either way.
-const python = process.platform === 'win32' ? '"../.venv/Scripts/python.exe"' : 'python'
+const venvPython = process.platform === 'win32' ? '../.venv/Scripts/python.exe' : '../.venv/bin/python'
+const fallback = process.env.CATOOBOT_E2E_PYTHON ?? 'python'
+const python = existsSync(venvPython) ? `"${venvPython}"` : fallback
 
 export default defineConfig({
   testDir: './e2e',
