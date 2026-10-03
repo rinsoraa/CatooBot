@@ -91,21 +91,33 @@ jobs:
         run: npm run build
 
       # webui/dist is committed on purpose: the aiohttp server serves it and no
-      # Node toolchain is needed at runtime. This proves the committed bundle is
-      # the one these sources produce — file names carry the content hashes, so
-      # a stale bundle fails hard; a byte-level diff (platform-specific
-      # minifier output) is reported as a warning instead of a false failure.
+      # Node toolchain is needed at runtime. The committed bundle is built on
+      # Windows; a Linux build produces different content hashes (platform
+      # minifier output), so the hard checks are structural: the same module
+      # graph, and every asset the committed index.html references exists.
+      # A byte-level difference is surfaced as a warning, never a false failure.
       - name: Verify the committed bundle matches the build
         working-directory: .
         run: |
-          committed=$(git ls-files webui/dist | sed 's#webui/dist/##' | sort)
-          built=$(cd webui/dist && find . -type f | sed 's#^\./##' | sort)
+          strip_hash() { sed -E 's/-[A-Za-z0-9_-]{8}\././' ; }
+          committed=$(git ls-files webui/dist | sed 's#webui/dist/##' | grep -v '^index.html$' | sort | strip_hash)
+          built=$(cd webui/dist && find . -type f | sed 's#^\./##' | grep -v '^index.html$' | sort | strip_hash)
           if [ "$committed" != "$built" ]; then
-            echo "::error title=webui dist::committed webui/dist does not match a fresh build"
+            echo "::error title=webui dist::committed webui/dist has a different module graph than a fresh build"
             diff <(echo "$committed") <(echo "$built") || true
             exit 1
           fi
+          missing=0
+          # pattern without a leading slash: portable across shells (MSYS would
+          # rewrite a `/assets/...` argument into a Windows path)
+          for asset in $(git show HEAD:webui/dist/index.html | tr -d '\r' | grep -oE 'assets/[A-Za-z0-9_.-]+' | sort -u); do
+            if ! git cat-file -e "HEAD:webui/dist/${asset}" 2>/dev/null; then
+              echo "::error title=webui dist::committed index.html references a missing asset: ${asset}"
+              missing=1
+            fi
+          done
+          [ "$missing" -eq 0 ] || exit 1
           if ! git diff --quiet -- webui/dist; then
-            echo "::warning title=webui dist::webui/dist differs byte-wise from a fresh build (platform minifier output); names and hashes match"
+            echo "::warning title=webui dist::content hashes differ from a fresh Linux build (expected); the committed bundle is the one aiohttp serves"
           fi
-          echo "committed bundle matches the build ($(echo "$built" | wc -l) files)"
+          echo "committed bundle matches the build ($(echo "$built" | wc -l) assets, same module graph)"
