@@ -19,6 +19,7 @@ import aiohttp
 from app.config.settings import AppConfig
 from app.core.bot import Bot
 from app.web.server import WebServer
+from tests.conftest import BIBLE_PATH
 from tests.test_web_realtime import DummyAdapter
 
 
@@ -97,19 +98,23 @@ async def api_server(
 ) -> AsyncIterator[tuple[ApiClient, Bot, WebServer]]:
     """Start a real WebServer; the overrides file is isolated per test."""
     port = free_port()
-    config = AppConfig(
-        bot={"name": "TestBot"},
-        database={"url": "sqlite:///" + str(tmp_path / "api.db")},
-        logging={"log_dir": str(tmp_path / "logs"), "level": "WARNING"},
-        web={
+    sections: dict[str, Any] = {
+        "bot": {"name": "TestBot"},
+        "database": {"url": "sqlite:///" + str(tmp_path / "api.db")},
+        "logging": {"log_dir": str(tmp_path / "logs"), "level": "WARNING"},
+        "web": {
             "enabled": True,
             "host": "127.0.0.1",
             "port": port,
             "username": "admin",
             "password": "pw123",
         },
-        **(config_overrides or {}),
-    )
+        # The sandbox needs a Bible; CI checks out the publish repo, where the
+        # real config/character_bible.md never exists — always use the fixture.
+        "sandbox": {"enabled": True, "bible_path": str(BIBLE_PATH)},
+    }
+    sections.update(config_overrides or {})
+    config = AppConfig(**sections)
     bot = Bot(config, DummyAdapter())
     await bot.database.connect()
     await bot.character.start()

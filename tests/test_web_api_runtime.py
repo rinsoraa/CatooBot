@@ -30,6 +30,7 @@ from app.web.api.runtime import RuntimeApiRoutes
 from app.web.realtime import RealtimeHub, attach_narration_feed, detach_narration_feed
 from app.web.server import WebServer
 from tests.api_harness import ApiClient, error_code, free_port
+from tests.conftest import BIBLE_PATH
 from tests.test_web_realtime import DummyAdapter
 
 SECRET_TOKEN = "o-UGheGr.qW.awrh"
@@ -43,19 +44,23 @@ V1WebServer = WebServer
 async def v1_server(tmp_path, *, config_overrides: dict[str, Any] | None = None):  # type: ignore[no-untyped-def]
     """真实 WebServer（带 v1 路由），overrides 文件与数据库按测试隔离。"""
     port = free_port()
-    config = AppConfig(
-        bot={"name": "TestBot"},
-        database={"url": "sqlite:///" + str(tmp_path / "api.db")},
-        logging={"log_dir": str(tmp_path / "logs"), "level": "WARNING"},
-        web={
+    sections: dict[str, Any] = {
+        "bot": {"name": "TestBot"},
+        "database": {"url": "sqlite:///" + str(tmp_path / "api.db")},
+        "logging": {"log_dir": str(tmp_path / "logs"), "level": "WARNING"},
+        "web": {
             "enabled": True,
             "host": "127.0.0.1",
             "port": port,
             "username": "admin",
             "password": "pw123",
         },
-        **(config_overrides or {}),
-    )
+        # The sandbox needs a Bible; CI checks out the publish repo, where the
+        # real config/character_bible.md never exists — always use the fixture.
+        "sandbox": {"enabled": True, "bible_path": str(BIBLE_PATH)},
+    }
+    sections.update(config_overrides or {})
+    config = AppConfig(**sections)
     bot = Bot(config, DummyAdapter())
     await bot.database.connect()
     await bot.character.start()
