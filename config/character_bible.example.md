@@ -65,9 +65,14 @@
 ## World Seed
 
 ### Spaces
+> 房间 id 用动作库认识的常规名（kitchen / bedroom / livingroom / bathroom /
+> neighborhood …）：世界里有个人清洁的房间，角色才拥有对应的自理动作；有客厅和
+> 电脑，才拥有接零活的动作——这些基础设施动作按世界供给归属，正文不必额外写字面词。
 - home（家，根空间）：
-  - room1 房间一
-  - room2 房间二
+  - livingroom 客厅
+  - bedroom 卧室
+  - kitchen 厨房
+  - bathroom 卫生间
 - outside（外部）：
   - street 街道
   - shop 商店

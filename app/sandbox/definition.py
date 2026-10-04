@@ -18,7 +18,7 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
-from app.sandbox.action_templates import ACTION_TEMPLATES
+from app.sandbox.action_templates import ACTION_TEMPLATES, map_spaces
 from app.sandbox.bible import CharacterBible
 
 
@@ -375,8 +375,22 @@ class CharacterDefinition(BaseModel):
         ]
         definition.social_space_definitions = _compile_social_spaces(bible)
         definition.project_definitions = _compile_projects(bible)
-        definition.action_ownership = _compile_action_ownership(bible, anchors=definition.anchors)
+        definition.action_ownership = _compile_action_ownership(
+            bible,
+            anchors=definition.anchors,
+            space_ids={space.id for space in definition.space_definitions},
+            object_ids={obj.id for obj in definition.object_definitions},
+            home_space=_home_space_id(definition.space_definitions),
+        )
         return definition
+
+
+def _home_space_id(spaces: list[SpaceSeedDefinition]) -> str:
+    """The seed's own home space — mirrors ``world_seed._home_space``."""
+    for space in spaces:
+        if not space.parent and space.kind in ("apartment", "world"):
+            return space.id
+    return spaces[0].id if spaces else ""
 
 
 def _compile_modes(bible: CharacterBible) -> list[ModeDefinition]:
@@ -545,12 +559,63 @@ def _anchor_owns_template(
     return bool(containers) and containers <= set(inventories)
 
 
+#: Phase D: families whose ownership is *world capability*, not bible text.
+#: The template's own ``tags`` are the family marker (data, not a hardcoded
+#: id list); the requirements name what the seeded world must actually supply.
+CAPABILITY_FAMILIES: dict[str, tuple[str, ...]] = {
+    # a flat with a bathroom owns showers — the prose never has to write 洗澡
+    "self-care": ("spaces",),
+    # and a desk with a computer owns commissions — no need for 委托/约稿
+    "work": ("spaces", "objects"),
+}
+
+
+def _capability_owns_template(
+    template_id: str,
+    *,
+    space_ids: set[str],
+    object_ids: set[str],
+    home_space: str = "",
+) -> bool:
+    """World-capability ownership for infrastructure families (Phase D).
+
+    A template tagged with one of :data:`CAPABILITY_FAMILIES` is owned when the
+    seeded world can actually support it: every space it names must exist (the
+    conventional ``home`` token resolving exactly like the action layer does,
+    via :func:`map_spaces`), and for tool-bearing families every
+    ``required_objects`` id must exist in the seed. Nothing is inferred from
+    the bible's prose — a bathroom *is* the capability.
+    """
+    template = ACTION_TEMPLATES.get(template_id)
+    if not template:
+        return False
+    family = next((tag for tag in template.get("tags", []) if tag in CAPABILITY_FAMILIES), "")
+    if not family:
+        return False
+    needs = CAPABILITY_FAMILIES[family]
+    if (
+        "spaces" in needs
+        and map_spaces(list(template.get("spaces", [])), space_ids, home_space=home_space) is None
+    ):
+        return False
+    if "objects" in needs:
+        required = {str(obj) for obj in template.get("required_objects", [])}
+        if not required <= object_ids:
+            return False
+    return True
+
+
 def _compile_action_ownership(
-    bible: CharacterBible, *, anchors: dict[str, str] | None = None
+    bible: CharacterBible,
+    *,
+    anchors: dict[str, str] | None = None,
+    space_ids: set[str] | None = None,
+    object_ids: set[str] | None = None,
+    home_space: str = "",
 ) -> list[str]:
     """§20: which system action templates this character *owns*.
 
-    Ownership is the union of two world-derived rules:
+    Ownership is the union of three world-derived rules:
 
     * bible keywords (as before) — a bible without, say, Minecraft simply
       never owns ``play_minecraft``;
@@ -558,6 +623,10 @@ def _compile_action_ownership(
       owned when this bible's own ``{drink}`` anchor resolves (she has/likes
       that drink), even if the text never writes 买可乐. Empty anchors or a
       missing container never grant ownership.
+    * world capability for the infrastructure families (Phase D) — showers and
+      commission work exist when the seeded world supplies the room and the
+      tools, so a personal-care or job action never depends on the prose
+      happening to spell 洗澡 / 委托.
 
     Actions with no hit at all are recorded as unresolved rather than silently
     dropped.
@@ -576,11 +645,20 @@ def _compile_action_ownership(
             continue
         if _anchor_owns_template(template_id, anchors or {}, bible.inventories):
             owned.append(template_id)
+            continue
+        if _capability_owns_template(
+            template_id,
+            space_ids=space_ids or set(),
+            object_ids=object_ids or set(),
+            home_space=home_space,
+        ):
+            owned.append(template_id)
     return owned
 
 
 __all__ = [
     "ACTION_KEYWORDS",
+    "CAPABILITY_FAMILIES",
     "CONVENTIONAL_MODES",
     "SOCIAL_SPACE_ALIASES",
     "CharacterDefinition",

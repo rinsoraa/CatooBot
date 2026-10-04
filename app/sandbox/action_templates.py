@@ -582,7 +582,7 @@ def resolve_action_template(
         payload[key] = _substitute(value, values)
     # spaces / destination must exist in this world; else fall back sensibly
     if space_ids is not None:
-        mapped = _map_spaces(payload.get("spaces", []), space_ids, home_space=home_space)
+        mapped = map_spaces(payload.get("spaces", []), space_ids, home_space=home_space)
         if mapped is None:
             return None
         payload["spaces"] = mapped
@@ -617,7 +617,7 @@ def _substitute(value: Any, values: dict[str, str]) -> Any:
     return value
 
 
-def _map_spaces(
+def map_spaces(
     template_spaces: list[str], space_ids: set[str], *, home_space: str = ""
 ) -> list[str] | None:
     """Map conventional template space ids onto this world's actual spaces.
@@ -626,6 +626,9 @@ def _map_spaces(
     seed's own home space (a template may say "she goes home" without knowing
     the character's room ids). A conventional id that exists is kept; missing
     ids are dropped, and if nothing remains the action is not ownable (None).
+
+    The definition layer reuses this for capability ownership, so resolution
+    and ownership never disagree about what "this world has that room" means.
     """
     if "*" in template_spaces:
         return ["*"]
