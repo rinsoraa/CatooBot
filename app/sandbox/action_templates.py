@@ -309,7 +309,7 @@ ACTION_TEMPLATES: dict[str, dict[str, Any]] = {
         "restock": {"inventory": "fridge", "slot": "{dessert}", "min": 1, "target": 3},
         "modes": ["outdoor"],
         "detail_pool": ["在甜品店挑蛋糕", "在甜品店买布丁"],
-        "requires_anchor": "snack",
+        "requires_anchor": "dessert",
     },
     "return_home": {
         "activity": "out",

@@ -845,6 +845,29 @@ class GoalManager:
             return None
         return sorted(eligible, key=lambda g: (-g.priority, g.created_at, g.goal_id))[0]
 
+    def _restock_satisfied(self, goal: Goal) -> bool:
+        """True when the shelf already holds the goal's desired quantity."""
+        inventory = self.runtime.inventories.get(str(goal.metadata.get("inventory_key", "")))
+        if inventory is None:
+            return False
+        desired = int(goal.metadata.get("desired_quantity", 1) or 1)
+        return inventory.count(goal.target_item) >= desired
+
+    def _restock_homecoming(self, goal: Goal) -> str:
+        """The closing walk of a single-item errand (§C parity with the trip).
+
+        ``return_home`` while the shelf is satisfied *and* she is still out —
+        and only then. With nothing left to walk (already home, or a world that
+        owns no such action) the errand is over and the goal closes as before.
+        """
+        if not self._restock_satisfied(goal):
+            return ""
+        if self.runtime.spaces.is_home(self.runtime.character.location):
+            return ""
+        if "return_home" not in self.runtime.actions.definitions:
+            return ""
+        return "return_home"
+
     def step_candidates(self, goal: Goal) -> list[Any]:
         """Legal actions that advance this goal — from the seed, never invented."""
         from app.sandbox.intent import CandidateKind, DecisionCandidate
@@ -853,7 +876,16 @@ class GoalManager:
         pairs: list[tuple[str, Any, int]] = []
         if goal.kind is GoalKind.restock_resource:
             inventory_key = str(goal.metadata.get("inventory_key", ""))
-            pairs = runtime.restock_actions(inventory_key, goal.target_item)
+            walk = self._restock_homecoming(goal)
+            if walk:
+                # the satisfied shelf does not end the errand while she is out:
+                # the one legal step is the visible, resumable walk home, and it
+                # runs through the same movement gate as any other action
+                pairs = [(walk, runtime.actions.definitions[walk], 0)]
+            elif self._restock_satisfied(goal):
+                pairs = []  # nothing left to drive — advance() closes the goal
+            else:
+                pairs = runtime.restock_actions(inventory_key, goal.target_item)
         elif goal.kind is GoalKind.pet_care:
             pairs = [
                 (action_id, definition, 0) for action_id, definition in runtime.pet_care_actions()
@@ -931,6 +963,15 @@ class GoalManager:
                 # exists) — the trip ends here, exactly once
                 self._complete(goal, reason="trip_completed")
                 return True
+        if (
+            goal.kind is GoalKind.restock_resource
+            and not self._restock_homecoming(goal)
+            and self._restock_satisfied(goal)
+        ):
+            # §C parity: the single-item errand ends exactly here — shelf
+            # satisfied with no walk left to take (home, or no such action)
+            self._complete(goal, reason="restocked")
+            return True
         candidates = self.step_candidates(goal)
         if not candidates:
             self._block(goal, "no_step_candidate")
@@ -1152,7 +1193,9 @@ class GoalManager:
             have = runtime.inventories.get(inventory_key).count(goal.target_item)
             goal.progress = min(1.0, have / max(1, desired))
             goal.updated_at = float(self._clock())
-            if have >= desired:
+            if have >= desired and not self._restock_homecoming(goal):
+                # the shelf is satisfied *and* the errand is closed: home, or a
+                # world with no walk to take — the single-item trip's own rule
                 self._complete(goal, reason="restocked")
             else:
                 self._publish(

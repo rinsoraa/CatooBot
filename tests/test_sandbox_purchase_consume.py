@@ -5,7 +5,8 @@
 * 消费 action = inventory -= (ITEM_CONSUMED) + 恰好一次 need_relief；
 * 补货阈值：``stock(slot) <= min`` 时采购动作才可用，短fall 决定动机分；
 * 低于 min（不只是为 0）就生成同一个 restock_resource goal，去重不重复；
-* 完成采购（have >= target）满足 goal，下一 tick 不再新建；
+* 完成采购（have >= target）补齐货架；§C 闭环要求"货架补齐 **且** 到家"才关闭
+  goal，中间由 goal 驱动可见的 return_home 步；
 * 陈旧提案被 DecisionValidator 以 ``restock_not_needed`` 拒绝；
 * 这些路径上的 inventory 写入只来自 acquire_item/take_item。
 """
@@ -342,6 +343,15 @@ class TestRestockGoalTrigger:
             await runtime.tick(minutes=1)
 
             assert pantry.count("可乐") >= goal.metadata["desired_quantity"]
+            # §C 闭环：货架补齐不等于差事结束 —— 她还在便利店时 goal 保持开放
+            # 并由它驱动可见的回家步（return_home），到家后才关闭
+            assert goal.status is not GoalStatus.completed
+            for _ in range(60):
+                if goal.status.terminal:
+                    break
+                clock.advance(600)
+                await runtime.tick(minutes=10)
+            assert runtime.spaces.is_home(runtime.character.location)
             assert goal.status is GoalStatus.completed
             completed = runtime.events.last(ET.GOAL_COMPLETED)
             assert completed is not None and completed.payload["goal_kind"] == "restock_resource"

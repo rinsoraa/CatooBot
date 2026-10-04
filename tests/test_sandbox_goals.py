@@ -71,6 +71,23 @@ def goals_of(runtime, kind: GoalKind) -> list:  # type: ignore[no-untyped-def]
     return [goal for goal in runtime.goals.all() if goal.kind is kind]
 
 
+async def finish_errand(runtime, clock, *, limit: int = 60):  # type: ignore[no-untyped-def]
+    """Tick until the single-item errand really ends: shelf satisfied *and* home.
+
+    §C parity: a satisfied shelf no longer closes the restock goal while she is
+    still at the shop — the goal stays open and drives the visible walk home
+    (``return_home``), so the errand closes exactly when she is back.
+    """
+    for _ in range(limit):
+        goals = goals_of(runtime, GoalKind.restock_resource)
+        if goals and goals[0].status.terminal:
+            assert runtime.spaces.is_home(runtime.character.location)
+            return goals[0]
+        clock.advance(600)
+        await runtime.tick(minutes=10)
+    raise AssertionError("the single-item errand never finished")
+
+
 # ---------------------------------------------------------------- Test 1/2
 
 
@@ -192,13 +209,14 @@ class TestGoalStepExecution:
             assert runtime.events.last(ET.ACTION_STARTED) is not None
             assert runtime.decisions.llm_calls == 0  # deterministic path (§16)
 
-            # finish the errand → items come back → the goal completes
+            # finish the purchase → items come back; the errand then closes
+            # with the visible walk home (§C: satisfied shelf + back home)
             runtime.current_action.planned_end_at = clock.now
             clock.advance(1)
             await runtime.tick(minutes=1)
             assert runtime.events.last(ET.ITEM_ACQUIRED) is not None
+            goal = await finish_errand(runtime, clock)
             assert runtime.events.last(ET.GOAL_COMPLETED) is not None
-            goal = goals_of(runtime, GoalKind.restock_resource)[0]
             assert goal.status is GoalStatus.completed
         finally:
             await runtime.shutdown()
@@ -620,12 +638,14 @@ class TestContinuityAndMemory:
             memories = [m["content"] for m in await runtime.memory.active_memories()]
             assert not any("补给" in content or "完成目标" in content for content in memories)
 
-            # finish the errand → completion does become one
+            # finish the errand (purchase, then the walk home) → completion
+            # does become one
             clock.advance(10)
             await runtime.tick(minutes=1)
             runtime.current_action.planned_end_at = clock.now  # type: ignore[union-attr]
             clock.advance(1)
             await runtime.tick(minutes=1)
+            await finish_errand(runtime, clock)
             await runtime.flush_experiences()
             kinds = {record.kind.value for record in runtime.experiences.emitted()}
             assert "goal_completed" in kinds

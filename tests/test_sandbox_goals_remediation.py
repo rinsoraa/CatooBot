@@ -20,7 +20,14 @@ from app.sandbox.goals import (
     GoalStatus,
     GoalStep,
 )
-from tests.test_sandbox_goals import Clock, drink_last_cola, goals_of, make_db, make_sandbox
+from tests.test_sandbox_goals import (
+    Clock,
+    drink_last_cola,
+    finish_errand,
+    goals_of,
+    make_db,
+    make_sandbox,
+)
 
 
 async def break_shops(runtime) -> None:  # type: ignore[no-untyped-def]
@@ -209,6 +216,7 @@ class TestGoalStepUsesActionInstanceIdentity:
             goal = goals_of(runtime, GoalKind.restock_resource)[0]
             assert goal.current_step is not None
             assert goal.current_step.action_instance_id == instance_id
+            step = goal.current_step
 
             runtime.current_action.planned_end_at = clock.now
             clock.advance(1)
@@ -216,7 +224,10 @@ class TestGoalStepUsesActionInstanceIdentity:
             completed = runtime.events.last(ET.ACTION_COMPLETED)
             assert completed is not None
             assert completed.payload["action_instance_id"] == instance_id
-            assert goal.current_step.status.value == "completed"
+            # the *step object* that started is the one that completed; the goal
+            # may already have materialized its closing walk-home step (§C)
+            assert step.status.value == "completed"
+            assert step.action_instance_id == instance_id
         finally:
             await runtime.shutdown()
             await db.close()
@@ -268,11 +279,14 @@ class TestInterruptedGoalRebindsResumedActionInstance:
             assert goal.current_step.status.value == "active"  # still the same step
 
             # completing the resumed instance advances the goal, not any other
+            resumed_step = goal.current_step
             runtime.current_action.planned_end_at = clock.now  # type: ignore[union-attr]
             clock.advance(1)
             await runtime.tick(minutes=1)
-            assert goal.current_step.status.value == "completed"
-            assert goal.status is GoalStatus.completed  # items came back
+            assert resumed_step is not None and resumed_step.status.value == "completed"
+            # items came back; the errand then closes with the walk home (§C)
+            await finish_errand(runtime, clock)
+            assert goal.status is GoalStatus.completed
         finally:
             await runtime.shutdown()
             await db.close()
