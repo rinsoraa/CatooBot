@@ -30,6 +30,7 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
+from app.config.settings import explicit_core_friends
 from app.sandbox.events import SandboxEventType as ET
 from app.sandbox.mutations import StateMutation
 
@@ -226,20 +227,16 @@ class PersonIdentityResolver:
     # -------------------------------------------------------------- mapping
 
     def core_map(self) -> dict[str, str]:
-        """QQ id → bible core friend name, from *explicit* configuration only."""
+        """QQ id → bible core friend name, from *explicit* configuration only.
+
+        Delegates to :func:`app.config.settings.explicit_core_friends` so the
+        sandbox, the relationship table and the proactive-chat gate can never
+        disagree about who is a core friend.
+        """
         cfg = getattr(self._rt, "config", None)
-        mapping: dict[str, str] = {}
-        raw = getattr(cfg, "core_friend_ids", []) or []
-        if isinstance(raw, dict):
-            mapping.update({str(k): str(v) for k, v in raw.items() if v})
-        explicit = getattr(cfg, "core_friend_identities", None) or {}
-        if isinstance(explicit, dict):
-            mapping.update({str(k): str(v) for k, v in explicit.items() if v})
-        if isinstance(raw, (list, tuple)) and len(raw) == 1:
-            names = self._core_names()
-            if len(names) == 1:  # legacy single-id form: unambiguous
-                mapping.setdefault(str(raw[0]), names[0])
-        return mapping
+        if cfg is None:
+            return {}
+        return explicit_core_friends(cfg, core_names=self._core_names())
 
     def _core_name_for(self, qq: str) -> str:
         name = self.core_map().get(qq, "")

@@ -15,7 +15,7 @@ from typing import TYPE_CHECKING, Any
 
 from app.ai.models import ChatMessage
 from app.behavior.models import TimeContext
-from app.character.relationship import Relationship
+from app.character.relationship import Relationship, stage_label
 from app.memory.model import Memory
 
 if TYPE_CHECKING:
@@ -196,7 +196,7 @@ class CharacterContextBuilder:
         # 4. Relationship with this user
         user_label = user_name or f"用户{relationship.user_id}"
         relationship_line = (
-            f"你与 {user_label} 的关系: 认识程度 {relationship.stage}"
+            f"你与 {user_label} 的关系: 认识程度 {stage_label(relationship.stage)}"
             f"（已互动 {relationship.interaction_count} 次）"
         )
         if relationship.preferred_tone:

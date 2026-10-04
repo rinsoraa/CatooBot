@@ -139,7 +139,34 @@ class BehaviorService:
                 "max_unanswered": as_int("max_unanswered", 1),
             },
         }
-        overrides.update(payload)
+        # 核心好友块：表单**没带的字段保持不动**（v0.8 表单总是带上它自己的字段，
+        # 而 v1 设置页/手工编辑只写它实际涉及的那些键）
+        core: dict[str, Any] = {}
+        if "core_initiative_enabled" in form:
+            core["enabled"] = as_bool(form.get("core_initiative_enabled"))
+        for int_key, int_default in (
+            ("min_interval_minutes", 60),
+            ("daily_limit", 6),
+            ("hourly_limit", 2),
+            ("max_unanswered", 2),
+        ):
+            if f"core_{int_key}" in form:
+                core[int_key] = as_int(f"core_{int_key}", int_default)
+        for float_key, float_default in (("idle_hours", 3.0), ("base_probability", 0.5)):
+            if f"core_{float_key}" in form:
+                core[float_key] = as_float(f"core_{float_key}", float_default)
+        if core:
+            payload["initiative"]["core_friend"] = core
+        for section, values in payload.items():
+            if isinstance(values, dict) and isinstance(overrides.get(section), dict):
+                # Merge, never replace: a form that does not expose every key of a
+                # section must not silently drop overrides written elsewhere (the
+                # v1 settings page writes into this same override map).
+                merged = dict(overrides[section])
+                merged.update(values)
+                overrides[section] = merged
+            else:
+                overrides[section] = values
         if self.bot.database:
             await self.bot.database.set_setting_json(SETTINGS_KEY, overrides, int(time.time()))
         await self.apply_overrides(overrides)

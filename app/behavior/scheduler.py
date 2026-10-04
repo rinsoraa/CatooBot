@@ -18,6 +18,7 @@ import time
 from typing import TYPE_CHECKING, Any
 
 from app.behavior.models import BehaviorEvent, ScheduledJob
+from app.config.settings import explicit_core_friends
 
 if TYPE_CHECKING:
     from app.behavior.engine import CharacterBehaviorEngine
@@ -206,6 +207,7 @@ class BehaviorScheduler:
         for relationship in relationships:
             scope_key = f"private:{relationship.user_id}"
             try:
+                is_core = self._is_core_friend(relationship.user_id)
                 user_enabled = await self._user_initiative_enabled(relationship.user_id)
                 candidates = await self._behavior.initiative.build_candidates(
                     scope_key=scope_key,
@@ -213,6 +215,7 @@ class BehaviorScheduler:
                     last_seen=relationship.last_seen,
                     relationship_stage=relationship.stage,
                     world_moment=moment_text,
+                    is_core=is_core,
                 )
                 if not candidates:
                     continue
@@ -223,6 +226,7 @@ class BehaviorScheduler:
                         relationship_stage=relationship.stage,
                         user_enabled=user_enabled,
                         last_seen=relationship.last_seen,
+                        is_core=is_core,
                     )
                     if not gate.allowed:
                         changed = self._gate_reason_seen.get(scope_key) != gate.reason
@@ -310,6 +314,17 @@ class BehaviorScheduler:
         if row is None:
             return True
         return bool(row["initiative_enabled"])
+
+    def _is_core_friend(self, user_id: str) -> bool:
+        """Configured core friend? (the same explicit mapping the sandbox uses)."""
+        checker = getattr(self._bot, "is_core_friend", None)
+        if callable(checker):
+            return bool(checker(user_id))
+        config = getattr(self._bot, "config", None)
+        sandbox_cfg = getattr(config, "sandbox", None)
+        if sandbox_cfg is None:
+            return False
+        return str(user_id) in explicit_core_friends(sandbox_cfg)
 
     # ---------------------------------------------------------------- audit
 

@@ -12,7 +12,7 @@ import random
 
 from app.behavior.models import TimeContext
 from app.behavior.presence import PresenceResolver
-from app.character.relationship import Relationship
+from app.character.relationship import CORE_STAGE, Relationship
 from app.character.state import CharacterState
 from app.config.settings import BehaviorReplyTimingConfig
 
@@ -61,7 +61,7 @@ class ReplyTiming:
             delay *= cfg.sleeping_factor
         if ctx.period in ("night", "late_night"):
             delay *= cfg.night_factor
-        if relationship is not None and relationship.stage in ("close", "very_close"):
+        if relationship is not None and relationship.stage in ("close", "very_close", CORE_STAGE):
             delay *= cfg.close_relationship_factor
         if (
             seconds_since_last_exchange is not None

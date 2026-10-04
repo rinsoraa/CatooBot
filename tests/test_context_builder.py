@@ -57,7 +57,9 @@ class TestContextBuilder:
         system = build_messages()[0].content
         assert "happy" in system
         assert "画画" in system
-        assert "close" in system
+        # 提示词里是给人看的档位标签，不再是机器用的 stage id（core 档=核心好友）
+        assert "亲近" in system
+        assert "已互动 42 次" in system
 
     def test_memory_block_present(self) -> None:
         system = build_messages()[0].content

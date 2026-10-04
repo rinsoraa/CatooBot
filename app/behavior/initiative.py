@@ -17,7 +17,7 @@ from typing import TYPE_CHECKING, Any
 from app.behavior.models import BehaviorEvent, InitiativeState
 from app.behavior.presence import PresenceResolver
 from app.behavior.topics import TopicManager
-from app.character.relationship import STAGES
+from app.character.relationship import CORE_STAGE, STAGES
 from app.config.settings import BehaviorInitiativeConfig
 from app.memory.retrieval import bigrams
 
@@ -73,7 +73,12 @@ class InitiativeEngine:
 
     @property
     def enabled(self) -> bool:
+        """The *general* proactive-chat switch (core friends have their own)."""
         return bool(self.config.enabled and self._db is not None)
+
+    def config_for(self, *, is_core: bool) -> Any:
+        """The rule set that applies to this person (core friends are separate)."""
+        return self.config.core_friend if is_core else self.config
 
     # ------------------------------------------------------------- state io
 
@@ -141,6 +146,7 @@ class InitiativeEngine:
         last_seen: int | None,
         relationship_stage: str,
         world_moment: str = "",
+        is_core: bool = False,
     ) -> list[InitiativeCandidate]:
         """Candidate topics for one user, strongest first (spec v0.8 §23/§27)."""
         candidates: list[InitiativeCandidate] = []
@@ -168,7 +174,7 @@ class InitiativeEngine:
                     )
                 )
         now = self._clock()
-        if last_seen and (now - last_seen) >= self.config.idle_hours * 3600:
+        if last_seen and (now - last_seen) >= self.config_for(is_core=is_core).idle_hours * 3600:
             candidates.append(
                 InitiativeCandidate(
                     scope_key=scope_key,
@@ -191,10 +197,18 @@ class InitiativeEngine:
         relationship_stage: str,
         user_enabled: bool = True,
         last_seen: int | None = None,
+        is_core: bool = False,
     ) -> GateResult:
-        """All hard rules first; probability is only the last hurdle."""
-        cfg = self.config
-        if not self.enabled:
+        """All hard rules first; probability is only the last hurdle.
+
+        ``is_core`` selects the rule set: core friends use
+        :class:`BehaviorInitiativeCoreConfig` with its own switch, interval,
+        budgets, idle window and probability — none shared with the general
+        rules. The per-person counters (``initiative_state``) stay per scope,
+        so one person's sends never consume another's quota.
+        """
+        cfg = self.config_for(is_core=is_core)
+        if not (cfg.enabled and self._db is not None):
             return GateResult(False, "disabled")
 
         block = self.presence.hard_block_reason(for_initiative=True)
@@ -204,7 +218,8 @@ class InitiativeEngine:
         if not user_enabled:
             return GateResult(False, "user_disabled")
 
-        if STAGES.index(relationship_stage) < STAGES.index(cfg.min_relationship_stage):
+        min_stage = getattr(cfg, "min_relationship_stage", "")
+        if min_stage and STAGES.index(relationship_stage) < STAGES.index(min_stage):
             return GateResult(False, "relationship_too_new")
 
         state = await self.load_state(candidate.scope_key)
@@ -225,7 +240,7 @@ class InitiativeEngine:
         if not candidate.reason:
             return GateResult(False, "no_reason")
 
-        if self._is_duplicate(candidate, state):
+        if self._is_duplicate(candidate, state, is_core=is_core):
             return GateResult(False, "duplicate")
 
         probability = cfg.base_probability
@@ -233,7 +248,7 @@ class InitiativeEngine:
             probability += cfg.topic_bonus
         if candidate.reason == "long_absence":
             probability += cfg.relationship_bonus
-        if relationship_stage in ("close", "very_close"):
+        if relationship_stage in ("close", "very_close", CORE_STAGE):
             probability += cfg.relationship_bonus
         probability = max(0.0, min(1.0, probability))
 
@@ -259,7 +274,9 @@ class InitiativeEngine:
             state.hourly_bucket = bucket
             state.hourly_count = 0
 
-    def _is_duplicate(self, candidate: InitiativeCandidate, state: InitiativeState) -> bool:
+    def _is_duplicate(
+        self, candidate: InitiativeCandidate, state: InitiativeState, *, is_core: bool = False
+    ) -> bool:
         """Reject near-identical repeats of the last proactive message (v0.8 §57)."""
         if not state.last_message:
             return False
@@ -267,7 +284,7 @@ class InitiativeEngine:
         if not wanted:
             return False
         overlap = len(wanted & bigrams(state.last_message)) / max(1, len(wanted))
-        return overlap >= self.config.duplicate_similarity
+        return overlap >= self.config_for(is_core=is_core).duplicate_similarity
 
     # -------------------------------------------------------------- exec
 
@@ -399,6 +416,14 @@ class InitiativeEngine:
             "min_interval_minutes": self.config.min_interval_minutes,
             "max_unanswered": self.config.max_unanswered,
             "idle_hours": self.config.idle_hours,
+            "core_friend": {
+                "enabled": self.config.core_friend.enabled,
+                "daily_limit": self.config.core_friend.daily_limit,
+                "hourly_limit": self.config.core_friend.hourly_limit,
+                "min_interval_minutes": self.config.core_friend.min_interval_minutes,
+                "max_unanswered": self.config.core_friend.max_unanswered,
+                "idle_hours": self.config.core_friend.idle_hours,
+            },
             "sent_today_total": total_today,
             "last_sent_at": sent[0]["created_at"] if sent else None,
             "scopes": rows,

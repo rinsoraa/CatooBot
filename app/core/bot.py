@@ -26,7 +26,7 @@ from app.character.persona_manager import PersonaManager
 from app.character.runtime import CharacterRuntime
 from app.commands.registry import CommandRegistry
 from app.commands.router import CommandRouter
-from app.config.settings import PROJECT_ROOT, AppConfig
+from app.config.settings import PROJECT_ROOT, AppConfig, explicit_core_friends
 from app.config.watcher import ConfigFileWatcher
 from app.core.event_bus import EventBus
 from app.core.lifecycle import Lifecycle
@@ -256,6 +256,21 @@ class Bot:
                 self.log.exception("Sandbox initialization failed; continuing without it")
                 self.sandbox = None
 
+        # Core friends are one identity across subsystems: the sandbox persons
+        # map, the chat relationship stage and the proactive-chat rules all read
+        # the same explicit mapping (config.sandbox.core_friend_identities /
+        # core_friend_ids), so 空凛 cannot be a core friend in one place and a
+        # stranger in another.
+        self.core_friend_ids: set[str] = set()
+        try:
+            core_names = getattr(getattr(self.sandbox, "seed", None), "core_friend_names", []) or []
+            self.core_friend_ids = set(
+                explicit_core_friends(config.sandbox, core_names=core_names).keys()
+            )
+            self.character.relationships.set_core_friends(self.core_friend_ids)
+        except Exception:  # noqa: BLE001 - identity wiring must not stop startup
+            self.log.exception("Core friend wiring failed; continuing without it")
+
         # Phase 13 §57: the real external gateway is opt-in; when it is on, the
         # sandbox answers QQ messages (the v1.2 chat path keeps non-message
         # events), and when it is off nothing about the old behaviour changes.
@@ -386,6 +401,15 @@ class Bot:
             return None
         return bool(sandbox.is_asleep())
 
+    def is_core_friend(self, user_id: int | str) -> bool:
+        """True for the QQ ids explicitly configured as core friends.
+
+        Works with or without the sandbox: the answer comes from configuration
+        (``sandbox.core_friend_identities`` / ``core_friend_ids``) resolved at
+        startup, so the chat side and the world agree on who she lives around.
+        """
+        return str(user_id) in getattr(self, "core_friend_ids", set())
+
     async def _reload_config_from_disk(self) -> None:
         """Hot-reload a hand-edited config.yaml (Task 23 config watching).
 
@@ -487,6 +511,12 @@ class Bot:
 
         try:
             await self.character.start()
+            # Configured core friends hold the top ``core`` stage from the very
+            # first boot — the table is corrected here so every reader (WebUI
+            # included) sees the same identity without waiting for a message.
+            changed = await self.character.relationships.sync_core_stages()
+            if changed:
+                self.log.info("[Relationship] core friend stages synced: %d row(s)", changed)
             persona = self.character.personas.persona
             story.boot_step(
                 "角色已就绪",

@@ -127,11 +127,13 @@ class FakeAdapter:
         return texts
 
 
-def make_bot(tmp_path, adapter: FakeAdapter | None = None) -> Bot:
+def make_bot(tmp_path, adapter: FakeAdapter | None = None, *, sandbox: dict | None = None) -> Bot:
     """Test bot with reply delays off so tests never really wait.
 
     Behaviour tests that care about timing build their own components with an
     injected sleep/RNG; ``tests/test_timing.py`` covers the delay model.
+    ``sandbox`` overrides the sandbox section (e.g. core-friend identities)
+    without turning the persistent world on.
     """
     config = AppConfig(
         bot={"name": "TestBot", "debug": False},
@@ -146,7 +148,7 @@ def make_bot(tmp_path, adapter: FakeAdapter | None = None) -> Bot:
         },
         # v2.0: the sandbox has its own dedicated tests; generic tests run the
         # legacy wiring unchanged.
-        sandbox={"enabled": False},
+        sandbox=sandbox if sandbox is not None else {"enabled": False},
     )
     adapter = adapter or FakeAdapter()
     bot = Bot(config, adapter)

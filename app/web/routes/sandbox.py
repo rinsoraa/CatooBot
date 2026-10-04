@@ -159,9 +159,10 @@ class SandboxRoutes(WebContext):
                     ("familiar", "familiar"),
                     ("close", "close"),
                     ("very_close", "very_close"),
+                    ("core", "core（核心好友）"),
                 ],
                 cfg.initiative.min_relationship_stage,
-                tip_text="关系熟到这个程度才主动",
+                tip_text="关系熟到这个程度才主动；核心好友永远是 core 档",
             )
             + ui.field(
                 "未回复上限",
@@ -175,11 +176,56 @@ class SandboxRoutes(WebContext):
             tip_text="主动消息 ≠ 后台生活：她在生活，但主动找人要过这道门",
         )
 
+        core = cfg.initiative.core_friend
+        core_card = ui.card(
+            "主动聊天（核心好友）",
+            "<p class='hint'>对<b>已配置的核心好友</b>（<code>sandbox."
+            "core_friend_identities</code> / <code>core_friend_ids</code>）单独生效："
+            "这一套硬限制与上面的普通主动聊天完全独立，可以按更亲近的节奏设置。"
+            "核心好友在关系表里固定为 <code>core</code> 档（最高），不受互动次数影响。</p>"
+            "<div class='grid'>"
+            + ui.switch(
+                "core_initiative_enabled",
+                core.enabled,
+                "启用核心好友主动聊天",
+                tip_text="独立开关：普通主动聊天关着时，这一路仍然生效",
+            )
+            + ui.field(
+                "最小间隔（分）",
+                "core_min_interval_minutes",
+                core.min_interval_minutes,
+                tip_text="两次主动之间至少隔多久",
+            )
+            + ui.field("每日上限", "core_daily_limit", core.daily_limit, tip_text="")
+            + ui.field("每小时上限", "core_hourly_limit", core.hourly_limit, tip_text="")
+            + ui.field(
+                "闲置（小时）",
+                "core_idle_hours",
+                core.idle_hours,
+                tip_text="对方多久没说话才主动",
+            )
+            + ui.field(
+                "未回复上限",
+                "core_max_unanswered",
+                core.max_unanswered,
+                tip_text="主动发了没回，达到上限就不再追问",
+            )
+            + ui.field(
+                "基础概率",
+                "core_base_probability",
+                core.base_probability,
+                tip_text="通过所有硬门之后，真正发出的概率",
+            )
+            + "</div>",
+            tip_text="同一个人的额度独立计算：一个核心好友的主动不会占用别人的名额",
+        )
+
         settings_body = (
             "<form method='post' action='/behavior/settings'>"
             + private_card
             + group_card
             + initiative_card
+            + core_card
             + "<p><button class='btn btn-primary' type='submit' "
             "data-tip='保存并热加载，无需重启'>保存设置</button></p></form>"
         )

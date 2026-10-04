@@ -387,6 +387,32 @@ class BehaviorGroupConfig(BaseModel):
     min_message_length: int = Field(default=3, ge=1)
 
 
+class BehaviorInitiativeCoreConfig(BaseModel):
+    """Proactive chat for configured core friends — independent hard limits.
+
+    A core friend (``sandbox.core_friend_identities`` / ``core_friend_ids``) is
+    the person the character actually lives around, so she may reach out to
+    them on her own schedule: own switch, interval, budgets, idle window and
+    probabilities, none of them shared with the general initiative rules.
+    Counters stay per person (``initiative_state`` is per scope), so one core
+    friend's messages never consume another person's quota.
+
+    No ``min_relationship_stage`` on purpose: a core friend holds the top
+    ``core`` stage by identity, so such a gate could never reject anyone.
+    """
+
+    enabled: bool = True
+    min_interval_minutes: int = Field(default=60, ge=1)
+    daily_limit: int = Field(default=6, ge=0)
+    hourly_limit: int = Field(default=2, ge=0)
+    idle_hours: float = Field(default=3.0, ge=0.0)
+    base_probability: float = Field(default=0.5, ge=0.0, le=1.0)
+    relationship_bonus: float = Field(default=0.2, ge=0.0, le=1.0)
+    topic_bonus: float = Field(default=0.35, ge=0.0, le=1.0)
+    max_unanswered: int = Field(default=2, ge=0)
+    duplicate_similarity: float = Field(default=0.6, ge=0.0, le=1.0)
+
+
 class BehaviorInitiativeConfig(BaseModel):
     """Proactive chat (spec v0.8 §21-§33). Disabled by default — opt in via WebUI."""
 
@@ -402,6 +428,8 @@ class BehaviorInitiativeConfig(BaseModel):
     active_activity_factor: float = Field(default=1.0, ge=0.0)
     max_unanswered: int = Field(default=1, ge=0)
     duplicate_similarity: float = Field(default=0.6, ge=0.0, le=1.0)
+    #: separate, independent rules for the configured core friends
+    core_friend: BehaviorInitiativeCoreConfig = Field(default_factory=BehaviorInitiativeCoreConfig)
 
 
 class BehaviorConfig(BaseModel):
@@ -748,6 +776,31 @@ class SandboxConfig(BaseModel):
     #: 决策 LLM 的调用超时（秒）与最低置信度（低于则走确定性回退）
     decision_timeout: float = Field(default=20.0, gt=0)
     decision_min_confidence: float = Field(default=0.35, ge=0.0, le=1.0)
+
+
+def explicit_core_friends(
+    config: SandboxConfig, *, core_names: list[str] | tuple[str, ...] = ()
+) -> dict[str, str]:
+    """QQ id → core-friend name, from *explicit* configuration only.
+
+    The single source of truth for "who is a core friend": the sandbox persons
+    map, the relationship stage table and the proactive-chat gate all read it,
+    so a configured core friend cannot be a core friend in one subsystem and a
+    stranger in another. Nothing is guessed — only the two config forms count,
+    plus the legacy single-id list when the bible has exactly one core friend
+    (``core_names`` comes from the compiled bible).
+    """
+    mapping: dict[str, str] = {}
+    raw = getattr(config, "core_friend_ids", []) or []
+    if isinstance(raw, dict):
+        mapping.update({str(k): str(v) for k, v in raw.items() if v})
+    explicit = getattr(config, "core_friend_identities", None) or {}
+    if isinstance(explicit, dict):
+        mapping.update({str(k): str(v) for k, v in explicit.items() if v})
+    names = [str(name) for name in core_names if name]
+    if isinstance(raw, (list, tuple)) and len(raw) == 1 and len(names) == 1:
+        mapping.setdefault(str(raw[0]), names[0])
+    return mapping
 
 
 class ExpressionConfig(BaseModel):
