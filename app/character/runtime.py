@@ -71,6 +71,7 @@ class CharacterRuntime:
         self.tools = tools  # optional ToolRuntime: enables contextual tool use
         self.agent = agent  # optional AgentRuntime: enables multi-step goals
         self.sandbox: Any = None  # optional SandboxRuntime (v2.0): her life
+        self.minecraft: Any = None  # optional MinecraftService (Phase 2): world view
         self.builder = CharacterContextBuilder()
         self.processor = CharacterResponseProcessor(logger=self._log)
         self.expression_store: Any = None  # optional ExpressionStore (Task 22)
@@ -310,6 +311,10 @@ class CharacterRuntime:
             # read-only retrieval handle for query_image_memory — the tool goes
             # through the manager, never the raw database.
             metadata["memory"] = self.memory
+        if getattr(self, "minecraft", None) is not None:
+            # read-only world view for the minecraft_world tool (Phase 2):
+            # perception snapshots only — no Minecraft actions exist to call.
+            metadata["minecraft_world"] = self.minecraft
         return ToolContext(
             user_id=str(user_id),
             group_id=str(group_id) if group_id is not None else None,

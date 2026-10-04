@@ -27,6 +27,7 @@ from app.integrations.minecraft.runtime_client import (
     MinecraftRuntimeClient,
     MinecraftRuntimeError,
 )
+from app.integrations.minecraft.world import WorldPerception
 from app.utils.logger import get_logger
 
 if TYPE_CHECKING:
@@ -202,6 +203,8 @@ class MinecraftService:
         self._process: _RuntimeProcess | None = None
         self._listeners: list[Listener] = []
         self._poll_task: asyncio.Task[None] | None = None
+        self._perception_task: asyncio.Task[None] | None = None
+        self.perception: WorldPerception | None = None
         self._started = False
         self._restart_count = 0
         self._runtime_down = False
@@ -260,13 +263,26 @@ class MinecraftService:
                 await self._start_runtime()
             else:
                 log.info("[Minecraft] runtime 由外部托管（auto_start_runtime=false）")
+            if self.config.perception_enabled:
+                self.perception = WorldPerception(
+                    client=self._client,
+                    clock=self._clock,
+                    near_interval=self.config.near_interval_seconds,
+                    local_interval=self.config.local_interval_seconds,
+                    extended_interval=self.config.extended_interval_seconds,
+                    event_cooldown=self.config.world_event_cooldown_seconds,
+                    change_block_threshold=self.config.world_change_block_threshold,
+                    dispatch=self._dispatch_world_event,
+                )
+                self._perception_task = asyncio.create_task(self._perception_loop())
             self._started = True
             self._poll_task = asyncio.create_task(self._poll_loop())
             log.info(
-                "[Minecraft] bridge ready (runtime_port=%d, callback=%s, auth=%s)",
+                "[Minecraft] bridge ready (runtime_port=%d, callback=%s, auth=%s, perception=%s)",
                 self.config.runtime_port,
                 "configured" if self.callback_url else "disabled",
                 "auth.json" if self.auth_configured else "offline-default",
+                f"on (near={self.config.near_interval_seconds}s)" if self.perception else "off",
             )
         except Exception:
             await self._cleanup()
@@ -278,6 +294,13 @@ class MinecraftService:
 
     async def _cleanup(self) -> None:
         self._started = False
+        if self._perception_task is not None:
+            self._perception_task.cancel()
+            try:
+                await self._perception_task
+            except asyncio.CancelledError:
+                pass
+            self._perception_task = None
         if self._poll_task is not None:
             self._poll_task.cancel()
             try:
@@ -498,6 +521,14 @@ class MinecraftService:
         metrics = getattr(self.bot, "metrics", None)
         if metrics is not None:
             metrics.inc(f"minecraft_{event.type_name.split('.', 1)[1]}_events")
+        if event.type_name == "minecraft.disconnected" and self.perception is not None:
+            # 离开世界：感知缓存整体作废（不留假在线状态）
+            self.perception.invalidate()
+        await self._notify_listeners(event)
+        return event
+
+    async def _notify_listeners(self, event: Any) -> None:
+        """把事件分发给所有订阅者；单个订阅者故障不拖垮事件通道。"""
         for listener in list(self._listeners):
             try:
                 result = listener(event)
@@ -505,7 +536,6 @@ class MinecraftService:
                     await result
             except Exception:  # noqa: BLE001 - 订阅者故障不拖垮事件通道
                 log.exception("[Minecraft] 事件订阅者处理 %s 失败", event.type_name)
-        return event
 
     def _apply_to_mirror(self, event: MinecraftBridgeEvent) -> None:
         name = event.type_name
@@ -588,6 +618,59 @@ class MinecraftService:
             current = str(live.get("status") or "DISCONNECTED")
             if previous != current:
                 log.info("[Minecraft] 状态对账：%s → %s", previous, current)
+
+    # ------------------------------------------------------------- 世界感知(P2)
+
+    async def _perception_loop(self) -> None:
+        """按层节拍轮询 Raw World Snapshot；差异事件经去抖后分发。"""
+        assert self.perception is not None
+        while True:
+            await asyncio.sleep(self.perception.next_due_in())
+            if not self._started:
+                return
+            try:
+                due = self.perception.due_layers()
+                if not due:
+                    continue
+                events = await self.perception.poll(due)
+                for name, data in events:
+                    await self._dispatch_world_event(name, data)
+            except asyncio.CancelledError:
+                raise
+            except MinecraftRuntimeError:
+                # runtime 不可达由状态对账轮询统一处理，这里安静等下一拍
+                await asyncio.sleep(1.0)
+            except Exception:  # noqa: BLE001 - 感知故障绝不拖垮连接层
+                log.exception("[Minecraft] 世界感知轮询失败")
+                await asyncio.sleep(1.0)
+
+    async def _dispatch_world_event(self, name: str, data: dict[str, Any]) -> None:
+        from app.integrations.minecraft.events import parse_world_event
+
+        try:
+            event = parse_world_event(name, data, self._clock())
+        except ValueError:
+            log.warning("[Minecraft] 忽略未知感知事件：%s", name)
+            return
+        log.info("[Minecraft] %s %s", event.type_name, data)
+        metrics = getattr(self.bot, "metrics", None)
+        if metrics is not None:
+            metrics.inc(
+                f"minecraft_{event.type_name.removeprefix('minecraft.').replace('.', '_')}_events"
+            )
+        await self._notify_listeners(event)
+
+    def world_view(self) -> dict[str, Any]:
+        """API / 只读工具的世界视图（语义模型 + 缓存元信息 + raw）。"""
+        if self.perception is None:
+            return {
+                "available": False,
+                "online": False,
+                "reason": (
+                    "world perception disabled" if self.config.enabled else "minecraft disabled"
+                ),
+            }
+        return self.perception.view()
 
     # ------------------------------------------------------------------- misc
 

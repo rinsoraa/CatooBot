@@ -15,11 +15,12 @@ import PageHeader from '@/components/PageHeader.vue'
 import SectionHeader from '@/components/SectionHeader.vue'
 import StatusBadge, { type StatusState } from '@/components/StatusBadge.vue'
 import { toast } from '@/composables/toast'
-import type { MinecraftOverview } from '@/types/minecraft'
+import type { MinecraftOverview, MinecraftWorldView } from '@/types/minecraft'
 
 const POLL_INTERVAL_MS = 3000
 
 const overview = ref<MinecraftOverview | null>(null)
+const world = ref<MinecraftWorldView | null>(null)
 const disabled = ref(false)
 const loading = ref(false)
 const error = ref('')
@@ -59,6 +60,33 @@ const PHASE_LABELS: Record<string, string> = {
   ERROR: '出错',
 }
 
+const TIME_PHASE_LABELS: Record<string, string> = {
+  day: '白天',
+  sunset: '日落',
+  night: '夜晚',
+  sunrise: '日出',
+}
+
+const semantic = computed(() => world.value?.semantic ?? null)
+const worldSelf = computed(() => semantic.value?.self ?? null)
+const worldEnvironment = computed(() => semantic.value?.environment ?? null)
+
+function envValue(key: string): string {
+  const value = (worldEnvironment.value as Record<string, unknown> | null)?.[key]
+  if (key === 'time_phase' && typeof value === 'string') {
+    return TIME_PHASE_LABELS[value] ?? value
+  }
+  return display(value)
+}
+
+function stringifyJson(value: unknown): string {
+  try {
+    return JSON.stringify(value ?? {}, null, 2)
+  } catch {
+    return '{}'
+  }
+}
+
 function display(value: unknown): string {
   if (value === null || value === undefined || value === '') return '—'
   return String(value)
@@ -94,6 +122,15 @@ async function load(silent = false): Promise<void> {
     if (!silent) error.value = errorMessage(caught)
   } finally {
     if (!silent) loading.value = false
+  }
+}
+
+async function loadWorld(): Promise<void> {
+  // World Debug 数据独立加载：失败不打断连接状态显示（旧数据静默保留）。
+  try {
+    world.value = await minecraftApi.world()
+  } catch {
+    /* 保留上一份数据 */
   }
 }
 
@@ -145,8 +182,11 @@ function stopPolling(): void {
 
 onMounted(() => {
   void load()
+  void loadWorld()
   pollTimer = setInterval(() => {
-    if (!working.value && !document.hidden) void load(true)
+    if (working.value || document.hidden) return
+    void load(true)
+    void loadWorld()
   }, POLL_INTERVAL_MS)
 })
 
@@ -264,6 +304,79 @@ onUnmounted(stopPolling)
           >
             离开服务器
           </button>
+        </section>
+
+        <section
+          v-if="phase === 'ONLINE' && semantic"
+          class="minecraft__card cb-card"
+          data-test="mc-world"
+        >
+          <SectionHeader
+            title="World Debug（只读感知）"
+            :description="`Raw World Snapshot → 语义模型；数据年龄 ${display(world?.age_seconds)} 秒。`"
+          />
+          <dl class="minecraft__facts" data-test="mc-world-env">
+            <div><dt>生物群系</dt><dd>{{ envValue('biome') }}</dd></div>
+            <div><dt>时间</dt><dd>{{ envValue('time_phase') }}</dd></div>
+            <div><dt>天气</dt><dd>{{ envValue('weather') }}</dd></div>
+            <div><dt>光照</dt><dd>{{ envValue('light') }}</dd></div>
+            <div><dt>饥饿</dt><dd>{{ display(worldSelf?.food) }}</dd></div>
+            <div><dt>游戏模式</dt><dd>{{ display(worldSelf?.game_mode) }}</dd></div>
+            <div><dt>手持</dt><dd>{{ display(worldSelf?.held_item) }}</dd></div>
+            <div><dt>朝向</dt><dd>{{ display(worldSelf?.yaw) }}</dd></div>
+          </dl>
+
+          <div v-if="(semantic?.players?.length ?? 0) > 0" data-test="mc-world-players">
+            <h4 class="minecraft__subhead">附近玩家</h4>
+            <table class="minecraft__table">
+              <thead><tr><th>玩家</th><th>方向</th><th>距离</th></tr></thead>
+              <tbody>
+                <tr v-for="player in semantic?.players" :key="player.name">
+                  <td>{{ player.name }}</td><td>{{ player.direction }}</td><td>{{ player.distance }} 格</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+          <p v-else class="cb-muted" data-test="mc-world-players-empty">附近没有其他玩家。</p>
+
+          <div v-if="(semantic?.entities?.length ?? 0) > 0" data-test="mc-world-entities">
+            <h4 class="minecraft__subhead">附近生物</h4>
+            <table class="minecraft__table">
+              <thead><tr><th>类型</th><th>数量</th><th>方位</th><th>最近</th></tr></thead>
+              <tbody>
+                <tr v-for="entity in semantic?.entities" :key="entity.type">
+                  <td>{{ entity.type }}</td><td>×{{ entity.count }}</td>
+                  <td>{{ display(entity.direction) }}</td><td>{{ display(entity.distance) }} 格</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+          <p v-else class="cb-muted" data-test="mc-world-entities-empty">附近没有发现生物。</p>
+
+          <div v-if="(semantic?.points_of_interest?.length ?? 0) > 0" data-test="mc-world-poi">
+            <h4 class="minecraft__subhead">兴趣点（功能方块 / 光源 / 矿石）</h4>
+            <table class="minecraft__table">
+              <thead><tr><th>方块</th><th>方向</th><th>距离</th></tr></thead>
+              <tbody>
+                <tr v-for="(poi, index) in semantic?.points_of_interest" :key="`${poi.type}-${index}`">
+                  <td>{{ poi.type }}</td><td>{{ poi.direction }}</td><td>{{ poi.distance }} 格</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+
+          <div v-if="(semantic?.terrain?.length ?? 0) > 0" data-test="mc-world-terrain">
+            <h4 class="minecraft__subhead">地形摘要</h4>
+            <p class="cb-muted">
+              {{ (semantic?.terrain ?? []).map((item) => `${item.type}（${item.direction}）`).join('、') }}
+            </p>
+          </div>
+
+          <details class="minecraft__details" data-test="mc-world-raw">
+            <summary>Raw Snapshot / 语义模型 JSON</summary>
+            <pre class="minecraft__pre">{{ stringifyJson(world?.semantic) }}</pre>
+            <pre class="minecraft__pre">{{ stringifyJson(world?.raw) }}</pre>
+          </details>
         </section>
       </template>
     </template>
@@ -389,5 +502,50 @@ onUnmounted(stopPolling)
   color: var(--cb-text);
   font-variant-numeric: tabular-nums;
   overflow-wrap: anywhere;
+}
+
+.minecraft__subhead {
+  margin: var(--cb-space-2) 0 0;
+  font-size: var(--cb-text-sm);
+  color: var(--cb-text);
+}
+
+.minecraft__table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: var(--cb-text-sm);
+}
+
+.minecraft__table th,
+.minecraft__table td {
+  padding: var(--cb-space-2);
+  border-bottom: 1px solid var(--cb-border);
+  text-align: left;
+}
+
+.minecraft__table th {
+  color: var(--cb-text-faint);
+  font-size: var(--cb-text-xs);
+  font-weight: 500;
+}
+
+.minecraft__details summary {
+  cursor: pointer;
+  font-size: var(--cb-text-xs);
+  color: var(--cb-text-faint);
+}
+
+.minecraft__pre {
+  max-height: 260px;
+  overflow: auto;
+  margin: var(--cb-space-2) 0 0;
+  padding: var(--cb-space-3);
+  border: 1px solid var(--cb-border);
+  border-radius: var(--cb-radius-sm);
+  background: var(--cb-bg-soft);
+  color: var(--cb-text-muted);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-size: var(--cb-text-xs);
 }
 </style>

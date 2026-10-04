@@ -73,3 +73,45 @@ def parse_bridge_event(raw: dict[str, Any]) -> MinecraftBridgeEvent:
         data=data,
     )
     return event
+
+
+# ----------------------------------------------------------------- world events
+
+
+class MinecraftWorldEvent(BaseModel):
+    """语义级世界感知事件（Phase 2）：由感知引擎去抖后产生，再分发给订阅者。"""
+
+    event: str
+    timestamp: float = 0.0
+    data: dict[str, Any] = Field(default_factory=dict)
+
+    @field_validator("timestamp", mode="before")
+    @classmethod
+    def _coerce_timestamp(cls, value: Any) -> float:
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return 0.0
+
+    @property
+    def type_name(self) -> str:
+        return self.event
+
+
+#: 语义级感知事件（任务书 §七）：方块变化聚合为 world.changed，绝无逐方块风暴
+WORLD_EVENT_NAMES = frozenset(
+    {
+        "minecraft.world.changed",
+        "minecraft.player.nearby",
+        "minecraft.player.left_area",
+        "minecraft.entity.discovered",
+        "minecraft.entity.left_area",
+        "minecraft.poi.discovered",
+    }
+)
+
+
+def parse_world_event(event: str, data: dict[str, Any], timestamp: float) -> MinecraftWorldEvent:
+    if event not in WORLD_EVENT_NAMES:
+        raise ValueError(f"未知的世界感知事件类型：{event!r}")
+    return MinecraftWorldEvent(event=event, timestamp=timestamp, data=data)

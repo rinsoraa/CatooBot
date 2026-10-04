@@ -49,6 +49,7 @@ ROUTES = [
     "GET /api/v1/memories/{memory_id}",
     "GET /api/v1/meta",
     "GET /api/v1/minecraft",
+    "GET /api/v1/minecraft/world",
     "GET /api/v1/overview",
     "GET /api/v1/runtime",
     "GET /api/v1/runtime/scheduler",

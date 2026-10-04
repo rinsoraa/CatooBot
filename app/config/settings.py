@@ -813,6 +813,17 @@ class MinecraftConfig(BaseModel):
     #: 外部自管 runtime 时的回调地址与共享密钥（auto_start=true 时自动生成，留空）
     external_callback_url: str = ""
     external_callback_token: str = ""
+    # ---- 世界感知（Phase 2，只读「眼睛」）
+    #: 进入世界后持续获取 Raw World Snapshot 并构建语义模型
+    perception_enabled: bool = True
+    #: 分层刷新周期（Near 高频高细 / Local 中频 / Extended 低频摘要）
+    near_interval_seconds: float = Field(default=1.0, ge=0.3, le=120)
+    local_interval_seconds: float = Field(default=4.0, ge=1.0, le=600)
+    extended_interval_seconds: float = Field(default=20.0, ge=5.0, le=1800)
+    #: 语义级感知事件的最小间隔（去抖；方块变化聚合为 world.changed）
+    world_event_cooldown_seconds: float = Field(default=5.0, ge=1.0, le=300)
+    #: 触发 world.changed 的近层方块变化数量阈值
+    world_change_block_threshold: int = Field(default=10, ge=1, le=1000)
 
 
 class AppConfig(BaseModel):

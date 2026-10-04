@@ -84,6 +84,16 @@ class MinecraftApiRoutes(WebContext):
             raise _translate(exc) from exc
         return ok(data, request=request)
 
+    async def _v1_minecraft_world(self, request: web.Request) -> web.Response:
+        """World Debug 只读视图（Phase 2）：语义模型 + raw snapshot + 缓存元信息。"""
+        service = getattr(self._bot, "minecraft", None)
+        if service is None or not isinstance(service, MinecraftService):
+            return ok(
+                {"available": False, "online": False, "reason": "minecraft disabled"},
+                request=request,
+            )
+        return ok(service.world_view(), request=request)
+
     # ---------------------------------------------------------------- actions
 
     async def _v1_minecraft_join(self, request: web.Request) -> web.Response:
@@ -125,6 +135,7 @@ class MinecraftApiRoutes(WebContext):
     def _register_v1_minecraft(self, app: web.Application) -> None:
         wrap = json_endpoint
         app.router.add_get(f"{API_PREFIX}/minecraft", wrap(self._v1_minecraft_get))
+        app.router.add_get(f"{API_PREFIX}/minecraft/world", wrap(self._v1_minecraft_world))
         app.router.add_post(f"{API_PREFIX}/minecraft/join", wrap(self._v1_minecraft_join))
         app.router.add_post(f"{API_PREFIX}/minecraft/leave", wrap(self._v1_minecraft_leave))
         app.router.add_post(f"{API_PREFIX}/minecraft/events", wrap(self._v1_minecraft_events))

@@ -321,6 +321,7 @@ Minecraft 连接层（Bridge runtime 为独立 Node.js 进程，见 `docs/MINECR
 | `GET /api/v1/minecraft` | 连接层一屏投影 | — | `{enabled, auth_configured, runtime: {running, pid, managed, restarts, down, log_tail: []}, connection: {status, session_id, host, port, username, auth_mode, dimension, position: {x,y,z}, health, last_error, kicked_reason, connected_at}, last_event}`；runtime 不可达时以本地镜像降级呈现 |
 | `POST /api/v1/minecraft/join` | 加入服务器（进世界由事件异步确认） | `{"host": "...", "port": 25565}`（port 省略=25565） | `{"session_id", "status"}`（`CONNECTING`/`AUTHENTICATING`）；校验失败 422 `minecraft.invalid_target`，已有会话 409 `minecraft.session_active`，runtime 不可用 503 `minecraft.runtime_down` |
 | `POST /api/v1/minecraft/leave` | 主动离开（幂等：不在任何服务器也成功） | — | `{"ok", "status"}`；状态最终由事件流确认 |
+| `GET /api/v1/minecraft/world` | World Debug 只读视图（Phase 2）：Semantic World Model + raw snapshot + 分层缓存元信息 | — | `{available, online, captured_at, age_seconds, layers: {near/local/extended: {age_seconds}}, semantic, raw}`；未启用/未在线恒 200 且 `available:false`（读端点不做 503） |
 | `POST /api/v1/minecraft/events` | **Bridge runtime 事件回调**（服务间通道，不是给浏览器的） | 事件载荷（`minecraft.connecting|connected|spawned|chat|player_joined|player_left|kicked|disconnected|error` + `session_id` + `timestamp` + 上下文） | `{"accepted": true}` |
 
 `/minecraft/events` 安全模型：**免会话 Cookie、免 CSRF**（本机 runtime 进程没有浏览器会话），

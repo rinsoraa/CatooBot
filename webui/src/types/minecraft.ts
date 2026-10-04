@@ -58,3 +58,64 @@ export interface MinecraftLeaveResult {
   ok?: boolean
   status: MinecraftPhase
 }
+
+// ---------------- Phase 2 · World Perception ----------------
+
+export interface MinecraftWorldPlayer {
+  name: string
+  direction: string
+  distance: number
+  compass?: string
+}
+
+export interface MinecraftWorldEntity {
+  type: string
+  count: number
+  direction?: string | null
+  distance?: number
+}
+
+export interface MinecraftWorldPoi {
+  type: string
+  direction: string
+  distance: number
+  compass?: string
+  pos?: { x: number; y: number; z: number } | null
+}
+
+export interface MinecraftTerrainItem {
+  type: string
+  direction: string
+  distance?: number
+  samples?: number
+}
+
+export interface MinecraftSemantic {
+  captured_at: number
+  self?: {
+    location?: string | null
+    dimension?: string | null
+    position?: { x: number; y: number; z: number } | null
+    health?: number | null
+    food?: number | null
+    game_mode?: string | null
+    held_item?: string | null
+    yaw?: number | null
+  } | null
+  environment?: Record<string, unknown> | null
+  terrain?: MinecraftTerrainItem[]
+  players?: MinecraftWorldPlayer[]
+  entities?: MinecraftWorldEntity[]
+  points_of_interest?: MinecraftWorldPoi[]
+}
+
+export interface MinecraftWorldView {
+  available: boolean
+  online: boolean
+  reason?: string
+  captured_at?: number | null
+  age_seconds?: number | null
+  layers?: Record<string, { age_seconds: number | null }>
+  semantic?: MinecraftSemantic | null
+  raw?: Record<string, unknown> | null
+}

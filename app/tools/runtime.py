@@ -84,6 +84,7 @@ class ToolRuntime:
     def _register_builtins(self) -> None:
         from app.tools.builtins import (
             CalculatorTool,
+            MinecraftWorldTool,
             QueryImageMemoryTool,
             TimeTool,
             WeatherTool,
@@ -94,6 +95,7 @@ class ToolRuntime:
         builders = (
             ("time", lambda: TimeTool()),
             ("calculator", lambda: CalculatorTool()),
+            ("minecraft_world", lambda: MinecraftWorldTool()),
             ("query_image_memory", lambda: QueryImageMemoryTool()),
             (
                 "weather",

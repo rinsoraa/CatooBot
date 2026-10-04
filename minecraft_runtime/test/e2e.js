@@ -98,7 +98,7 @@ async function waitForRuntime(port, timeoutMs = 20000) {
 async function waitFor(predicate, label, timeoutMs = 30000) {
   const deadline = Date.now() + timeoutMs
   while (Date.now() < deadline) {
-    if (predicate()) return
+    if (await predicate()) return
     await sleep(150)
   }
   throw new Error(`timeout waiting for: ${label}`)
@@ -248,6 +248,50 @@ async function main() {
       assert(chat.status === 200 && chat.body.sent === true, `chat api ok, got ${JSON.stringify(chat.body)}`)
       await waitFor(() => observer.seen.some((line) => line.includes('我在这里！')), 'observer saw bot chat')
       console.log('[e2e] observer saw bot chat ✓')
+
+      // ---------------- Phase 2：Raw World Snapshot（Test 1/2/3/5/6 子集） ----------------
+      if (cycle === 1) {
+        // flying-squid 广播玩家实体包有延迟：轮询直到观察者出现在 players 里。
+        let s = null
+        await waitFor(async () => {
+          const snap = await request(runtimePort, 'GET', '/minecraft/world/snapshot?layers=near')
+          if (snap.status !== 200 || snap.body.online !== true) return false
+          s = snap.body
+          return s.players.some((p) => p.username === OBSERVER_NAME)
+        }, 'observer appears in snapshot players', 20000)
+        // Self：位置与 status 一致
+        assert(s.self && Number.isFinite(s.self.position.x), 'self.position present')
+        assert(typeof s.self.yaw === 'number' && typeof s.self.pitch === 'number', 'yaw/pitch present')
+        assert(s.self.dimension === status.body.dimension, 'dimension consistent with status')
+        // Environment
+        assert(s.environment && ['day', 'sunset', 'night', 'sunrise'].includes(s.environment.time_phase), `time_phase valid: ${s.environment.time_phase}`)
+        assert(['clear', 'rain', 'thunder'].includes(s.environment.weather), 'weather valid')
+        // Players：观察者必须被发现，且带完整空间字段
+        const tester = s.players.find((p) => p.username === OBSERVER_NAME)
+        assert(tester, 'observer discovered in players')
+        assert(Number.isFinite(tester.distance) && tester.distance > 0, 'player distance')
+        assert(Number.isFinite(tester.bearing), 'player bearing numeric')
+        // Blocks：近层柱面扫描有数据、无空气、方向合法
+        assert(s.blocks.near.columns.length > 0, 'near columns present')
+        for (const col of s.blocks.near.columns.slice(0, 12)) {
+          assert(col.name && !['air', 'cave_air', 'void_air'].includes(col.name), `non-air block: ${col.name}`)
+          assert(['front', 'front_left', 'front_right', 'left', 'right', 'back', 'back_left', 'back_right', 'above', 'below'].includes(col.relative_direction), `valid relative_direction: ${col.relative_direction}`)
+          // 方向数学一致性：从 rel + yaw 重算必须与 runtime 给出的一致
+          const rad = (s.self.yaw * Math.PI) / 180
+          const fx = -Math.sin(rad)
+          const fz = Math.cos(rad)
+          const horizontal = Math.sqrt(col.rel.dx ** 2 + col.rel.dz ** 2)
+          const bearing = Math.atan2(fx * col.rel.dz - fz * col.rel.dx, fx * col.rel.dx + fz * col.rel.dz) * 180 / Math.PI
+          const expected =
+            horizontal < 2
+              ? (col.rel.dy >= 1.5 ? 'above' : col.rel.dy <= -1.5 ? 'below' : 'front')
+              : ['front', 'front_right', 'right', 'back_right', 'back', 'back_left', 'left', 'front_left'][Math.floor(((((bearing + 22.5) % 360) + 360) % 360) / 45)]
+          assert(expected === col.relative_direction, `direction math: block ${col.name} expected ${expected}, got ${col.relative_direction}`)
+        }
+        // 空气不膨胀：near 层列数 = 扫描柱数上限内（169 柱），绝无海量空气条目
+        assert(s.blocks.near.columns.length <= 220, 'near layer bounded')
+        console.log(`[e2e] snapshot ✓ self=(${s.self.position.x}, ${s.self.position.y}, ${s.self.position.z}) biome=${s.environment.biome} near=${s.blocks.near.columns.length} cols, player=${OBSERVER_NAME} ${tester.relative_direction} @${tester.distance}`)
+      }
 
       // 重复 connect 必须被拒绝（不产生第二个 session）
       const dup = await request(runtimePort, 'POST', '/minecraft/connect', { host: '127.0.0.1', port: serverPort })

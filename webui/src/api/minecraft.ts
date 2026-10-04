@@ -6,12 +6,17 @@ import type {
   MinecraftJoinResult,
   MinecraftLeaveResult,
   MinecraftOverview,
+  MinecraftWorldView,
 } from '@/types/minecraft'
 
 export const minecraftApi = {
   /** 连接层一屏投影（状态机 + 世界状态 + runtime 健康）。 */
   overview() {
     return api.get<MinecraftOverview>('/minecraft')
+  },
+  /** World Debug 只读视图（Phase 2）：语义模型 + raw snapshot。 */
+  world() {
+    return api.get<MinecraftWorldView>('/minecraft/world')
   },
   /** 加入服务器；进世界由事件异步确认（页面靠轮询看到 ONLINE）。 */
   join(host: string, port: number) {

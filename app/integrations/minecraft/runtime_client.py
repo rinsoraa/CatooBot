@@ -54,6 +54,10 @@ class MinecraftRuntimeClient:
     async def status(self) -> dict[str, Any]:
         return await self._request("GET", "/minecraft/status")
 
+    async def world_snapshot(self, layers: str = "near,local,extended") -> dict[str, Any]:
+        """Raw World Snapshot（Phase 2）；layers=near,local,extended 子集可选。"""
+        return await self._request("GET", f"/minecraft/world/snapshot?layers={layers}")
+
     async def chat(self, message: str) -> dict[str, Any]:
         return await self._request("POST", "/minecraft/chat", body={"message": message})
 

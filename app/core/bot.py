@@ -307,6 +307,8 @@ class Bot:
                 from app.integrations.minecraft.service import MinecraftService
 
                 self.minecraft = MinecraftService(self, config.minecraft, clock=self._clock)
+                # 只读世界视图暴露给工具上下文（minecraft_world 工具用）
+                self.character.minecraft = self.minecraft
             except Exception:  # noqa: BLE001 - minecraft trouble must not stop startup
                 self.log.exception("Minecraft bridge initialization failed; continuing without it")
                 self.minecraft = None

@@ -562,3 +562,10 @@ minecraft:
   poll_interval_seconds: 5     # 状态对账轮询（事件以回调推送为主）
   connect_timeout_seconds: 75  # 多久没进世界算连接失败
   max_runtime_restarts: 3      # runtime 进程意外退出的自动重启预算
+  # ---- 世界感知（Phase 2，只读）
+  perception_enabled: true     # 进世界后持续构建 Raw Snapshot → 语义模型
+  near_interval_seconds: 1.0   # Near（~6 格）刷新周期
+  local_interval_seconds: 4.0  # Local（~32 格）刷新周期
+  extended_interval_seconds: 20.0  # Extended（~96 格摘要）刷新周期
+  world_event_cooldown_seconds: 5.0  # 感知事件去抖间隔
+  world_change_block_threshold: 10   # 触发 world.changed 的方块变化数

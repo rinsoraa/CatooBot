@@ -27,6 +27,7 @@ const http = require('http')
 const path = require('path')
 const fs = require('fs')
 const mineflayer = require('mineflayer')
+const Vec3 = require('vec3').Vec3 ?? require('vec3')
 
 // --------------------------------------------------------------- configuration
 
@@ -193,6 +194,322 @@ function readAuth() {
   } catch {
     return { mode: 'offline', username: 'GuanTou' }
   }
+}
+
+// ------------------------------------------------------------------ world perception
+
+// Phase 2：Raw World Snapshot（只读「眼睛」；没有任何移动/挖掘/放置能力）。
+// 所有空间对象同时保留世界坐标与相对量，bearing / relative_direction 由这里计算，
+// 绝不让 LLM 从坐标自行推断。
+
+const RELATIVE_DIRECTIONS = [
+  'front',
+  'front_left',
+  'front_right',
+  'left',
+  'right',
+  'back',
+  'back_left',
+  'back_right',
+  'above',
+  'below',
+]
+const SECTORS_CLOCKWISE = [
+  'front',
+  'front_right',
+  'right',
+  'back_right',
+  'back',
+  'back_left',
+  'left',
+  'front_left',
+]
+const COMPASS = [
+  'north',
+  'north_east',
+  'east',
+  'south_east',
+  'south',
+  'south_west',
+  'west',
+  'north_west',
+]
+
+// 值得关注的方块（POI）：功能方块 / 光源 / 传送门 / 矿石等。
+const POI_EXACT = new Set([
+  'crafting_table',
+  'furnace',
+  'blast_furnace',
+  'smoker',
+  'chest',
+  'trapped_chest',
+  'ender_chest',
+  'barrel',
+  'anvil',
+  'chipped_anvil',
+  'damaged_anvil',
+  'grindstone',
+  'enchanting_table',
+  'brewing_stand',
+  'cauldron',
+  'lectern',
+  'loom',
+  'smithing_table',
+  'cartography_table',
+  'stonecutter',
+  'fletching_table',
+  'bell',
+  'jukebox',
+  'note_block',
+  'beacon',
+  'conduit',
+  'respawn_anchor',
+  'lodestone',
+  'hopper',
+  'dropper',
+  'dispenser',
+  'observer',
+  'comparator',
+  'repeater',
+  'daylight_detector',
+  'bookshelf',
+  'torch',
+  'soul_torch',
+  'redstone_torch',
+  'lantern',
+  'soul_lantern',
+  'glowstone',
+  'sea_lantern',
+  'shroomlight',
+  'end_portal_frame',
+  'nether_portal',
+  'end_portal',
+  'spawner',
+])
+const POI_SUFFIXES = ['_bed', '_door', '_sign', '_banner', '_ore', '_shulker_box', '_candle']
+
+function isInterestingBlock(name) {
+  if (POI_EXACT.has(name)) return true
+  for (const suffix of POI_SUFFIXES) {
+    if (name.endsWith(suffix)) return true
+  }
+  return false
+}
+
+function facingVector(yawRad) {
+  // 协议约定：yaw=0 → +Z（south），顺时针增大（90° → -X/west）。
+  return { x: -Math.sin(yawRad), z: Math.cos(yawRad) }
+}
+
+function bearingTo(facing, dx, dz) {
+  // 相对朝向的方位角（度）：0=正前方，正值=右侧，范围 [-180, 180]。
+  const cross = facing.x * dz - facing.z * dx
+  const dot = facing.x * dx + facing.z * dz
+  return Math.round(Math.atan2(cross, dot) * (180 / Math.PI) * 10) / 10
+}
+
+function relativeDirection(bearingDeg, dy, horizontalDist) {
+  if (horizontalDist < 2) {
+    if (dy >= 1.5) return 'above'
+    if (dy <= -1.5) return 'below'
+    return 'front'
+  }
+  const normalized = (((bearingDeg + 22.5) % 360) + 360) % 360
+  return SECTORS_CLOCKWISE[Math.floor(normalized / 45)]
+}
+
+function compassDirection(dx, dz) {
+  // 世界方位：north=-Z，east=+X。0=N，顺时针。
+  const deg = (((Math.atan2(dx, -dz) * 180) / Math.PI) + 360) % 360
+  return COMPASS[Math.round(deg / 45) % 8]
+}
+
+function spatialFields(bot, position) {
+  const self = bot.entity.position
+  const dx = position.x - self.x
+  const dy = position.y - self.y
+  const dz = position.z - self.z
+  const horizontal = Math.sqrt(dx * dx + dz * dz)
+  const facing = facingVector(bot.entity.yaw)
+  const bearing = bearingTo(facing, dx, dz)
+  return {
+    dx: Math.round(dx * 10) / 10,
+    dy: Math.round(dy * 10) / 10,
+    dz: Math.round(dz * 10) / 10,
+    distance: Math.round(Math.sqrt(dx * dx + dy * dy + dz * dz) * 10) / 10,
+    bearing,
+    relative_direction: relativeDirection(bearing, dy, horizontal),
+    compass: compassDirection(dx, dz),
+  }
+}
+
+function isAir(name) {
+  return name === 'air' || name === 'cave_air' || name === 'void_air'
+}
+
+function timePhase(ticks) {
+  if (ticks === null || ticks === undefined) return null
+  const t = ((Number(ticks) % 24000) + 24000) % 24000
+  if (t < 12000) return 'day'
+  if (t < 13000) return 'sunset'
+  if (t < 23000) return 'night'
+  return 'sunrise'
+}
+
+function columnTop(bot, x, z, yTop, yBottom) {
+  for (let y = yTop; y >= yBottom; y--) {
+    const block = bot.blockAt(new Vec3(x, y, z))
+    if (block && !isAir(block.name)) return block
+  }
+  return null
+}
+
+function describeBlock(bot, block) {
+  const position = block.position
+  const fields = spatialFields(bot, { x: position.x + 0.5, y: position.y, z: position.z + 0.5 })
+  return {
+    name: block.name,
+    rel: { dx: fields.dx, dy: fields.dy, dz: fields.dz },
+    pos: { x: position.x, y: position.y, z: position.z },
+    distance: fields.distance,
+    bearing: fields.bearing,
+    relative_direction: fields.relative_direction,
+    compass: fields.compass,
+  }
+}
+
+function scanColumns(bot, radius, step, yUp, yDown, cap) {
+  // 以罐头为中心的柱面表层扫描：每根柱子取最高非空气方块，天然剔除大量空气。
+  const columns = []
+  const self = bot.entity.position
+  for (let dz = -radius; dz <= radius; dz += step) {
+    for (let dx = -radius; dx <= radius; dx += step) {
+      const block = columnTop(bot, self.x + dx, self.z + dz, self.y + yUp, self.y - yDown)
+      if (block) {
+        columns.push(describeBlock(bot, block))
+        if (columns.length >= cap) return columns
+      }
+    }
+  }
+  return columns
+}
+
+function scanInteresting(bot, radius, yBand, cap) {
+  // 罐头附近的「值得关注」方块（功能方块/光源/矿石…），立体小范围扫描。
+  const found = []
+  const seen = new Set()
+  const self = bot.entity.position
+  for (let dy = yBand; dy >= -yBand; dy--) {
+    for (let dz = -radius; dz <= radius; dz++) {
+      for (let dx = -radius; dx <= radius; dx++) {
+        const block = bot.blockAt(new Vec3(self.x + dx, self.y + dy, self.z + dz))
+        if (!block || !isInterestingBlock(block.name)) continue
+        const key = `${block.position.x},${block.position.y},${block.position.z}`
+        if (seen.has(key)) continue
+        seen.add(key)
+        found.push(describeBlock(bot, block))
+        if (found.length >= cap) return found
+      }
+    }
+  }
+  return found
+}
+
+function buildWorldSnapshot(bot, layers) {
+  const self = bot.entity.position
+  const selfFields = {
+    position: { x: Math.round(self.x * 100) / 100, y: Math.round(self.y * 100) / 100, z: Math.round(self.z * 100) / 100 },
+    yaw: Math.round((((bot.entity.yaw * 180) / Math.PI) % 360 + 360) % 360),
+    pitch: Math.round(bot.entity.pitch * (180 / Math.PI) * 10) / 10,
+    dimension: bot.game?.dimension ?? null,
+    health: typeof bot.health === 'number' ? bot.health : null,
+    food: typeof bot.food === 'number' ? bot.food : null,
+    game_mode: bot.game?.gameMode ?? null,
+    held_item: bot.heldItem?.name ?? null,
+  }
+
+  const players = Object.values(bot.players)
+    .filter((player) => player.entity && player.username !== bot.username)
+    .map((player) => {
+      const fields = spatialFields(bot, player.entity.position)
+      const position = player.entity.position
+      return {
+        username: player.username,
+        pos: { x: Math.round(position.x * 10) / 10, y: Math.round(position.y * 10) / 10, z: Math.round(position.z * 10) / 10 },
+        ...fields,
+      }
+    })
+    .sort((a, b) => a.distance - b.distance)
+    .slice(0, 20)
+
+  const entities = Object.values(bot.entities)
+    .filter((entity) => {
+      if (!entity || !entity.position || entity.type === 'player') return false
+      return Boolean(entity.name || entity.displayName)
+    })
+    .map((entity) => {
+      const fields = spatialFields(bot, entity.position)
+      return {
+        type: entity.name || entity.displayName || entity.type,
+        kind: entity.kind ?? null,
+        pos: { x: Math.round(entity.position.x * 10) / 10, y: Math.round(entity.position.y * 10) / 10, z: Math.round(entity.position.z * 10) / 10 },
+        ...fields,
+      }
+    })
+    .sort((a, b) => a.distance - b.distance)
+    .slice(0, 40)
+
+  const feetBlock = bot.blockAt(self)
+  const environment = {
+    biome: feetBlock?.biome?.name ?? null,
+    time_of_day_ticks: bot.time ? bot.time.timeOfDay : null,
+    time_phase: bot.time ? timePhase(bot.time.timeOfDay) : null,
+    weather: bot.isRaining ? (bot.thunderState ? 'thunder' : 'rain') : 'clear',
+    light:
+      feetBlock && (feetBlock.skyLight !== undefined || feetBlock.blockLight !== undefined)
+        ? Math.max(feetBlock.skyLight ?? 0, feetBlock.blockLight ?? 0)
+        : null,
+    dimension: bot.game?.dimension ?? null,
+  }
+
+  const blocks = {}
+  if (layers.has('near')) {
+    blocks.near = { radius: 6, step: 1, columns: scanColumns(bot, 6, 1, 8, 8, 220) }
+  }
+  if (layers.has('local')) {
+    blocks.local = { radius: 32, step: 8, columns: scanColumns(bot, 32, 8, 16, 16, 120) }
+    blocks.interesting = scanInteresting(bot, 10, 3, 40)
+  }
+  if (layers.has('extended')) {
+    const points = []
+    for (const distance of [48, 96]) {
+      for (let i = 0; i < 8; i++) {
+        const angle = (i * Math.PI) / 4
+        const x = Math.round(self.x + Math.cos(angle) * distance)
+        const z = Math.round(self.z + Math.sin(angle) * distance)
+        const block = columnTop(bot, x, z, self.y + 24, self.y - 24)
+        if (block) {
+          points.push({ ...describeBlock(bot, block), biome: block.biome?.name ?? null })
+        }
+      }
+    }
+    blocks.extended = { radius: 96, points }
+  }
+
+  return {
+    self: selfFields,
+    players,
+    entities,
+    environment,
+    blocks,
+  }
+}
+
+function parseLayers(query) {
+  const raw = String(query || '').trim()
+  if (!raw) return new Set(['near', 'local', 'extended'])
+  const allowed = new Set(['near', 'local', 'extended'])
+  return new Set(raw.split(',').map((part) => part.trim()).filter((part) => allowed.has(part)))
 }
 
 // ------------------------------------------------------------------- bot wiring
@@ -531,6 +848,32 @@ async function handleRequest(request, response) {
     }
     if (request.method === 'GET' && path === '/minecraft/status') {
       jsonResponse(response, 200, { ok: true, ...statusPayload() })
+      return
+    }
+    if (request.method === 'GET' && path === '/minecraft/world/snapshot') {
+      // 只读世界感知（Phase 2）：未在线时返回 online=false，缓存由上层失效。
+      if (state.phase !== 'ONLINE' || state.bot === null) {
+        jsonResponse(response, 200, { ok: true, online: false, fetched_at: Date.now() / 1000 })
+        return
+      }
+      const layers = parseLayers(new URL(request.url, 'http://localhost').searchParams.get('layers'))
+      try {
+        const snapshot = buildWorldSnapshot(state.bot, layers)
+        jsonResponse(response, 200, {
+          ok: true,
+          online: true,
+          fetched_at: Date.now() / 1000,
+          ...snapshot,
+        })
+      } catch (error) {
+        // 感知失败不该杀死 bot 会话：如实上报错误。
+        const message = String(error && error.message ? error.message : error)
+        log('warn', 'world snapshot failed', { error: message })
+        jsonResponse(response, 500, {
+          ok: false,
+          error: { code: 'world.snapshot_failed', message },
+        })
+      }
       return
     }
     if (request.method === 'POST' && path === '/minecraft/connect') {

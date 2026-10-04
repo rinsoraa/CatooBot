@@ -24,7 +24,7 @@ const ONLINE_OVERVIEW = {
     session_id: 'mc_s1',
     host: '127.0.0.1',
     port: 25565,
-    username: 'GuanTou',
+    username: 'Catodayo',
     auth_mode: 'offline',
     dimension: 'overworld',
     position: { x: 4.5, y: 21.0, z: 25.3 },
@@ -34,6 +34,24 @@ const ONLINE_OVERVIEW = {
     connected_at: 1700000000,
   },
   last_event: null,
+}
+
+const WORLD_VIEW = {
+  available: true,
+  online: true,
+  captured_at: 1700000000,
+  age_seconds: 0.5,
+  layers: { near: { age_seconds: 0.5 }, local: { age_seconds: 2 }, extended: { age_seconds: 10 } },
+  semantic: {
+    captured_at: 1700000000,
+    self: { location: 'plains', dimension: 'overworld', position: { x: 10, y: 64, z: -5 }, health: 20, food: 20 },
+    environment: { biome: 'plains', time_phase: 'day', weather: 'clear', light: 15 },
+    terrain: [{ type: 'grassland', direction: 'north', distance: 4 }],
+    players: [{ name: 'RinsoraNeko', direction: 'front_right', distance: 6, compass: 'west' }],
+    entities: [{ type: 'cow', count: 3, direction: 'west', distance: 8 }],
+    points_of_interest: [{ type: 'crafting_table', direction: 'front', distance: 4 }],
+  },
+  raw: { self: {}, blocks: {} },
 }
 
 const DISABLED_OVERVIEW = {
@@ -62,6 +80,9 @@ function makeHandler(overrides: { join?: MockReply; leave?: MockReply } = {}) {
     const url = new URL(request.url, 'http://localhost')
     if (url.pathname === '/api/v1/minecraft' && request.method === 'GET') {
       return ok(ONLINE_OVERVIEW)
+    }
+    if (url.pathname === '/api/v1/minecraft/world' && request.method === 'GET') {
+      return ok(WORLD_VIEW)
     }
     if (url.pathname === '/api/v1/minecraft/join' && request.method === 'POST') {
       return overrides.join ?? ok({ session_id: 'mc_new', status: 'CONNECTING' })
@@ -106,7 +127,7 @@ describe('Minecraft 页', () => {
     const { wrapper } = await mountPage(makeHandler())
     expect(wrapper.find('[data-test="minecraft-status-value"]').text()).toContain('在线')
     expect(wrapper.find('[data-test="minecraft-server"]').text()).toContain('127.0.0.1:25565')
-    expect(wrapper.find('[data-test="minecraft-username"]').text()).toContain('GuanTou')
+    expect(wrapper.find('[data-test="minecraft-username"]').text()).toContain('Catodayo')
     expect(wrapper.find('[data-test="minecraft-dimension"]').text()).toContain('overworld')
     expect(wrapper.find('[data-test="minecraft-position"]').text()).not.toContain('—')
     expect(wrapper.find('[data-test="minecraft-health"]').text()).toContain('20')
@@ -169,5 +190,37 @@ describe('Minecraft 页', () => {
     await wrapper.get('[data-test="confirm"]').trigger('click')
     await flushAll()
     expect(calls.some((c) => c.url.endsWith('/minecraft/leave'))).toBe(true)
+  })
+
+  it('在线时展示 World Debug：环境/玩家/生物/POI/地形', async () => {
+    const { wrapper } = await mountPage(makeHandler())
+    await flushAll()
+    expect(wrapper.find('[data-test="mc-world"]').exists()).toBe(true)
+    const env = wrapper.get('[data-test="mc-world-env"]').text()
+    expect(env).toContain('plains')
+    expect(env).toContain('白天')
+    const players = wrapper.get('[data-test="mc-world-players"]').text()
+    expect(players).toContain('RinsoraNeko')
+    expect(players).toContain('front_right')
+    expect(wrapper.get('[data-test="mc-world-entities"]').text()).toContain('cow')
+    expect(wrapper.get('[data-test="mc-world-poi"]').text()).toContain('crafting_table')
+    expect(wrapper.get('[data-test="mc-world-terrain"]').text()).toContain('grassland')
+  })
+
+  it('未在线时不出 World Debug 区', async () => {
+    const overview = {
+      ...ONLINE_OVERVIEW,
+      connection: { ...ONLINE_OVERVIEW.connection, status: 'DISCONNECTED' },
+    }
+    const { wrapper } = await mountPage((request) => {
+      const url = new URL(request.url, 'http://localhost')
+      if (url.pathname === '/api/v1/minecraft') return ok(overview)
+      if (url.pathname === '/api/v1/minecraft/world') {
+        return ok({ available: false, online: false, semantic: null, raw: null })
+      }
+      return fail(404, 'resource.not_found', 'no')
+    })
+    await flushAll()
+    expect(wrapper.find('[data-test="mc-world"]').exists()).toBe(false)
   })
 })
