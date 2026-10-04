@@ -165,3 +165,13 @@ def test_parse_server_address_variants():
     assert parse_server_address("进服 hypixel.net") == ("hypixel.net", 25565)
     assert parse_server_address("连接MC localhost：3000") == ("localhost", 3000)
     assert parse_server_address("加入我的世界") is None
+
+
+async def test_loader_discovers_and_loads_minecraft_plugin(tmp_path):
+    """防回归：插件目录必须有 __init__.py（pkgutil 不枚举 namespace 包），
+    否则 loader 静默扫不到——线上曾因此插件从未加载且无任何报错。"""
+    from tests.conftest import make_ready_bot
+
+    bot = await make_ready_bot(tmp_path)
+    assert "minecraft" in bot.plugins.loaded
+    assert "character" in bot.plugins.loaded
