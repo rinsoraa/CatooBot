@@ -83,15 +83,14 @@ class TestPurchaseSemantics:
 
             started = await complete_now(runtime, clock, "buy_sweets")
 
-            # 购买只加库存，不降需求
-            assert pantry.count("布丁") == 2
-            assert pantry.count("蛋糕") == 1
+            # 购买只加库存，不降需求（Phase C：甜食店只买 dessert 槽）
+            assert pantry.count("布丁") == 0
+            assert pantry.count("蛋糕") == 2
             assert runtime.needs.level("hunger") == hunger_before
 
             acquired = [e for e in runtime.events.of_type(ET.ITEM_ACQUIRED)]
             assert [(e.payload["item"], e.payload["quantity"]) for e in acquired] == [
-                ("布丁", 2),
-                ("蛋糕", 1),
+                ("蛋糕", 2),
             ]
             assert all(e.target_entity_id == "inventory:fridge" for e in acquired)
             assert not runtime.events.of_type(ET.ITEM_CONSUMED)
@@ -103,8 +102,7 @@ class TestPurchaseSemantics:
                 if m["target"] == "inventory:fridge" and m["reason"] == "buy_sweets"
             ]
             assert {(m["field"], m["before"], m["after"]) for m in mutations} == {
-                ("布丁", 0, 2),
-                ("蛋糕", 0, 1),
+                ("蛋糕", 0, 2),
             }
             assert runtime.actions.definitions["buy_sweets"].need_relief == {}
             assert started.definition_id == "buy_sweets"
@@ -178,7 +176,7 @@ class TestRestockGate:
         runtime = await make_sandbox(db=db, clock=clock)
         try:
             pantry = fridge(runtime)
-            assert pantry.count("布丁") == 3 and pantry.count("蛋糕") == 1
+            assert pantry.count("布丁") == 3 and pantry.count("蛋糕") == 2
             runtime.needs.get("hunger").level = 0.9  # type: ignore[union-attr]
 
             # 冰箱有货：即使很饿，采购也不在候选里
@@ -412,7 +410,8 @@ class TestValidationAndAuthority:
             ]
 
             # acquire_item 的签名：一笔 mutation ⇄ 一个 ITEM_ACQUIRED（total=after）
-            assert len(mutations) == len(acquired) == 2
+            # Phase C：buy_sweets 现在只采购 dessert 槽（蛋糕 ×2）
+            assert len(mutations) == len(acquired) == 1
             for mutation in mutations:
                 matches = [e for e in acquired if e.payload["item"] == mutation["field"]]
                 assert len(matches) == 1
@@ -420,7 +419,7 @@ class TestValidationAndAuthority:
                 assert mutation["source"] == "character_action"
             assert not [e for e in chain if e.event_type is ET.ITEM_CONSUMED]
             # 没有事件支撑的库存写入不存在（否则这里会有多余 mutation）
-            assert {(m["field"], m["after"]) for m in mutations} == {("布丁", 2), ("蛋糕", 1)}
+            assert {(m["field"], m["after"]) for m in mutations} == {("蛋糕", 2)}
         finally:
             await runtime.shutdown()
             await db.close()
@@ -444,7 +443,7 @@ class TestPlumbing:
                 action_id: quantity
                 for action_id, _definition, quantity in runtime.restock_actions("fridge", "蛋糕")
             }
-            assert cake == {"buy_sweets": 1, "go_shopping_sweets": 1}
+            assert cake == {"buy_sweets": 2, "go_shopping_sweets": 1}
         finally:
             await runtime.shutdown()
             await db.close()
@@ -456,8 +455,8 @@ class TestPlumbing:
         actions = {payload["id"]: payload for payload in seed.actions}
 
         sweets = actions["buy_sweets"]
-        assert sweets["purchase"] == {"fridge": {"布丁": 2, "蛋糕": 1}}
-        assert sweets["restock"] == {"inventory": "fridge", "slot": "蛋糕", "min": 0, "target": 1}
+        assert sweets["purchase"] == {"fridge": {"蛋糕": 2}}
+        assert sweets["restock"] == {"inventory": "fridge", "slot": "蛋糕", "min": 1, "target": 3}
         assert not sweets.get("need_relief")
         cola = actions["buy_cola"]
         assert cola["purchase"] == {"fridge": {"可乐": 6}}

@@ -305,11 +305,24 @@ ACTION_TEMPLATES: dict[str, dict[str, Any]] = {
         "interruptibility": 0.2,
         "priority": 0.65,
         "tags": ["shopping", "outdoor", "favorite"],
-        "purchase": {"fridge": {"{snack}": 2, "{dessert}": 1}},
-        "restock": {"inventory": "fridge", "slot": "{dessert}", "min": 0, "target": 1},
+        "purchase": {"fridge": {"{dessert}": 2}},
+        "restock": {"inventory": "fridge", "slot": "{dessert}", "min": 1, "target": 3},
         "modes": ["outdoor"],
         "detail_pool": ["在甜品店挑蛋糕", "在甜品店买布丁"],
         "requires_anchor": "snack",
+    },
+    "return_home": {
+        "activity": "out",
+        "name": "回家",
+        "spaces": ["home"],
+        "min_minutes": 10,
+        "typical_minutes": 20,
+        "max_minutes": 40,
+        "interruptibility": 0.6,
+        "priority": 0.4,
+        "tags": ["chore"],
+        "modes": ["outdoor"],
+        "detail_pool": ["往家走", "回到家了"],
     },
     "go_shopping_cola": {
         "activity": "out",
@@ -523,6 +536,7 @@ def resolve_action_template(
     social_ids: set[str],
     space_ids: set[str] | None = None,
     shop_ids: list[str] | None = None,
+    home_space: str = "",
 ) -> dict[str, Any] | None:
     """Template + seed → one concrete action payload (§20/§21).
 
@@ -568,7 +582,7 @@ def resolve_action_template(
         payload[key] = _substitute(value, values)
     # spaces / destination must exist in this world; else fall back sensibly
     if space_ids is not None:
-        mapped = _map_spaces(payload.get("spaces", []), space_ids)
+        mapped = _map_spaces(payload.get("spaces", []), space_ids, home_space=home_space)
         if mapped is None:
             return None
         payload["spaces"] = mapped
@@ -603,13 +617,21 @@ def _substitute(value: Any, values: dict[str, str]) -> Any:
     return value
 
 
-def _map_spaces(template_spaces: list[str], space_ids: set[str]) -> list[str] | None:
+def _map_spaces(
+    template_spaces: list[str], space_ids: set[str], *, home_space: str = ""
+) -> list[str] | None:
     """Map conventional template space ids onto this world's actual spaces.
 
-    ``*`` passes through. A conventional id that exists is kept; missing ids
-    are dropped, and if nothing remains the action is not ownable (None).
+    ``*`` passes through, and the conventional token ``home`` resolves to the
+    seed's own home space (a template may say "she goes home" without knowing
+    the character's room ids). A conventional id that exists is kept; missing
+    ids are dropped, and if nothing remains the action is not ownable (None).
     """
     if "*" in template_spaces:
         return ["*"]
-    mapped = [space for space in template_spaces if space in space_ids]
+    mapped = [
+        home_space if space == "home" and home_space in space_ids else space
+        for space in template_spaces
+        if space in space_ids or (space == "home" and home_space in space_ids)
+    ]
     return mapped or None

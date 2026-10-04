@@ -188,7 +188,15 @@ def build_world_seed(
         }
         for project in definition.project_definitions
     }
-    actions = _resolve_actions(definition, inventories, social_ids, projects, space_ids, shop_ids)
+    actions = _resolve_actions(
+        definition,
+        inventories,
+        social_ids,
+        projects,
+        space_ids,
+        shop_ids,
+        home_space=home_space,
+    )
     need_labels = _need_labels(definition, projects)
 
     return CharacterWorldSeed(
@@ -395,6 +403,8 @@ def _resolve_actions(
     projects: dict[str, dict[str, Any]],
     space_ids: set[str],
     shop_ids: list[str],
+    *,
+    home_space: str = "",
 ) -> list[dict[str, Any]]:
     """§20/§21: template + definition → owned, fully-resolved action definitions.
 
@@ -419,6 +429,7 @@ def _resolve_actions(
             social_ids=social_ids,
             space_ids=space_ids,
             shop_ids=shop_ids,
+            home_space=home_space,
         )
         if action is not None:
             resolved.append(action)

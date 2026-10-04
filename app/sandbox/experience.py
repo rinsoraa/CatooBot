@@ -96,6 +96,37 @@ class ExperienceKind(str, Enum):  # noqa: UP042 - pydantic-friendly str enum
     commitment_outcome = "commitment_outcome"
     #: Phase 10 §4: a real episode lived *with* someone (verified shared activity)
     shared_activity = "shared_activity"
+    #: Phase C: one outing that did several errands — the *only* experience a
+    #: shopping trip produces (its individual purchases stay events)
+    errand_trip = "errand_trip"
+
+
+def strip_purchase_prefix(name: str) -> str:
+    """买甜食 → 甜食 — the summary phrase already carries its own 买."""
+    text = (name or "").strip()
+    return text[1:] if text.startswith("买") and len(text) > 1 else text
+
+
+def errand_trip_summary(names: list[str]) -> str:
+    """Deterministic trip summary from the stops' purchase action names (§21).
+
+    1 item → ``完成了买甜食``; 2 → ``完成了买甜食和饮料``; 3+ →
+    ``完成了买甜食、饮料和日用品``. No LLM, no random detail text.
+    """
+    cleaned: list[str] = []
+    for name in names:
+        text = strip_purchase_prefix(name)
+        if text and text not in cleaned:
+            cleaned.append(text)
+    if not cleaned:
+        return "完成了一趟出门采购"
+    if len(cleaned) == 1:
+        joined = cleaned[0]
+    elif len(cleaned) == 2:
+        joined = f"{cleaned[0]}和{cleaned[1]}"
+    else:
+        joined = "、".join(cleaned[:-1]) + f"和{cleaned[-1]}"
+    return f"完成了买{joined}"
 
 
 class ExperienceRecord(BaseModel):
@@ -139,6 +170,8 @@ class ExperienceBuilder:
         ExperienceKind.social_contact: 1,
         # §7: the shared episode absorbs the action/promise pieces of its chain
         ExperienceKind.shared_activity: 20,
+        # Phase C: a trip outranks the action_completed pieces it replaces
+        ExperienceKind.errand_trip: 15,
         ExperienceKind.action_resumed: 2,
         ExperienceKind.interaction_completed: 3,
         ExperienceKind.action_completed: 4,
@@ -231,7 +264,9 @@ class ExperienceBuilder:
 
     @staticmethod
     def _episode_rank(key: str) -> int:
-        """Priority of an episode key: ActionInstance > commitment > fact (§3)."""
+        """Priority of an episode key: trip > ActionInstance > commitment > fact."""
+        if key.startswith("trip:"):
+            return -1  # Phase C: the trip owns its purchase pieces
         if key.startswith("action:"):
             return 0
         if key.startswith("commitment:"):
@@ -248,8 +283,13 @@ class ExperienceBuilder:
 
     @staticmethod
     def _episode_keys(metadata: dict[str, Any]) -> list[str]:
-        """Episode identity for a built record: instance > commitment (§4/§12)."""
+        """Episode identity for a built record: trip > instance > commitment (§4/§12)."""
         keys: list[str] = []
+        trip_id = str(metadata.get("trip_id", "") or "")
+        if trip_id:
+            # Phase C: put the trip key first *only when present* — it is the
+            # episode the individual purchase events must fold into
+            keys.append(f"trip:{trip_id}")
         instance_id = str(metadata.get("action_instance_id", "") or "")
         if instance_id:
             keys.append(f"action:{instance_id}")
@@ -377,6 +417,27 @@ class ExperienceBuilder:
             },
         )
 
+    def _trip_names(self, stops: list[Any]) -> tuple[list[str], list[str]]:
+        """(name, action id) per trip item, in itinerary order (Phase C §21).
+
+        A definition that no longer exists falls back to the recorded item
+        name — the summary never invents text.
+        """
+        names: list[str] = []
+        action_ids: list[str] = []
+        for stop in stops:
+            if not isinstance(stop, dict):
+                continue
+            for entry in stop.get("items", []):
+                if not isinstance(entry, dict):
+                    continue
+                action_id = str(entry.get("action_id", "") or "")
+                action_ids.append(action_id)
+                definition = self._rt.actions.definitions.get(action_id)
+                name = definition.name if definition is not None else ""
+                names.append(name or str(entry.get("item", "")))
+        return names, action_ids
+
     def commitment_describe(self, person_id: str) -> str:
         """Who the promise was with, in words the runtime already owns."""
         manager = getattr(self._rt, "commitments", None)
@@ -392,6 +453,11 @@ class ExperienceBuilder:
     ) -> tuple[ExperienceKind, str, float, dict[str, Any]] | None:
         payload = event.payload
         if event.event_type is ET.ACTION_COMPLETED:
+            if str(payload.get("trip_id", "") or ""):
+                # Phase C: a trip step is fully recorded as events + stop
+                # metadata; the *trip* is the one experience (built below from
+                # the goal completion) — never a standalone action record
+                return None
             definition = self._rt.actions.definitions.get(event.target_entity_id)
             name = definition.name if definition else event.target_entity_id
             typical = definition.typical_minutes if definition else 0
@@ -496,6 +562,28 @@ class ExperienceBuilder:
             )
         if event.event_type is ET.GOAL_COMPLETED:
             description = str(payload.get("description", "") or payload.get("goal_kind", ""))
+            trip_id = str(payload.get("trip_id", "") or "")
+            if trip_id:
+                # §XI.1/§21 (Phase C): ONE parent experience per trip, from the
+                # real stop actions — importance 0.45, byte-identical summary
+                stops = payload.get("stops")
+                stop_list = stops if isinstance(stops, list) else []
+                names, action_ids = self._trip_names(stop_list)
+                return (
+                    ExperienceKind.errand_trip,
+                    errand_trip_summary(names),
+                    0.45,
+                    {
+                        "trip_id": trip_id,
+                        "goal_id": str(payload.get("goal_id", "")),
+                        "goal_kind": str(payload.get("goal_kind", "")),
+                        "description": description,
+                        "stop_count": len(stop_list),
+                        "action_ids": action_ids,
+                        "action_names": names,
+                        "stops": stop_list,
+                    },
+                )
             return (
                 ExperienceKind.goal_completed,
                 f"完成目标：{description}",

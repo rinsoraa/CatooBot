@@ -1574,17 +1574,24 @@ class SandboxRuntime:
                 )
 
         await self._transaction(apply, label=f"complete:{action.definition_id}")
+        # Phase C: a finishing *trip step* is tagged, so the experience layer
+        # can fold the individual purchases into the one trip episode
+        trip_context = self._active_trip_step(action.id)
+        completion_payload: dict[str, Any] = {
+            "action_id": definition.id,
+            "action_instance_id": action.id,
+            "detail": action.detail,
+            "reason": "natural_completion",
+        }
+        if trip_context is not None:
+            completion_payload["trip_id"] = trip_context["trip_id"]
+            completion_payload["trip_stop_index"] = trip_context["trip_stop_index"]
         # the completion's experiences reach the store right away (§28-1)
         self.events.publish(
             SandboxEventType.ACTION_COMPLETED,
             source="character",
             target=definition.id,
-            payload={
-                "action_id": definition.id,
-                "action_instance_id": action.id,
-                "detail": action.detail,
-                "reason": "natural_completion",
-            },
+            payload=completion_payload,
             correlation_id=correlation,
         )
         await self._persist_deltas()
@@ -1930,6 +1937,32 @@ class SandboxRuntime:
                 item=str(payload.get("item", "")),
                 total=int(payload.get("total", 0) or 0),
             )
+
+    def _active_trip_step(self, action_instance_id: str) -> dict[str, Any] | None:
+        """Phase C: is this finishing instance the current step of an open
+        shopping_trip? Returns its trip identity, or None for every ordinary
+        action (which must keep its own standalone experience)."""
+        if not action_instance_id:
+            return None
+        for goal in self.goals.all():
+            if goal.kind is not GoalKind.shopping_trip:
+                continue
+            if goal.status is not GoalStatus.active:
+                continue  # only the trip that is actually running tags its steps
+            step = goal.current_step
+            if step is None or step.action_instance_id != action_instance_id:
+                continue
+            if step.status not in (StepStatus.pending, StepStatus.active):
+                continue
+            trip_id = str(goal.metadata.get("trip_id", "") or "")
+            if not trip_id:
+                continue
+            result = dict(step.result or {})
+            return {
+                "trip_id": trip_id,
+                "trip_stop_index": int(result.get("trip_stop_index", -1) or -1),
+            }
+        return None
 
     def restock_actions(self, inventory_key: str, item: str) -> list[Any]:
         """Owned actions that replenish (key, item) — seed-derived.
@@ -2903,6 +2936,12 @@ class SandboxRuntime:
             self.inventories = InventorySystem(
                 {key: Inventory.model_validate(data) for key, data in snapshot.inventories.items()}
             )
+        # the decision engine holds direct references to these aggregates —
+        # re-point them after a restore, or a restarted world would decide on
+        # the stale (pre-snapshot) stock/spaces/objects
+        self.engine.spaces = self.spaces
+        self.engine.objects = self.objects
+        self.engine.inventories = self.inventories
         if snapshot.social_spaces:
             self.social_spaces = {
                 item["id"]: SocialSpace.model_validate(item) for item in snapshot.social_spaces

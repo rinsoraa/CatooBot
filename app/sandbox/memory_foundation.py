@@ -131,9 +131,13 @@ class MemoryCandidateBuilder:
     def _episode_fallback(meta: dict[str, Any], chain: str) -> str:
         """Episode identity for records without a canonical key (§10.2 §3).
 
-        The priority mirrors the experience layer exactly — an ActionInstance
-        outranks the promise, because one promise may be lived more than once.
+        The priority mirrors the experience layer exactly — a shopping trip
+        (Phase C) outranks the ActionInstance, which outranks the promise,
+        because one promise may be lived more than once.
         """
+        trip = str(meta.get("trip_id", "") or "")
+        if trip:
+            return f"trip:{trip}"
         instance = str(meta.get("action_instance_id", "") or "")
         if instance:
             return f"action:{instance}"
@@ -288,6 +292,19 @@ class MemoryCandidateBuilder:
                 f"完成目标：{description}",
                 f"goal:{meta.get('goal_id', chain)}",
                 0.9,
+            )
+        if kind is ExperienceKind.errand_trip:
+            # Phase C §21: one deterministic candidate per trip; the episode
+            # key is the identity, so trip A and trip B stay two candidates
+            episode = experience.episode_key or MemoryCandidateBuilder._episode_fallback(
+                meta, chain
+            )
+            return (
+                MemoryType.episodic,
+                MemoryScope.self_,
+                experience.summary,
+                episode or f"trip:{chain}",
+                0.85,
             )
         if kind is ExperienceKind.interaction_completed:
             return (

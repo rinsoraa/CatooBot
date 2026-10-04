@@ -31,6 +31,9 @@ class GoalKind(str, Enum):  # noqa: UP042 - pydantic-friendly str enum
     complete_project = "complete_project"
     #: Phase 9: honour a promise made to someone — the execution side of a commitment
     fulfill_commitment = "fulfill_commitment"
+    #: Phase C: *one* outing that does several errands (stops), instead of N
+    #: back-to-back single purchases — a trip, never an action
+    shopping_trip = "shopping_trip"
 
 
 class GoalStatus(str, Enum):  # noqa: UP042
@@ -120,8 +123,12 @@ class Goal(BaseModel):
         """(character, kind, target) — the same shortage never stacks (§9).
 
         A commitment goal targets the *commitment id* (§16), so one promise can
-        only ever hold one goal — no matter how many ticks it stays due.
+        only ever hold one goal — no matter how many ticks it stays due. Phase C:
+        a shopping trip has no single target — its identity is the *open* trip
+        slot itself, so repeated low-stock facts can never open a second one.
         """
+        if self.kind is GoalKind.shopping_trip:
+            return f"{self.character_id}|{self.kind.value}|open"
         target = (
             self.target_commitment or self.target_item or self.target_project or self.target_entity
         )
@@ -130,12 +137,92 @@ class Goal(BaseModel):
 
 #: §27 deterministic priority bands (world data decides the target, not the band)
 PRIORITY_PET_CRITICAL = 0.8
+#: Phase C: one multi-stop outing outranks the per-slot restock goals it absorbs
+PRIORITY_SHOPPING_TRIP = 0.65
 PRIORITY_RESOURCE_SHORTAGE = 0.6
 PRIORITY_UNFINISHED_PROJECT = 0.4
+#: a trip needs at least this many purchase errands to be worth one outing
+MIN_TRIP_ITEMS = 2
 #: how long a blocked goal waits before another attempt (§24)
 RETRY_COOLDOWN_SECONDS = 900.0
 #: a goal gives up after this many consecutive blocked attempts
 MAX_RETRIES = 5
+
+
+# ------------------------------------------------------- Phase C trip helpers
+
+
+def _purchase_space(definition: Any) -> str:
+    """The shop space a procurement action happens at (``spaces[0]``; a
+    wildcard errand falls back to its ``destination``)."""
+    spaces = [str(space) for space in (definition.spaces or []) if space not in ("", "*")]
+    if spaces:
+        return spaces[0]
+    return str(definition.destination or "")
+
+
+def _bfs_hops(spaces: Any, origin: str, target: str) -> int:
+    """Hop count between two spaces over the shared ``SpaceSystem`` graph.
+
+    Deterministic (sorted frontier); an unreachable pair reports a large
+    sentinel so sorting stays total instead of raising.
+    """
+    if origin == target:
+        return 0
+    seen = {origin}
+    frontier = [origin]
+    hops = 0
+    while frontier:
+        hops += 1
+        nxt: list[str] = []
+        for node in frontier:
+            for neighbor in sorted(spaces.neighbors(node)):
+                if neighbor == target:
+                    return hops
+                if neighbor not in seen:
+                    seen.add(neighbor)
+                    nxt.append(neighbor)
+        frontier = nxt
+    return 1_000_000
+
+
+def _order_trip_stops(stops: list[dict[str, Any]], *, runtime: Any) -> list[dict[str, Any]]:
+    """Route order: fewest BFS hops from home, then the errand's priority.
+
+    The priority tie-break is the world's own action priority (a favorite shop
+    outranks a routine one), so the order is deterministic and domain-derived.
+    """
+    home = runtime.seed.character.home_space
+
+    def key(stop: dict[str, Any]) -> tuple[int, float, str]:
+        hops = _bfs_hops(runtime.spaces, home, str(stop.get("space", "")))
+        priority = 0.0
+        for entry in stop.get("items", []):
+            definition = runtime.actions.definitions.get(str(entry.get("action_id", "")))
+            if definition is not None:
+                priority = max(priority, float(definition.priority))
+        return (hops, -priority, str(stop.get("space", "")))
+
+    return sorted(stops, key=key)
+
+
+def _trip_stops(goal: Any) -> list[dict[str, Any]]:
+    stops = goal.metadata.get("stops") if isinstance(goal.metadata, dict) else None
+    return stops if isinstance(stops, list) else []
+
+
+def _trip_items(goal: Any) -> list[dict[str, Any]]:
+    return [item for stop in _trip_stops(goal) for item in stop.get("items", [])]
+
+
+def _trip_keys(goal: Any) -> set[tuple[str, str]]:
+    return {
+        (str(item.get("inventory", "")), str(item.get("slot", ""))) for item in _trip_items(goal)
+    }
+
+
+def _refresh_stop_done(stop: dict[str, Any]) -> None:
+    stop["done"] = all(bool(item.get("done")) for item in stop.get("items", []))
 
 
 class GoalDetector:
@@ -222,9 +309,18 @@ class GoalDetector:
         policy keep the legacy zero test). Depletion is judged per
         *restockable* item (world-derived), never by whether a zero-count key
         happens to remain in the inventory mapping.
+
+        Phase C: the sweep first rebuilds/absorbs one multi-errand trip; slots
+        that trip already covers do not also get a per-slot restock goal.
         """
         runtime = self._manager.runtime
+        trip_id = self._ensure_trip(
+            source_event_id="", source=GoalSource.unfinished_task, correlation_id=""
+        )
+        covered = self._trip_cover_keys(trip_id)
         for inventory_key, item in self._restockable_targets():
+            if (inventory_key, item) in covered:
+                continue
             stock = runtime.inventories.get(inventory_key).count(item)
             policy = self._restock_policy(inventory_key, item)
             floor = int(policy["min"]) if policy else 0
@@ -248,6 +344,13 @@ class GoalDetector:
         item = str(payload.get("was", "") or "")
         if not item:
             return
+        trip_id = self._ensure_trip(
+            source_event_id=event.event_id,
+            source=GoalSource.inventory_depleted,
+            correlation_id=event.correlation_id,
+        )
+        if (key, item) in self._trip_cover_keys(trip_id):
+            return  # the open trip already owns this errand (§14: one outing)
         self._create_restock(
             item=item,
             inventory_key=key,
@@ -268,6 +371,11 @@ class GoalDetector:
         if not item:
             return
         inventory_key = event.target_entity_id.replace("inventory:", "")
+        trip_id = self._ensure_trip(
+            source_event_id=event.event_id,
+            source=GoalSource.inventory_low,
+            correlation_id=event.correlation_id,
+        )
         policy = self._restock_policy(inventory_key, item)
         if policy is None:
             return
@@ -276,6 +384,8 @@ class GoalDetector:
             return  # 真正的清空由 INVENTORY_DEPLETED 负责（source=inventory_depleted）
         if stock > int(policy["min"]):
             return
+        if (inventory_key, item) in self._trip_cover_keys(trip_id):
+            return  # 已在一次出门的行程里（§14）
         self._create_restock(
             item=item,
             inventory_key=inventory_key,
@@ -312,6 +422,120 @@ class GoalDetector:
             metadata={"inventory_key": inventory_key, "desired_quantity": desired},
             correlation_id=correlation_id,
         )
+
+    # ------------------------------------------------ Phase C: shopping trip
+
+    def _low_stock_slots(self) -> list[tuple[str, str, int]]:
+        """(inventory key, item, target) of every slot at/under its own floor."""
+        runtime = self._manager.runtime
+        short: list[tuple[str, str, int]] = []
+        for inventory_key, item in self._restockable_targets():
+            policy = self._restock_policy(inventory_key, item)
+            floor = int(policy["min"]) if policy else 0
+            target = int(policy["target"]) if policy else 0
+            if runtime.inventories.get(inventory_key).count(item) <= floor:
+                short.append((inventory_key, item, target))
+        return short
+
+    def _trip_entry_for(self, inventory_key: str, item: str, target: int) -> dict[str, Any] | None:
+        """One trip item: the purchase action the world actually owns for it.
+
+        Prefers a concrete shop action (``spaces[0]``) over a wildcard errand
+        whose ``destination`` names the shop; a shop the character cannot reach
+        from home is dropped with a logged reason — never a crash (§14).
+        """
+        runtime = self._manager.runtime
+        concrete: list[tuple[str, int, str]] = []
+        wildcard: list[tuple[str, int, str]] = []
+        for action_id, definition in runtime.actions.definitions.items():
+            quantity = int(definition.purchase.get(inventory_key, {}).get(item, 0) or 0)
+            if quantity <= 0:
+                continue
+            space = _purchase_space(definition)
+            if not space:
+                continue
+            bucket = (
+                concrete
+                if definition.spaces and definition.spaces[0] not in ("", "*")
+                else wildcard
+            )
+            bucket.append((action_id, quantity, space))
+        chosen = (concrete or wildcard)[:1]
+        if not chosen:
+            return None
+        action_id, quantity, space = chosen[0]
+        home = runtime.seed.character.home_space
+        if not runtime.spaces.is_reachable(home, space):
+            self._manager.log.warning(
+                "[Goal] trip drops %s×%s: %s unreachable from home %s",
+                inventory_key,
+                item,
+                space,
+                home,
+            )
+            return None
+        return {
+            "space": space,
+            "inventory": inventory_key,
+            "slot": item,
+            "item": item,
+            "action_id": action_id,
+            "target": int(target or quantity) or quantity,
+            "done": False,
+            "outcome": "",
+        }
+
+    def _group_stops(self, entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """Same-space items → one stop; stops ordered by BFS hops from home."""
+        groups: dict[str, dict[str, Any]] = {}
+        for entry in entries:
+            stop = groups.setdefault(
+                entry["space"], {"space": entry["space"], "items": [], "done": False}
+            )
+            stop["items"].append(entry)
+        return _order_trip_stops(list(groups.values()), runtime=self._manager.runtime)
+
+    def _ensure_trip(
+        self, *, source_event_id: str, source: GoalSource, correlation_id: str = ""
+    ) -> str:
+        """The one open trip absorbs every low-stock errand (§14).
+
+        Creates a trip only when at least :data:`MIN_TRIP_ITEMS` purchase
+        actions are pending (a single shortage stays the Phase B restock goal);
+        every later low-stock fact merges into the same open trip.
+        """
+        manager = self._manager
+        entries = [
+            entry
+            for inventory_key, item, target in self._low_stock_slots()
+            if (entry := self._trip_entry_for(inventory_key, item, target)) is not None
+        ]
+        open_trip = manager.open_trip()
+        if open_trip is not None:
+            manager.absorb_trip_items(open_trip, entries)
+            return open_trip.goal_id
+        if len(entries) < MIN_TRIP_ITEMS:
+            return ""
+        stops = self._group_stops(entries)
+        return manager.create(
+            kind=GoalKind.shopping_trip,
+            source=source,
+            source_event_id=source_event_id,
+            reason="low_stock_trip",
+            priority=PRIORITY_SHOPPING_TRIP,
+            correlation_id=correlation_id,
+            metadata={
+                "trip_id": f"trip_{uuid.uuid4().hex[:10]}",
+                "stops": stops,
+                "created_at": manager.now(),
+            },
+        )
+
+    def _trip_cover_keys(self, trip_id: str) -> set[tuple[str, str]]:
+        if not trip_id:
+            return set()
+        goal = next((g for g in self._manager.all() if g.goal_id == trip_id), None)
+        return _trip_keys(goal) if goal is not None else set()
 
     def _on_pet_hungry(self, event: SandboxEvent, payload: dict[str, Any]) -> None:
         if self._manager.runtime.pet is None:
@@ -372,6 +596,13 @@ class GoalManager:
         self._flushed_terminal: set[str] = set()
 
     # ------------------------------------------------------------- lifecycle
+
+    @property
+    def log(self) -> Any:
+        return self._log
+
+    def now(self) -> float:
+        return float(self._clock())
 
     async def restore(self) -> None:
         """Reload persisted goals and re-check each one against the world (§34)."""
@@ -448,6 +679,156 @@ class GoalManager:
         self._publish(ET.GOAL_CREATED, candidate, reason=reason, extra={"kind": kind.value})
         return candidate.goal_id
 
+    # ------------------------------------------------- Phase C: the one trip
+
+    def open_trip(self) -> Goal | None:
+        """The single open shopping trip, if any (§14: never a second one)."""
+        return next(
+            (
+                goal
+                for goal in self._goals.values()
+                if goal.kind is GoalKind.shopping_trip and not goal.status.terminal
+            ),
+            None,
+        )
+
+    def absorb_trip_items(self, goal: Goal, entries: list[dict[str, Any]]) -> None:
+        """Merge newly-short slots into the *open* trip without resetting work.
+
+        A slot already in the trip is never duplicated; a done stop that fell
+        short again while the trip is still out is re-opened (a legal purchase
+        exists by construction — the detector only offers low slots).
+        """
+        if goal.kind is not GoalKind.shopping_trip or goal.status.terminal:
+            return
+        stops = _trip_stops(goal)
+        by_key = {
+            (str(item.get("inventory", "")), str(item.get("slot", ""))): item
+            for item in _trip_items(goal)
+        }
+        changed = False
+        for entry in entries:
+            key = (str(entry.get("inventory", "")), str(entry.get("slot", "")))
+            existing = by_key.get(key)
+            if existing is not None:
+                if existing.get("done"):
+                    existing["done"] = False
+                    existing["outcome"] = ""
+                    changed = True
+                continue
+            stop = next(
+                (s for s in stops if str(s.get("space", "")) == str(entry.get("space", ""))),
+                None,
+            )
+            if stop is None:
+                stop = {"space": str(entry.get("space", "")), "items": [], "done": False}
+                stops.append(stop)
+            stop["items"].append(entry)
+            by_key[key] = entry
+            stop["done"] = False
+            changed = True
+        if not changed:
+            return
+        goal.metadata["stops"] = _order_trip_stops(stops, runtime=self.runtime)
+        goal.updated_at = float(self._clock())
+        self._dirty.add(goal.goal_id)
+
+    def _trip_current_item(self, goal: Goal) -> tuple[int, int, dict[str, Any]] | None:
+        """The first undone item; a slot already at/above target is *skipped*
+        (marked satisfied without buying — §10 mid-trip skip)."""
+        runtime = self.runtime
+        changed = False
+        for stop_index, stop in enumerate(_trip_stops(goal)):
+            for item_index, item in enumerate(stop.get("items", [])):
+                if item.get("done"):
+                    continue
+                target = int(item.get("target", 0) or 0)
+                inventory = runtime.inventories.get(str(item.get("inventory", "")))
+                have = inventory.count(str(item.get("slot", "")))
+                if target and have >= target:
+                    item["done"] = True
+                    item["outcome"] = "satisfied"
+                    _refresh_stop_done(stop)
+                    changed = True
+                    continue
+                if changed:
+                    goal.updated_at = float(self._clock())
+                    self._dirty.add(goal.goal_id)
+                return stop_index, item_index, item
+        if changed:
+            goal.updated_at = float(self._clock())
+            self._dirty.add(goal.goal_id)
+        return None
+
+    def _trip_step(self, goal: Goal) -> dict[str, Any] | None:
+        """The trip's next move: a purchase step, the closing return-home step,
+        or None when there is nothing left to do (done and home / no way home)."""
+        runtime = self.runtime
+        while True:
+            current = self._trip_current_item(goal)
+            if current is None:
+                break
+            stop_index, item_index, item = current
+            action_id = str(item.get("action_id", "") or "")
+            if action_id not in runtime.actions.definitions:
+                re_routed = self._reroute_trip_item(goal, item)
+                if not re_routed:
+                    continue  # the item was retired; look at the next one
+                action_id = re_routed
+            return {"action_id": action_id, "stop_index": stop_index, "item_index": item_index}
+        if runtime.spaces.is_home(runtime.character.location):
+            return None
+        if "return_home" in runtime.actions.definitions:
+            # §C: the trip's explicit closing step — no destination on the
+            # purchase actions, so the walk home is visible and resumable
+            return {"action_id": "return_home", "stop_index": -1, "item_index": -1}
+        return None
+
+    def _reroute_trip_item(self, goal: Goal, item: dict[str, Any]) -> str:
+        """Re-pick a purchase action if the planned one vanished; else retire."""
+        inventory_key = str(item.get("inventory", ""))
+        slot = str(item.get("slot", ""))
+        for action_id, definition, _quantity in self.runtime.restock_actions(inventory_key, slot):
+            if int(definition.purchase.get(inventory_key, {}).get(slot, 0) or 0) > 0:
+                item["action_id"] = action_id
+                self._dirty.add(goal.goal_id)
+                return action_id
+        item["done"] = True
+        item["outcome"] = "unavailable"
+        self._dirty.add(goal.goal_id)
+        return ""
+
+    def _mark_trip_item(self, goal: Goal, step: GoalStep) -> None:
+        """A trip step's action finished — close exactly the item it carried."""
+        result = dict(step.result or {})
+        if not result or result.get("trip_step"):
+            return  # the closing return-home step carries no stop
+        stop_index = int(result.get("trip_stop_index", -1))
+        item_index = int(result.get("trip_item_index", -1))
+        if stop_index < 0 or item_index < 0:
+            return
+        stops = _trip_stops(goal)
+        if stop_index >= len(stops):
+            return
+        items = stops[stop_index].get("items", [])
+        if item_index >= len(items):
+            return
+        item = items[item_index]
+        target = int(item.get("target", 0) or 0)
+        have = self.runtime.inventories.get(str(item.get("inventory", ""))).count(
+            str(item.get("slot", ""))
+        )
+        item["done"] = True
+        item["outcome"] = "purchased" if (not target or have >= target) else "partial"
+        _refresh_stop_done(stops[stop_index])
+        goal.updated_at = float(self._clock())
+        self._dirty.add(goal.goal_id)
+
+    @staticmethod
+    def _trip_counts(goal: Goal) -> tuple[int, int]:
+        items = _trip_items(goal)
+        return sum(1 for item in items if item.get("done")), len(items)
+
     # ---------------------------------------------------------------- drives
 
     def active_goal(self) -> Goal | None:
@@ -491,6 +872,19 @@ class GoalManager:
                     str(goal.metadata.get("target_activity", ""))
                 )
             ]
+        elif goal.kind is GoalKind.shopping_trip:
+            # §C: exactly one legal move — the current stop's purchase action,
+            # else the explicit walk home (the trip materializes one step at a
+            # time; it never builds a plan tree)
+            trip_step = self._trip_step(goal)
+            if trip_step is not None:
+                pairs = [
+                    (
+                        trip_step["action_id"],
+                        runtime.actions.definitions[trip_step["action_id"]],
+                        0,
+                    )
+                ]
         candidates = []
         for action_id, definition, _quantity in pairs:
             requirements: list[str] = []
@@ -529,6 +923,14 @@ class GoalManager:
         goal = self.active_goal()
         if goal is None:
             return False
+        trip_step: dict[str, Any] | None = None
+        if goal.kind is GoalKind.shopping_trip:
+            trip_step = self._trip_step(goal)
+            if trip_step is None:
+                # every stop is closed and she is home (or no closing action
+                # exists) — the trip ends here, exactly once
+                self._complete(goal, reason="trip_completed")
+                return True
         candidates = self.step_candidates(goal)
         if not candidates:
             self._block(goal, "no_step_candidate")
@@ -567,6 +969,16 @@ class GoalManager:
             requirements=[],
             result={"source": outcome.source},
         )
+        if trip_step is not None:
+            # §C: the step knows which stop/item it carries, so completion can
+            # close exactly that item (and the closing walk carries none)
+            step.result.update(
+                {
+                    "trip_step": trip_step["stop_index"] < 0,
+                    "trip_stop_index": trip_step["stop_index"],
+                    "trip_item_index": trip_step["item_index"],
+                }
+            )
         if goal.status is GoalStatus.blocked:
             # §1: a cooldown-expired goal that became legal again is *active*
             # again — same goal id, same correlation, no clone
@@ -628,6 +1040,9 @@ class GoalManager:
         if len(matches) != 1:
             return  # nothing to advance — or ambiguous, in which case do nothing
         goal, step = matches[0]
+        if goal.kind is GoalKind.shopping_trip:
+            # §C: close the stop this exact step carried before evaluating
+            self._mark_trip_item(goal, step)
         step.status = StepStatus.completed
         self._publish(
             ET.GOAL_STEP_COMPLETED,
@@ -746,6 +1161,22 @@ class GoalManager:
                     reason="partial",
                     extra={"progress": round(goal.progress, 3)},
                 )
+        elif goal.kind is GoalKind.shopping_trip:
+            # §C: the trip closes when every stop is done *and* she is home —
+            # the closing return-home step's completion lands here; the last
+            # purchase alone (still at the shop) only reports progress
+            done, total = self._trip_counts(goal)
+            goal.progress = done / max(1, total)
+            goal.updated_at = float(self._clock())
+            if done >= total and runtime.spaces.is_home(runtime.character.location):
+                self._complete(goal, reason="returned_home")
+            else:
+                self._publish(
+                    ET.GOAL_PROGRESS,
+                    goal,
+                    reason="trip_progress",
+                    extra={"stops_done": done, "stops_total": total},
+                )
         elif goal.kind is GoalKind.fulfill_commitment:
             # the goal's own progress is the commitment's honesty, decided by
             # the commitment layer — never re-derived from the world here
@@ -770,7 +1201,13 @@ class GoalManager:
         goal.updated_at = float(self._clock())
         if goal.current_step is not None and goal.current_step.status is not StepStatus.completed:
             goal.current_step.status = StepStatus.completed
-        self._publish(ET.GOAL_COMPLETED, goal, reason=reason, extra={"goal_kind": goal.kind.value})
+        extra: dict[str, Any] = {"goal_kind": goal.kind.value}
+        if goal.kind is GoalKind.shopping_trip:
+            # §C: the trip's own payload carries the itinerary, so the one
+            # experience can summarize the errand without re-reading the world
+            extra["trip_id"] = str(goal.metadata.get("trip_id", "") or "")
+            extra["stops"] = _trip_stops(goal)
+        self._publish(ET.GOAL_COMPLETED, goal, reason=reason, extra=extra)
 
     def on_commitment_fulfilled(self, event: Any) -> None:
         """Bus handler: a kept promise closes its *exact* goal (Phase 9.1 §2-§6).
@@ -847,6 +1284,10 @@ class GoalManager:
         if goal.kind is GoalKind.fulfill_commitment:
             activity = str(goal.metadata.get("target_activity", "")) or "约定"
             return f"履行约定：{activity}"
+        if goal.kind is GoalKind.shopping_trip:
+            names = [str(item.get("item", "")) for item in _trip_items(goal)]
+            listed = "、".join(name for name in names[:3] if name)
+            return f"出门采购：{listed}" if listed else "出门采购"
         return goal.kind.value
 
     def _publish(

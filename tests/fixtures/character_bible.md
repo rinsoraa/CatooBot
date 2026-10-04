@@ -116,7 +116,7 @@
 - package_box 快递盒（玄关）：取快递后出现
 
 ### Inventory
-- fridge：可乐 × 10、布丁 × 3、蛋糕 × 1
+- fridge：可乐 × 10、布丁 × 3、蛋糕 × 2
 - cat_food_bowl：猫粮（充足）
 - character（随身）：手机、猫猫睡衣、外出休闲装
 

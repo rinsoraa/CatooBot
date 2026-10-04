@@ -18,6 +18,7 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
+from app.sandbox.action_templates import ACTION_TEMPLATES
 from app.sandbox.bible import CharacterBible
 
 
@@ -175,6 +176,8 @@ ACTION_KEYWORDS: dict[str, tuple[str, ...]] = {
     "think": ("想平时不会想的事", "哲思", "发呆"),
     "walk": ("散步", "在外面走", "小区"),
     "idle": (),
+    #: Phase C: the closing step of a shopping trip — owns「回家」
+    "return_home": ("回家", "回去", "到家"),
 }
 
 #: bible Preferences keys → anchor slots consumed by action templates
@@ -372,7 +375,7 @@ class CharacterDefinition(BaseModel):
         ]
         definition.social_space_definitions = _compile_social_spaces(bible)
         definition.project_definitions = _compile_projects(bible)
-        definition.action_ownership = _compile_action_ownership(bible)
+        definition.action_ownership = _compile_action_ownership(bible, anchors=definition.anchors)
         return definition
 
 
@@ -478,12 +481,86 @@ def _compile_projects(bible: CharacterBible) -> list[ProjectDefinition]:
     return projects
 
 
-def _compile_action_ownership(bible: CharacterBible) -> list[str]:
+#: matches template slot placeholders such as {drink} / {snack} / {dessert}
+_TEMPLATE_PLACEHOLDER = re.compile(r"\{([a-zA-Z_]+)\}")
+
+#: template keys that make a template part of the procurement/shopping family
+_PROCUREMENT_KEYS = ("purchase", "restock", "requires_absent")
+
+
+def _template_slot_names(template: dict[str, Any]) -> set[str]:
+    """Anchor slots a procurement template resolves against ({drink}, …)."""
+    slots: set[str] = set()
+
+    def collect(value: Any) -> None:
+        if isinstance(value, str):
+            slots.update(_TEMPLATE_PLACEHOLDER.findall(value))
+        elif isinstance(value, dict):
+            for key, item in value.items():
+                collect(key)
+                collect(item)
+        elif isinstance(value, list):
+            for item in value:
+                collect(item)
+
+    for key in _PROCUREMENT_KEYS:
+        if template.get(key):
+            collect(template[key])
+    if template.get("effects"):
+        # go_shopping_* carry no purchase/restock — the effects spell the slots
+        collect(template["effects"])
+    return slots
+
+
+def _template_containers(template: dict[str, Any]) -> set[str]:
+    """Inventory containers a procurement template writes to / checks."""
+    containers: set[str] = set()
+    for key in template.get("purchase") or {}:
+        containers.add(str(key))
+    restock = template.get("restock") or {}
+    if restock.get("inventory"):
+        containers.add(str(restock["inventory"]))
+    for key in template.get("requires_absent") or {}:
+        containers.add(str(key))
+    return containers
+
+
+def _anchor_owns_template(
+    template_id: str, anchors: dict[str, str], inventories: dict[str, Any]
+) -> bool:
+    """Anchor presence for the procurement family: she buys what she actually has.
+
+    A bible that never writes 买可乐 still owns ``buy_cola`` when its own
+    ``{drink}`` anchor resolves; every slot the template references must
+    resolve, and the container it writes to (fridge…) must exist in this
+    world — a coffee-only character with no fridge owns no cola action.
+    """
+    template = ACTION_TEMPLATES.get(template_id)
+    if not template or not any(template.get(key) for key in _PROCUREMENT_KEYS):
+        return False
+    slots = _template_slot_names(template)
+    if not slots or not all(str(anchors.get(slot, "") or "").strip() for slot in slots):
+        return False
+    containers = _template_containers(template)
+    return bool(containers) and containers <= set(inventories)
+
+
+def _compile_action_ownership(
+    bible: CharacterBible, *, anchors: dict[str, str] | None = None
+) -> list[str]:
     """§20: which system action templates this character *owns*.
 
-    Ownership is derived from bible keywords; a bible without, say, Minecraft
-    simply never owns ``play_minecraft``. Actions with no keyword hits at all
-    are recorded as unresolved rather than silently dropped.
+    Ownership is the union of two world-derived rules:
+
+    * bible keywords (as before) — a bible without, say, Minecraft simply
+      never owns ``play_minecraft``;
+    * anchor presence for the procurement/shopping family — ``buy_cola`` is
+      owned when this bible's own ``{drink}`` anchor resolves (she has/likes
+      that drink), even if the text never writes 买可乐. Empty anchors or a
+      missing container never grant ownership.
+
+    Actions with no hit at all are recorded as unresolved rather than silently
+    dropped.
     """
     corpus = bible.preferences_text() if hasattr(bible, "preferences_text") else ""
     if not corpus:
@@ -495,6 +572,9 @@ def _compile_action_ownership(bible: CharacterBible) -> list[str]:
     owned: list[str] = []
     for template_id, keywords in ACTION_KEYWORDS.items():
         if not keywords or any(keyword in corpus for keyword in keywords):
+            owned.append(template_id)
+            continue
+        if _anchor_owns_template(template_id, anchors or {}, bible.inventories):
             owned.append(template_id)
     return owned
 
