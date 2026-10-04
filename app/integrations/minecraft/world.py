@@ -339,6 +339,8 @@ class WorldPerception:
         self._cooldown = event_cooldown
         self._change_threshold = change_block_threshold
         self._dispatch = dispatch
+        #: 离线时的退避（秒）：不在世界里的轮询绝不允许 0 间隔空转
+        self._offline_retry_seconds = 2.0
         self.cache = WorldStateCache(clock)
         self._due: dict[str, float] = {layer: 0.0 for layer in self._intervals}
         self._last_event_at: dict[str, float] = {}
@@ -360,6 +362,12 @@ class WorldPerception:
         now = self._clock()
         return max(0.05, min(self._due.values()) - now)
 
+    def defer(self, seconds: float) -> None:
+        """把所有层的下次到期时间推后（离线/待命时用，避免空转）。"""
+        now = self._clock()
+        for layer in self._due:
+            self._due[layer] = now + seconds
+
     async def poll(self, layers: set[str]) -> list[tuple[str, dict[str, Any]]]:
         """拉取一层或多层 snapshot；返回本轮应当分发的事件列表。"""
         if not layers:
@@ -370,6 +378,8 @@ class WorldPerception:
             if self.cache.online:
                 self.cache.invalidate()
                 self._reset_baseline()
+            # 离线：本轮不算数，退避后再试（否则 due 永远到期 → 忙等打 runtime）
+            self.defer(self._offline_retry_seconds)
             return []
         self.cache.update(raw, layers)
         for layer in layers:

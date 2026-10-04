@@ -290,6 +290,17 @@ async function main() {
         }
         // 空气不膨胀：near 层列数 = 扫描柱数上限内（169 柱），绝无海量空气条目
         assert(s.blocks.near.columns.length <= 220, 'near layer bounded')
+
+        // 上下文体积测量（Phase 2 §性能）：各层字节数 + 可转储供 Python 侧分析
+        const nearOnly = await request(runtimePort, 'GET', '/minecraft/world/snapshot?layers=near')
+        const allLayers = await request(runtimePort, 'GET', '/minecraft/world/snapshot')
+        const nearBytes = JSON.stringify(nearOnly.body).length
+        const allBytes = JSON.stringify(allLayers.body).length
+        console.log(`[e2e] snapshot sizes: near-only=${nearBytes}B all-layers=${allBytes}B`)
+        if (process.env.MC_E2E_SNAPSHOT_OUT) {
+          fs.writeFileSync(process.env.MC_E2E_SNAPSHOT_OUT, JSON.stringify(allLayers.body), 'utf8')
+          console.log(`[e2e] snapshot dumped to ${process.env.MC_E2E_SNAPSHOT_OUT}`)
+        }
         console.log(`[e2e] snapshot ✓ self=(${s.self.position.x}, ${s.self.position.y}, ${s.self.position.z}) biome=${s.environment.biome} near=${s.blocks.near.columns.length} cols, player=${OBSERVER_NAME} ${tester.relative_direction} @${tester.distance}`)
       }
 

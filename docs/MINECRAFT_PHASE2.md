@@ -18,6 +18,39 @@ WorldPerception（app/integrations/minecraft/world.py）
 minecraft_world 只读工具（对话上下文）/ WebUI World Debug / Phase 3+ 行动层
 ```
 
+## 0. 修改文件清单
+
+**新增**
+
+| 文件 | 说明 |
+|---|---|
+| `app/integrations/minecraft/world.py` | 感知核心：Raw* 模型 / 语义映射器 / 分层缓存 / WorldPerception（去抖事件） |
+| `app/tools/builtins/minecraft_world.py` | 只读工具 `minecraft_world`（对话上下文用世界摘要） |
+| `tests/test_minecraft_world.py` | 单元测试 10 个（解析/聚合/无发明/缓存失效/事件去抖/阈值/离线退避） |
+| `docs/MINECRAFT_PHASE2.md` | 本文档 |
+
+**修改**
+
+| 文件 | 变更 |
+|---|---|
+| `minecraft_runtime/runtime.js` | 空间数学（bearing/relative_direction/compass）、柱面表层扫描、POI 判定、`GET /minecraft/world/snapshot` |
+| `minecraft_runtime/test/e2e.js` | snapshot 有效性 + 方向数学重算一致断言 + 各层字节数输出 |
+| `app/integrations/minecraft/events.py` | `MinecraftWorldEvent` / `WORLD_EVENT_NAMES` / `parse_world_event` |
+| `app/integrations/minecraft/runtime_client.py` | `world_snapshot(layers)` |
+| `app/integrations/minecraft/service.py` | 感知生命周期（start/stop）、`_perception_loop`、`_dispatch_world_event`、`world_view()`、断开即时失效 |
+| `app/integrations/minecraft/__init__.py` | 导出世界事件类型 |
+| `app/tools/builtins/__init__.py`、`app/tools/runtime.py` | 注册 `minecraft_world` 工具 |
+| `app/character/runtime.py` | `minecraft` 引用 + 工具上下文注入 `minecraft_world` |
+| `app/core/bot.py` | 构造时把 MinecraftService 交给角色运行时 |
+| `app/web/api/minecraft.py` | `GET /api/v1/minecraft/world`（World Debug，恒 200） |
+| `app/config/settings.py` | `MinecraftConfig` +6 个感知配置项 |
+| `config/config.example.yaml`、`config/config.yaml` | `minecraft:` 段补感知字段 |
+| `tests/test_minecraft_service.py` | FakeRuntime +snapshot 端点；感知集成测试 2 个 |
+| `tests/test_web_api_minecraft.py` | World Debug 端点测试 2 个 |
+| `tests/test_web_routes.py` | 路由快照 +1 条 |
+| `webui/src/types/minecraft.ts`、`api/minecraft.ts`、`pages/Minecraft.vue`、`pages/__tests__/minecraft.spec.ts`、`dist/*` | World Debug 区（环境/玩家/生物/POI/地形/JSON 折叠）+ 测试 + 重建 |
+| `docs/WEBUI_API_CONTRACT.md`、`WEBUI_V1_ROUTE_MATRIX.md`、`README.md` | 契约 §7.5 +world、路由矩阵 210 条、索引 |
+
 ## 1. Raw Snapshot schema（runtime → CatooBot）
 
 `GET /minecraft/world/snapshot?layers=near,local,extended`（layers 子集可选，默认全部；
@@ -115,13 +148,57 @@ E2E 用「从 rel+yaw 重算」做数学一致性断言（Test 6 的机器执行
 
 ## 7. 测试记录（2026-10-05）
 
+**单元测试**（`tests/test_minecraft_world.py`，10 个）：
+
+- 载荷解析：离线载荷/非 dict/坏结构分别得到正确结果或 ValueError；
+- terrain 类别映射（grass_block→grassland、oak_log/leaves→forest、water→water、功能方块不归地形）；
+- 语义聚合**可追溯、不发明**：terrain/POI 逐条来自 raw；entities 按类型计数 + 主方位 + 最近距离；
+- 缓存断开整体作废（`online=False`、raw=None、age=None）；
+- `service.receive_event(disconnected)` 令感知缓存立即失效（Test 10 的 Python 侧）；
+- 首帧只建基线不发事件；player.nearby 冷却期内不重复；world.changed 低于阈值不发、超阈值聚合成一条；离线 snapshot 作废缓存 + 下一拍退避（不空转）。
+
+**集成测试**（真实 HTTP，不走 mock）：
+
+- `test_start_runs_perception_and_world_view`：`service.start()` 拉起感知循环 → spawned 事件 → 真 HTTP 轮询 FakeRuntime 的 snapshot → `world_view()` 读出语义模型 + raw 原文 + 层龄；disconnected 后立即 `available=False`；
+- `test_perception_disabled_keeps_world_view_unavailable`：未开感知时如实报告原因；
+- `test_world_endpoint_reports_primed_semantic_model`：`GET /api/v1/minecraft/world` 返回语义模型/raw/层龄；未启用时恒 200 + `available:false`。
+
+**Node E2E**（flying-squid 真协议服务器 + 观察者玩家，3 轮循环中验证）：
+
+- snapshot `online=true`、self 的 dimension 与 `/minecraft/status` 一致、time_phase/weather 合法；
+- 观察者玩家出现在 `players` 且带 distance/bearing/relative_direction；
+- near 层 169 列全部非空气、relative_direction 取值合法；
+- **方向数学一致性**：从 `rel` 与 `self.yaw` 在测试侧独立重算 bearing/扇区，必须与 runtime 输出逐条一致（Test 6 的机器执行）；
+- 层大小有界（≤220 列）；各层字节数随每轮输出（见 §8）。
+
 | 门禁 | 结果 |
 |---|---|
-| `pytest tests`（全量） | 通过（含 `test_minecraft_world.py` 10 个新用例：解析/聚合/无发明/缓存失效/去抖/阈值） |
-| Node E2E（flying-squid + 观察者） | snapshot：online、self/env 有效、观察者被发现、169 柱非空气、**方向数学重算一致**、层大小有界 |
-| ruff / mypy / vitest / vue-tsc / playwright | 全绿 |
+| `pytest tests`（全量） | 通过（1816+，含上列新增） |
+| Node E2E | ALL CHECKS PASSED |
+| ruff / ruff format / mypy app / vue-tsc / vitest / playwright E2E | 全绿 |
 
-## 8. 已知限制
+## 8. 性能 / 上下文体积评估（实测）
+
+数据来自 E2E 的真实 snapshot（flying-squid + 观察者玩家，near=169 柱）：
+
+| 对象 | 实测 | 说明 |
+|---|---|---|
+| Raw Snapshot（全层 near+local+extended+interesting） | ≈ **45–51 KB** | 只走本机 HTTP 与 Python 内存，**永不进 LLM 上下文** |
+| Raw Snapshot（仅 near） | ≈ **29–33 KB** | 高频层；Local/Extended 按需（默认 4s / 20s） |
+| Semantic World Model | ≈ **1.1 KB**（JSON；紧凑 ≈1.0 KB） | raw→语义压缩比约 **44×** |
+| 工具 summary（LLM 真正看到的） | **249 B / 167 字** | 例：`罐头在 plains（overworld），坐标 (22.0, 60.0, 21.0)，day，附近玩家：Tester（back_left，5.7格），地形：grassland（south_east）、…` |
+
+**上下文预算结论**：即使把语义模型整个 JSON 注入，也只有约 1 KB（≈0.3–0.4k token）；
+工具默认只把 summary（≈0.1k token）给模型，结构化 data 留在工具结果里。
+无论感知频率多高，**进入上下文的体积与扫描半径无关**（半径只影响本机 CPU/内存），
+这是"空气不进协议 + 表层柱面 + 语义聚合"设计的直接收益。
+
+**CPU/网络开销**：Near 1s/次（≈29 KB 本机 HTTP）、Local 4s、Extended 20s；
+柱面扫描单次 169 列 ×（y 向上 8 + 向下 8）≈ 2.7k `blockAt` 查询，E2E 实测单次 snapshot
+（含全部三层）在毫秒级完成，对事件循环无感（感知跑在 CatooBot 的 asyncio 里，
+单次请求走本机回环，无阻塞调用）。
+
+## 9. 已知限制
 
 1. **Mod 服务器**：罐头是原版协议客户端，NeoForge/Forge 强制握手的服务器可能拒绝进入
    （Phase 1 已知限制的延续）；感知只对已进入的世界有效。
@@ -132,7 +209,7 @@ E2E 用「从 rel+yaw 重算」做数学一致性断言（Test 6 的机器执行
 4. Extended 只采样 16 个点：是「地形摘要」不是精确地图（任务书允许）。
 5. 实体发现依赖实体已在 bot 视距内注册；远处实体由 extended 之外的层不覆盖。
 
-## 9. Phase 3 建议
+## 10. Phase 3 建议
 
 1. **动作层**：runtime 增加 `move_to / dig / place / look / follow` 端点 + CatooBot
    侧确认门与额度控制（「手」）；工具从只读扩展为带风险分级的动作工具。

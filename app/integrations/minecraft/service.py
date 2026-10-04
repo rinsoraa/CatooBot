@@ -628,6 +628,10 @@ class MinecraftService:
             await asyncio.sleep(self.perception.next_due_in())
             if not self._started:
                 return
+            if self._mirror.get("status") != "ONLINE":
+                # 不在世界里：感知无事可做，拉长节拍待命（进世界后 ≤1s 内开扫）
+                self.perception.defer(1.0)
+                continue
             try:
                 due = self.perception.due_layers()
                 if not due:

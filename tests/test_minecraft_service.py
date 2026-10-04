@@ -50,6 +50,7 @@ class FakeRuntime:
         app.router.add_get("/minecraft/status", self._status)
         app.router.add_post("/minecraft/chat", self._chat)
         app.router.add_post("/minecraft/disconnect", self._disconnect)
+        app.router.add_get("/minecraft/world/snapshot", self._world_snapshot)
         self._runner = web.AppRunner(app, access_log=None)
         await self._runner.setup()
         site = web.TCPSite(self._runner, "127.0.0.1", self.port)
@@ -111,6 +112,13 @@ class FakeRuntime:
         self.disconnects += 1
         self.online = False
         return web.json_response({"ok": True, "status": "DISCONNECTED"})
+
+    async def _world_snapshot(self, request: web.Request) -> web.Response:
+        from tests.test_minecraft_world import raw_payload
+
+        if not self.online:
+            return web.json_response({"ok": True, "online": False, "fetched_at": 0.0})
+        return web.json_response(raw_payload())
 
 
 def make_config(fake: FakeRuntime | None, **overrides: object) -> MinecraftConfig:
@@ -294,3 +302,69 @@ def test_auth_configured_detects_local_auth_file(tmp_path):
         MinecraftConfig(enabled=True, runtime_dir=str(empty)),  # type: ignore[arg-type]
     )
     assert service2.auth_configured is False
+
+
+# ------------------------------------------------------- Phase 2 感知集成（真 HTTP）
+
+
+async def test_start_runs_perception_and_world_view(fake_runtime: FakeRuntime, make_service):
+    """集成：service.start() 拉起感知循环 → 进世界事件后 World View 可读语义模型。"""
+    fake_runtime.online = True
+    service = make_service(
+        make_config(
+            fake_runtime,
+            perception_enabled=True,
+            near_interval_seconds=0.3,
+            local_interval_seconds=1.0,
+            extended_interval_seconds=5.0,
+            external_callback_url="http://127.0.0.1:9/events",
+        )
+    )
+    await service.start()
+    try:
+        # 模拟进世界（状态镜像 ONLINE 是感知开扫的前置条件）
+        await service.receive_event(
+            {
+                "event": "minecraft.spawned",
+                "session_id": "s-int",
+                "timestamp": 1.0,
+                "username": "Catodayo",
+            }
+        )
+        deadline = asyncio.get_event_loop().time() + 6
+        view: dict = {}
+        while asyncio.get_event_loop().time() < deadline:
+            view = service.world_view()
+            if view.get("available"):
+                break
+            await asyncio.sleep(0.1)
+        assert view["available"] is True, f"感知未在期限内产出：{view}"
+        assert view["online"] is True
+        assert view["semantic"]["self"]["dimension"] == "overworld"
+        assert view["semantic"]["self"]["location"] == "plains"
+        # raw 原文必须保留（Semantic 不是唯一数据源）
+        assert view["raw"]["self"]["dimension"] == "overworld"
+        assert view["layers"]["near"]["age_seconds"] is not None
+
+        # 断开事件：World View 立即失效（Test 10）
+        await service.receive_event(
+            {"event": "minecraft.disconnected", "session_id": "s-int", "timestamp": 2.0}
+        )
+        assert service.world_view()["available"] is False
+    finally:
+        await service.stop()
+
+
+async def test_perception_disabled_keeps_world_view_unavailable(
+    fake_runtime: FakeRuntime, make_service
+):
+    service = make_service(
+        make_config(
+            fake_runtime,
+            perception_enabled=False,
+            external_callback_url="http://127.0.0.1:9/events",
+        )
+    )
+    view = service.world_view()
+    assert view["available"] is False
+    assert "perception disabled" in view["reason"]

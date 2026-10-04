@@ -165,3 +165,42 @@ async def test_events_webhook_without_login_and_wrong_token(tmp_path):
             assert status == 401
         finally:
             await service._cleanup()
+
+
+# ------------------------------------------------------- Phase 2：World Debug 端点
+
+
+async def test_world_endpoint_disabled_is_available_false(tmp_path):
+    async with api_server(tmp_path) as (client, bot, server):
+        await client.login()
+        status, payload = await client.get("/api/v1/minecraft/world")
+        assert status == 200  # 读端点恒 200（功能状态不是错误）
+        assert payload["data"]["available"] is False
+
+
+async def test_world_endpoint_reports_primed_semantic_model(tmp_path):
+    """集成：感知缓存就绪后，World Debug 端点返回语义模型 + raw 原文。"""
+    from tests.test_minecraft_world import make_clock, make_perception
+
+    async with api_server(tmp_path) as (client, bot, server):
+        await client.login()
+        clock, advance = make_clock()
+        perception, _fake_client, _events = make_perception(clock, advance)
+        await perception.poll({"near", "local"})
+        assert perception.cache.online is True
+
+        service = MinecraftService(bot, MinecraftConfig(enabled=True, auto_start_runtime=False))
+        service.perception = perception
+        bot.minecraft = service
+        try:
+            status, payload = await client.get("/api/v1/minecraft/world")
+            assert status == 200
+            data = payload["data"]
+            assert data["available"] is True
+            assert data["online"] is True
+            assert data["semantic"]["self"]["location"] == "plains"
+            assert data["semantic"]["points_of_interest"][0]["type"] == "crafting_table"
+            assert data["raw"]["self"]["dimension"] == "overworld"
+            assert data["age_seconds"] is not None
+        finally:
+            await service._cleanup()
