@@ -368,6 +368,16 @@ test('角色/世界/社交/记忆/能力/系统：逐页真实数据', async ({ 
   await expect(
     page.locator('[data-test="credential-row"]').filter({ hasText: 'CATOOBOT_ONEBOT_ACCESS_TOKEN' }),
   ).toBeVisible()
+
+  // Minecraft：连接层（Phase 1）。E2E 环境没有 Minecraft runtime，
+  // minecraft.enabled=false → 页面渲染引导卡而不是连接表单。
+  await expectPage(page, {
+    path: '/minecraft',
+    topbar: 'Minecraft',
+    h1: 'Minecraft',
+    marker: '[data-test="minecraft-disabled"]',
+  })
+  await expect(page.locator('[data-test="minecraft-disabled"]')).toContainText('连接层未启用')
 })
 
 test('设置热更新：修改 → 应用（toast+徽标）→ 改回', async ({ page }) => {

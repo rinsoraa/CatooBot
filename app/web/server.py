@@ -169,6 +169,15 @@ class WebServer(
         # to anonymous visitors.
         if path.startswith("/assets/") or path == "/favicon.ico":
             return await handler(request)
+        # Minecraft Bridge 回调（Phase 1）：来自本机 runtime 进程的服务间调用，
+        # 用共享密钥做 Bearer 认证而不是浏览器会话；token 由 WebUI 的
+        # /api/v1/minecraft/events 处理器做权威复检。会话豁免是方法+路径精确匹配。
+        if path == f"{API_PREFIX}/minecraft/events" and request.method == "POST":
+            minecraft = getattr(self._bot, "minecraft", None)
+            token = getattr(minecraft, "callback_token", None) if minecraft is not None else None
+            if token and request.headers.get("Authorization", "") == f"Bearer {token}":
+                return await handler(request)
+            return fail(unauthorized("Bridge 回调 token 无效"), request=request)
         # JSON login lives at the same path as the session bootstrap, so the
         # exemption is method-scoped; the SSR login keeps its two forms.
         if (

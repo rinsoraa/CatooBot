@@ -12,14 +12,17 @@ script's own location — no machine-specific path is hard-coded here) is a git
 repo pointing at the private GitHub project. It never receives secrets or
 runtime data:
 
-    synced:     app/  plugins/  tests/  docs/  .github/  pyproject.toml  run.py
-                README.md  .env.example  .gitignore  .gitattributes
-                .dockerignore  Dockerfile  docker-compose.yml  uv.lock
-                sync_github.py  config/config.example.yaml
+    synced:     app/  plugins/  tests/  docs/  .github/  webui/  minecraft_runtime/
+                pyproject.toml  run.py  README.md  .env.example  .gitignore
+                .gitattributes  .dockerignore  Dockerfile  docker-compose.yml
+                uv.lock  sync_github.py  config/config.example.yaml
                 config/character_bible.example.md
     never:      .env  config/config.yaml  config/overrides.yaml
                 config/character_bible.md (private character data)
                 data/  logs/  .venv/  caches  *.egg-info
+                minecraft_runtime/auth.json (Minecraft account secrets)
+                minecraft_runtime/auth_cache/ (Microsoft token cache)
+                minecraft_runtime/node_modules/
 """
 
 from __future__ import annotations
@@ -34,7 +37,7 @@ from pathlib import Path
 SOURCE = Path(__file__).resolve().parent
 TARGET = SOURCE.parent / "CatooBot_github"
 
-MIRRORED_DIRS = ("app", "plugins", "tests", "docs", ".github", "webui")
+MIRRORED_DIRS = ("app", "plugins", "tests", "docs", ".github", "webui", "minecraft_runtime")
 ROOT_FILES = (
     "pyproject.toml",
     "uv.lock",
@@ -62,6 +65,10 @@ EXCLUDED_DIR_PATTERNS = (
     ".ruff_cache",
     "node_modules",
     ".vite",
+    # Minecraft Bridge runtime 的本地认证数据（Phase 1）：账号凭据与 token 缓存
+    # 只留在操作者机器上，绝不进镜像/仓库。
+    "auth.json",
+    "auth_cache",
 )
 
 

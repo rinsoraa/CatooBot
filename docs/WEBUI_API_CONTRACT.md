@@ -48,6 +48,7 @@
 | `ai.*` | Provider/模型（`ai.provider_unknown`、`ai.model_unknown`、`ai.test_failed`、`ai.no_key`） |
 | `world.*` | 沙盒/角色（`world.not_running`、`world.confirm_required`、`world.busy`） |
 | `memory.*` / `social.*` / `media.*` / `tools.*` / `agent.*` | 各领域动作冲突/不存在 |
+| `minecraft.*` | Minecraft 连接层（`minecraft.disabled`、`minecraft.runtime_down`、`minecraft.invalid_target`、`minecraft.session_active`、`minecraft.not_connected`、`minecraft.bad_event`、`minecraft.chat_empty`） |
 | `internal.*` | 兜底 |
 
 ### 1.3 关键设计决策（与今日现状的差异，必须实现）
@@ -307,6 +308,25 @@ W2 需在 `AdminService` 增只读方法；`runtime/tick` 复用 `RuntimeSchedul
   `[channel] ` 前缀（`_PlainFilter` 注入）解析成显式 `channel` 字段并从消息中移除；`channel` 过滤在服务端
   完成（多取行再筛）。响应保持 `{items, file, truncated, parsed, total}`，`items[]` 每项含
   `{ts, level, logger, channel, message}`（非叙述行 `channel=null`）。
+
+### 7.5 Minecraft 连接（Phase 1，`app/web/api/minecraft.py`）
+
+Minecraft 连接层（Bridge runtime 为独立 Node.js 进程，见 `docs/MINECRAFT_PHASE1.md`）。
+本节端点只调用 `MinecraftService`，不复制状态机逻辑。`minecraft.enabled=false`（或 `bot.minecraft` 缺失）时：
+`GET /minecraft` 恒为 200（返回下方投影、`enabled: false`——「未启用」是功能状态不是错误）；
+`POST /join`、`POST /leave` 返回 503 `minecraft.disabled`。
+
+| 方法与路径 | 说明 | 请求 / 查询 | 响应 `data` |
+|---|---|---|---|
+| `GET /api/v1/minecraft` | 连接层一屏投影 | — | `{enabled, auth_configured, runtime: {running, pid, managed, restarts, down, log_tail: []}, connection: {status, session_id, host, port, username, auth_mode, dimension, position: {x,y,z}, health, last_error, kicked_reason, connected_at}, last_event}`；runtime 不可达时以本地镜像降级呈现 |
+| `POST /api/v1/minecraft/join` | 加入服务器（进世界由事件异步确认） | `{"host": "...", "port": 25565}`（port 省略=25565） | `{"session_id", "status"}`（`CONNECTING`/`AUTHENTICATING`）；校验失败 422 `minecraft.invalid_target`，已有会话 409 `minecraft.session_active`，runtime 不可用 503 `minecraft.runtime_down` |
+| `POST /api/v1/minecraft/leave` | 主动离开（幂等：不在任何服务器也成功） | — | `{"ok", "status"}`；状态最终由事件流确认 |
+| `POST /api/v1/minecraft/events` | **Bridge runtime 事件回调**（服务间通道，不是给浏览器的） | 事件载荷（`minecraft.connecting|connected|spawned|chat|player_joined|player_left|kicked|disconnected|error` + `session_id` + `timestamp` + 上下文） | `{"accepted": true}` |
+
+`/minecraft/events` 安全模型：**免会话 Cookie、免 CSRF**（本机 runtime 进程没有浏览器会话），
+改用启动时生成的共享密钥做 Bearer 认证（`Authorization: Bearer <token>`；豁免与校验点在
+`WebServer._auth_middleware` + 处理器权威复检）。token 只存在于 CatooBot 进程内存与
+runtime 子进程环境变量中，永不落盘、永不下发浏览器。未知事件名/坏载荷 → 400 `minecraft.bad_event`。
 
 ---
 

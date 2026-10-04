@@ -97,6 +97,12 @@ const router = createRouter({
       ],
     },
     {
+      path: '/minecraft',
+      name: 'minecraft',
+      component: () => import('@/pages/Minecraft.vue'),
+      meta: { requiresAuth: true, title: 'Minecraft' },
+    },
+    {
       path: '/:pathMatch(.*)*',
       name: 'not-found',
       component: () => import('@/pages/NotFound.vue'),

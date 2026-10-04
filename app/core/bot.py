@@ -299,6 +299,18 @@ class Bot:
                 self.log.exception("Runtime scheduler initialization failed")
                 self.runtime_scheduler = None
 
+        # Minecraft 连接层（Phase 1）：Bridge runtime 托管 + 事件通道，opt-in。
+        # 失败只降级（QQ/WebUI 照常），绝不影响聊天主链路。
+        self.minecraft: Any = None
+        if config.minecraft.enabled:
+            try:
+                from app.integrations.minecraft.service import MinecraftService
+
+                self.minecraft = MinecraftService(self, config.minecraft, clock=self._clock)
+            except Exception:  # noqa: BLE001 - minecraft trouble must not stop startup
+                self.log.exception("Minecraft bridge initialization failed; continuing without it")
+                self.minecraft = None
+
         self.lifecycle = Lifecycle(self)
         self.router = CommandRouter(self, self.commands, prefix=config.bot.command_prefix)
         self.core_router = CoreRouter(self)
@@ -709,6 +721,14 @@ class Bot:
             # registers the gateway as the message handler; the bot still owns
             # the socket below (server mode)
             await self.onebot_gateway.start()
+        if self.minecraft is not None:
+            try:
+                await self.minecraft.start()
+                story.boot_step("Minecraft 桥已启动", detail="连接层就绪（Phase 1）")
+            except Exception:  # noqa: BLE001 - minecraft trouble must not stop startup
+                self.log.exception("Minecraft bridge failed to start; continuing without it")
+                self.minecraft = None
+                story.boot_step("Minecraft 桥启动失败（QQ 聊天不受影响）", ok=False)
         await self.adapter.start()
         story.boot_step("OneBot 适配器已监听", detail=self.config.onebot.url)
         if self.watchdog is not None:
@@ -848,6 +868,8 @@ class Bot:
         try:
             if self.onebot_gateway is not None:
                 await self.onebot_gateway.stop()
+            if self.minecraft is not None:
+                await self.minecraft.stop()
             if self.runtime_scheduler is not None:
                 await self.runtime_scheduler.stop(
                     timeout=float(getattr(self.config.runtime, "shutdown_timeout_seconds", 5.0))

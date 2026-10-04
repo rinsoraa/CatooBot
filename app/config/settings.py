@@ -785,6 +785,36 @@ class RuntimeConfig(BaseModel):
     shutdown_timeout_seconds: float = Field(default=5.0, gt=0)
 
 
+class MinecraftConfig(BaseModel):
+    """Minecraft 连接层（Phase 1）：Bridge runtime（mineflayer 子进程）的托管参数。
+
+    账号认证信息不在这里——它们只存在于 ``<runtime_dir>/auth.json``
+    （本地安全目录，已 gitignore），绝不经过 Bridge API / 配置 / Git 传输。
+    """
+
+    enabled: bool = False
+    #: Minecraft Runtime（Node.js）所在目录，含 runtime.js 与 auth.json
+    runtime_dir: str = "minecraft_runtime"
+    node_executable: str = "node"
+    #: Bridge runtime 的本地 HTTP 端口（只绑定 127.0.0.1）
+    runtime_port: int = Field(default=25580, ge=1024, le=65535)
+    #: 由 CatooBot 启动/重启/回收 runtime 进程；关闭 = 外部自管（进阶用法）
+    auto_start_runtime: bool = True
+    #: 等待 runtime 进程健康检查通过的最长时间
+    startup_timeout_seconds: float = Field(default=30.0, gt=0)
+    #: 单次 Bridge HTTP 请求超时
+    request_timeout_seconds: float = Field(default=15.0, gt=0)
+    #: 状态对账轮询间隔（事件以回调推送为主，轮询只兜底对账）
+    poll_interval_seconds: float = Field(default=5.0, ge=1.0)
+    #: 传给 runtime 的连接看门狗：多久没进世界算失败
+    connect_timeout_seconds: float = Field(default=75.0, gt=0)
+    #: runtime 进程意外退出后的自动重启预算（防崩溃循环）
+    max_runtime_restarts: int = Field(default=3, ge=0)
+    #: 外部自管 runtime 时的回调地址与共享密钥（auto_start=true 时自动生成，留空）
+    external_callback_url: str = ""
+    external_callback_token: str = ""
+
+
 class AppConfig(BaseModel):
     bot: BotConfig = Field(default_factory=BotConfig)
     onebot: OneBotConfig = Field(default_factory=OneBotConfig)
@@ -801,6 +831,7 @@ class AppConfig(BaseModel):
     conversation: ConversationConfig = Field(default_factory=ConversationConfig)
     continuity: ContinuityConfig = Field(default_factory=ContinuityConfig)
     runtime: RuntimeConfig = Field(default_factory=RuntimeConfig)
+    minecraft: MinecraftConfig = Field(default_factory=MinecraftConfig)
     sandbox: SandboxConfig = Field(default_factory=SandboxConfig)
     tools: ToolsConfig = Field(default_factory=ToolsConfig)
     agent: AgentConfig = Field(default_factory=AgentConfig)

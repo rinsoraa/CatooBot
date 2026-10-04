@@ -18,6 +18,7 @@ from app.web.api.config_api import ConfigApiRoutes
 from app.web.api.credentials import CredentialApiRoutes
 from app.web.api.domain import DomainApiRoutes
 from app.web.api.media_api import MediaApiRoutes
+from app.web.api.minecraft import MinecraftApiRoutes
 from app.web.api.runtime import RuntimeApiRoutes
 from app.web.api.session import SessionRoutes
 from app.web.api.tools_api import ToolsApiRoutes
@@ -34,6 +35,7 @@ class ApiRoutes(
     ToolsApiRoutes,
     MediaApiRoutes,
     AgentApiRoutes,
+    MinecraftApiRoutes,
     WebContext,
 ):
     """Composes every `/api/v1` domain module (W2)."""
@@ -70,6 +72,7 @@ class ApiRoutes(
             "_register_v1_tools",
             "_register_v1_media",
             "_register_v1_agent",
+            "_register_v1_minecraft",
         ):
             register = getattr(self, name, None)
             if register is not None:

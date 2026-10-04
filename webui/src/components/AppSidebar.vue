@@ -12,6 +12,7 @@ import IconCharacter from '@/components/icons/IconCharacter.vue'
 import IconHome from '@/components/icons/IconHome.vue'
 import IconMedia from '@/components/icons/IconMedia.vue'
 import IconMemory from '@/components/icons/IconMemory.vue'
+import IconMinecraft from '@/components/icons/IconMinecraft.vue'
 import IconSocial from '@/components/icons/IconSocial.vue'
 import IconSystem from '@/components/icons/IconSystem.vue'
 
@@ -32,6 +33,7 @@ const entries: NavEntry[] = [
   { key: 'social', label: '社交', icon: IconSocial, to: '/social', enabled: true },
   { key: 'memory', label: '记忆', icon: IconMemory, to: '/memory', enabled: true },
   { key: 'media', label: '媒体与能力', icon: IconMedia, to: '/abilities/tools', enabled: true },
+  { key: 'minecraft', label: 'Minecraft', icon: IconMinecraft, to: '/minecraft', enabled: true },
   { key: 'system', label: '系统', icon: IconSystem, to: '/system/settings', enabled: true },
 ]
 

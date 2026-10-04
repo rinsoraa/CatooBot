@@ -84,6 +84,15 @@ jobs:
           CATOOBOT_E2E_PASSWORD: e2e-test-password
         run: npm run test:e2e
 
+      # Minecraft 连接层（Phase 1）：Bridge runtime 的真实协议 E2E
+      # （flying-squid 本地服务器 × mineflayer bot × runtime HTTP API）。
+      # Node 已在上面装好；依赖用独立 lockfile（minecraft_runtime/package-lock.json）。
+      - name: Minecraft runtime E2E
+        working-directory: minecraft_runtime
+        run: |
+          npm ci --no-audit --no-fund
+          node test/e2e.js
+
   webui:
     name: webui · typecheck · tests · build
     runs-on: ubuntu-latest

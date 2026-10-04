@@ -542,3 +542,23 @@ expression:
   inject_max_items: 3         # 每次回复最多注入 K 条
   inject_max_chars: 24        # 注入总长度上限
   groups: []                  # 白名单（空 = 所有群）
+
+# ============================================================
+# Minecraft 连接层（Phase 1）
+# 让罐头以配置好的账号加入 Minecraft Java 服务器，并把连接状态、
+# 进世界、聊天、被踢、断开等事件反馈给 CatooBot。只有连接与聊天；
+# 感知/寻路/Agent 属于 Phase 2+，这里一律不做。
+# 账号认证信息不写在这里：编辑 minecraft_runtime/auth.json
+# （参考 auth.example.json；该文件已 gitignore，绝不进 Git、不经 QQ/WebUI 收取）。
+# ============================================================
+minecraft:
+  enabled: false               # 总开关（WebUI /minecraft 页与 QQ 指令都依赖它）
+  runtime_dir: minecraft_runtime
+  node_executable: node        # Node.js ≥ 20
+  runtime_port: 25580          # Bridge runtime 本地 HTTP 端口（只绑定 127.0.0.1）
+  auto_start_runtime: true     # 由 CatooBot 托管 runtime 进程（启动/崩溃重启/回收）
+  startup_timeout_seconds: 30
+  request_timeout_seconds: 15
+  poll_interval_seconds: 5     # 状态对账轮询（事件以回调推送为主）
+  connect_timeout_seconds: 75  # 多久没进世界算连接失败
+  max_runtime_restarts: 3      # runtime 进程意外退出的自动重启预算

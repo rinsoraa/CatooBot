@@ -1,0 +1,9 @@
+{
+  "id": "bot.catoo.minecraft",
+  "name": "minecraft",
+  "version": "1.0.0",
+  "api_version": "1.0",
+  "capabilities": ["message.read", "send.private", "send.group", "services"],
+  "author": "Rinsora",
+  "description": "Minecraft 连接层（Phase 1）：QQ 触发加入/离开服务器，并把 Minecraft 聊天送进沙盒外部事件链"
+}

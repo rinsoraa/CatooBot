@@ -67,8 +67,14 @@ def concretize(path: str) -> str:
     return path
 
 
+#: 服务间 Bearer 通道（Minecraft Bridge 回调，契约 §7.5）：不走会话 Cookie，
+#: 也就不适用浏览器的 CSRF 模型——它由 Authorization: Bearer 共享密钥把守，
+#: 且在会话/CSRF 检查之前短路（app/web/server.py 的 _auth_middleware）。
+BEARER_CHANNEL_PATHS = frozenset({f"{API_PREFIX}/minecraft/events"})
+
+
 def v1_routes(server: WebServer) -> list[tuple[str, str]]:
-    """(method, canonical_path) —— 真实路由表，排除登录豁免路径。"""
+    """(method, canonical_path) —— 真实路由表，排除登录与 Bearer 豁免路径。"""
     assert server._runner is not None
     rows = {
         (route.method, route.resource.canonical)
@@ -77,6 +83,7 @@ def v1_routes(server: WebServer) -> list[tuple[str, str]]:
         and route.resource.canonical.startswith(API_PREFIX)
     }
     rows.discard((LOGIN_METHOD, LOGIN_PATH))
+    rows.discard(("POST", f"{API_PREFIX}/minecraft/events"))
     return sorted(rows, key=lambda item: (item[1], item[0]))
 
 
@@ -205,3 +212,51 @@ class TestCsrfMatrix:
                 f"{API_PREFIX}/config", body={"values": {"ai.enabled": False}}
             )
             assert status == 200 and payload["ok"] is True
+
+
+class TestBearerServiceChannel:
+    """Minecraft Bridge 回调（Bearer 通道，Phase 1）：token 门独立于会话/CSRF。
+
+    从 CSRF 矩阵排除（v1_routes 里的 discard）不等于没人管：这里证明
+    通道被 Bearer 共享密钥把守，且错误/缺失 token 一律 401，不受登录态影响。
+    """
+
+    async def test_bearer_gate_is_independent_of_session_and_csrf(self, tmp_path: Path) -> None:
+        from app.config.settings import MinecraftConfig
+        from app.integrations.minecraft.service import MinecraftService
+
+        async with api_server(tmp_path) as (client, bot, _server):
+            service = MinecraftService(
+                bot,
+                MinecraftConfig(
+                    enabled=True,
+                    auto_start_runtime=False,
+                    external_callback_token="matrix-token",
+                ),
+            )
+            bot.minecraft = service
+            try:
+                path = next(iter(BEARER_CHANNEL_PATHS))
+                # 未登录 + 无 token / 错 token → 401（不是 302/403/5xx）
+                status, payload = await client.post(path, body={}, csrf=False)
+                assert status == 401 and error_code(payload) == "auth.unauthorized"
+                status, payload = await client.post(
+                    path, body={}, headers={"Authorization": "Bearer wrong"}, csrf=False
+                )
+                assert status == 401 and error_code(payload) == "auth.unauthorized"
+                # 已登录但错 token：仍是 401 —— Bearer 门优先于浏览器的 CSRF 模型
+                await _login_ok(client)
+                status, payload = await client.post(
+                    path, body={}, headers={"Authorization": "Bearer wrong"}
+                )
+                assert status == 401 and error_code(payload) == "auth.unauthorized"
+                # 对照组：正确 token 免会话/免 CSRF 直达 handler（载荷合法 → 200）
+                status, payload = await client.post(
+                    path,
+                    body={"event": "minecraft.disconnected", "session_id": None, "timestamp": 1.0},
+                    headers={"Authorization": "Bearer matrix-token"},
+                    csrf=False,
+                )
+                assert status == 200 and payload["data"]["accepted"] is True
+            finally:
+                await service._cleanup()

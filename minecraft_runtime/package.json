@@ -1,0 +1,20 @@
+{
+  "name": "catoobot-minecraft-runtime",
+  "version": "1.0.0",
+  "private": true,
+  "description": "CatooBot Minecraft Bridge runtime (Phase 1): one mineflayer bot behind a local HTTP API",
+  "main": "runtime.js",
+  "scripts": {
+    "start": "node runtime.js",
+    "test": "node test/e2e.js"
+  },
+  "dependencies": {
+    "mineflayer": "^4.20.1"
+  },
+  "devDependencies": {
+    "flying-squid": "^1.12.0"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
