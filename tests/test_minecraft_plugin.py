@@ -167,6 +167,42 @@ def test_parse_server_address_variants():
     assert parse_server_address("加入我的世界") is None
 
 
+async def test_join_trigger_casual_phrasing(service_and_bot):
+    """真实用例：『来玩minecraft，地址是127.0.0.1:25565』必须触发 join。"""
+    bot, service, calls = service_and_bot
+    plugin = await make_plugin(bot, service)
+    await plugin._on_private(private_event("来玩minecraft，地址是127.0.0.1:25565"))
+    assert ("join", "127.0.0.1", 25565) in calls
+
+
+async def test_failed_join_reports_reason_then_stays_quiet(service_and_bot):
+    """挂着等待请求却被踢/断开：把原因回给请求者，且只报一次。"""
+    bot, service, calls = service_and_bot
+    plugin = await make_plugin(bot, service)
+    await plugin._on_private(private_event("来玩minecraft 127.0.0.1:25565"))
+    assert ("join", "127.0.0.1", 25565) in calls
+    assert bot.adapter.sent_texts() == []  # 还没进世界，不播报
+
+    await plugin._on_minecraft_event(
+        event_of(service, "minecraft.disconnected", reason="服务器装了 NeoForge")
+    )
+    texts = bot.adapter.sent_texts()
+    assert any("我进不去这个服务器" in t for t in texts)
+    assert any("服务器装了 NeoForge" in t for t in texts)
+
+    # 已清空等待名单：后续断开不再骚扰
+    await plugin._on_minecraft_event(event_of(service, "minecraft.disconnected", reason="again"))
+    assert bot.adapter.sent_texts() == texts
+
+
+async def test_leave_without_pending_does_not_spam(service_and_bot):
+    """正常玩完离开（无等待请求）不触发失败播报。"""
+    bot, service, _ = service_and_bot
+    plugin = await make_plugin(bot, service)
+    await plugin._on_minecraft_event(event_of(service, "minecraft.disconnected"))
+    assert bot.adapter.sent_texts() == []
+
+
 async def test_loader_discovers_and_loads_minecraft_plugin(tmp_path):
     """防回归：插件目录必须有 __init__.py（pkgutil 不枚举 namespace 包），
     否则 loader 静默扫不到——线上曾因此插件从未加载且无任何报错。"""

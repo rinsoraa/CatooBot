@@ -32,8 +32,8 @@ if TYPE_CHECKING:
 _MC_WORD = r"(?:minecraft|我的世界|mc)"
 
 _JOIN_RE = re.compile(
-    rf"加入\s*{_MC_WORD}|{_MC_WORD}\s*加入|进一下?\s*{_MC_WORD}|进服|连接\s*{_MC_WORD}"
-    rf"|登入\s*{_MC_WORD}|上线\s*{_MC_WORD}",
+    rf"(?:加入|进一下?|进服|连接|联机|来玩|一起玩|去玩|玩|开黑|组队|登入|登录|上线)\s*{_MC_WORD}"
+    rf"|{_MC_WORD}\s*(?:加入|联机|开黑)",
     re.IGNORECASE,
 )
 _LEAVE_RE = re.compile(
@@ -163,19 +163,38 @@ class MinecraftPlugin(Plugin):
             await self._announce_join()
         elif event.type_name == "minecraft.chat":
             await self._forward_chat(event)
+        elif event.type_name == "minecraft.disconnected":
+            await self._report_failed_join(event)
 
     async def _announce_join(self) -> None:
         """谁在 QQ 里喊了「加入」，就回给谁：成功进世界才算数。"""
         for target in list(self._pending_join):
             self._pending_join.pop(target, None)
-            kind, _, key = target.partition(":")
-            try:
-                if kind == "group":
-                    await self.bot.api.send_group_msg(int(key), "我进来啦！")
-                else:
-                    await self.bot.api.send_private_msg(int(key), "我进来啦！")
-            except Exception:  # noqa: BLE001 - 播报失败不影响连接
-                self.bot.log.exception("[Minecraft] 无法播报加入成功")
+            await self._send_to_target(target, "我进来啦！")
+
+    async def _report_failed_join(self, event: MinecraftBridgeEvent) -> None:
+        """挂着等待名单却没进世界就断开（被踢/连不上）：把原因回给请求者。
+
+        没有等待名单的断开（玩完离开、WebUI 操作）不播报——不主动骚扰。
+        """
+        if not self._pending_join:
+            return
+        reason = str(event.data.get("reason") or "连接失败")
+        if len(reason) > 120:
+            reason = reason[:120] + "……"
+        for target in list(self._pending_join):
+            self._pending_join.pop(target, None)
+            await self._send_to_target(target, f"我进不去这个服务器……原因是 {reason}")
+
+    async def _send_to_target(self, target: str, text: str) -> None:
+        kind, _, key = target.partition(":")
+        try:
+            if kind == "group":
+                await self.bot.api.send_group_msg(int(key), text)
+            else:
+                await self.bot.api.send_private_msg(int(key), text)
+        except Exception:  # noqa: BLE001 - 播报失败不影响连接
+            self.bot.log.exception("[Minecraft] 无法发送 QQ 播报")
 
     async def _forward_chat(self, event: MinecraftBridgeEvent) -> None:
         """Minecraft 聊天 → 沙盒外部事件链（Phase 1 的唯一「处理」）。"""
