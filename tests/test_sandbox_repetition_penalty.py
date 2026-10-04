@@ -73,22 +73,26 @@ class TestPenalty:
             await db.close()
 
     async def test_a_critical_need_shrinks_the_penalty(self, tmp_path) -> None:  # type: ignore[no-untyped-def]
-        """Case B：critical 需求覆盖普通惩罚（紧急时允许重复）。"""
+        """Case B：critical 需求覆盖普通惩罚（紧急时允许重复）。
+
+        Phase B：buy_sweets 已变成纯采购（不再缓解 hunger），这里改用一个
+        真正消费食物的动作来验证同一条契约。
+        """
         db = await make_db(tmp_path)
         clock = Clock()
         runtime = await make_sandbox(db=db, clock=clock)
         try:
-            buy = definition(runtime, "buy_sweets")
+            eat = definition(runtime, "eat_pudding")
             runtime._note_action_finished(  # noqa: SLF001
-                SimpleNamespace(definition_id="buy_sweets", space_id="dessert_shop")
+                SimpleNamespace(definition_id="eat_pudding", space_id="kitchen")
             )
-            normal = runtime._recency_penalty(buy)  # noqa: SLF001
+            normal = runtime._recency_penalty(eat)  # noqa: SLF001
 
             hunger = runtime.needs.get("hunger")
             assert hunger is not None
             hunger.level = 0.99
             assert "hunger" in {need.key for need in runtime.needs.critical()}
-            critical = runtime._recency_penalty(buy)  # noqa: SLF001
+            critical = runtime._recency_penalty(eat)  # noqa: SLF001
             assert critical < normal
             assert abs(critical - normal * RECENCY_CRITICAL_FACTOR) < 1e-6
         finally:

@@ -121,13 +121,58 @@ class SandboxDecisionEngine:
         return out
 
     def _requirements_met(self, definition: ActionDefinition) -> bool:
-        """requires_absent: only sensible while the listed items are empty."""
+        """Hard state requirements: requires_absent + the restock threshold floor.
+
+        A ``restock`` action is only sensible while its slot is at or below
+        ``min`` — a stocked fridge must never produce another purchase.
+        """
         for key, items in definition.requires_absent.items():
             inventory = self.inventories.all().get(key)
             for item in items:
                 if inventory is not None and inventory.count(item) > 0:
                     return False
-        return True
+        allowed, _reason = self.restock_gate(definition)
+        return allowed
+
+    def restock_gate(self, definition: ActionDefinition) -> tuple[bool, str]:
+        """Availability policy for procurement actions (Phase B).
+
+        Returns ``(False, "restock_not_needed")`` when the world already holds
+        more than ``restock.min`` of the slot — the decision validator uses
+        this exact reason so a stale proposal is refused explicitly.
+        """
+        policy = definition.restock
+        if not policy:
+            return True, ""
+        inventory_key = str(policy.get("inventory", "") or "")
+        slot = str(policy.get("slot", "") or "")
+        if not inventory_key or not slot:
+            return True, ""
+        inventory = self.inventories.all().get(inventory_key)
+        stock = inventory.count(slot) if inventory is not None else 0
+        if stock > int(policy.get("min", 0) or 0):
+            return False, "restock_not_needed"
+        return True, ""
+
+    def _restock_bonus(self, definition: ActionDefinition) -> float:
+        """Deterministic pull toward replenishment, proportional to shortfall.
+
+        ``0.2 + 0.4 * (target - stock) / target`` (max 0.6 on an empty slot) —
+        large enough to beat the legacy "buy-and-nibble" pull, small enough
+        that critical needs still dominate. 0.0 for non-restock actions.
+        """
+        policy = definition.restock
+        if not policy:
+            return 0.0
+        inventory_key = str(policy.get("inventory", "") or "")
+        slot = str(policy.get("slot", "") or "")
+        target = int(policy.get("target", 0) or 0)
+        if not inventory_key or not slot or target <= 0:
+            return 0.0
+        inventory = self.inventories.all().get(inventory_key)
+        stock = inventory.count(slot) if inventory is not None else 0
+        shortfall = (target - stock) / target
+        return max(0.0, 0.2 + 0.4 * shortfall)
 
     def _objects_available(self, definition: ActionDefinition) -> bool:
         for object_id in definition.required_objects:
@@ -159,6 +204,9 @@ class SandboxDecisionEngine:
             # It only appears when something she relies on ran out (§33/§175):
             # a real, deferrable pull — not a forced action.
             score += 0.5
+        # Phase B: a procurement action is pulled by how far below its shelf
+        # target the slot sits (the gate already limited it to stock ≤ min).
+        score += self._restock_bonus(definition)
         deep_start, deep_end = DEEP_NIGHT_HOURS
         if deep_start <= hour < deep_end:
             # quiet/reflective actions fit the deep-night window
@@ -182,6 +230,8 @@ class SandboxDecisionEngine:
                 reasons.append(f"need:{key}")
         if definition.id in self._preference_bonus:
             reasons.append("preference")
+        if definition.restock and self.restock_gate(definition)[0]:
+            reasons.append("restock")
         if self._penalty(definition) > 0.0:
             reasons.append("recent")
         if deep_start <= hour < deep_end and "idle" in definition.tags:

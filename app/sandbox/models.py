@@ -195,6 +195,15 @@ class ActionDefinition(BaseModel):
     need_cost: dict[str, float] = Field(default_factory=dict)
     # item consumption: inventory key -> {item: count}
     consumes: dict[str, dict[str, int]] = Field(default_factory=dict)
+    #: items *bought* on completion (the counterpart of ``consumes``):
+    #: inventory key -> {item: count}, applied via ``acquire_item`` (Phase B).
+    #: A purchase never carries ``need_relief`` — buying food is not eating it.
+    purchase: dict[str, dict[str, int]] = Field(default_factory=dict)
+    #: restock policy for a procurement action: {"inventory": key,
+    #: "slot": item, "min": int, "target": int}. The action is a candidate
+    #: only while ``stock(slot) <= min`` and is pulled by the shortfall below
+    #: ``target``. ``None`` = not a restock action (today's behavior).
+    restock: dict[str, Any] | None = None
     # effects applied on completion: e.g. {"project:mc_city": 0.02}
     effects: dict[str, float] = Field(default_factory=dict)
     modes: list[str] = Field(default_factory=list)  # implied mode ids

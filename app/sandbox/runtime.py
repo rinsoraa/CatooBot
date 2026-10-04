@@ -1451,6 +1451,7 @@ class SandboxRuntime:
                     "need_relief": definition.need_relief,
                     "need_cost": definition.need_cost,
                     "consumes": definition.consumes,
+                    "purchase": definition.purchase,
                 },
                 correlation_id=correlation,
             )
@@ -1474,6 +1475,20 @@ class SandboxRuntime:
                     elif count < 0:
                         # negative = "must exist, not consumed" (e.g. pet food)
                         pass
+            # purchases are the counterpart: items enter the world through the
+            # canonical acquisition path (ITEM_ACQUIRED + StateMutation). A
+            # purchase never relieves a need — only eating/drinking does.
+            for inv_key, items in definition.purchase.items():
+                for item, count in items.items():
+                    if count > 0:
+                        self.acquire_item(
+                            inv_key,
+                            item,
+                            quantity=count,
+                            source="character_action",
+                            reason=definition.id,
+                            **effect_context(),
+                        )
             # needs: relief and cost both go through adjust_need (§3.5)
             for key, amount in definition.need_relief.items():
                 self.adjust_need(
@@ -1917,17 +1932,24 @@ class SandboxRuntime:
             )
 
     def restock_actions(self, inventory_key: str, item: str) -> list[Any]:
-        """Owned actions whose effects replenish (key, item) — seed-derived.
+        """Owned actions that replenish (key, item) — seed-derived.
 
         This is the whole definition of "restockable" (§10): if no action in
-        this world adds the item back, it simply is not a goal.
+        this world adds the item back, it simply is not a goal. Two canonical
+        sources count — an explicit ``purchase`` (Phase B: shopping buys stock)
+        and a legacy positive ``effects`` gain; the reported quantity is the
+        purchase count / effect gain.
         """
-        needle = f"inventory:{inventory_key}:{item}"
         result = []
         for action_id, definition in self.actions.definitions.items():
-            gain = float(definition.effects.get(needle, 0.0) or 0.0)
-            if gain > 0:
-                result.append((action_id, definition, int(gain)))
+            quantity = int(definition.purchase.get(inventory_key, {}).get(item, 0) or 0)
+            if quantity <= 0:
+                gain = float(
+                    definition.effects.get(f"inventory:{inventory_key}:{item}", 0.0) or 0.0
+                )
+                quantity = int(gain)
+            if quantity > 0:
+                result.append((action_id, definition, quantity))
         return result
 
     def pet_care_actions(self) -> list[Any]:

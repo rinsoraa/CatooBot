@@ -180,6 +180,11 @@ class DecisionValidator:
                 return False, "objects_unavailable"
             if not rt.inventories.can_consume(definition.consumes):
                 return False, "requirements_unmet"
+            # Phase B: the same restock floor the candidate gate applied — a
+            # proposal whose procurement premise went stale is refused by name
+            restock_ok, restock_reason = rt.engine.restock_gate(definition)
+            if not restock_ok:
+                return False, restock_reason
             if not rt.engine._requirements_met(definition):  # noqa: SLF001
                 return False, "requirements_unmet"
         return True, ""

@@ -49,6 +49,8 @@ class GoalStatus(str, Enum):  # noqa: UP042
 class GoalSource(str, Enum):  # noqa: UP042 - §7
     need_critical = "need_critical"
     inventory_depleted = "inventory_depleted"
+    #: stock fell to/under the slot's restock floor (Phase B; not yet zero)
+    inventory_low = "inventory_low"
     project_milestone = "project_milestone"
     pet_need = "pet_need"
     external_event = "external_event"
@@ -154,6 +156,8 @@ class GoalDetector:
         payload = event.payload
         if event.event_type is ET.INVENTORY_DEPLETED:
             self._on_depleted(event, payload)
+        elif event.event_type in (ET.ITEM_CONSUMED, ET.ITEM_ACQUIRED):
+            self._on_inventory_changed(event, payload)
         elif event.event_type is ET.PET_HUNGRY:
             self._on_pet_hungry(event, payload)
         elif event.event_type is ET.PROJECT_PROGRESS_CHANGED:
@@ -164,9 +168,10 @@ class GoalDetector:
     def _restockable_targets(self) -> list[tuple[str, str]]:
         """(inventory_key, item) pairs some owned action can replenish (§11).
 
-        Derived from ``ActionDefinition.effects``: an item whose count ran to
-        zero — and which therefore vanished from ``inventory.items`` — is
-        still discovered, because the *world's* own actions say it can be
+        Derived from ``ActionDefinition.purchase`` (Phase B procurement) and
+        positive ``effects`` (legacy shopping). An item whose count ran to zero
+        — and which therefore vanished from ``inventory.items`` — is still
+        discovered, because the *world's* own actions say it can be
         replenished. No item names anywhere.
         """
         runtime = self._manager.runtime
@@ -178,17 +183,52 @@ class GoalDetector:
                 parts = effect_key.split(":", 2)
                 if len(parts) == 3:
                     seen[(parts[1], parts[2])] = None
+            for inventory_key, items in definition.purchase.items():
+                for item, quantity in items.items():
+                    if int(quantity or 0) > 0:
+                        seen[(inventory_key, item)] = None
         return list(seen)
+
+    def _restock_policy(self, inventory_key: str, item: str) -> dict[str, Any] | None:
+        """The threshold policy governing (inventory, item), if any.
+
+        Merged across every owned action that restocks the slot: the floor is
+        the highest ``min`` and the shelf goal the highest ``target`` — the
+        world's own actions define the policy, never a detector constant.
+        """
+        runtime = self._manager.runtime
+        floor: int | None = None
+        target = 0
+        for definition in runtime.actions.definitions.values():
+            policy = definition.restock
+            if not policy:
+                continue
+            if str(policy.get("inventory", "")) != inventory_key:
+                continue
+            if str(policy.get("slot", "")) != item:
+                continue
+            minimum = int(policy.get("min", 0) or 0)
+            floor = minimum if floor is None else max(floor, minimum)
+            target = max(target, int(policy.get("target", 0) or 0))
+        if floor is None:
+            return None
+        return {"min": floor, "target": target}
 
     def sweep(self) -> None:
         """Startup/restore scan: worlds that already have open business (§34).
 
-        Depletion is judged per *restockable* item (world-derived), never by
-        whether a zero-count key happens to remain in the inventory mapping.
+        A slot is short when its stock is at or under the world's own restock
+        floor (Phase B: nearly-empty counts, not only zero; slots without a
+        policy keep the legacy zero test). Depletion is judged per
+        *restockable* item (world-derived), never by whether a zero-count key
+        happens to remain in the inventory mapping.
         """
         runtime = self._manager.runtime
         for inventory_key, item in self._restockable_targets():
-            if runtime.inventories.get(inventory_key).count(item) <= 0:
+            stock = runtime.inventories.get(inventory_key).count(item)
+            policy = self._restock_policy(inventory_key, item)
+            floor = int(policy["min"]) if policy else 0
+            if stock <= floor:
                 self._create_restock(
                     item=item,
                     inventory_key=inventory_key,
@@ -216,6 +256,35 @@ class GoalDetector:
             correlation_id=event.correlation_id,
         )
 
+    def _on_inventory_changed(self, event: SandboxEvent, payload: dict[str, Any]) -> None:
+        """Consumption/acquisition left a restockable slot at its floor.
+
+        Phase B: a nearly-empty slot is already reason enough — the goal is
+        created as soon as stock drops to/under the policy's ``min``, long
+        before zero. Dedupe by ``dedupe_key`` means repeated events reuse the
+        same goal.
+        """
+        item = str(payload.get("item", "") or "")
+        if not item:
+            return
+        inventory_key = event.target_entity_id.replace("inventory:", "")
+        policy = self._restock_policy(inventory_key, item)
+        if policy is None:
+            return
+        stock = self._manager.runtime.inventories.get(inventory_key).count(item)
+        if stock <= 0:
+            return  # 真正的清空由 INVENTORY_DEPLETED 负责（source=inventory_depleted）
+        if stock > int(policy["min"]):
+            return
+        self._create_restock(
+            item=item,
+            inventory_key=inventory_key,
+            source_event_id=event.event_id,
+            source=GoalSource.inventory_low,
+            reason="inventory_low",
+            correlation_id=event.correlation_id,
+        )
+
     def _create_restock(
         self,
         *,
@@ -223,17 +292,21 @@ class GoalDetector:
         inventory_key: str,
         source_event_id: str,
         source: GoalSource,
+        reason: str = "inventory_depleted",
         correlation_id: str = "",
     ) -> str:
         acquisitions = self._manager.runtime.restock_actions(inventory_key, item)
         if not acquisitions:
             return ""  # nothing in this world replenishes it → not a goal (§10)
-        desired = max(quantity for _action_id, _definition, quantity in acquisitions)
+        policy = self._restock_policy(inventory_key, item)
+        desired = int(policy["target"]) if policy and int(policy["target"]) > 0 else 0
+        if desired <= 0:
+            desired = max(quantity for _action_id, _definition, quantity in acquisitions)
         return self._manager.create(
             kind=GoalKind.restock_resource,
             source=source,
             source_event_id=source_event_id,
-            reason="inventory_depleted",
+            reason=reason,
             priority=PRIORITY_RESOURCE_SHORTAGE,
             target_item=item,
             metadata={"inventory_key": inventory_key, "desired_quantity": desired},
