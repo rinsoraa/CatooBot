@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import socket
+from pathlib import Path
 
 import pytest
 from aiohttp import web
@@ -263,3 +264,33 @@ async def test_poll_loop_reconciles_status(fake_runtime: FakeRuntime, make_servi
     task.cancel()
     with pytest.raises(asyncio.CancelledError):
         await task
+
+
+def test_default_runtime_dir_resolves_against_project_root():
+    """防回归：MC_AUTH_FILE 必须是绝对路径——Node 子进程的 CWD 就在 runtime
+    目录里，相对路径会被二次拼接，auth.json 永远读不到（曾静默回退默认名）。"""
+    from app.config.settings import PROJECT_ROOT
+
+    service = MinecraftService(None, make_config(None))  # type: ignore[arg-type]
+    assert service._runtime_dir() == PROJECT_ROOT / "minecraft_runtime"
+    auth = Path(service._runtime_env()["MC_AUTH_FILE"])
+    assert auth.is_absolute()
+    assert auth == PROJECT_ROOT / "minecraft_runtime" / "auth.json"
+
+
+def test_auth_configured_detects_local_auth_file(tmp_path):
+    (tmp_path / "auth.json").write_text("{}", encoding="utf-8")
+    service = MinecraftService(
+        None,
+        MinecraftConfig(enabled=True, runtime_dir=str(tmp_path)),  # type: ignore[arg-type]
+    )
+    assert service.auth_configured is True
+    assert Path(service._runtime_env()["MC_AUTH_FILE"]) == tmp_path / "auth.json"
+
+    empty = tmp_path / "empty"
+    empty.mkdir()
+    service2 = MinecraftService(
+        None,
+        MinecraftConfig(enabled=True, runtime_dir=str(empty)),  # type: ignore[arg-type]
+    )
+    assert service2.auth_configured is False

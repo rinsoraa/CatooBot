@@ -21,7 +21,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from app.config.settings import MinecraftConfig
+from app.config.settings import PROJECT_ROOT, MinecraftConfig
 from app.integrations.minecraft.events import MinecraftBridgeEvent, parse_bridge_event
 from app.integrations.minecraft.runtime_client import (
     MinecraftRuntimeClient,
@@ -237,7 +237,17 @@ class MinecraftService:
     @property
     def auth_configured(self) -> bool:
         """本地 auth.json 是否存在（只看存在性，绝不读内容）。"""
-        return (Path(self.config.runtime_dir) / "auth.json").exists()
+        return (self._runtime_dir() / "auth.json").exists()
+
+    def _runtime_dir(self) -> Path:
+        """runtime 目录；相对路径以项目根为基准（与 bible_path 等约定一致）。
+
+        必须解析成绝对路径再传给子进程：Node 进程的 CWD 就在 runtime 目录里，
+        相对路径会在它那边被二次拼接（auth.json 曾因此永远读不到，
+        静默回退成默认名字）。
+        """
+        path = Path(self.config.runtime_dir)
+        return path if path.is_absolute() else PROJECT_ROOT / path
 
     async def start(self) -> None:
         """Bot.start 时调用：拉起 runtime（可选）+ 对账轮询。失败会清理自身。"""
@@ -301,7 +311,7 @@ class MinecraftService:
         env = dict(os.environ)
         env["MC_RUNTIME_PORT"] = str(self.config.runtime_port)
         env["MC_CONNECT_TIMEOUT"] = str(self.config.connect_timeout_seconds)
-        env["MC_AUTH_FILE"] = str(Path(self.config.runtime_dir) / "auth.json")
+        env["MC_AUTH_FILE"] = str(self._runtime_dir() / "auth.json")
         if self.callback_url:
             env["MC_CALLBACK_URL"] = self.callback_url
             env["MC_CALLBACK_TOKEN"] = self.callback_token or ""
@@ -311,7 +321,7 @@ class MinecraftService:
         if self._process is not None:
             await self._process.stop()
             self._process = None
-        runtime_dir = Path(self.config.runtime_dir)
+        runtime_dir = self._runtime_dir()
         if not (runtime_dir / "runtime.js").exists():
             target = runtime_dir / "runtime.js"
             raise MinecraftRuntimeDown(
