@@ -186,6 +186,39 @@ class SandboxStore:
         except Exception:  # noqa: BLE001
             logger.exception("[Sandbox] action save failed: %s", action.id)
 
+    async def recent_finished_actions(self, *, limit: int = 24) -> list[tuple[str, float, str]]:
+        """``(definition_id, ended_at, space_id)`` of recently finished actions.
+
+        Phase A: the repetition penalty is rebuilt from this after a restart so
+        she does not immediately re-buy what she just bought. Read-only.
+        """
+        if not self.available:
+            return []
+        try:
+            rows = await self._db.fetchall(
+                "SELECT definition_id, ended_at, data FROM sandbox_actions "
+                "WHERE ended_at IS NOT NULL AND ended_at > 0 "
+                "ORDER BY ended_at DESC LIMIT ?",
+                (max(1, int(limit)),),
+            )
+        except Exception:  # noqa: BLE001 - history is best-effort
+            logger.exception("[Sandbox] recent action query failed")
+            return []
+        out: list[tuple[str, float, str]] = []
+        for row in rows:
+            try:
+                data = json.loads(row["data"] or "{}")
+            except (TypeError, ValueError):
+                data = {}
+            out.append(
+                (
+                    str(row["definition_id"] or ""),
+                    float(row["ended_at"] or 0.0),
+                    str(data.get("space_id", "") or ""),
+                )
+            )
+        return out
+
     async def active_action(self) -> ActionInstance | None:
         if not self.available:
             return None

@@ -53,6 +53,7 @@ class SandboxDecisionEngine:
         ai_decider: Any = None,
         preference_bonus: dict[str, float] | None = None,
         home_spaces: set[str] | None = None,
+        recency_penalty: Any = None,
     ) -> None:
         self.bible = bible
         self.actions = actions
@@ -70,6 +71,10 @@ class SandboxDecisionEngine:
         self._preference_bonus = dict(preference_bonus or {})
         #: which spaces count as "home" for go-do-it candidates (from the seed)
         self._home_spaces = home_spaces or set()
+        #: Phase A: soft repetition penalty — how much to subtract from a score
+        #: because the same action was just done (0.0 = no penalty). Injected by
+        #: the runtime so the engine stays free of runtime history.
+        self._recency_penalty = recency_penalty
 
     # ------------------------------------------------------------ candidates
 
@@ -134,10 +139,22 @@ class SandboxDecisionEngine:
         """Walking to another home space is allowed; shops are handled by needs."""
         return any(target in self._home_spaces for target in targets) or "*" in targets
 
+    def _penalty(self, definition: ActionDefinition) -> float:
+        """Soft repetition penalty for this action right now (0.0 when absent)."""
+        if self._recency_penalty is None:
+            return 0.0
+        try:
+            return max(0.0, float(self._recency_penalty(definition)))
+        except Exception:  # noqa: BLE001 - a broken provider must not break scoring
+            return 0.0
+
     def _score(self, definition: ActionDefinition, *, hour: int) -> float:
         score = 0.0
         score += self.needs.weight_for(definition)  # need pressure
         score += self._preference_bonus.get(definition.id, 0.0)  # bible preference
+        # Phase A: a favorite that was *just* done loses its crown; the penalty
+        # decays with time and critical needs shrink it (see runtime).
+        score -= self._penalty(definition)
         if definition.requires_absent:
             # It only appears when something she relies on ran out (§33/§175):
             # a real, deferrable pull — not a forced action.
@@ -165,6 +182,8 @@ class SandboxDecisionEngine:
                 reasons.append(f"need:{key}")
         if definition.id in self._preference_bonus:
             reasons.append("preference")
+        if self._penalty(definition) > 0.0:
+            reasons.append("recent")
         if deep_start <= hour < deep_end and "idle" in definition.tags:
             reasons.append("deep_night")
         return reasons

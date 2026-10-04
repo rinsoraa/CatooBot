@@ -13,6 +13,7 @@ import asyncio
 import logging
 import time
 import uuid
+from collections import deque
 from collections.abc import Callable
 from typing import Any
 
@@ -186,6 +187,21 @@ def _home_space_set(seed: Any) -> set[str]:
     return ids
 
 
+#: Phase A — soft repetition penalty bands (seconds since the same action ended)
+RECENCY_FRESH_SECONDS = 1800.0  # 30 min
+RECENCY_RECENT_SECONDS = 7200.0  # 2 h
+RECENCY_NORMAL_SECONDS = 14400.0  # 4 h
+#: how much score a just-finished action loses, per band
+RECENCY_PENALTY_FRESH = 0.6
+RECENCY_PENALTY_RECENT = 0.3
+RECENCY_PENALTY_NORMAL = 0.1
+#: extra penalty for repeating in the very same place (buy again at the counter)
+RECENCY_SAME_SPACE_BONUS = 0.2
+RECENCY_PENALTY_CAP = 0.8
+#: a critical need shrinks the penalty to this fraction (emergency beats novelty)
+RECENCY_CRITICAL_FACTOR = 0.25
+
+
 class SandboxRuntime:
     """The character's persistent life. One instance per bot."""
 
@@ -274,6 +290,9 @@ class SandboxRuntime:
         self.influence = ExternalInfluenceEvaluator()
         #: §14: the paused action waiting to resume, if any
         self._interrupted: InterruptedActionContext | None = None
+        #: Phase A: (definition_id, ended_at, space_id) of recently finished
+        #: actions — the source of the soft repetition penalty
+        self._recent_actions: deque[tuple[str, float, str]] = deque(maxlen=32)
         #: PET_HUNGRY fires once per crossing, not every tick
         self._pet_hungry_signaled = False
         self._last_pet_hungry: Any = None
@@ -393,6 +412,7 @@ class SandboxRuntime:
             ),
             preference_bonus=_preference_bonus(seed),
             home_spaces=_home_space_set(seed),
+            recency_penalty=self._recency_penalty,
         )
         if ai_decider is not None and hasattr(ai_decider, "set_character_context"):
             try:
@@ -424,6 +444,8 @@ class SandboxRuntime:
             await self._seed_fresh()
         # §20: pending external events survive a restart; consumed ids too (§19)
         await self._restore_external_state()
+        # Phase A: rebuild the repetition history so a restart does not reset it
+        await self._restore_recent_actions()
         # §34: goals survive a restart; each is re-checked against the world,
         # and the world's existing open business is swept once
         await self.goals.restore()
@@ -924,6 +946,84 @@ class SandboxRuntime:
         self._social_session = None
         return str(session.get("person_id", ""))
 
+    # ------------------------------------------------ Phase A: recent actions
+
+    def _note_action_finished(self, action: ActionInstance) -> None:
+        """Remember a finished action for the soft repetition penalty."""
+        definition_id = str(getattr(action, "definition_id", "") or "")
+        if not definition_id:
+            return
+        self._recent_actions.append(
+            (definition_id, float(self._clock()), str(getattr(action, "space_id", "") or ""))
+        )
+
+    def _recency_band(self) -> str:
+        """Discrete age band of the most recent finish ("" when nothing yet).
+
+        Discrete on purpose: it is part of the decision-opportunity signature, so
+        crossing a boundary re-opens a decision without deciding every tick.
+        """
+        if not self._recent_actions:
+            return ""
+        age = max(0.0, float(self._clock()) - max(item[1] for item in self._recent_actions))
+        if age < RECENCY_FRESH_SECONDS:
+            return "fresh"
+        if age < RECENCY_RECENT_SECONDS:
+            return "recent"
+        if age < RECENCY_NORMAL_SECONDS:
+            return "normal"
+        return "stale"
+
+    def _recency_penalty(self, definition: Any) -> float:
+        """Soft score reduction because this action was just done (§A).
+
+        A critical need cuts the penalty to ``RECENCY_CRITICAL_FACTOR`` so a real
+        emergency still wins; the same place repeating adds a little extra.
+        """
+        definition_id = str(getattr(definition, "id", "") or "")
+        if not definition_id or not self._recent_actions:
+            return 0.0
+        newest: tuple[str, float, str] | None = None
+        for item in self._recent_actions:
+            if item[0] != definition_id:
+                continue
+            if newest is None or item[1] > newest[1]:
+                newest = item
+        if newest is None:
+            return 0.0
+        age = max(0.0, float(self._clock()) - newest[1])
+        if age < RECENCY_FRESH_SECONDS:
+            penalty = RECENCY_PENALTY_FRESH
+        elif age < RECENCY_RECENT_SECONDS:
+            penalty = RECENCY_PENALTY_RECENT
+        elif age < RECENCY_NORMAL_SECONDS:
+            penalty = RECENCY_PENALTY_NORMAL
+        else:
+            return 0.0
+        primary_space = ""
+        spaces = list(getattr(definition, "spaces", []) or [])
+        if spaces and spaces[0] != "*":
+            primary_space = str(spaces[0])
+        if primary_space and newest[2] and newest[2] == primary_space:
+            penalty += RECENCY_SAME_SPACE_BONUS
+        penalty = min(RECENCY_PENALTY_CAP, penalty)
+        relief = dict(getattr(definition, "need_relief", {}) or {})
+        critical_keys = {need.key for need in self.needs.critical()}
+        if relief and critical_keys & set(relief):
+            penalty *= RECENCY_CRITICAL_FACTOR
+        return round(penalty, 4)
+
+    async def _restore_recent_actions(self) -> None:
+        """Rebuild the penalty history from the database (restart continuity)."""
+        try:
+            rows = await self.store.recent_finished_actions(limit=32)
+        except Exception:  # noqa: BLE001 - history is best-effort
+            return
+        known = {action_id for action_id, _, _ in self._recent_actions}
+        for definition_id, ended_at, space_id in rows:
+            if definition_id and definition_id not in known:
+                self._recent_actions.append((definition_id, float(ended_at), space_id))
+
     def decision_opportunity(self) -> str:
         """A deterministic identity for "this decision situation" (§8).
 
@@ -938,7 +1038,11 @@ class SandboxRuntime:
         # the goal's *dedupe key* (character|kind|target), never its uuid: the
         # signature must be reproducible for the same world (§49)
         goal_key = goal.dedupe_key if goal is not None else ""
-        return f"{self.world_revision}|{instance}|{critical}|{goal_key}"
+        # Phase A: the recency band joins the identity — crossing fresh→recent→
+        # normal re-opens one decision (the penalty decayed), while plain time
+        # passing inside a band still suppresses re-decisions.
+        band = self._recency_band()
+        return f"{self.world_revision}|{instance}|{critical}|{goal_key}|{band}"
 
     def _tick_minutes(self) -> float:
         """Fallback step for a caller that passed no step (Phase 14.1 §11).
@@ -1336,6 +1440,7 @@ class SandboxRuntime:
 
         def apply() -> None:
             self.actions.finish(action, ActionStatus.completed)
+            self._note_action_finished(action)
             # §11 (3.5): every effect below hangs off this event — one chain,
             # no orphan facts.
             applied = self.events.publish(
@@ -2407,6 +2512,7 @@ class SandboxRuntime:
             lambda: self.actions.finish(action, ActionStatus.interrupted),
             label=f"interrupt:{action.definition_id}",
         )
+        self._note_action_finished(action)
         await self.store.save_action(action)
         self.events.publish(
             SandboxEventType.ACTION_INTERRUPTED,
