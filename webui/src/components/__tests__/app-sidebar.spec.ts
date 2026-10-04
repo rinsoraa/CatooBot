@@ -1,4 +1,4 @@
-/** AppSidebar（§24-§25 / W4）：七个入口、四个「即将开放」占位、三条真实路由、当前项与折叠模式。 */
+/** AppSidebar（§24-§25 / W4 / Minecraft Phase 1）：八个入口全为真实路由，顺序与信息架构一致。 */
 import { mount } from '@vue/test-utils'
 import { createMemoryHistory, createRouter } from 'vue-router'
 import { describe, expect, it } from 'vitest'
@@ -22,10 +22,19 @@ async function mountSidebar(collapsed: boolean) {
 }
 
 describe('AppSidebar', () => {
-  it('renders exactly the seven v1.0 entries in order', async () => {
+  it('renders exactly the v1.0 entries in order', async () => {
     const { wrapper } = await mountSidebar(false)
     const labels = wrapper.findAll('.cb-sidebar__label').map((item) => item.text())
-    expect(labels).toEqual(['总览', '角色', 'AI 与模型', '社交', '记忆', '媒体与能力', '系统'])
+    expect(labels).toEqual([
+      '总览',
+      '角色',
+      'AI 与模型',
+      '社交',
+      '记忆',
+      '媒体与能力',
+      'Minecraft',
+      '系统',
+    ])
   })
 
   it('links every entry to a real v1 route after W5', async () => {
@@ -34,7 +43,7 @@ describe('AppSidebar', () => {
     expect(wrapper.findAll('button[aria-disabled="true"]')).toHaveLength(0)
 
     const links = wrapper.findAll('a')
-    // §24/§142 的信息架构顺序：总览 → 角色 → AI → 社交 → 记忆 → 能力 → 系统
+    // 信息架构顺序：总览 → 角色 → AI → 社交 → 记忆 → 能力 → Minecraft → 系统
     expect(links.map((link) => link.attributes('href'))).toEqual([
       '/',
       '/character',
@@ -42,6 +51,7 @@ describe('AppSidebar', () => {
       '/social',
       '/memory',
       '/abilities/tools',
+      '/minecraft',
       '/system/settings',
     ])
     for (const link of links) {
@@ -62,7 +72,7 @@ describe('AppSidebar', () => {
     expect(wrapper.findAll('.cb-sidebar__soon')).toHaveLength(0)
 
     const items = wrapper.findAll('.cb-sidebar__item')
-    expect(items).toHaveLength(7)
+    expect(items).toHaveLength(8)
     for (const item of items) {
       expect(item.attributes('aria-label')).toBeTruthy()
       expect(item.attributes('title')).toBeTruthy()
