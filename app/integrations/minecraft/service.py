@@ -331,6 +331,8 @@ class MinecraftService:
         self._mirror: dict[str, Any] = {"status": "DISCONNECTED"}
         #: Phase 3E：Agent Bridge（由 Bot 装配；持有它 = 六个 LLM Tool 的判定与上下文）
         self.agent: Any = None
+        #: Phase 4A：游戏内聊天桥（由 Bot 装配；把 minecraft.chat 变成 USER 回合）
+        self.chat_bridge: Any = None
         self._last_event: dict[str, Any] | None = None
         self._recent_event_keys: deque[str] = deque(maxlen=256)
         # 回调共享密钥：auto_start 时随进程环境注入；外部托管时用配置值
@@ -400,6 +402,9 @@ class MinecraftService:
             if self.agent is not None:
                 # Phase 3E：Agent 上下文跟着 action 事件走（绝不触发新的 Agent Turn）
                 self.add_listener(self.agent.apply_event)
+            if self.chat_bridge is not None:
+                # Phase 4A：游戏内聊天 → USER 回合（与沙盒外部事件链并存，互不替代）
+                self.add_listener(self.chat_bridge.apply_event)
             self._poll_task = asyncio.create_task(self._poll_loop())
             log.info(
                 "[Minecraft] bridge ready (runtime_port=%d, callback=%s, auth=%s, perception=%s)",

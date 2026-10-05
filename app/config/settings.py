@@ -879,10 +879,37 @@ class MinecraftAgentToolsConfig(BaseModel):
     allow_destructive: bool = False  # 尚未实现任何 DESTRUCTIVE 动作
 
 
+class MinecraftConfirmationConfig(BaseModel):
+    """Phase 4A：MEDIUM/HIGH 动作的用户确认门（任务书 §八）。
+
+    确认只活在内存里，重启即失效（绝不让旧授权复活）；TTL 到点即 EXPIRED。
+    """
+
+    #: 一次确认的有效期（秒）；10~300
+    ttl_seconds: float = Field(default=60.0, ge=10.0, le=300.0)
+    #: 同时挂起的确认上限（有界内存；超出时最旧的先失效）
+    max_pending: int = Field(default=32, ge=1, le=256)
+
+
+class MinecraftAgentChatConfig(BaseModel):
+    """Phase 4A：Minecraft 玩家聊天 → 角色对话（USER 回合）桥。"""
+
+    #: 玩家在游戏里说话时，让角色按用户回合接话并在游戏里回复
+    enabled: bool = True
+    #: 游戏内回复的长度上限（Minecraft 聊天本身 256 字符上限；这里更短更自然）
+    max_reply_chars: int = Field(default=200, ge=20, le=256)
+
+
 class MinecraftAgentConfig(BaseModel):
     """Phase 3E：Minecraft Agent Bridge（LLM ↔ 已存在的动作能力）。"""
 
     tools: MinecraftAgentToolsConfig = Field(default_factory=MinecraftAgentToolsConfig)
+    #: Phase 4A：MEDIUM/HIGH 的确认门参数
+    confirmation: MinecraftConfirmationConfig = Field(default_factory=MinecraftConfirmationConfig)
+    #: Phase 4A：游戏内聊天 → 角色对话
+    chat: MinecraftAgentChatConfig = Field(default_factory=MinecraftAgentChatConfig)
+    #: Phase 4A：可信 Minecraft 玩家名（LOW 及以上动作只对这些人执行；SAFE 不限）
+    trusted_players: list[str] = Field(default_factory=list)
 
 
 class MinecraftConfig(BaseModel):

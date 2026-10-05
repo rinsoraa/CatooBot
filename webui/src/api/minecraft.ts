@@ -49,4 +49,8 @@ export const minecraftApi = {
   stop() {
     return api.post<MinecraftStopResult>('/minecraft/stop', {})
   },
+  /** Phase 4A：确认门 Debug（只能缩小授权：造测试条 / 取消 / 置过期）。 */
+  confirm(action: 'create_test' | 'cancel' | 'expire', body: Record<string, unknown> = {}) {
+    return api.post<Record<string, unknown>>('/minecraft/agent/confirm', { action, ...body })
+  },
 }

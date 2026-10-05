@@ -565,6 +565,13 @@ async function main() {
           // 目标先站到罐头旁边（3 格内，进入 chase 上限）
           tpTarget(followee, beforeFollow.x + 3, beforeFollow.y, beforeFollow.z)
 
+          // flying-squid 的实体包有延迟：先等 runtime 真的"看见"这个玩家再跟随，
+          // 否则 bot.players[name].entity 还不存在 → player.not_found（机器繁忙时必现）
+          await waitFor(async () => {
+            const snap = await request(runtimePort, 'GET', '/minecraft/world/snapshot?layers=near')
+            return (snap.body.players || []).some((p) => p.username === 'Followee')
+          }, 'runtime 看见 Followee', 10000)
+
           const followStart = await request(runtimePort, 'POST', '/minecraft/follow_player', {
             username: 'Followee',
           })
@@ -594,6 +601,12 @@ async function main() {
             [-6, -2],
             [4, 6],
           ]
+          // 「她确实动了」看的是过程里的**最大**位移：两跳方向相反时 net 位移可能很小
+          let maxMoved = 0
+          const trackMoved = async () => {
+            const now = await botPosNow()
+            maxMoved = Math.max(maxMoved, Math.hypot(now.x - beforeFollow.x, now.z - beforeFollow.z))
+          }
           for (let hop = 1; hop <= 2; hop += 1) {
             if (hop === 2) hopOffsets.reverse() // 第二跳换个方向，避免同一条路
             let reached = false
@@ -610,6 +623,7 @@ async function main() {
                   return gap <= 4
                 }, `第 ${hop} 跳后跟到目标附近`, 9000)
                 reached = true
+                await trackMoved()
                 break
               } catch {
                 /* 该落点不可达：换一个 */
@@ -622,10 +636,11 @@ async function main() {
               `Test A：目标移动不结束 action（仍是 ${stillRunning.action && stillRunning.action.status}）`,
             )
           }
-          const afterFollow = await botPosNow()
-          const followMoved = Math.hypot(afterFollow.x - beforeFollow.x, afterFollow.z - beforeFollow.z)
-          assert(followMoved >= 1, `Test A：罐头真的移动了（水平位移 ${followMoved.toFixed(1)} 格）`)
-          console.log(`[e2e] follow_player ✓ 目标移动两跳后仍在跟随（位移 ${followMoved.toFixed(1)} 格）`)
+          await trackMoved()
+          assert(maxMoved >= 1, `Test A：罐头真的移动了（最大水平位移 ${maxMoved.toFixed(1)} 格）`)
+          console.log(
+            `[e2e] follow_player ✓ 目标移动两跳后仍在跟随（最大位移 ${maxMoved.toFixed(1)} 格）`,
+          )
 
           // ---- Test B：STOP → CANCELLED + goal null + moving false + 位置停住 ----
           const stopFollow = await request(runtimePort, 'POST', '/minecraft/stop', {})
@@ -707,7 +722,10 @@ async function main() {
         try {
           const botForSlow = await botPosNow()
           tpTarget(slowTarget, botForSlow.x + 3, botForSlow.y, botForSlow.z)
-          await sleep(500)
+          await waitFor(async () => {
+            const snap = await request(runtimePort, 'GET', '/minecraft/world/snapshot?layers=near')
+            return (snap.body.players || []).some((p) => p.username === 'SlowTarget')
+          }, 'runtime 看见 SlowTarget', 10000)
           const timeoutResp = await request(runtimePort, 'POST', '/minecraft/follow_player', {
             username: 'SlowTarget',
           })

@@ -22,7 +22,15 @@ from app.integrations.minecraft.service import (
     MinecraftDisabled,
     MinecraftService,
 )
-from app.web.api.common import API_PREFIX, bad_request, json_endpoint, ok, read_json, unauthorized
+from app.web.api.common import (
+    API_PREFIX,
+    bad_request,
+    json_endpoint,
+    not_found,
+    ok,
+    read_json,
+    unauthorized,
+)
 from app.web.api_errors import ApiError
 from app.web.routes.base import WebContext
 
@@ -224,6 +232,61 @@ class MinecraftApiRoutes(WebContext):
             raise _translate(exc) from exc
         return ok(result, request=request)
 
+    # ------------------------------------------- Confirmation Gate（Phase 4A）
+
+    async def _v1_minecraft_confirm(self, request: web.Request) -> web.Response:
+        """确认门的 Debug 端点（§九/§三十二）。
+
+        ``action`` ∈ ``create_test`` / ``cancel`` / ``expire``：**只能缩小授权**——这里
+        没有 ``confirm``/``consume``，真正的确认必须来自用户的新回合（对话里说「确认」）。
+        """
+        try:
+            service = _service(self._bot)
+        except MinecraftBridgeError as exc:
+            raise _translate(exc) from exc
+        bridge = getattr(service, "agent", None)
+        if bridge is None:
+            raise ApiError(503, "minecraft.disabled", "Minecraft Agent 未装配")
+        body = await read_json(request)
+        action = str(body.get("action") or "").strip()
+        confirmation_id = str(body.get("confirmation_id") or "").strip()
+        if action == "create_test":
+            # 开发/验收用：造一条 PENDING（不是授权；消费仍要用户回合 + 全套校验）
+            tool = str(body.get("tool") or "").strip()
+            if not tool:
+                raise bad_request(
+                    "create_test 需要 tool", code="minecraft.action_invalid", field="tool"
+                )
+            risk = str(body.get("risk") or bridge.policy.risk_of(tool) or "MEDIUM").upper()
+            arguments = body.get("arguments") if isinstance(body.get("arguments"), dict) else {}
+            pending = bridge.confirmations.create(
+                session_id=str(body.get("session_id") or "webui:confirm-test"),
+                user_id=str(body.get("user_id") or "webui-admin"),
+                tool=tool,
+                risk=risk,
+                arguments=arguments,
+                summary=f"{tool}（{risk}）：WebUI 测试确认",
+            )
+            return ok({"created": True, "confirmation": pending.to_dict()}, request=request)
+        if action == "cancel":
+            changed = bridge.confirmations.cancel(confirmation_id)
+            status = "CANCELLED"
+        elif action == "expire":
+            changed = bridge.confirmations.expire(confirmation_id)
+            status = "EXPIRED"
+        else:
+            raise bad_request(
+                "action 必须是 create_test / cancel / expire",
+                code="minecraft.confirmation_invalid",
+                field="action",
+            )
+        if not changed:
+            raise not_found("确认不存在或已不是 PENDING", code="minecraft.confirmation_invalid")
+        return ok(
+            {"confirmation_id": confirmation_id, "status": status},
+            request=request,
+        )
+
     # ------------------------------------------------------- bridge callbacks
 
     async def _v1_minecraft_events(self, request: web.Request) -> web.Response:
@@ -255,3 +318,6 @@ class MinecraftApiRoutes(WebContext):
         )
         app.router.add_post(f"{API_PREFIX}/minecraft/stop", wrap(self._v1_minecraft_stop))
         app.router.add_post(f"{API_PREFIX}/minecraft/events", wrap(self._v1_minecraft_events))
+        app.router.add_post(
+            f"{API_PREFIX}/minecraft/agent/confirm", wrap(self._v1_minecraft_confirm)
+        )

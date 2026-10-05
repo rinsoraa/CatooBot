@@ -180,6 +180,7 @@ ROUTES = [
     "POST /api/v1/memories/consolidation/run",
     "POST /api/v1/memories/embeddings/{action}",
     "POST /api/v1/memories/{memory_id}/{action}",
+    "POST /api/v1/minecraft/agent/confirm",
     "POST /api/v1/minecraft/events",
     "POST /api/v1/minecraft/follow_player",
     "POST /api/v1/minecraft/join",

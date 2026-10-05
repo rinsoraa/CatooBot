@@ -420,6 +420,79 @@ async def test_minecraft_projection_includes_agent_block(tmp_path):
             await service._cleanup()
 
 
+# ------------------------------------------------ Phase 4A：确认门端点
+
+
+async def test_confirmation_endpoint_only_shrinks_authority(tmp_path):
+    """§九/§三十二：Debug 端点只能造测试条 / 取消 / 置过期，**不能**代替用户确认。"""
+    from app.integrations.minecraft.agent import MinecraftAgentBridge
+
+    async with api_server(tmp_path) as (client, bot, server):
+        await client.login()
+        service = MinecraftService(bot, MinecraftConfig(enabled=True, auto_start_runtime=False))
+        bot.minecraft = service
+        try:
+            bridge = MinecraftAgentBridge(service)
+            service.agent = bridge
+
+            # 未装配 bridge 时（真实未启用）→ 503 minecraft.disabled
+            # 这里已装配，先造一条测试确认
+            status, payload = await client.post(
+                "/api/v1/minecraft/agent/confirm",
+                body={"action": "create_test", "tool": "minecraft_dig", "risk": "MEDIUM"},
+            )
+            assert status == 200
+            created = payload["data"]["confirmation"]
+            assert created["status"] == "PENDING" and created["tool"] == "minecraft_dig"
+
+            # 只读投影里能看到它（WebUI 的 Pending Confirmation 面板）
+            status, payload = await client.get("/api/v1/minecraft")
+            store = payload["data"]["agent"]["confirmations"]
+            assert store["ttl_seconds"] == 60.0
+            assert created["confirmation_id"] in {
+                row["confirmation_id"] for row in store["pending"]
+            }
+            assert payload["data"]["agent"]["trusted_players"] == []
+
+            # 没有「确认」动作：非法 action 直接 400（不能代替用户确认）
+            for action in ("confirm", "consume", "approve"):
+                status, payload = await client.post(
+                    "/api/v1/minecraft/agent/confirm",
+                    body={"action": action, "confirmation_id": created["confirmation_id"]},
+                )
+                assert status == 400 and error_code(payload) == "minecraft.confirmation_invalid"
+
+            # CANCEL / EXPIRE 只缩小授权（各用一条自己的确认）
+            for action, expected in (("cancel", "CANCELLED"), ("expire", "EXPIRED")):
+                _status, payload = await client.post(
+                    "/api/v1/minecraft/agent/confirm",
+                    body={"action": "create_test", "tool": f"minecraft_test_{action}"},
+                )
+                target = payload["data"]["confirmation"]["confirmation_id"]
+                status, payload = await client.post(
+                    "/api/v1/minecraft/agent/confirm",
+                    body={"action": action, "confirmation_id": target},
+                )
+                assert status == 200 and payload["data"]["status"] == expected
+                # 同一条再操作 → 404（已经不是 PENDING：一次性）
+                status, payload = await client.post(
+                    "/api/v1/minecraft/agent/confirm",
+                    body={"action": action, "confirmation_id": target},
+                )
+                assert status == 404 and error_code(payload) == "minecraft.confirmation_invalid"
+        finally:
+            await service._cleanup()
+
+
+async def test_confirmation_endpoint_requires_minecraft(tmp_path):
+    async with api_server(tmp_path) as (client, bot, server):
+        await client.login()
+        status, payload = await client.post(
+            "/api/v1/minecraft/agent/confirm", body={"action": "create_test"}
+        )
+        assert status == 503 and error_code(payload) == "minecraft.disabled"
+
+
 # ------------------------------------------------ Phase 3D：follow_player 端点
 
 

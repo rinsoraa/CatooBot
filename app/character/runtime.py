@@ -101,6 +101,7 @@ class CharacterRuntime:
         user_text: str,
         *,
         turn_origin: TurnOrigin,
+        origin_metadata: dict[str, str] | None = None,
         history: list[ChatMessage] | None = None,
         user_name: str | None = None,
         is_group: bool = False,
@@ -121,6 +122,10 @@ class CharacterRuntime:
         只允许在 :attr:`TurnOrigin.USER` 回合里执行，而来源绝不能从 ``user_text`` 猜
         （主动发言的文本长得跟用户消息一样）。调用方必须如实声明；不确定就传
         :attr:`TurnOrigin.BACKGROUND`（fail-closed）。
+
+        ``origin_metadata``（Phase 4A）是**运输层事实**（例如「这条消息来自游戏内玩家
+        RinsoraNeko」）：它会进工具上下文，供信任门等策略使用。它**不能**覆盖由
+        ``turn_origin`` 派生的意图键（派生值最后写入，见 :meth:`_tool_context`）。
         """
         persona = self.personas.persona
         state = await self.states.load()
@@ -198,6 +203,7 @@ class CharacterRuntime:
             is_group=is_group,
             time_context=time_context,
             turn_origin=turn_origin,
+            origin_metadata=origin_metadata,
         )
         content = self.processor.sanitize(content_text.strip())
         if content and sandbox is not None and getattr(sandbox, "enabled", False):
@@ -238,6 +244,7 @@ class CharacterRuntime:
         user_text: str,
         is_group: bool,
         turn_origin: TurnOrigin,
+        origin_metadata: dict[str, str] | None = None,
         time_context: Any = None,
     ) -> str:
         """One AI turn; when tools are on, the bounded tool loop runs here.
@@ -252,6 +259,7 @@ class CharacterRuntime:
             time_context=time_context,
             is_group=is_group,
             turn_origin=turn_origin,
+            origin_metadata=origin_metadata,
         )
         if self.agent is not None and getattr(self.agent, "enabled", False):
             agent_text = await self._try_agent(
@@ -318,16 +326,22 @@ class CharacterRuntime:
         time_context: Any,
         is_group: bool,
         turn_origin: TurnOrigin,
+        origin_metadata: dict[str, str] | None = None,
         group_id: int | None = None,
     ) -> Any:
         """Tool context carries only what a tool legitimately needs (spec v0.6 §30).
 
         ``turn_origin``（Phase 3E.1）在这里落成两个键：``turn_origin``（日志/排查）
         与派生的 ``minecraft_explicit_intent``（意图门唯一读的那个布尔）。
+
+        ``origin_metadata``（Phase 4A）是运输层事实（如 ``minecraft_player``）。它在
+        **派生键之前**合并：调用方塞进来的任何意图标记都会被派生值覆盖 —— 授权不可能
+        靠参数伪造。
         """
         from app.tools.models import ToolContext
 
         metadata: dict[str, Any] = dict(self._life_metadata())
+        metadata.update(origin_metadata or {})
         if self.memory is not None:
             # read-only retrieval handle for query_image_memory — the tool goes
             # through the manager, never the raw database.

@@ -19,6 +19,7 @@ import type {
   MinecraftActionView,
   MinecraftAgentContext,
   MinecraftAgentToolRow,
+  MinecraftConfirmationView,
   MinecraftOverview,
   MinecraftPathfinderInfo,
   MinecraftWorldView,
@@ -59,6 +60,41 @@ const agentTools = computed<MinecraftAgentToolRow[]>(() => overview.value?.agent
 const agentContext = computed<Partial<MinecraftAgentContext>>(
   () => overview.value?.agent?.context ?? {},
 )
+// Phase 4A：待确认动作（确认门）——只读列表；按钮只能取消/过期/造测试条
+const confirmations = computed<MinecraftConfirmationView[]>(
+  () => overview.value?.agent?.confirmations?.pending ?? [],
+)
+const trustedPlayers = computed<string[]>(() => overview.value?.agent?.trusted_players ?? [])
+
+function confirmStatusLabel(row: MinecraftConfirmationView): string {
+  return row.status === 'PENDING' ? '待确认' : row.status
+}
+
+async function createTestConfirmation(): Promise<void> {
+  working.value = true
+  try {
+    await minecraftApi.confirm('create_test', { tool: 'minecraft_test_medium', risk: 'MEDIUM' })
+    toast.success('已创建测试确认', '仅用于调试确认门；真实确认必须由用户在对话里做出')
+    await load(true)
+  } catch (caught) {
+    toast.error('创建测试确认失败', errorMessage(caught))
+  } finally {
+    working.value = false
+  }
+}
+
+async function cancelConfirmation(row: MinecraftConfirmationView, action: 'cancel' | 'expire') {
+  working.value = true
+  try {
+    await minecraftApi.confirm(action, { confirmation_id: row.confirmation_id })
+    toast.success(action === 'cancel' ? '已取消该确认' : '已把它置为过期', row.summary)
+    await load(true)
+  } catch (caught) {
+    toast.error('操作失败', errorMessage(caught))
+  } finally {
+    working.value = false
+  }
+}
 
 /** 风险等级 → 状态徽标的语义色（SAFE 绿 / LOW 黄 / 更高风险红）。 */
 function riskState(risk: string): StatusState {
@@ -661,6 +697,88 @@ onUnmounted(stopPolling)
             LOW 动作（移动 / 跟随）只有在用户明确要求的对话里才会执行；模型自己想动也会被拒。
             本阶段没有挖、放、攻击、合成等任何破坏世界的能力。
           </p>
+        </section>
+
+        <section class="minecraft__card cb-card" data-test="mc-confirmation">
+          <SectionHeader
+            title="Pending Confirmation（Phase 4A）"
+            description="MEDIUM/HIGH 动作需要用户确认：确认绑定 用户 + 会话 + 参数指纹，一次性、限时；这里只能取消或置为过期，不能代替用户确认。"
+          />
+          <dl class="minecraft__facts" data-test="mc-confirmation-facts">
+            <div>
+              <dt>Trusted Players</dt>
+              <dd data-test="mc-trusted-players">
+                {{ trustedPlayers.length ? trustedPlayers.join('、') : '（未配置：游戏内 LOW 动作不执行）' }}
+              </dd>
+            </div>
+            <div>
+              <dt>TTL</dt>
+              <dd data-test="mc-confirmation-ttl">
+                {{ overview?.agent?.confirmations?.ttl_seconds ?? '—' }} 秒
+              </dd>
+            </div>
+          </dl>
+          <table class="minecraft__table" data-test="mc-confirmation-table">
+            <thead>
+              <tr>
+                <th scope="col">Tool</th>
+                <th scope="col">Risk</th>
+                <th scope="col">Target</th>
+                <th scope="col">User</th>
+                <th scope="col">Expires</th>
+                <th scope="col">Status</th>
+                <th scope="col">操作</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr
+                v-for="row in confirmations"
+                :key="row.confirmation_id"
+                :data-test="`mc-confirmation-${row.confirmation_id}`"
+              >
+                <td><code>{{ row.tool }}</code></td>
+                <td><StatusBadge :state="riskState(row.risk)" :label="row.risk" /></td>
+                <td>{{ row.summary }}</td>
+                <td>{{ row.user_id }}</td>
+                <td>{{ formatTime(row.expires_at) }}</td>
+                <td><StatusBadge state="warn" :label="confirmStatusLabel(row)" /></td>
+                <td>
+                  <button
+                    type="button"
+                    class="minecraft__button"
+                    :disabled="working"
+                    :data-test="`mc-confirmation-cancel-${row.confirmation_id}`"
+                    @click="cancelConfirmation(row, 'cancel')"
+                  >
+                    CANCEL
+                  </button>
+                  <button
+                    type="button"
+                    class="minecraft__button"
+                    :disabled="working"
+                    :data-test="`mc-confirmation-expire-${row.confirmation_id}`"
+                    @click="cancelConfirmation(row, 'expire')"
+                  >
+                    EXPIRE
+                  </button>
+                </td>
+              </tr>
+              <tr v-if="!confirmations.length">
+                <td colspan="7" class="cb-caption">
+                  没有待确认的动作。本阶段还没有 MEDIUM/HIGH 动作，可用下面的按钮造一条测试确认。
+                </td>
+              </tr>
+            </tbody>
+          </table>
+          <button
+            type="button"
+            class="minecraft__button"
+            :disabled="working || !overview?.enabled"
+            data-test="mc-confirmation-create-test"
+            @click="createTestConfirmation"
+          >
+            CREATE TEST CONFIRMATION
+          </button>
         </section>
 
         <section

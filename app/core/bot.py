@@ -324,8 +324,11 @@ class Bot:
                 self.minecraft = MinecraftService(self, config.minecraft, clock=self._clock)
                 # Phase 3E：LLM Tool 的唯一入口（判定 → Service → 结构化结果）
                 from app.integrations.minecraft.agent import MinecraftAgentBridge
+                from app.integrations.minecraft.chat_bridge import MinecraftChatBridge
 
                 self.minecraft.agent = MinecraftAgentBridge(self.minecraft, clock=self._clock)
+                # Phase 4A：游戏内玩家聊天 → USER 回合（与沙盒外部事件链并存）
+                self.minecraft.chat_bridge = MinecraftChatBridge(self, self.minecraft)
                 # Agent Bridge 暴露给工具上下文 / 每轮 prompt 上下文
                 self.character.minecraft_agent = self.minecraft.agent
             except Exception:  # noqa: BLE001 - minecraft trouble must not stop startup

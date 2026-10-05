@@ -3,6 +3,32 @@
 本文件记录 CatooBot 的版本演进。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号见 `pyproject.toml`；日期取自真实提交历史（本仓库 2026-09-30 起）。
 
+## [Unreleased] — Minecraft Phase 4A · Action Confirmation Gate & Minecraft Chat User Bridge
+
+- **游戏内玩家说话 = USER 回合**（新 `MinecraftChatBridge`）：Minecraft 玩家在服务器里说
+  「罐头，你过来」现在会走正常 Tool Loop（SAFE 不限、LOW 需可信玩家），回复再用
+  `MinecraftService.send_chat` 发回游戏内；沙盒外部事件链**保持不变**（两个消费者，
+  互不替代、互不触发）。会话独立于 QQ：`minecraft:{host}:{port}:{username}`。
+- **防循环硬门禁**：罐头自己发的聊天绝不回到她自己的 LLM 回合（拿不到自己的名字时宁可不回）；
+  悄悄话不公开回、系统行忽略、并发上限 4 条、回复最长 200 字符。
+- **可信玩家**（`minecraft.agent.trusted_players`）：游戏内 LOW 及以上动作只对名单里的人执行，
+  其他人得到 `minecraft.user_not_trusted` 且**零动作调用**——但仍能正常聊天；
+  QQ/WebUI 用户不受这份名单约束。身份由运输层 `origin_metadata` 声明，
+  **不能**靠它伪造用户回合（派生键覆盖，有测试）。
+- **确认门基础设施**（MEDIUM/HIGH/DESTRUCTIVE）：确认对象绑定 `user_id + session_id +
+  arguments_hash`，只能由新的 USER 回合消费，一次性、TTL（默认 60s）、有界内存、重启全失效；
+  错误码 `confirmation_required / invalid / expired / mismatch / not_user_turn` 全部结构化。
+  首次调用返回"需要确认"+ PENDING 信息；用户明确说「确认」后再用相同参数调用才会执行。
+- **本阶段没有任何世界修改动作**：dig / place / attack / craft / eat / inventory / container /
+  redstone 一律没有 Tool（有安全测试断言生产注册表里不存在这些名字）；确认门由测试桩驱动验证。
+- 策略顺序固化为 §三十三 的十步，并把「需要在线」从按名字列白名单改成「默认需要在线，
+  只有 minecraft_world / minecraft_stop 例外」——Phase 4B 加动作时不会漏掉在线门。
+- WebUI 连接页新增 **Pending Confirmation** 面板（只读 + CREATE TEST / CANCEL / EXPIRE），
+  `GET /api/v1/minecraft` 新增 `agent.confirmations` 与 `agent.trusted_players`；
+  新增 `POST /api/v1/minecraft/agent/confirm`（**只能缩小授权**，没有 confirm/consume）。
+- 新增测试：`tests/test_minecraft_confirmation.py`（16）、
+  `tests/test_minecraft_agent_confirm_gate.py`（18）、`tests/test_minecraft_chat_bridge.py`（18）。
+
 ## [Unreleased] — Minecraft Phase 3E.1 · Intent Propagation Integrity
 
 - **修掉 Phase 3E 留下的安全边界缺口**：`CharacterRuntime._tool_context()` 曾**无条件**

@@ -26,6 +26,16 @@ from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
+from app.character.turn import TurnOrigin
+from app.integrations.minecraft.confirmation import (
+    CODE_EXPIRED,
+    CODE_MISMATCH,
+    CODE_NOT_TRUSTED,
+    CODE_REQUIRED,
+    CONFIRMATION_RISKS,
+    ConfirmationOutcome,
+    ConfirmationStore,
+)
 from app.integrations.minecraft.service import MinecraftBridgeError
 from app.tools.models import ToolContext, ToolResult
 
@@ -38,6 +48,8 @@ log = logging.getLogger("CatooBot.Minecraft.Agent")
 
 #: ToolContext.metadata 里的桥接对象键（tool 通过它拿到 service/policy/context）
 BRIDGE_KEY = "minecraft"
+#: ToolContext.metadata 里的「本轮来自游戏内玩家」的用户名（Phase 4A 信任门用）
+PLAYER_KEY = "minecraft_player"
 #: ToolContext.metadata 里的「本轮由用户明确发起」标记（意图门用；缺省 = 不允许 LOW）。
 #: 它**只能**由 :class:`~app.character.turn.TurnOrigin` 派生（Phase 3E.1），
 #: 任何调用方都不许手写这个键。
@@ -67,11 +79,11 @@ TOOL_ACTION: dict[str, str] = {
     "minecraft_stop": "stop",
 }
 
-#: 需要世界在线才能执行（minecraft_world 是离线也能答的只读工具；
-#: minecraft_stop 是最高优先级安全停止，离线/不可达也必须成功）
-NEEDS_ONLINE: frozenset[str] = frozenset(
-    {"minecraft_chat", "minecraft_look_at", "minecraft_move_to", "minecraft_follow_player"}
-)
+#: 离线也能用的 Tool：minecraft_world（离线也要能回答「我不在游戏里」）
+#: 与 minecraft_stop（最高优先级安全停止，永远成功、幂等）。
+#: 其余一切工具（含 Phase 4B 的 MEDIUM/HIGH 动作）都要求在线——**默认需要在线**，
+#: 这样新增动作不需要记得去改一张「需要在线」的名单。
+OFFLINE_TOOLS: frozenset[str] = frozenset({"minecraft_world", "minecraft_stop"})
 
 #: 独占前台动作（runtime 同一时间只允许一个）：忙 → minecraft.action_busy（§二十六）
 EXCLUSIVE_TOOLS: frozenset[str] = frozenset(
@@ -144,19 +156,30 @@ class GateFacts:
     nearby_players: tuple[str, ...] = ()
     #: 本轮来源（仅供日志/审计；判定只读 ``explicit_intent``，绝不读它）
     turn_origin: str = ""
+    #: 本轮来自游戏内玩家说话时的 MC 用户名（空 = 不是来自游戏内的回合）
+    minecraft_player: str = ""
+    #: 可信玩家名单（配置；只有 ``minecraft_player`` 非空时才参与判定）
+    trusted_players: tuple[str, ...] = ()
 
 
 class MinecraftActionPolicy:
     """Minecraft Tool 的唯一硬门（任务书 §十二/§十四/§十五）。"""
 
     def __init__(
-        self, tools: MinecraftAgentToolsConfig, logger: logging.Logger | None = None
+        self,
+        tools: MinecraftAgentToolsConfig,
+        logger: logging.Logger | None = None,
+        *,
+        risk_table: Mapping[str, str] | None = None,
     ) -> None:
         self.tools = tools
+        #: 工具 → 风险等级。默认就是正式表（六个 Tool）；Phase 4B 起扩表时改这里，
+        #: 测试用的桩动作通过参数注入——生产代码里绝不出现未实现动作的名字。
+        self.risk_table: dict[str, str] = dict(risk_table or ACTION_RISK)
         self._log = logger or log
 
     def risk_of(self, tool: str) -> str:
-        return ACTION_RISK.get(tool, "")
+        return self.risk_table.get(tool, "")
 
     def allowed_by_config(self, tool: str) -> bool:
         """纯配置视角的放行（不含在线/忙碌/意图）——WebUI 只读展示也用它。"""
@@ -171,7 +194,15 @@ class MinecraftActionPolicy:
         arguments: Mapping[str, Any] | None = None,
         facts: GateFacts | None = None,
     ) -> PolicyDecision:
-        """按固定顺序判定（§十二）：Tool → Enabled → Online → Risk → Intent → Busy → Context。"""
+        """按固定顺序判定（§三十三）：
+
+        注册 → Minecraft 启用 → 工具启用 → 在线 → 风险开关 → USER 回合
+        → 可信玩家 → 忙 → 确认。
+
+        SAFE 不需要 USER、不需要 trusted；LOW 需要 USER（来自游戏内时还要 trusted）；
+        MEDIUM/HIGH/DESTRUCTIVE 还要**确认**——这里只回答「需要确认」，
+        真正消费确认的是 :class:`MinecraftAgentBridge`（它持有确认存储）。
+        """
         facts = facts or GateFacts()
         origin = facts.turn_origin
         risk = self.risk_of(tool)
@@ -191,7 +222,7 @@ class MinecraftActionPolicy:
             return self._reject(
                 tool, risk, "minecraft.disabled", "Minecraft 工具未启用", turn_origin=origin
             )
-        if tool in NEEDS_ONLINE and not facts.online:
+        if tool not in OFFLINE_TOOLS and not facts.online:
             return self._reject(
                 tool,
                 risk,
@@ -215,6 +246,20 @@ class MinecraftActionPolicy:
                 "这需要用户明确要求；不要自己决定移动罐头（可以先用 minecraft_world 看看情况）",
                 turn_origin=origin,
             )
+        if (
+            risk in EXPLICIT_INTENT_RISKS
+            and facts.minecraft_player
+            and facts.minecraft_player not in facts.trusted_players
+        ):
+            # §二十一/§二十二：游戏里的陌生人喊「罐头过来」不该让她真的跑过去。
+            # 只对**来自游戏内**的回合生效（QQ/WebUI 回合没有 minecraft_player）→ §二十六 不变。
+            return self._reject(
+                tool,
+                risk,
+                CODE_NOT_TRUSTED,
+                f"玩家「{facts.minecraft_player}」还不在可信名单里，罐头不会执行这个动作",
+                turn_origin=origin,
+            )
         if tool in EXCLUSIVE_TOOLS and facts.busy:
             return self._reject(
                 tool,
@@ -223,6 +268,23 @@ class MinecraftActionPolicy:
                 f"当前正在执行 Minecraft 行动（{facts.busy}）；"
                 "如需打断，先用 minecraft_stop 停止它",
                 turn_origin=origin,
+            )
+        if risk in CONFIRMATION_RISKS:
+            # §四/§三十三：MEDIUM/HIGH/DESTRUCTIVE 一律要用户确认——这里只标记
+            # 「需要确认」，由 bridge 消费一条匹配的 PENDING（消费必须发生在 USER 回合）。
+            self._log.info(
+                "[MC Policy] confirmation tool=%s risk=%s turn_origin=%s trusted=%s",
+                tool,
+                risk,
+                origin or "unknown",
+                bool(facts.minecraft_player and facts.minecraft_player in facts.trusted_players),
+            )
+            return PolicyDecision(
+                allowed=False,
+                tool=tool,
+                risk=risk,
+                code=CODE_REQUIRED,
+                message="这个 Minecraft 动作需要用户确认",
             )
         target = str((arguments or {}).get("username", "")).strip()
         if (
@@ -241,10 +303,12 @@ class MinecraftActionPolicy:
                 turn_origin=origin,
             )
         self._log.info(
-            "[MC Policy] allowed tool=%s risk=%s turn_origin=%s",
+            "[MC Policy] allowed tool=%s risk=%s turn_origin=%s trusted=%s confirmation=%s",
             tool,
             risk,
             facts.turn_origin or "unknown",
+            bool(facts.minecraft_player and facts.minecraft_player in facts.trusted_players),
+            "required" if risk in CONFIRMATION_RISKS else "not_required",
         )
         return PolicyDecision(allowed=True, tool=tool, risk=risk)
 
@@ -266,7 +330,8 @@ class MinecraftActionPolicy:
             "risk_flags": {
                 level: bool(getattr(self.tools, flag, False)) for level, flag in RISK_FLAGS.items()
             },
-            "registered": dict(ACTION_RISK),
+            "registered": dict(self.risk_table),
+            "confirmation_risks": sorted(CONFIRMATION_RISKS),
         }
 
 
@@ -379,12 +444,24 @@ class MinecraftAgentBridge:
     """六个 Minecraft Tool 的唯一入口：判定 → Service → 结构化结果。"""
 
     def __init__(
-        self, service: MinecraftService, *, clock: Callable[[], float] = time.time
+        self,
+        service: MinecraftService,
+        *,
+        clock: Callable[[], float] = time.time,
+        risk_table: Mapping[str, str] | None = None,
     ) -> None:
         self.service = service
         self._clock = clock
-        self.policy = MinecraftActionPolicy(service.config.agent.tools)
+        self.policy = MinecraftActionPolicy(
+            service.config.agent.tools, risk_table=risk_table, logger=log
+        )
         self.context = MinecraftAgentContext(clock=clock)
+        #: Phase 4A：MEDIUM/HIGH 的用户确认（内存态、TTL、绑 user/session/args）
+        self.confirmations = ConfirmationStore(
+            ttl_seconds=service.config.agent.confirmation.ttl_seconds,
+            max_pending=service.config.agent.confirmation.max_pending,
+            clock=clock,
+        )
 
     # ------------------------------------------------------------ 事实采集
 
@@ -424,7 +501,13 @@ class MinecraftAgentBridge:
             "age_seconds": view.get("age_seconds"),
         }
 
-    def gate_facts(self, *, explicit_intent: bool = False, turn_origin: str = "") -> GateFacts:
+    def gate_facts(
+        self,
+        *,
+        explicit_intent: bool = False,
+        turn_origin: str = "",
+        minecraft_player: str = "",
+    ) -> GateFacts:
         world = self.world_facts()
         current = self.context.current_action or {}
         busy = ""
@@ -437,6 +520,8 @@ class MinecraftAgentBridge:
             explicit_intent=explicit_intent,
             nearby_players=tuple(player["name"] for player in world["players"]),
             turn_origin=turn_origin,
+            minecraft_player=minecraft_player,
+            trusted_players=tuple(self.service.config.agent.trusted_players),
         )
 
     # ------------------------------------------------------------ 判定/调用
@@ -448,7 +533,9 @@ class MinecraftAgentBridge:
             tool,
             arguments,
             self.gate_facts(
-                explicit_intent=explicit_intent(context), turn_origin=turn_origin(context)
+                explicit_intent=explicit_intent(context),
+                turn_origin=turn_origin(context),
+                minecraft_player=minecraft_player(context),
             ),
         )
 
@@ -467,7 +554,18 @@ class MinecraftAgentBridge:
         """判定 → 调 Service → 结构化结果；任何异常都不外泄给模型。"""
         decision = self.check(tool, arguments, context=context)
         if not decision.allowed:
-            return self.denial(tool, decision)
+            if decision.code != CODE_REQUIRED:
+                return self.denial(tool, decision)
+            # §十/§十一：MEDIUM/HIGH 需要确认——只有「本轮是 USER 回合 + 存在匹配的
+            # PENDING 确认」才算用户授权；否则如实报「需要确认」并给出待确认信息。
+            outcome = self._resolve_confirmation(tool, arguments, context)
+            if not outcome.ok:
+                return self._confirmation_failure(tool, arguments, context, outcome)
+            log.info(
+                "[MC Confirmation] authorised tool=%s id=%s",
+                tool,
+                outcome.confirmation.confirmation_id if outcome.confirmation else "-",
+            )
         log.info("[MC Tool] requested tool=%s args=%s", tool, _preview(arguments))
         try:
             payload = await call(self.service)
@@ -507,6 +605,90 @@ class MinecraftAgentBridge:
             summary=_summarize(tool, data),
             metadata={"source_type": "minecraft", "confidence": 0.9},
         )
+
+    # ---------------------------------------------------------- 确认门(4A)
+
+    def _resolve_confirmation(
+        self, tool: str, arguments: Mapping[str, Any], context: ToolContext
+    ) -> ConfirmationOutcome:
+        """本轮是否带着一条有效确认？（§十-§十四）
+
+        * 没有 PENDING：创建一条并如实报告「需要用户确认」（动作不执行）；
+        * 有 PENDING：交给 :meth:`ConfirmationStore.consume` 做
+          来源(USER) → 归属(session/user) → 参数指纹 → 一次性 的完整校验。
+        """
+        session_id = str(context.session_id)
+        user_id = str(context.user_id)
+        pending = self.confirmations.latest_for(session_id=session_id, user_id=user_id, tool=tool)
+        if pending is None:
+            self._request_confirmation(tool, arguments, context)
+            return ConfirmationOutcome(
+                ok=False, code=CODE_REQUIRED, message="这个 Minecraft 动作需要用户确认"
+            )
+        outcome = self.confirmations.consume(
+            pending.confirmation_id,
+            session_id=session_id,
+            user_id=user_id,
+            arguments=arguments,
+            turn_origin=turn_origin_enum(context),
+        )
+        if outcome.ok:
+            return outcome
+        if outcome.code == CODE_EXPIRED:
+            # §八：过期不能再使用 —— 按当前参数重新挂一条，让用户再确认一次
+            self._request_confirmation(tool, arguments, context)
+            return outcome
+        if outcome.code == CODE_MISMATCH:
+            # §七：用户确认的是**哪一个**动作，参数不可变 —— 参数变了就不是同一个动作：
+            # 作废旧确认、按新参数重新挂一条（下一次用户确认才是对新动作的授权）。
+            self.confirmations.cancel(pending.confirmation_id)
+            self._request_confirmation(tool, arguments, context)
+            return ConfirmationOutcome(
+                ok=False,
+                code=CODE_MISMATCH,
+                message="动作参数与你确认时的不一样，已按新参数重新发起确认",
+            )
+        return outcome
+
+    def _request_confirmation(
+        self, tool: str, arguments: Mapping[str, Any], context: ToolContext
+    ) -> None:
+        """挂一条 PENDING（同会话同用户同工具同参数时复用）。"""
+        risk = self.policy.risk_of(tool)
+        self.confirmations.create(
+            session_id=str(context.session_id),
+            user_id=str(context.user_id),
+            tool=tool,
+            risk=risk,
+            arguments=arguments,
+            summary=_confirmation_summary(tool, risk, arguments),
+        )
+
+    def _confirmation_failure(
+        self,
+        tool: str,
+        arguments: Mapping[str, Any],
+        context: ToolContext,
+        outcome: ConfirmationOutcome,
+    ) -> ToolResult:
+        """需要确认 / 确认无效 → 结构化失败（把待确认信息一起交给模型）。"""
+        extra: dict[str, Any] = {}
+        pending = self.confirmations.find_pending(
+            session_id=str(context.session_id),
+            user_id=str(context.user_id),
+            tool=tool,
+            arguments=arguments,
+        )
+        if pending is not None and outcome.code == CODE_REQUIRED:
+            extra["confirmation"] = pending.to_payload()
+        message = outcome.message
+        if outcome.code == CODE_REQUIRED:
+            message += (
+                "；先把这件事用你自己的话告诉用户，等他明确说「确认」之后"
+                "再用完全相同的参数重新调用这个工具"
+            )
+        log.info("[MC Confirmation] required tool=%s code=%s", tool, outcome.code)
+        return _failure(tool, outcome.code, message, extra=extra)
 
     # ------------------------------------------------------------ 事件入口
 
@@ -582,6 +764,9 @@ class MinecraftAgentBridge:
             },
             "policy": self.policy.snapshot(),
             "tools": tools or [],
+            # Phase 4A：待确认列表 + 可信玩家（只读；Debug 面板与「确认门」都看这里）
+            "confirmations": self.confirmations.snapshot(),
+            "trusted_players": list(self.service.config.agent.trusted_players),
         }
 
 
@@ -603,6 +788,27 @@ def turn_origin(context: ToolContext) -> str:
     return str(getattr(value, "value", value) or "")
 
 
+def turn_origin_enum(context: ToolContext) -> TurnOrigin:
+    """本轮来源的枚举形态；缺失/未知一律按 BACKGROUND（fail-closed）。"""
+    raw = context.metadata.get(TURN_ORIGIN_KEY, "")
+    try:
+        return TurnOrigin(str(getattr(raw, "value", raw)))
+    except ValueError:
+        return TurnOrigin.BACKGROUND
+
+
+def minecraft_player(context: ToolContext) -> str:
+    """本轮来自游戏内玩家时的 MC 用户名（空 = 不是来自游戏内的回合）。"""
+    value = context.metadata.get(PLAYER_KEY, "")
+    return str(getattr(value, "value", value) or "").strip()
+
+
+def _confirmation_summary(tool: str, risk: str, arguments: Mapping[str, Any] | None) -> str:
+    """给用户/界面看的一句话（不含机密、不含正文）。"""
+    preview = _preview(arguments or {})
+    return f"{tool}（{risk}）" + (f"：{preview}" if preview else "")
+
+
 def bridge_from(context: ToolContext) -> MinecraftAgentBridge | None:
     bridge = context.metadata.get(BRIDGE_KEY)
     return bridge if isinstance(bridge, MinecraftAgentBridge) else None
@@ -615,13 +821,17 @@ def _stable_code(code: Any) -> str:
     return RUNTIME_ERROR_CODES.get(text, "minecraft.action_failed")
 
 
-def _failure(tool: str, code: str, message: str) -> ToolResult:
+def _failure(
+    tool: str, code: str, message: str, *, extra: Mapping[str, Any] | None = None
+) -> ToolResult:
+    data: dict[str, Any] = {"ok": False, "error": {"code": code, "message": message}}
+    data.update(extra or {})
     return ToolResult(
         tool_name=tool,
         success=False,
         error=message,
         error_type=code,
-        data={"ok": False, "error": {"code": code, "message": message}},
+        data=data,
         metadata={"source_type": "minecraft", "confidence": 0.0},
     )
 

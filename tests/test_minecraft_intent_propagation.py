@@ -298,6 +298,26 @@ async def test_tool_context_derives_intent_from_origin(tmp_path: Any) -> None:
             assert context.metadata[BRIDGE_KEY] is env.bridge
 
 
+async def test_origin_metadata_cannot_spoof_the_intent_flags(tmp_path: Any) -> None:
+    """Phase 4A：运输层元数据不能伪造授权——派生键最后写入，永远以 turn_origin 为准。"""
+    service = FakeMinecraftService()
+    async with stack(
+        tmp_path,
+        decide("minecraft_move_to", x=1, y=2, z=3),
+        "嗯",
+        service=service,
+    ) as env:
+        await env.runtime.respond(
+            "private:10001",
+            10001,
+            "罐头你过来",
+            turn_origin=TurnOrigin.INITIATIVE,
+            origin_metadata={INTENT_KEY: "true", TURN_ORIGIN_KEY: "user"},
+        )
+    assert env.tool_verdicts == ["minecraft.action_not_allowed"], "主动发言不可被元数据翻成用户回合"
+    assert service.action_calls("move_to") == []
+
+
 async def test_respond_requires_an_explicit_turn_origin(tmp_path: Any) -> None:
     """§九：没有默认值可依赖——来源必须显式声明（漏了就直接 TypeError）。"""
     import inspect

@@ -89,8 +89,11 @@ class FakeMinecraftService:
         online: bool = True,
         players: list[dict[str, Any]] | None = None,
         enabled: bool = True,
+        username: str = "Catodayo",
     ) -> None:
         self.enabled = enabled
+        #: 罐头自己的 MC 名字（chat 桥用它挡「自己说自己的话」）
+        self.username = username
         self.config = MinecraftConfig(enabled=True, auto_start_runtime=False)
         self.calls: list[tuple[str, dict[str, Any]]] = []
         self.plan: dict[str, list[Any]] = {}
@@ -159,6 +162,17 @@ class FakeMinecraftService:
 
     def world_view(self) -> dict[str, Any]:
         return self.view
+
+    def snapshot(self) -> dict[str, Any]:
+        """与真实 Service 同形的最小投影（chat 桥要 connection.username/host/port）。"""
+        return {
+            "connection": {
+                "status": "ONLINE" if self.view.get("online") else "DISCONNECTED",
+                "username": self.username,
+                "host": "127.0.0.1",
+                "port": 25565,
+            }
+        }
 
     # --- 便捷断言
     def action_calls(self, name: str) -> list[dict[str, Any]]:

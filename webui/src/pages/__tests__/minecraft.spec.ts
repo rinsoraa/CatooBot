@@ -64,6 +64,27 @@ const ONLINE_OVERVIEW = {
       updated_at: 1700000000,
     },
     policy: { enabled: true, risk_flags: { SAFE: true, LOW: true }, registered: {} },
+    trusted_players: ['RinsoraNeko'],
+    confirmations: {
+      ttl_seconds: 60,
+      max_pending: 32,
+      total: 1,
+      pending: [
+        {
+          confirmation_id: 'cfm_test_1',
+          session_id: 'private:10001',
+          user_id: '10001',
+          tool: 'minecraft_test_medium',
+          risk: 'MEDIUM',
+          arguments_hash: 'abc123',
+          arguments: { x: 120, y: 64, z: -230 },
+          summary: 'minecraft_test_medium（MEDIUM）：x=120',
+          created_at: 1700000000,
+          expires_at: 1700000060,
+          status: 'PENDING',
+        },
+      ],
+    },
     tools: [
       { name: 'minecraft_chat', risk: 'SAFE', enabled: true, allowed: true, reason: '' },
       { name: 'minecraft_follow_player', risk: 'LOW', enabled: true, allowed: false, reason: 'minecraft.action_busy' },
@@ -151,6 +172,9 @@ function makeHandler(overrides: { join?: MockReply; leave?: MockReply } = {}) {
     }
     if (url.pathname === '/api/v1/minecraft/stop' && request.method === 'POST') {
       return ok({ status: 'IDLE', cancelled: [] })
+    }
+    if (url.pathname === '/api/v1/minecraft/agent/confirm' && request.method === 'POST') {
+      return ok({ created: true, confirmation_id: 'cfm_test_1', status: 'CANCELLED' })
     }
     return fail(404, 'resource.not_found', `未模拟 ${request.method} ${url.pathname}`)
   }
@@ -497,6 +521,51 @@ describe('Minecraft 页 · LLM Tool Debug（Phase 3E）', () => {
     })
     await flushAll()
     expect(wrapper.get('[data-test="mc-agent"]').text()).toContain('minecraft.disabled')
+  })
+})
+
+describe('Minecraft 页 · 确认门（Phase 4A）', () => {
+  it('列出待确认动作（工具/风险/目标/用户/状态）与可信玩家', async () => {
+    const { wrapper } = await mountPage((request) => {
+      const url = new URL(request.url, 'http://localhost')
+      if (url.pathname === '/api/v1/minecraft') return ok(ONLINE_OVERVIEW)
+      return fail(404, 'resource.not_found', 'no')
+    })
+    await flushAll()
+    const panel = wrapper.get('[data-test="mc-confirmation"]')
+    expect(panel.text()).toContain('minecraft_test_medium')
+    expect(panel.text()).toContain('MEDIUM')
+    expect(panel.text()).toContain('10001')
+    expect(panel.text()).toContain('待确认')
+    expect(wrapper.get('[data-test="mc-confirmation-ttl"]').text()).toContain('60')
+    expect(wrapper.get('[data-test="mc-trusted-players"]').text()).toContain('RinsoraNeko')
+  })
+
+  it('CANCEL / EXPIRE 走确认端点，且不带任何「确认」动作', async () => {
+    const { wrapper, calls } = await mountPage(makeHandler())
+    await flushAll()
+    await wrapper.get('[data-test="mc-confirmation-cancel-cfm_test_1"]').trigger('click')
+    await flushAll()
+    const cancelCall = calls.find((c) => c.url.endsWith('/minecraft/agent/confirm'))
+    expect(cancelCall?.body).toEqual({ action: 'cancel', confirmation_id: 'cfm_test_1' })
+
+    await wrapper.get('[data-test="mc-confirmation-expire-cfm_test_1"]').trigger('click')
+    await flushAll()
+    const expireCall = calls.filter((c) => c.url.endsWith('/minecraft/agent/confirm')).at(-1)
+    expect(expireCall?.body).toEqual({ action: 'expire', confirmation_id: 'cfm_test_1' })
+    // 页面从不发送 confirm/consume —— 授权只能由用户在对话里给
+    expect(
+      calls.some((c) => ['confirm', 'consume'].includes(String((c.body as any)?.action))),
+    ).toBe(false)
+  })
+
+  it('CREATE TEST CONFIRMATION 只造测试条', async () => {
+    const { wrapper, calls } = await mountPage(makeHandler())
+    await flushAll()
+    await wrapper.get('[data-test="mc-confirmation-create-test"]').trigger('click')
+    await flushAll()
+    const call = calls.find((c) => c.url.endsWith('/minecraft/agent/confirm'))
+    expect(call?.body).toMatchObject({ action: 'create_test' })
   })
 })
 

@@ -221,11 +221,37 @@ export interface MinecraftAgentPolicy {
   registered: Record<string, MinecraftActionRisk>
 }
 
+/** Phase 4A：一条待确认/已确认的 Minecraft 动作授权（只读投影）。 */
+export interface MinecraftConfirmationView {
+  confirmation_id: string
+  session_id: string
+  user_id: string
+  tool: string
+  risk: MinecraftActionRisk
+  arguments_hash: string
+  arguments: Record<string, unknown>
+  summary: string
+  created_at: number
+  expires_at: number
+  status: 'PENDING' | 'CONFIRMED' | 'EXPIRED' | 'CANCELLED' | 'CONSUMED'
+}
+
+export interface MinecraftConfirmationStoreView {
+  ttl_seconds: number
+  max_pending: number
+  pending: MinecraftConfirmationView[]
+  total: number
+}
+
 export interface MinecraftAgentView {
   enabled: boolean
   context: Partial<MinecraftAgentContext>
   policy: Partial<MinecraftAgentPolicy>
   tools: MinecraftAgentToolRow[]
+  /** Phase 4A：待确认列表（只读）。 */
+  confirmations?: MinecraftConfirmationStoreView
+  /** Phase 4A：可信 Minecraft 玩家（LOW 及以上动作只对这些人执行）。 */
+  trusted_players?: string[]
 }
 
 export interface MinecraftWorldView {
