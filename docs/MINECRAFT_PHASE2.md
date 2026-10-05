@@ -122,7 +122,7 @@ E2E 用「从 rel+yaw 重算」做数学一致性断言（Test 6 的机器执行
 
 | 事件 | 触发 | data |
 |---|---|---|
-| `minecraft.world.changed` | 近层签名**增/改/删**（并集比较）≥ `world_change_block_threshold`（默认 10）个方块，或环境**语义签名**（biome/time_phase/weather/dimension；刻意不含 `time_of_day_ticks`/`light`）变化；**聚合为一条** | `{changed_blocks, environment_changed, environment(签名)}` |
+| `minecraft.world.changed` | 近层签名**增/改/删**（并集比较）≥ `world_change_block_threshold`（默认 10）个方块，或环境**语义签名**（biome/time_phase/weather/dimension；刻意不含 `time_of_day_ticks`/`light`）变化；**聚合为一条**。Phase 3A 起方块变化只在**观测窗口重叠区**内统计（移动产生的进入/离开不算） | `{changed_blocks, environment_changed, environment(签名), near_diff:{kind,shifted_blocks,overlap_blocks,shift}}` |
 | `minecraft.player.nearby` | 新玩家进入感知范围 | `{usernames, players:[{name,direction,distance}]}` |
 | `minecraft.player.left_area` | 玩家离开 | `{usernames}` |
 | `minecraft.entity.discovered` | 新实体类型出现 | `{types: {type: count}}` |
@@ -259,7 +259,7 @@ E2E 用「从 rel+yaw 重算」做数学一致性断言（Test 6 的机器执行
 Phase 3 一旦加入移动/跟随：观察窗口本身在平移，同一批方块在窗口内换坐标 →
 当前实现会把**位移**误报为 `minecraft.world.changed`。
 
-**Phase 3 开始前必须先重新设计 movement-aware world diff**，例如：
+**已在 Phase 3A 完成（见 §12）。** 设计要点：
 
 - 以罐头所在区块为基准做窗口对齐（比较「本区块内的相对坐标」）；
 - 或把差异显式分成「世界变化」与「窗口位移」两类，并在事件里分别标注；
@@ -278,3 +278,82 @@ Phase 3 一旦加入移动/跟随：观察窗口本身在平移，同一批方�
 
 Phase 2.1 完成后，感知层数据一致性通过（partial merge / layer age / 环境签名 / 增删改检测全覆盖），
 **可以进入 Phase 3**；但 Phase 3 的第一个工作项必须是 §11.3 的 movement-aware world diff 重设计。
+
+## 12. Phase 3A：Movement-Aware World Diff（已完成）
+
+> 只改 WorldPerception / WorldStateCache / world diff / 测试 / 本文档；**未新增任何移动能力**
+> （runtime 无 `/minecraft/move*`、无 pathfinder、无 setControlState）。罐头仍然不能移动。
+
+### 12.1 算法说明
+
+签名键从 3D 改为 **水平柱面坐标 `(x, z)`**（值 = 该柱垂直窗口内最高非空气方块名）——
+near 本质是水平柱面窗口（runtime 柱坐标 = `floor(self.x) + dx`），2D 键让垂直移动/跳跃
+不会因为窗口顶部裁切改变键而产生虚假变化（Test 8）。
+
+对齐方式：**签名键本来就是绝对世界坐标，所以「映射到世界坐标系」是恒等的**——
+对齐 = 取两个窗口矩形（锚点 ± 半径）的**交集**；交集之外的单侧柱 = 窗口进入/离开。
+（实现时曾尝试「把上一帧键整体平移 delta」，那是错的：会拿相邻方块互相比较，
+真实变化会被邻位抵消；见 §12.4 教训。）
+
+`compute_near_diff(previous, previous_anchor, previous_radius, current, current_anchor,
+current_radius, change_threshold)`：O(N+M)，只有 key 对齐与集合差；
+窗口 13×13 上限（169 柱），无 O(N²)、无全世界扫描（任务书 §十二）。
+
+### 12.2 baseline / anchor 设计
+
+- **观测锚点** `observation_anchor(self_state) = (floor(x), floor(z))`（块坐标，不用浮点）；
+- `WorldStateCache` 在 **near 层更新的同一帧**存储 `near_anchor`（与 near 数据同帧，
+  不能被 local/extended 的帧刷新——窗口对齐必须用「那一帧 near 拍摄时的中心」）；
+- `WorldPerception` 基线 = `(_prev_near_signature, _prev_near_anchor, _prev_near_radius)`；
+  首帧 / 断开 / rebase 后都用当前帧重建；
+- **rebase 规则**：窗口交集占比 < `REBASE_MIN_OVERLAP_RATIO`(0.2) → `TELEPORT_REBASE`
+  （半径 6 时约等于位移 ≥8 格：旧窗口几乎全部离开视野）。rebase 时旧基线作废、
+  当前帧即新基线，环境签名也一并重置（避免下一帧补发「位移泄漏」事件）。
+
+### 12.3 差异分类与事件行为（任务书 §六/§七）
+
+| kind | 条件 | 事件行为 |
+|---|---|---|
+| `NO_MOVEMENT` | 锚点未变 | 按 Phase 2.1 规则：重贴区增/改/删 ≥ 阈值或环境签名变化 → `world.changed` |
+| `WINDOW_SHIFT` | 有位移、重贴变化 < 阈值 | **不发 world.changed**（位移柱只记日志 + `near_diff`）；环境签名变化仍可触发 |
+| `WORLD_CHANGE` | 重贴区变化 ≥ 阈值（可伴随位移） | `world.changed`（情况 D：移动中重叠区真实变化照常上报） |
+| `TELEPORT_REBASE` | 有效重叠 < 20% | **不发任何 world.changed**；旧基线作废、重建 |
+
+窗口位移/重定位只做**内部记录**（服务日志一行；`perception.last_diff` 暴露给
+WebUI World Debug 的 JSON，不进任何普通 LLM 上下文）。
+
+### 12.4 新增测试（`tests/test_minecraft_world.py`，+8，共 29）
+
+| 测试 | 覆盖 |
+|---|---|
+| `test_yaw_change_does_not_emit_world_changed` | §九：原地 yaw 0→90（连方向字段一起变）不得触发 |
+| `test_move_one_block_without_world_change_emits_nothing` | Test 1：移位 1 格 → `WINDOW_SHIFT`、changed=0、shifted=26 |
+| `test_move_three_blocks_without_world_change_emits_nothing` | Test 2：移位 3 格 → changed=0、shifted=78 |
+| `test_move_with_overlap_change_is_counted` | Test 3：移动 + 重贴区 1 处真实变化，threshold=1 → 事件、changed=1、kind=WORLD_CHANGE |
+| `test_move_with_ten_overlap_changes_emits_world_changed` | Test 4：10 处变化、threshold=10 → 正常触发 |
+| `test_entering_window_blocks_are_not_counted_as_world_change` | Test 5：移动 5 格 → 130 柱进入/离开**不计**changed；overlap=104 |
+| `test_teleport_rebases_baseline_without_event` | Test 6：远距传送 → `TELEPORT_REBASE`、无事件；新基线立即可用（随后真实变化能触发） |
+| `test_vertical_movement_does_not_count_as_world_change` | Test 8：跳跃（含柱顶 y 变化、名字不变）→ changed=0 |
+
+既有 21 个用例全部保持通过（含 Phase 2.1 的 partial merge / 环境签名 / 增删改）。
+夹具修正 2 处：把越出 13×13 窗口的测试柱挪回窗口内（真实 runtime 永远不会输出窗口外的柱）。
+
+### 12.5 边界案例与已知取舍
+
+1. **rebase 阈值**：位移 ≥8 格（重叠 <20%）即按「没有有效重叠」处理 → 旧基线作废。
+   这是任务书 §二 E「没有有效重叠」的可操作化；8 格内的位移照常做重叠比对。
+2. **垂直方向不做对齐**：锚点只用 X/Z（任务书 §三）。向下移动时若柱顶方块恰好贴在
+   垂直窗口上沿、其上方为空气，可能产生 1 柱级别的名字变化——属于可接受噪声，
+   不会造成「大量虚假变化」。
+3. **players/entities/poi 基线不参与 rebase**：传送后「附近出现新玩家/生物」事件仍会发出
+   ——那是真实事实；只有**方块窗口**与**环境签名**在 rebase 时重置。
+4. rebase 帧不发送任何 `world.changed`（包括环境变化）；新位置的首次环境变化从
+   rebase 后的下一帧起照常比对。
+5. `near_diff` 只进事件载荷/调试视图，**不进 LLM 上下文**（任务书 §六）。
+
+### 12.6 Phase 3B readiness
+
+Phase 3A 完成：WorldPerception 已能区分「观察窗口位移」与「世界真实变化」，
+移动 1/3/5 格、传送、旋转、跳跃均不产生虚假 `world.changed`，重叠区真实变化照常计数。
+**可以进入 Phase 3B（Safe Action Layer）**——届时终于可以在 runtime 加入移动能力，
+感知层不需要再改；唯一的后续观察项是真实移动速度下的 rebase 频率与该日志（§12.5.1）。

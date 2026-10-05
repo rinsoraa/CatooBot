@@ -8,6 +8,10 @@ import pytest
 from app.config.settings import MinecraftConfig
 from app.integrations.minecraft.service import MinecraftService
 from app.integrations.minecraft.world import (
+    NO_MOVEMENT,
+    TELEPORT_REBASE,
+    WINDOW_SHIFT,
+    WORLD_CHANGE,
     WorldPerception,
     WorldStateCache,
     build_semantic_model,
@@ -318,14 +322,16 @@ async def test_world_changed_requires_block_threshold():
     assert all(name != "minecraft.world.changed" for name, _ in events)
 
     advance(6.0)  # 越过冷却
-    # 整片变化（>10）：聚合成一条 world.changed（绝无逐方块风暴）
+    # 整片变化（>10）：聚合成一条 world.changed（绝无逐方块风暴）。
+    # 坐标必须落在 near 窗口内（anchor=(10,-5)、radius=6 → x∈[4,16]、z∈[-11,1]），
+    # 与 runtime 的真实输出一致；窗口外的柱属于位移噪声（Phase 3A）。
     columns = client.payload["blocks"]["near"]["columns"]
     for i in range(12):
         columns.append(
             {
                 "name": "cobblestone",
                 "rel": {"dx": i, "dy": -1, "dz": 3},
-                "pos": {"x": 10 + i, "y": 63, "z": -2},
+                "pos": {"x": 4 + i, "y": 63, "z": 1},
                 "distance": 3.0 + i,
                 "bearing": 0.0,
                 "relative_direction": "front",
@@ -598,7 +604,7 @@ async def test_world_changed_detects_removed_block():
     """previous A,B,C stone；current A,B → changed_blocks == 1（C 的移除必须被计到）。"""
     clock, advance = make_clock()
     perception, client, events = make_perception(clock, advance, change_block_threshold=1)
-    a, b, c = _stone_column(1, 1), _stone_column(2, 1), _stone_column(3, 1)
+    a, b, c = _stone_column(8, 0), _stone_column(9, 0), _stone_column(10, 0)
     client.payload = _near_payload_with([a, b, c])
     await perception.poll({"near"})  # prime：A/B/C 基线
 
@@ -614,7 +620,7 @@ async def test_world_changed_counts_multiple_removed_blocks():
     """移除数量 ≥ 阈值必须产生事件，计数只算真实移除。"""
     clock, advance = make_clock()
     perception, client, events = make_perception(clock, advance, change_block_threshold=3)
-    client.payload = _near_payload_with([_stone_column(i, 1) for i in (1, 2, 3)])
+    client.payload = _near_payload_with([_stone_column(i, 0) for i in (8, 9, 10)])
     await perception.poll({"near"})
 
     advance(2.0)
@@ -624,3 +630,207 @@ async def test_world_changed_counts_multiple_removed_blocks():
     assert len(changed) == 1
     assert changed[0]["changed_blocks"] == 3
     assert changed[0]["changed_blocks"] >= 3
+
+
+# ================================ Phase 3A：movement-aware world diff
+
+
+def _grid_payload(
+    anchor: tuple[int, int],
+    *,
+    y: int = 64,
+    radius: int = 6,
+    overrides: dict[tuple[int, int], str] | None = None,
+) -> dict:
+    """以 anchor 为中心生成整窗柱面（每柱一个 grass_block，可局部覆盖方块名）。
+
+    与 runtime 的真实输出同形：柱坐标 = floor(self.x) + dx（dx 为整数），
+    所以窗口恰好是 ``anchor ± radius`` 的方块矩形。
+    """
+    payload = raw_payload()
+    ax, az = anchor
+    payload["self"]["position"] = {"x": float(ax), "y": float(y), "z": float(az)}
+    names = overrides or {}
+    columns = []
+    for dx in range(-radius, radius + 1):
+        for dz in range(-radius, radius + 1):
+            x, z = ax + dx, az + dz
+            columns.append(
+                {
+                    "name": names.get((x, z), "grass_block"),
+                    "rel": {"dx": dx, "dy": -1, "dz": dz},
+                    "pos": {"x": x, "y": y - 1, "z": z},
+                    "distance": float(max(abs(dx), abs(dz))),
+                    "bearing": 0.0,
+                    "relative_direction": "front",
+                    "compass": "north",
+                }
+            )
+    payload["blocks"] = {"near": {"radius": radius, "step": 1, "columns": columns}}
+    return payload
+
+
+def _world_changed_events(events: list[tuple[str, dict]]) -> list[dict]:
+    return [data for name, data in events if name == "minecraft.world.changed"]
+
+
+async def test_yaw_change_does_not_emit_world_changed():
+    """§九：原地只转视角（yaw 0 → 90）不得触发 world.changed（世界没变）。"""
+    clock, advance = make_clock()
+    perception, client, events = make_perception(clock, advance)
+    client.payload = _grid_payload((100, 200))
+    await perception.poll({"near"})  # prime
+
+    advance(2.0)
+    rotated = _grid_payload((100, 200))
+    rotated["self"]["yaw"] = 90.0
+    for column in rotated["blocks"]["near"]["columns"]:
+        column["bearing"] = 90.0
+        column["relative_direction"] = "right"  # 方向字段变化不是世界变化
+    client.payload = rotated
+    events = await perception.poll({"near"})
+    assert _world_changed_events(events) == []
+    assert perception.last_diff is not None
+    assert perception.last_diff.kind == NO_MOVEMENT
+    assert perception.last_diff.changed_blocks == 0
+
+
+async def test_move_one_block_without_world_change_emits_nothing():
+    """Test 1：移动 1 格、世界没变 → 无 world.changed；位移柱只记 shifted。"""
+    clock, advance = make_clock()
+    perception, client, events = make_perception(clock, advance)
+    client.payload = _grid_payload((100, 200))
+    await perception.poll({"near"})
+
+    advance(2.0)
+    client.payload = _grid_payload((101, 200))  # 向东 1 格：A 离开 / F 进入
+    events = await perception.poll({"near"})
+    assert _world_changed_events(events) == []
+    diff = perception.last_diff
+    assert diff is not None
+    assert diff.kind == WINDOW_SHIFT
+    assert diff.changed_blocks == 0
+    assert diff.shifted_blocks == 26  # 每侧一整列 13 柱
+    assert diff.shift == (1, 0)
+
+
+async def test_move_three_blocks_without_world_change_emits_nothing():
+    """Test 2：移动 3 格、世界没变 → 无 world.changed。"""
+    clock, advance = make_clock()
+    perception, client, events = make_perception(clock, advance)
+    client.payload = _grid_payload((100, 200))
+    await perception.poll({"near"})
+
+    advance(2.0)
+    client.payload = _grid_payload((103, 200))
+    events = await perception.poll({"near"})
+    assert _world_changed_events(events) == []
+    diff = perception.last_diff
+    assert diff is not None and diff.kind == WINDOW_SHIFT
+    assert diff.changed_blocks == 0
+    assert diff.shifted_blocks == 3 * 13 * 2  # 每侧 3 列
+
+
+async def test_move_with_overlap_change_is_counted():
+    """Test 3：移动后重叠区域 1 个方块变化，threshold=1 → 事件且计数为 1。"""
+    clock, advance = make_clock()
+    perception, client, events = make_perception(clock, advance, change_block_threshold=1)
+    client.payload = _grid_payload((100, 200))
+    await perception.poll({"near"})
+
+    advance(2.0)
+    # 世界方块 (102,200)：上一帧是 grass_block，现在变成 stone（世界真实变化）
+    client.payload = _grid_payload((101, 200), overrides={(102, 200): "stone"})
+    events = await perception.poll({"near"})
+    changed = _world_changed_events(events)
+    assert len(changed) == 1
+    assert changed[0]["changed_blocks"] == 1
+    assert changed[0]["near_diff"]["kind"] == WORLD_CHANGE
+
+
+async def test_move_with_ten_overlap_changes_emits_world_changed():
+    """Test 4：移动后重叠区域 10 个方块变化，threshold=10 → 正常触发。"""
+    clock, advance = make_clock()
+    perception, client, events = make_perception(clock, advance)  # 默认 threshold=10
+    client.payload = _grid_payload((100, 200))
+    await perception.poll({"near"})
+
+    advance(2.0)
+    overrides = {(96 + i, 200): "stone" for i in range(10)}
+    client.payload = _grid_payload((101, 200), overrides=overrides)
+    events = await perception.poll({"near"})
+    changed = _world_changed_events(events)
+    assert len(changed) == 1
+    assert changed[0]["changed_blocks"] == 10
+    assert changed[0]["near_diff"]["kind"] == WORLD_CHANGE
+
+
+async def test_entering_window_blocks_are_not_counted_as_world_change():
+    """Test 5：移动 5 格产生的大量新区域不得计成 changed_blocks。"""
+    clock, advance = make_clock()
+    perception, client, events = make_perception(clock, advance, change_block_threshold=1)
+    client.payload = _grid_payload((100, 200))
+    await perception.poll({"near"})
+
+    advance(2.0)
+    client.payload = _grid_payload((105, 200))  # 5 格：65 柱进入 + 65 柱离开
+    events = await perception.poll({"near"})
+    assert _world_changed_events(events) == []
+    diff = perception.last_diff
+    assert diff is not None and diff.kind == WINDOW_SHIFT
+    assert diff.changed_blocks == 0
+    assert diff.shifted_blocks == 5 * 13 * 2
+    assert diff.overlap_blocks == 8 * 13  # 重叠区双侧都存在的柱
+
+
+async def test_teleport_rebases_baseline_without_event():
+    """Test 6：远距 teleport → 不触发事件、旧基线作废、新位置立即可作基线。"""
+    clock, advance = make_clock()
+    perception, client, events = make_perception(clock, advance, change_block_threshold=1)
+    client.payload = _grid_payload((100, 200))
+    await perception.poll({"near"})
+
+    advance(2.0)
+    client.payload = _grid_payload((1000, 200))  # 没有有效重叠
+    events = await perception.poll({"near"})
+    assert _world_changed_events(events) == []
+    diff = perception.last_diff
+    assert diff is not None and diff.kind == TELEPORT_REBASE
+    assert diff.changed_blocks == 0
+
+    # 新窗口已建立基线：原地不动 → 无事件
+    advance(2.0)
+    events = await perception.poll({"near"})
+    assert _world_changed_events(events) == []
+    assert perception.last_diff is not None
+    assert perception.last_diff.kind == NO_MOVEMENT
+
+    # 新基线上检测到真实变化（threshold=1）→ 事件
+    advance(2.0)
+    client.payload = _grid_payload((1000, 200), overrides={(1000, 200): "stone"})
+    events = await perception.poll({"near"})
+    changed = _world_changed_events(events)
+    assert len(changed) == 1
+    assert changed[0]["changed_blocks"] == 1
+
+
+async def test_vertical_movement_does_not_count_as_world_change():
+    """Test 8：垂直移动/跳跃不得把世界判定为大量方块变化。"""
+    clock, advance = make_clock()
+    perception, client, events = make_perception(clock, advance, change_block_threshold=1)
+    client.payload = _grid_payload((100, 200), y=64)
+    await perception.poll({"near"})
+
+    advance(2.0)
+    payload = _grid_payload((100, 200), y=70)  # 跳到 6 格高：锚点不变（X/Z 对齐）
+    for column in payload["blocks"]["near"]["columns"]:
+        if column["pos"]["x"] == 100 and column["pos"]["z"] == 200:
+            # 同一根柱子：最高方块因垂直窗口裁切换了 y 坐标，名字没变 → 不是世界变化
+            column["pos"]["y"] = 65
+    client.payload = payload
+    events = await perception.poll({"near"})
+    assert _world_changed_events(events) == []
+    diff = perception.last_diff
+    assert diff is not None
+    assert diff.kind == NO_MOVEMENT
+    assert diff.changed_blocks == 0

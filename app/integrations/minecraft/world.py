@@ -1,24 +1,28 @@
-"""World Perception & Semantic World Model（Phase 2 · 只读「眼睛」）。
+"""World Perception & Semantic World Model（Phase 2 / 2.1 / 3A · 只读「眼睛」）。
 
 数据流（与任务书一致，Mineflayer 原始对象绝不进 LLM）::
 
     Minecraft Runtime  GET /minecraft/world/snapshot
       ↓ Raw World Snapshot（事实数据，本模块的 Raw* 模型）
-    WorldPerception（分层缓存 + 语义映射 + 差异事件，本模块）
+    WorldPerception（分层缓存 + 语义映射 + movement-aware 差异事件，本模块）
       ↓ Semantic World Model（面向对话/Agent 的世界理解数据）
-    只读工具 / WebUI World Debug / 未来的 Phase 3 行动层
+    只读工具 / WebUI World Debug / 未来的 Phase 3B 行动层
 
 硬约束：
 
 * **语义层不从无中发明对象**——每个语义条目都能追溯到一个 raw 条目（测试保证）；
 * **空气不进上下文**——柱面表层扫描在 runtime 侧完成，raw 里本来就没有空气柱；
 * **relative_direction 由系统计算**——runtime 侧算好，Python 不再从坐标推断；
-* **断开即失效**——bot 离线时缓存整体作废，绝不保留假在线状态。
+* **断开即失效**——bot 离线时缓存整体作废，绝不保留假在线状态；
+* **窗口位移 ≠ 世界变化**（Phase 3A）——near 差异以观测锚点对齐后只在重叠区域比对，
+  移动造成的方块进入/离开窗口永远不计入 world.changed。
 """
 
 from __future__ import annotations
 
+import math
 from collections.abc import Callable
+from dataclasses import dataclass
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -283,12 +287,20 @@ class WorldStateCache:
         self._local: BlockLayer | None = None
         self._extended: ExtendedLayer | None = None
         self._interesting: list[BlockEntry] = []
+        #: near 层拍摄时的观测锚点（Phase 3A）：与 near 数据同帧存储，
+        #: 因为窗口对齐必须用「那一帧扫描时的中心」，不能被其它层的帧刷新。
+        self._near_anchor: tuple[int, int] | None = None
         self._layer_at: dict[str, float] = {}
         self._fetched_at: float = 0.0
 
     @property
     def online(self) -> bool:
         return self._online
+
+    @property
+    def near_anchor(self) -> tuple[int, int] | None:
+        """最近一次 near 快照的窗口锚点（floor(x), floor(z)）；无 near 数据为 None。"""
+        return self._near_anchor
 
     def update(self, raw: RawSnapshot, layers: set[str]) -> None:
         """合并一次 snapshot：只覆盖本次请求的层，其余层原样保留。"""
@@ -308,6 +320,7 @@ class WorldStateCache:
         blocks = raw.blocks
         if "near" in layers and blocks.near is not None:
             self._near = blocks.near
+            self._near_anchor = observation_anchor(raw.self_state)
             self._layer_at["near"] = now
         if "local" in layers:
             if blocks.local is not None:
@@ -329,6 +342,7 @@ class WorldStateCache:
         self._local = None
         self._extended = None
         self._interesting = []
+        self._near_anchor = None
         self._layer_at.clear()
         self._fetched_at = 0.0
 
@@ -385,6 +399,144 @@ def environment_signature(environment: Environment | None) -> dict[str, Any] | N
     return {field: getattr(environment, field) for field in ENVIRONMENT_SIGNATURE_FIELDS}
 
 
+# ----------------------------------------------------- movement-aware near diff（Phase 3A）
+
+#: near 差异分类（任务书 §六）：至少区分这四种。
+NO_MOVEMENT = "NO_MOVEMENT"
+WINDOW_SHIFT = "WINDOW_SHIFT"
+WORLD_CHANGE = "WORLD_CHANGE"
+TELEPORT_REBASE = "TELEPORT_REBASE"
+
+#: 两个观察窗口的有效重叠低于这个比例即视为「没有有效重叠」→ rebase。
+#: 半径 6（13×13 柱）时约等于位移 ≥8 格：旧窗口几乎全部离开视野。
+REBASE_MIN_OVERLAP_RATIO = 0.2
+
+
+@dataclass(frozen=True)
+class WorldDiff:
+    """一次 near 差异的分类结果（Phase 3A）。
+
+    * ``shifted_blocks``：窗口进入/离开的柱数——位移噪声，**永远不计**为世界变化；
+    * ``changed_blocks``：重叠区域内的增/改/删；
+    * ``overlap_blocks``：重叠区域内两侧都存在的柱数（可比对量）；
+    * ``shift``：本帧相对上一帧的锚点位移（方块坐标，整数格）。
+    """
+
+    kind: str
+    shifted_blocks: int = 0
+    changed_blocks: int = 0
+    overlap_blocks: int = 0
+    shift: tuple[int, int] = (0, 0)
+
+
+def observation_anchor(self_state: SelfState | None) -> tuple[int, int] | None:
+    """观测锚点：罐头所在方块坐标 ``(floor(x), floor(z))``。
+
+    Near 扫描是以自身位置为中心的水平柱面窗口（runtime 里柱坐标 =
+    floor(self.x) + dx，dx 为整数），所以窗口对齐只要 X/Z 方块坐标；
+    不使用连续浮点坐标作为位移量（任务书 §三）。
+    """
+    if self_state is None or self_state.position is None:
+        return None
+    return (math.floor(self_state.position.x), math.floor(self_state.position.z))
+
+
+def _window_rect(anchor: tuple[int, int], radius: int) -> set[tuple[int, int]]:
+    """锚点 + 半径对应的窗口柱坐标集合（13×13 上限，小常数）。"""
+    ax, az = anchor
+    return {
+        (ax + dx, az + dz) for dx in range(-radius, radius + 1) for dz in range(-radius, radius + 1)
+    }
+
+
+def _effective_radius(radius: int | None, keys: Any, anchor: tuple[int, int]) -> int:
+    """窗口半径：优先用 runtime 上报值；缺失时退化为密钥包围盒半径。"""
+    if radius and radius > 0:
+        return int(radius)
+    if not keys:
+        return 0
+    ax, az = anchor
+    return max(max(abs(x - ax), abs(z - az)) for x, z in keys)
+
+
+def compute_near_diff(
+    *,
+    previous: dict[tuple[int, int], str],
+    previous_anchor: tuple[int, int],
+    previous_radius: int | None,
+    current: dict[tuple[int, int], str],
+    current_anchor: tuple[int, int],
+    current_radius: int | None,
+    change_threshold: int,
+) -> WorldDiff:
+    """对齐两个观察窗口，只把**重叠区域**的真实变化计为世界变化。
+
+    算法（O(N+M)，只有 key 对齐与集合差，无 O(N²)、无全世界扫描）：
+
+    1. 签名键**本来就是绝对世界坐标**，所以「映射到世界坐标系」是恒等的：
+       对齐 = 取两个窗口矩形（锚点 ± 半径）的交集，交集外的柱才是窗口噪声；
+       （不要平移上一帧的键——那会拿相邻方块互相比较，真实变化会被邻位抵消。）
+    2. 有效重叠比例低于 ``REBASE_MIN_OVERLAP_RATIO`` → ``TELEPORT_REBASE``
+       （旧基线作废，由调用方用当前帧重建）；
+    3. 逐个重叠柱比较名字：增（缺→有）、删（有→缺）、改（名不同）都计入
+       ``changed_blocks``——这就是 Phase 2.1 的增删改语义，只是被限制在重叠区内；
+    4. 只在单侧出现且落在重叠区之外的柱 = 窗口进入/离开 → 计入 ``shifted_blocks``，
+       **绝不**计入世界变化（情况 C / Test 5）。
+
+    分类 k：rebase → TELEPORT_REBASE；``changed_blocks >= threshold`` → WORLD_CHANGE；
+    有位移 → WINDOW_SHIFT；否则 NO_MOVEMENT。
+    """
+    dx = current_anchor[0] - previous_anchor[0]
+    dz = current_anchor[1] - previous_anchor[1]
+    # 1) 窗口矩形与有效重叠（世界坐标）
+    prev_rect = _window_rect(
+        previous_anchor, _effective_radius(previous_radius, previous, previous_anchor)
+    )
+    curr_rect = _window_rect(
+        current_anchor, _effective_radius(current_radius, current, current_anchor)
+    )
+    common = prev_rect & curr_rect
+    overlap_ratio = len(common) / max(1, min(len(prev_rect), len(curr_rect)))
+    if overlap_ratio < REBASE_MIN_OVERLAP_RATIO:
+        return WorldDiff(
+            kind=TELEPORT_REBASE,
+            shifted_blocks=len(previous) + len(current),
+            changed_blocks=0,
+            overlap_blocks=0,
+            shift=(dx, dz),
+        )
+    # 2) 重叠区内的增/改/删
+    previous_keys = set(previous)
+    current_keys = set(current)
+    changed = 0
+    overlap = 0
+    for key in previous_keys | current_keys:
+        if key not in common:
+            continue
+        before = previous.get(key)
+        after = current.get(key)
+        if before is not None and after is not None:
+            overlap += 1
+        if before != after:
+            changed += 1
+    # 3) 窗口进入 / 离开（重叠区之外的单侧密钥）
+    shifted = sum(1 for key in current_keys if key not in previous_keys and key not in common)
+    shifted += sum(1 for key in previous_keys if key not in current_keys and key not in common)
+    if changed >= change_threshold:
+        kind = WORLD_CHANGE
+    elif dx != 0 or dz != 0:
+        kind = WINDOW_SHIFT
+    else:
+        kind = NO_MOVEMENT
+    return WorldDiff(
+        kind=kind,
+        shifted_blocks=shifted,
+        changed_blocks=changed,
+        overlap_blocks=overlap,
+        shift=(dx, dz),
+    )
+
+
 # --------------------------------------------------------------- perception diff
 
 
@@ -421,9 +573,15 @@ class WorldPerception:
         self._prev_players: set[str] = set()
         self._prev_entity_types: set[str] = set()
         self._prev_poi_names: set[str] = set()
-        self._prev_near_signature: dict[str, str] | None = None
+        self._prev_near_signature: dict[tuple[int, int], str] | None = None
+        #: 与 _prev_near_signature 配套的观测窗口锚点/半径（Phase 3A）：
+        #: 窗口对齐必须用「上一帧 near 拍摄时的中心」，不能用最新帧的位置。
+        self._prev_near_anchor: tuple[int, int] | None = None
+        self._prev_near_radius: int | None = None
         self._prev_environment: dict[str, Any] | None = None
         self._primed = False
+        #: 最近一次可比对的 near 差异分类（debug / 事件系统用，不进 LLM 上下文）
+        self.last_diff: WorldDiff | None = None
 
     # ------------------------------------------------------------------ polling
 
@@ -475,7 +633,10 @@ class WorldPerception:
         self._prev_entity_types.clear()
         self._prev_poi_names.clear()
         self._prev_near_signature = None
+        self._prev_near_anchor = None
+        self._prev_near_radius = None
         self._prev_environment = None
+        self.last_diff = None
 
     # ------------------------------------------------------------------- events
 
@@ -490,11 +651,14 @@ class WorldPerception:
     def _diff(self, merged: RawSnapshot) -> list[tuple[str, dict[str, Any]]]:
         """对合并视图做差异（不是对本次请求的 raw）：partial poll 不产生幽灵变化。"""
         events: list[tuple[str, dict[str, Any]]] = []
+        self.last_diff = None
         usernames = {player.username for player in merged.players}
         entity_types = {entity.type for entity in merged.entities}
         poi_names = {entry.name for entry in merged.blocks.interesting}
         # 有 near 层数据才谈方块签名；没有就保持 None（不做比较、不更新基线）
         signature = self._near_signature(merged) if merged.blocks.near is not None else None
+        anchor = self.cache.near_anchor
+        radius = merged.blocks.near.radius if merged.blocks.near is not None else None
         environment = environment_signature(merged.environment)
 
         if not self._primed:
@@ -504,6 +668,8 @@ class WorldPerception:
             self._prev_entity_types = entity_types
             self._prev_poi_names = poi_names
             self._prev_near_signature = signature
+            self._prev_near_anchor = anchor
+            self._prev_near_radius = radius
             self._prev_environment = environment
             return events
 
@@ -542,51 +708,80 @@ class WorldPerception:
         if new_pois and self._allow("minecraft.poi.discovered"):
             events.append(("minecraft.poi.discovered", {"types": sorted(new_pois)[:10]}))
 
-        # world.changed：方块变化数量达标 或 环境语义签名变化，聚合成一条带摘要的事件。
-        # 方块比较必须走 keys 并集：增/改/删都算变化（只看当前签名会漏掉「移除」）。
-        changed = 0
-        if signature is not None and self._prev_near_signature is not None:
-            previous = self._prev_near_signature
-            changed = sum(
-                1
-                for key in previous.keys() | signature.keys()
-                if previous.get(key) != signature.get(key)
-            )
-        env_changed = (
-            environment is not None
-            and self._prev_environment is not None
-            and environment != self._prev_environment
+        # world.changed：movement-aware near 差异（Phase 3A）＋环境语义签名。
+        # 窗口位移（进入/离开的柱）绝不计入 changed_blocks；只有重叠区域内的
+        # 增/改/删才可能触发事件（TELEPORT_REBASE 时整体不触发，重建基线）。
+        comparable = (
+            signature is not None
+            and anchor is not None
+            and self._prev_near_signature is not None
+            and self._prev_near_anchor is not None
         )
-        if (changed >= self._change_threshold or env_changed) and self._allow(
-            "minecraft.world.changed"
-        ):
-            events.append(
-                (
-                    "minecraft.world.changed",
-                    {
-                        "changed_blocks": changed,
-                        "environment_changed": env_changed,
-                        "environment": environment,
-                    },
-                )
+        if comparable:
+            assert signature is not None and anchor is not None  # for type checkers
+            assert self._prev_near_signature is not None
+            assert self._prev_near_anchor is not None
+            diff = compute_near_diff(
+                previous=self._prev_near_signature,
+                previous_anchor=self._prev_near_anchor,
+                previous_radius=self._prev_near_radius,
+                current=signature,
+                current_anchor=anchor,
+                current_radius=radius,
+                change_threshold=self._change_threshold,
             )
+            self.last_diff = diff
+            env_changed = (
+                environment is not None
+                and self._prev_environment is not None
+                and environment != self._prev_environment
+            )
+            if (
+                diff.kind != TELEPORT_REBASE
+                and (diff.kind == WORLD_CHANGE or env_changed)
+                and self._allow("minecraft.world.changed")
+            ):
+                events.append(
+                    (
+                        "minecraft.world.changed",
+                        {
+                            "changed_blocks": diff.changed_blocks,
+                            "environment_changed": env_changed,
+                            "environment": environment,
+                            # 差异分类只用于调试/事件系统，不要求进 LLM 上下文
+                            "near_diff": {
+                                "kind": diff.kind,
+                                "shifted_blocks": diff.shifted_blocks,
+                                "overlap_blocks": diff.overlap_blocks,
+                                "shift": list(diff.shift),
+                            },
+                        },
+                    )
+                )
 
         self._prev_players = usernames
         self._prev_entity_types = entity_types
         self._prev_poi_names = poi_names
         if signature is not None:
+            # rebase 与「首次拿到 near」都走这里：当前帧即新基线
             self._prev_near_signature = signature
+            self._prev_near_anchor = anchor
+            self._prev_near_radius = radius
         if environment is not None:
             self._prev_environment = environment
         return events
 
-    def _near_signature(self, raw: RawSnapshot) -> dict[str, str]:
-        """近层地表签名：世界坐标 → 方块名，用于统计真实变化量。"""
-        if raw.blocks.near is None:
+    def _near_signature(self, merged: RawSnapshot) -> dict[tuple[int, int], str]:
+        """近层柱面签名：方块坐标 ``(x, z)`` → 该柱垂直窗口内最高非空气方块名。
+
+        Phase 3A：键只取水平坐标（near 是水平柱面窗口）——垂直移动/跳跃
+        不会因为窗口顶部裁切改变键而制造虚假变化（Test 8）。
+        """
+        if merged.blocks.near is None:
             return {}
         return {
-            f"{entry.pos.x},{entry.pos.y},{entry.pos.z}": entry.name
-            for entry in raw.blocks.near.columns
+            (int(entry.pos.x), int(entry.pos.z)): entry.name
+            for entry in merged.blocks.near.columns
             if entry.pos
         }
 
@@ -599,6 +794,14 @@ class WorldPerception:
             "available": self.cache.online and raw is not None,
             **self.cache.view(),
         }
+        if self.last_diff is not None:
+            view["last_diff"] = {
+                "kind": self.last_diff.kind,
+                "shifted_blocks": self.last_diff.shifted_blocks,
+                "changed_blocks": self.last_diff.changed_blocks,
+                "overlap_blocks": self.last_diff.overlap_blocks,
+                "shift": list(self.last_diff.shift),
+            }
         if raw is not None and self.cache.online:
             view["semantic"] = build_semantic_model(raw)
             view["raw"] = raw.model_dump(by_alias=True)

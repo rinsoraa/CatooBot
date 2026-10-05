@@ -27,7 +27,7 @@ from app.integrations.minecraft.runtime_client import (
     MinecraftRuntimeClient,
     MinecraftRuntimeError,
 )
-from app.integrations.minecraft.world import WorldPerception
+from app.integrations.minecraft.world import TELEPORT_REBASE, WINDOW_SHIFT, WorldPerception
 from app.utils.logger import get_logger
 
 if TYPE_CHECKING:
@@ -639,6 +639,16 @@ class MinecraftService:
                 events = await self.perception.poll(due)
                 for name, data in events:
                     await self._dispatch_world_event(name, data)
+                # 窗口位移/大跨度重定位只做内部记录（Phase 3A §七：不进 LLM 上下文）
+                diff = self.perception.last_diff
+                if diff is not None and diff.kind in (WINDOW_SHIFT, TELEPORT_REBASE):
+                    log.info(
+                        "[Minecraft] 观察窗口%s（shift=%s，位移柱 %d，重叠 %d）——不计为世界变化",
+                        "重定位" if diff.kind == TELEPORT_REBASE else "位移",
+                        diff.shift,
+                        diff.shifted_blocks,
+                        diff.overlap_blocks,
+                    )
             except asyncio.CancelledError:
                 raise
             except MinecraftRuntimeError:
