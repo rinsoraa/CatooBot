@@ -46,7 +46,42 @@ export interface MinecraftOverview {
   auth_configured: boolean
   runtime: MinecraftRuntimeInfo
   connection: MinecraftConnection
+  /** Phase 3B：当前/最近一次动作（IDLE = 从未有动作）。 */
+  action?: MinecraftActionView
   last_event: Record<string, unknown> | null
+}
+
+// ---------------- Phase 3B · Action Runtime ----------------
+
+export type MinecraftActionStatus =
+  | 'IDLE'
+  | 'QUEUED'
+  | 'RUNNING'
+  | 'SUCCEEDED'
+  | 'FAILED'
+  | 'CANCELLED'
+  | 'TIMEOUT'
+
+export interface MinecraftActionView {
+  action: string | null
+  action_id: string | null
+  status: MinecraftActionStatus
+  started_at: number | null
+  finished_at: number | null
+  elapsed_ms: number | null
+  /** runtime 里进行中的动作数（含非互斥 chat）。 */
+  active_count?: number
+}
+
+export interface MinecraftLookAtResult {
+  action_id: string
+  action: string
+  status: MinecraftActionStatus
+}
+
+export interface MinecraftStopResult {
+  status: string
+  cancelled: string[]
 }
 
 export interface MinecraftJoinResult {

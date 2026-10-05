@@ -13,6 +13,7 @@
 from __future__ import annotations
 
 import asyncio
+import math
 import os
 import secrets
 import time
@@ -83,10 +84,48 @@ class MinecraftBusy(MinecraftBridgeError):
         super().__init__(message, code="minecraft.session_active")
 
 
-#: runtime 业务错误码 → 稳定错误
+# ---- Phase 3B：Action Runtime 的稳定错误 ----------------
+
+
+class MinecraftActionBusy(MinecraftBridgeError):
+    """同一时间只允许一个前台动作；再提交 → 拒绝（不排队、不覆盖）。"""
+
+    status = 409
+
+    def __init__(self, message: str = "已有动作在执行") -> None:
+        super().__init__(message, code="minecraft.action_busy")
+
+
+class MinecraftActionInvalid(MinecraftBridgeError):
+    """动作参数不合法 / 未知动作（本地校验或 runtime 校验）。"""
+
+    status = 422
+
+    def __init__(self, message: str = "动作参数不合法") -> None:
+        super().__init__(message, code="minecraft.action_invalid")
+
+
+class MinecraftActionFailed(MinecraftBridgeError):
+    """动作已被受理但执行失败（失败原因在 message 里，不含内部堆栈）。"""
+
+    status = 500
+
+    def __init__(self, message: str = "动作执行失败") -> None:
+        super().__init__(message, code="minecraft.action_failed")
+
+
+#: runtime 业务错误码 → 稳定错误（action.* 必须先于通用 409 判断）
 def _translate(exc: MinecraftRuntimeError) -> MinecraftBridgeError:
     if exc.unreachable:
         return MinecraftRuntimeDown(str(exc))
+    if exc.code == "action.busy":
+        return MinecraftActionBusy(str(exc))
+    if exc.code in {"action.invalid", "action.unknown"}:
+        return MinecraftActionInvalid(str(exc))
+    if exc.code == "action.not_online":
+        return MinecraftNotConnected(str(exc))
+    if exc.code == "action.failed":
+        return MinecraftActionFailed(str(exc))
     if exc.status == 409:
         return MinecraftBusy(str(exc))
     if exc.code in {"target.invalid", "chat.empty", "chat.too_long"}:
@@ -94,6 +133,26 @@ def _translate(exc: MinecraftRuntimeError) -> MinecraftBridgeError:
     if exc.code == "chat.not_online":
         return MinecraftNotConnected(str(exc))
     return MinecraftBridgeError(str(exc), code=f"minecraft.{exc.code}")
+
+
+#: action 事件 → 镜像里的动作状态
+_ACTION_EVENT_STATUSES = {
+    "minecraft.action.started": "RUNNING",
+    "minecraft.action.completed": "SUCCEEDED",
+    "minecraft.action.failed": "FAILED",
+    "minecraft.action.cancelled": "CANCELLED",
+    "minecraft.action.timeout": "TIMEOUT",
+}
+
+#: 空闲动作视图（WebUI「Current Action」用）
+ACTION_IDLE: dict[str, Any] = {
+    "action": None,
+    "action_id": None,
+    "status": "IDLE",
+    "started_at": None,
+    "finished_at": None,
+    "elapsed_ms": None,
+}
 
 
 class _RuntimeProcess:
@@ -455,6 +514,62 @@ class MinecraftService:
                 self._mark_runtime_down(str(exc))
             raise _translate(exc) from exc
 
+    # ------------------------------------------- Action Runtime（Phase 3B）
+
+    async def look_at(self, x: Any, y: Any, z: Any) -> dict[str, Any]:
+        """让罐头看向指定世界坐标（SAFE 动作：不改世界、不移动）。
+
+        参数校验在 Service 层先做一遍（与 runtime 同规则）——上层永远不接触
+        yaw/pitch 数学；返回 ``{action_id, action, status}``，终态含 TIMEOUT/CANCELLED。
+        """
+        self._require_enabled()
+        coords: dict[str, float] = {}
+        for name, value in (("x", x), ("y", y), ("z", z)):
+            if isinstance(value, bool) or not isinstance(value, (int, float)):
+                raise MinecraftActionInvalid(f"坐标 {name} 必须是数字")
+            if not math.isfinite(float(value)):
+                raise MinecraftActionInvalid(f"坐标 {name} 必须是有限数字")
+            coords[name] = float(value)
+        if abs(coords["x"]) > 3.0e7 or abs(coords["z"]) > 3.0e7 or not -512 <= coords["y"] <= 2048:
+            raise MinecraftActionInvalid("坐标超出 Minecraft 世界边界")
+        try:
+            await self._ensure_runtime()
+            return await self._client.look_at(coords["x"], coords["y"], coords["z"])
+        except MinecraftRuntimeError as exc:
+            if exc.unreachable:
+                self._mark_runtime_down(str(exc))
+            raise _translate(exc) from exc
+
+    async def stop_action(self) -> dict[str, Any]:
+        """最高优先级安全停止（幂等）：取消进行中动作，返回被取消的 action_id 列表。
+
+        runtime 不可达也按成功处理——硬停止入口永远不该失败（此时本来也没有
+        可执行的动作）。
+        """
+        self._require_enabled()
+        try:
+            await self._ensure_runtime()
+        except MinecraftRuntimeDown:
+            # runtime 进程都没了 → 本来就没有可执行的动作；硬停止入口永远成功
+            return {
+                "ok": True,
+                "status": "IDLE",
+                "cancelled": [],
+                "note": "runtime 不可达，视为已停止",
+            }
+        try:
+            return await self._client.stop()
+        except MinecraftRuntimeError as exc:
+            if exc.unreachable:
+                self._mark_runtime_down(str(exc))
+                return {
+                    "ok": True,
+                    "status": "IDLE",
+                    "cancelled": [],
+                    "note": "runtime 不可达，视为已停止",
+                }
+            raise _translate(exc) from exc
+
     async def status(self) -> dict[str, Any]:
         """合并 runtime 实况与本地镜像；runtime 不可达时返回降级快照。"""
         try:
@@ -493,6 +608,8 @@ class MinecraftService:
                 "kicked_reason": mirror.get("kicked_reason"),
                 "connected_at": mirror.get("connected_at"),
             },
+            # Phase 3B：当前/最近一次动作（IDLE 表示从未有动作或 runtime 未上报）
+            "action": dict(mirror.get("action") or ACTION_IDLE),
             "last_event": self._last_event,
         }
 
@@ -559,6 +676,22 @@ class MinecraftService:
             self._mirror["health"] = None
         elif name == "minecraft.error":
             self._mirror["last_error"] = event.data.get("error")
+        elif name.startswith("minecraft.action."):
+            self._apply_action_event(event)
+
+    def _apply_action_event(self, event: MinecraftBridgeEvent) -> None:
+        """Phase 3B：动作生命周期镜像（started/终态 → WebUI 的 Current Action）。"""
+        data = event.data
+        self._mirror["action"] = {
+            "action": data.get("action"),
+            "action_id": data.get("action_id"),
+            "status": _ACTION_EVENT_STATUSES.get(event.type_name, "IDLE"),
+            "started_at": data.get("started_at"),
+            "finished_at": (
+                None if event.type_name == "minecraft.action.started" else event.timestamp
+            ),
+            "elapsed_ms": data.get("elapsed_ms"),
+        }
 
     # ----------------------------------------------------------------- 对账轮询
 

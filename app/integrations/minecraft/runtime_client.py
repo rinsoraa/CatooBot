@@ -61,6 +61,14 @@ class MinecraftRuntimeClient:
     async def chat(self, message: str) -> dict[str, Any]:
         return await self._request("POST", "/minecraft/chat", body={"message": message})
 
+    async def look_at(self, x: float, y: float, z: float) -> dict[str, Any]:
+        """让 bot 看向世界坐标（Phase 3B：SAFE 动作，yaw/pitch 数学在 runtime 里）。"""
+        return await self._request("POST", "/minecraft/look_at", body={"x": x, "y": y, "z": z})
+
+    async def stop(self) -> dict[str, Any]:
+        """最高优先级安全停止（Phase 3B）：取消进行中动作，幂等。"""
+        return await self._request("POST", "/minecraft/stop", body={})
+
     async def disconnect(self) -> dict[str, Any]:
         return await self._request("POST", "/minecraft/disconnect", body={})
 

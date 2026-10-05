@@ -33,6 +33,14 @@ const ONLINE_OVERVIEW = {
     kicked_reason: null,
     connected_at: 1700000000,
   },
+  action: {
+    action: null,
+    action_id: null,
+    status: 'IDLE',
+    started_at: null,
+    finished_at: null,
+    elapsed_ms: null,
+  },
   last_event: null,
 }
 
@@ -89,6 +97,12 @@ function makeHandler(overrides: { join?: MockReply; leave?: MockReply } = {}) {
     }
     if (url.pathname === '/api/v1/minecraft/leave' && request.method === 'POST') {
       return overrides.leave ?? ok({ ok: true, status: 'DISCONNECTING' })
+    }
+    if (url.pathname === '/api/v1/minecraft/look_at' && request.method === 'POST') {
+      return ok({ action_id: 'act_ui_1', action: 'look_at', status: 'SUCCEEDED' })
+    }
+    if (url.pathname === '/api/v1/minecraft/stop' && request.method === 'POST') {
+      return ok({ status: 'IDLE', cancelled: [] })
     }
     return fail(404, 'resource.not_found', `未模拟 ${request.method} ${url.pathname}`)
   }
@@ -222,5 +236,81 @@ describe('Minecraft 页', () => {
     })
     await flushAll()
     expect(wrapper.find('[data-test="mc-world"]').exists()).toBe(false)
+  })
+})
+
+describe('Minecraft 页 · Current Action（Phase 3B）', () => {
+  it('空闲时显示 IDLE，Look At Test 被禁用（不在世界）', async () => {
+    const overview = {
+      ...ONLINE_OVERVIEW,
+      connection: { ...ONLINE_OVERVIEW.connection, status: 'DISCONNECTED' },
+    }
+    const { wrapper } = await mountPage((request) => {
+      const url = new URL(request.url, 'http://localhost')
+      if (url.pathname === '/api/v1/minecraft') return ok(overview)
+      return fail(404, 'resource.not_found', 'no')
+    })
+    await flushAll()
+    expect(wrapper.get('[data-test="mc-action-status"]').text()).toContain('IDLE')
+    expect(wrapper.get('[data-test="mc-action-name"]').text()).toContain('—')
+    expect((wrapper.get('[data-test="mc-action-look"]').element as HTMLButtonElement).disabled).toBe(
+      true,
+    )
+    // STOP 永远可用（幂等安全停止）
+    expect((wrapper.get('[data-test="mc-action-stop"]').element as HTMLButtonElement).disabled).toBe(
+      false,
+    )
+  })
+
+  it('在线时 Look At Test 提交附近测试坐标到 /minecraft/look_at', async () => {
+    const { wrapper, calls } = await mountPage(makeHandler())
+    await flushAll()
+    await wrapper.get('[data-test="mc-action-look"]').trigger('click')
+    await flushAll()
+    const look = calls.find((c) => c.url.endsWith('/minecraft/look_at'))
+    expect(look).toBeTruthy()
+    // position 是 (4.5, 21.0, 25.3) → Math.round 后 (+5, 0, +5) = (10, 21, 30)
+    expect(look?.body).toEqual({ x: 10, y: 21, z: 30 })
+  })
+
+  it('STOP 调 /minecraft/stop 并在 toast 里报告取消数量', async () => {
+    const { wrapper, calls } = await mountPage((request) => {
+      const url = new URL(request.url, 'http://localhost')
+      if (url.pathname === '/api/v1/minecraft' && request.method === 'GET') return ok(ONLINE_OVERVIEW)
+      if (url.pathname === '/api/v1/minecraft/stop' && request.method === 'POST') {
+        return ok({ status: 'IDLE', cancelled: ['act_1'] })
+      }
+      return fail(404, 'resource.not_found', 'no')
+    })
+    await flushAll()
+    await wrapper.get('[data-test="mc-action-stop"]').trigger('click')
+    await flushAll()
+    expect(calls.some((c) => c.url.endsWith('/minecraft/stop'))).toBe(true)
+    const toast = useToast()
+    expect(toast.items.value.some((item) => item.detail.includes('act_1'))).toBe(true)
+  })
+
+  it('运行中的动作显示名称/ID/耗时', async () => {
+    const overview = {
+      ...ONLINE_OVERVIEW,
+      action: {
+        action: 'look_at',
+        action_id: 'act_running',
+        status: 'RUNNING',
+        started_at: 1700000000,
+        finished_at: null,
+        elapsed_ms: 1200,
+      },
+    }
+    const { wrapper } = await mountPage((request) => {
+      const url = new URL(request.url, 'http://localhost')
+      if (url.pathname === '/api/v1/minecraft') return ok(overview)
+      return fail(404, 'resource.not_found', 'no')
+    })
+    await flushAll()
+    expect(wrapper.get('[data-test="mc-action-name"]').text()).toContain('look_at')
+    expect(wrapper.get('[data-test="mc-action-status"]').text()).toContain('RUNNING')
+    expect(wrapper.get('[data-test="mc-action-id"]').text()).toContain('act_running')
+    expect(wrapper.get('[data-test="mc-action-elapsed"]').text()).toContain('1.2 s')
   })
 })

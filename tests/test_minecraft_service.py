@@ -8,6 +8,7 @@ from __future__ import annotations
 import asyncio
 import socket
 from pathlib import Path
+from typing import Any
 
 import pytest
 from aiohttp import web
@@ -41,6 +42,11 @@ class FakeRuntime:
         self.chats: list[str] = []
         self.connects: list[tuple[str, int]] = []
         self.disconnects = 0
+        # Phase 3B：Action Runtime
+        self.look_at_calls: list[dict[str, Any]] = []
+        self.stop_calls = 0
+        self.look_at_plan: list[dict[str, Any]] = []  # 依次消费；空 = 默认 SUCCEEDED
+        self.stop_cancelled: list[str] = []
         self._runner: web.AppRunner | None = None
 
     async def start(self) -> None:
@@ -51,6 +57,8 @@ class FakeRuntime:
         app.router.add_post("/minecraft/chat", self._chat)
         app.router.add_post("/minecraft/disconnect", self._disconnect)
         app.router.add_get("/minecraft/world/snapshot", self._world_snapshot)
+        app.router.add_post("/minecraft/look_at", self._look_at)
+        app.router.add_post("/minecraft/stop", self._stop)
         self._runner = web.AppRunner(app, access_log=None)
         await self._runner.setup()
         site = web.TCPSite(self._runner, "127.0.0.1", self.port)
@@ -112,6 +120,31 @@ class FakeRuntime:
         self.disconnects += 1
         self.online = False
         return web.json_response({"ok": True, "status": "DISCONNECTED"})
+
+    async def _look_at(self, request: web.Request) -> web.Response:
+        body = await request.json()
+        self.look_at_calls.append(body)
+        plan = self.look_at_plan.pop(0) if self.look_at_plan else {"status": "SUCCEEDED"}
+        if "error" in plan:
+            code, status = plan["error"]
+            return web.json_response(
+                {"ok": False, "error": {"code": code, "message": f"{code}（fake runtime）"}},
+                status=status,
+            )
+        return web.json_response(
+            {
+                "ok": True,
+                "action_id": plan.get("action_id", "act_fake_1"),
+                "action": "look_at",
+                "status": plan["status"],
+            }
+        )
+
+    async def _stop(self, request: web.Request) -> web.Response:
+        self.stop_calls += 1
+        return web.json_response(
+            {"ok": True, "status": "IDLE", "cancelled": list(self.stop_cancelled)}
+        )
 
     async def _world_snapshot(self, request: web.Request) -> web.Response:
         from tests.test_minecraft_world import raw_payload

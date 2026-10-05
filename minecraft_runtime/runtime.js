@@ -28,6 +28,7 @@ const path = require('path')
 const fs = require('fs')
 const mineflayer = require('mineflayer')
 const Vec3 = require('vec3').Vec3 ?? require('vec3')
+const { createActionRuntime, ActionError } = require('./action_runtime')
 
 // --------------------------------------------------------------- configuration
 
@@ -512,6 +513,76 @@ function parseLayers(query) {
   return new Set(raw.split(',').map((part) => part.trim()).filter((part) => allowed.has(part)))
 }
 
+// ------------------------------------------------------------------ action runtime（Phase 3B）
+
+// 本阶段只注册三个动作（任务书 §四）：look_at（SAFE，改朝向不改世界/位置）、
+// chat（SAFE，唯一非互斥通信动作）、stop（控制面，随时可执行）。
+// 未来 move_to / follow / dig / place / craft 必须复用本 runtime —— 本阶段一律不实现。
+
+const actionRuntime = createActionRuntime({
+  registry: {
+    look_at: {
+      exclusive: true,
+      timeout_ms: 5000,
+      risk: 'SAFE',
+      validate(params) {
+        const coords = {}
+        for (const name of ['x', 'y', 'z']) {
+          const value = params[name]
+          if (typeof value !== 'number' || !Number.isFinite(value)) {
+            throw new ActionError(`坐标 ${name} 必须是有限数字`, 'action.invalid', 400)
+          }
+          coords[name] = value
+        }
+        if (Math.abs(coords.x) > 3.0e7 || Math.abs(coords.z) > 3.0e7 || coords.y < -512 || coords.y > 2048) {
+          throw new ActionError('坐标超出 Minecraft 世界边界', 'action.invalid', 400)
+        }
+        return coords
+      },
+      async run(bot, params) {
+        // 上层永远不处理 yaw/pitch 数学：直接交给 mineflayer 的 lookAt。
+        await bot.lookAt(new Vec3(params.x, params.y, params.z), true)
+        // 状态回报：完成瞬间的实际朝向（服务器可能在之后回写，这里如实记录动作结果）
+        return {
+          yaw: Math.round(((bot.entity.yaw * 180) / Math.PI) * 10) / 10,
+          pitch: Math.round(((bot.entity.pitch * 180) / Math.PI) * 10) / 10,
+        }
+      },
+      cleanup(bot) {
+        // 超时兜底：look_at 不会移动角色，但清掉控制位是最便宜的坏状态保险。
+        if (bot && typeof bot.clearControlStates === 'function') bot.clearControlStates()
+      },
+    },
+    chat: {
+      exclusive: false, // 唯一允许并存的动作（§八）
+      timeout_ms: 5000,
+      risk: 'SAFE',
+      offline_code: 'chat.not_online', // 保持 Phase 1 HTTP 兼容
+      validate(params) {
+        const message = String(params.message ?? '')
+        if (!message.trim()) throw new ActionError('message 不能为空', 'chat.empty', 400)
+        if (message.length > CHAT_MAX_CHARS) {
+          throw new ActionError(`message 超过 ${CHAT_MAX_CHARS} 字符上限`, 'chat.too_long', 400)
+        }
+        return { message }
+      },
+      async run(bot, params) {
+        bot.chat(params.message)
+      },
+    },
+    stop: {
+      // 控制面动作：不占前台、不产生自己的动作记录；幂等、无 bot 也安全（§六）
+      control: true,
+      timeout_ms: 3000,
+      risk: 'SAFE',
+    },
+  },
+  getBot: () => state.bot,
+  isOnline: () => state.phase === 'ONLINE' && state.bot !== null,
+  emit: (event, data) => pushEvent(event, data),
+  log: (message) => log('info', message),
+})
+
 // ------------------------------------------------------------------- bot wiring
 
 function describeReason(reason) {
@@ -621,11 +692,13 @@ function wireBot(bot) {
     const wasActive = state.bot === bot
     state.bot = null
     if (!wasActive && !state.stopping) return // 旧实例的余波
+    // Phase 3B：会话结束 → 进行中的动作全部按 CANCELLED 结束（无僵尸 action）
+    const cancelledActions = actionRuntime.cancelAll('disconnect')
     if (state.phase !== 'ERROR') state.phase = 'DISCONNECTED'
     state.dimension = null
     state.position = null
     state.health = null
-    log('info', 'bot ended', { phase: state.phase })
+    log('info', 'bot ended', { phase: state.phase, cancelled_actions: cancelledActions.length })
     pushEvent('minecraft.disconnected', {
       username: state.username,
       reason: state.kickedReason || state.lastError || null,
@@ -751,6 +824,7 @@ function requestDisconnect() {
 }
 
 function statusPayload() {
+  const action = actionRuntime.snapshot()
   return {
     runtime_version: RUNTIME_VERSION,
     status: state.phase,
@@ -766,6 +840,8 @@ function statusPayload() {
     kicked_reason: state.kickedReason,
     connected_at: state.connectedAt,
     uptime_seconds: Math.round((Date.now() - state.startedAt) / 1000),
+    // Phase 3B：当前动作（前台优先，否则最近一次终态；从未有过 → IDLE）
+    action: { ...action.current, active_count: action.active_count },
   }
 }
 
@@ -884,6 +960,9 @@ async function handleRequest(request, response) {
       return
     }
     if (request.method === 'POST' && path === '/minecraft/chat') {
+      // Phase 1 API contract 保持不变（错误码/校验顺序照旧），内部改由
+      // ActionRuntime 托管：chat 有自己的 action_id 与 started/completed 事件，
+      // 作为非互斥通信动作可与前台动作并存（Phase 3B §七）。
       const body = await readBody(request)
       const message = String(body.message ?? '')
       if (!message.trim()) {
@@ -895,8 +974,22 @@ async function handleRequest(request, response) {
       if (state.phase !== 'ONLINE' || state.bot === null) {
         throw new BridgeError('bot 不在线，无法发言', 'chat.not_online')
       }
-      state.bot.chat(message)
-      jsonResponse(response, 200, { ok: true, sent: true })
+      const result = await actionRuntime.execute('chat', { message })
+      jsonResponse(response, 200, { ok: true, sent: true, ...result })
+      return
+    }
+    if (request.method === 'POST' && path === '/minecraft/look_at') {
+      // SAFE 动作：只改朝向，不改世界、不移动（yaw/pitch 数学由 runtime 处理）
+      const body = await readBody(request)
+      const result = await actionRuntime.execute('look_at', { x: body.x, y: body.y, z: body.z })
+      jsonResponse(response, 200, { ok: true, ...result })
+      return
+    }
+    if (request.method === 'POST' && path === '/minecraft/stop') {
+      // 最高优先级安全停止：幂等、无 bot 也安全，返回被取消的 action_id 列表
+      await readBody(request).catch(() => ({}))
+      const result = actionRuntime.stop()
+      jsonResponse(response, 200, { ok: true, ...result })
       return
     }
     if (request.method === 'POST' && path === '/minecraft/disconnect') {
@@ -912,6 +1005,13 @@ async function handleRequest(request, response) {
         ok: false,
         error: { code: error.code, message: error.message },
       })
+      return
+    }
+    if (error instanceof ActionError) {
+      // 动作层的稳定错误码（action.unknown/not_online/invalid/busy/failed）
+      const body = { code: error.code, message: error.message }
+      if (error.detail) body.detail = error.detail
+      jsonResponse(response, error.status, { ok: false, error: body })
       return
     }
     log('error', 'bridge request failed', { error: String(error && error.stack ? error.stack : error) })
@@ -942,6 +1042,7 @@ function shutdown(signal) {
   log('info', 'shutting down', { signal })
   state.stopping = true
   clearConnectTimer()
+  actionRuntime.cancelAll('shutdown') // 收尾：不留任何进行中的动作
   if (state.bot !== null) {
     try {
       state.bot.quit()

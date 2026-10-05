@@ -15,7 +15,7 @@ import PageHeader from '@/components/PageHeader.vue'
 import SectionHeader from '@/components/SectionHeader.vue'
 import StatusBadge, { type StatusState } from '@/components/StatusBadge.vue'
 import { toast } from '@/composables/toast'
-import type { MinecraftOverview, MinecraftWorldView } from '@/types/minecraft'
+import type { MinecraftActionView, MinecraftOverview, MinecraftWorldView } from '@/types/minecraft'
 
 const POLL_INTERVAL_MS = 3000
 
@@ -40,7 +40,11 @@ const isActive = computed(() =>
     phase.value,
   ),
 )
+const isOnline = computed(() => phase.value === 'ONLINE')
 const canLeave = computed(() => isActive.value)
+
+// Phase 3B：Action Runtime 视图（IDLE = 从未有动作）
+const action = computed<MinecraftActionView | null>(() => overview.value?.action ?? null)
 
 function phaseState(): StatusState {
   if (phase.value === 'ONLINE') return 'ok'
@@ -84,6 +88,61 @@ function stringifyJson(value: unknown): string {
     return JSON.stringify(value ?? {}, null, 2)
   } catch {
     return '{}'
+  }
+}
+
+function formatTime(seconds: number | null | undefined): string {
+  if (seconds === null || seconds === undefined || !Number.isFinite(seconds) || seconds <= 0) {
+    return '—'
+  }
+  const date = new Date(seconds * 1000)
+  if (Number.isNaN(date.getTime())) return '—'
+  const pad = (value: number): string => String(value).padStart(2, '0')
+  return `${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`
+}
+
+function formatElapsed(ms: number | null | undefined): string {
+  if (ms === null || ms === undefined || !Number.isFinite(ms)) return '—'
+  return ms >= 1000 ? `${(ms / 1000).toFixed(1)} s` : `${Math.round(ms)} ms`
+}
+
+async function lookAtTest(): Promise<void> {
+  const position = connection.value?.position
+  if (!position) {
+    toast.error('没有可用坐标', '罐头不在世界里，无法 look_at')
+    return
+  }
+  // 开发用测试坐标：罐头附近 (+5, 0, +5)
+  const x = Math.round(position.x) + 5
+  const y = Math.round(position.y)
+  const z = Math.round(position.z) + 5
+  working.value = true
+  try {
+    const result = await minecraftApi.lookAt(x, y, z)
+    toast.success('look_at 已执行', `${result.action} · ${result.status} · ${result.action_id}`)
+    await load(true)
+  } catch (caught) {
+    toast.error('look_at 失败', errorMessage(caught))
+  } finally {
+    working.value = false
+  }
+}
+
+async function stopAction(): Promise<void> {
+  working.value = true
+  try {
+    const result = await minecraftApi.stop()
+    toast.success(
+      '已停止',
+      result.cancelled.length > 0
+        ? `取消动作：${result.cancelled.join('、')}`
+        : '当前没有可取消的动作',
+    )
+    await load(true)
+  } catch (caught) {
+    toast.error('停止失败', errorMessage(caught))
+  } finally {
+    working.value = false
   }
 }
 
@@ -304,6 +363,44 @@ onUnmounted(stopPolling)
           >
             离开服务器
           </button>
+        </section>
+
+        <section class="minecraft__card cb-card" data-test="mc-action">
+          <SectionHeader
+            title="Current Action"
+            description="Action Runtime（Phase 3B）：look_at / stop 的实时状态；同一时间只有一个前台动作。"
+          />
+          <dl class="minecraft__facts" data-test="mc-action-facts">
+            <div><dt>Action</dt><dd data-test="mc-action-name">{{ display(action?.action) }}</dd></div>
+            <div><dt>Status</dt><dd data-test="mc-action-status">{{ display(action?.status) }}</dd></div>
+            <div><dt>Action ID</dt><dd data-test="mc-action-id">{{ display(action?.action_id) }}</dd></div>
+            <div><dt>Started</dt><dd>{{ formatTime(action?.started_at) }}</dd></div>
+            <div><dt>Elapsed</dt><dd data-test="mc-action-elapsed">{{ formatElapsed(action?.elapsed_ms) }}</dd></div>
+          </dl>
+          <div class="minecraft__form">
+            <button
+              type="button"
+              class="minecraft__button"
+              :disabled="working || !isOnline"
+              data-test="mc-action-look"
+              @click="lookAtTest"
+            >
+              Look At Test
+            </button>
+            <button
+              type="button"
+              class="minecraft__button minecraft__button--danger"
+              :disabled="working"
+              data-test="mc-action-stop"
+              @click="stopAction"
+            >
+              STOP
+            </button>
+          </div>
+          <p class="cb-caption">
+            Look At Test 看向罐头附近 (+5, 0, +5) 的测试坐标（SAFE 动作，不改世界、不移动）；
+            STOP 是最高优先级安全停止：取消进行中的动作并清空移动控制位（幂等）。
+          </p>
         </section>
 
         <section

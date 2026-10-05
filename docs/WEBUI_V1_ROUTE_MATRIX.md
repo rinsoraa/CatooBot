@@ -2,7 +2,7 @@
 
 > 最终状态（W6 cutover 后）。Auth = 会话 Cookie 要求；CSRF = 写操作要求 `X-CSRF-Token`；
 > Lazy = 前端按需加载（Vite chunk）；WS = 该页面消费的实时主题。
-> 数据来源：`app/web/server.py` 的真实路由表（210 条）与 `webui/src/router/index.ts`（45 条）。
+> 数据来源：`app/web/server.py` 的真实路由表（212 条）与 `webui/src/router/index.ts`（45 条）。
 
 ---
 
@@ -47,7 +47,7 @@
 | `/system/credentials` | system-credentials | 是 | 是 | 系统 · 凭据 | `/api/v1/credentials*` | — | ACTIVE |
 | `/system/logs` | system-logs | 是 | 是 | 系统 · 日志 | `/api/v1/logs/tail`, `/logs/channels` | log, narration, status | ACTIVE |
 | `/system/runtime` | system-runtime | 是 | 是 | 系统 · Runtime | `/api/v1/runtime*`, `/overview` | status, scheduler | ACTIVE |
-| `/minecraft` | minecraft | 是 | 是 | Minecraft | `/api/v1/minecraft`, `/minecraft/world`, `/minecraft/join`, `/minecraft/leave` | — | ACTIVE |
+| `/minecraft` | minecraft | 是 | 是 | Minecraft | `/api/v1/minecraft`, `/minecraft/world`, `/minecraft/join`, `/minecraft/leave`, `/minecraft/look_at`, `/minecraft/stop` | — | ACTIVE |
 | `/:pathMatch(.*)*` | not-found | 是 | 是 | 未找到 | — | — | ACTIVE |
 
 守卫：`meta.requiresAuth` 41 条 + guest 1 条 + 重定向 2 条 + catch-all 1 条 = 45 条定义。未登录访问任一 `requiresAuth` 路由 → `/login?redirect=<fullPath>`；登录后回跳原路径。
@@ -108,4 +108,4 @@
 | 媒体 | `/stickers`, `/expressions` | `POST /stickers/{id}/{...}`, `/stickers/reindex`, `POST /expressions/{id}/{...}` | delete → `media.confirm_required` |
 | Agent | `/agent`, `/agent/tasks[,/{id}]` | `POST /agent/tasks/{id}/{pause|resume|cancel|retry|replay}`, `POST /agent/simulate` | 控制操作前端确认；后端校验状态机 |
 | 日志/Runtime | `/logs/tail`, `/logs/channels`, `/runtime`, `/runtime/status`, `/runtime/scheduler`, `/overview` | `POST /runtime/tick`, `POST /runtime/actions/{name}` | 前端确认；受 `_world_lock` 与运行时保护 |
-| Minecraft | `/minecraft` | `POST /minecraft/join`, `POST /minecraft/leave`；`POST /minecraft/events`（Bridge 回调，**免会话/免 CSRF**，Bearer token 门） | leave 前端确认；join 校验 host/port |
+| Minecraft | `/minecraft`, `/minecraft/world` | `POST /minecraft/join`, `POST /minecraft/leave`, `POST /minecraft/look_at`, `POST /minecraft/stop`；`POST /minecraft/events`（Bridge 回调，**免会话/免 CSRF**，Bearer token 门） | leave 前端确认；join 校验 host/port；look_at 校验坐标；stop 幂等 |

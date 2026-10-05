@@ -248,6 +248,74 @@ async function main() {
       assert(chat.status === 200 && chat.body.sent === true, `chat api ok, got ${JSON.stringify(chat.body)}`)
       await waitFor(() => observer.seen.some((line) => line.includes('我在这里！')), 'observer saw bot chat')
       console.log('[e2e] observer saw bot chat ✓')
+      // Phase 3B：chat 已纳入 ActionRuntime → 必须有 chat 的 started/completed 事件
+      await waitFor(
+        () => events.some((e) => e.event === 'minecraft.action.completed' && e.action === 'chat'),
+        'chat action completed event',
+      )
+
+      // ---------------- Phase 3B：Action Runtime（look_at → stop，逐循环） ----------------
+      const startedBefore = countEvents('minecraft.action.started')
+      const completedBefore = countEvents('minecraft.action.completed')
+      const positionBefore = (await request(runtimePort, 'GET', '/minecraft/status')).body.position
+
+      // look_at：抬头看正上方（mineflayer 约定 pitch≈+90；yaw 无关紧要）
+      const look = await request(runtimePort, 'POST', '/minecraft/look_at', {
+        x: positionBefore.x + 0.5,
+        y: positionBefore.y + 50,
+        z: positionBefore.z + 0.5,
+      })
+      assert(look.status === 200, `look_at answers 200, got ${look.status}: ${JSON.stringify(look.body)}`)
+      assert(look.body.status === 'SUCCEEDED', `look_at SUCCEEDED, got ${look.body.status}`)
+      assert(
+        typeof look.body.action_id === 'string' && look.body.action_id.startsWith('act_'),
+        `look_at 返回 runtime 生成的 action_id，得到 ${look.body.action_id}`,
+      )
+      await waitFor(
+        () =>
+          countEvents('minecraft.action.started') > startedBefore &&
+          countEvents('minecraft.action.completed') > completedBefore,
+        'look_at action events',
+      )
+      const completedEvent = events.filter((e) => e.event === 'minecraft.action.completed').at(-1)
+      assert(completedEvent.action_id === look.body.action_id, 'completed 事件携带同一 action_id')
+      assert(completedEvent.action === 'look_at', 'completed 事件携带动作名')
+
+      // look_at 不产生水平位移（Phase 3A 关心的是窗口锚点 x/z；y 可能因重力下落变化）
+      const afterLook = await request(runtimePort, 'GET', '/minecraft/status')
+      const driftX = Math.abs(afterLook.body.position.x - positionBefore.x)
+      const driftZ = Math.abs(afterLook.body.position.z - positionBefore.z)
+      assert(
+        driftX <= 0.2 && driftZ <= 0.2,
+        `look_at 不产生水平位移（dx=${driftX.toFixed(2)}, dz=${driftZ.toFixed(2)}；y=${positionBefore.y}→${afterLook.body.position.y}）`,
+      )
+      // 状态回报：动作完成瞬间的实际朝向（mineflayer 约定抬头 pitch≈+90）。
+      // 不看 snapshot 回读：flying-squid 会随即 forcedMove 把朝向回写（测试环境行为）。
+      assert(
+        completedEvent.result && completedEvent.result.pitch >= 80,
+        `completed 事件回报 pitch≈+90（得到 ${completedEvent.result && completedEvent.result.pitch}）`,
+      )
+      console.log(`[e2e] look_at ✓ id=${look.body.action_id} pitch=${completedEvent.result.pitch}`)
+
+      // stop：幂等、无动作时也成功
+      const stop1 = await request(runtimePort, 'POST', '/minecraft/stop', {})
+      assert(stop1.status === 200 && stop1.body.status === 'IDLE', `stop → 200 IDLE，得到 ${JSON.stringify(stop1.body)}`)
+      assert(Array.isArray(stop1.body.cancelled) && stop1.body.cancelled.length === 0, '空闲 stop 不取消任何动作')
+      const stop2 = await request(runtimePort, 'POST', '/minecraft/stop', {})
+      assert(stop2.status === 200 && stop2.body.cancelled.length === 0, 'stop 幂等')
+
+      // 无僵尸动作 / 无并发残留 / 连接仍然 ONLINE（§十八验收）
+      const actionStatus = await request(runtimePort, 'GET', '/minecraft/status')
+      assert(actionStatus.body.status === 'ONLINE', '动作后连接仍是 ONLINE')
+      assert(actionStatus.body.action, 'status 带 action 段')
+      assert(actionStatus.body.action.active_count === 0, '无僵尸动作（active_count=0）')
+      assert(
+        ['IDLE', 'SUCCEEDED', 'CANCELLED', 'TIMEOUT', 'FAILED'].includes(actionStatus.body.action.status),
+        `动作已落定，得到 ${actionStatus.body.action.status}`,
+      )
+      console.log(
+        `[e2e] action runtime ✓ last=${actionStatus.body.action.action}/${actionStatus.body.action.status} active=${actionStatus.body.action.active_count}`,
+      )
 
       // ---------------- Phase 2：Raw World Snapshot（Test 1/2/3/5/6 子集） ----------------
       if (cycle === 1) {

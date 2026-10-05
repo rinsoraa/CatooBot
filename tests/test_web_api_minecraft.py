@@ -204,3 +204,112 @@ async def test_world_endpoint_reports_primed_semantic_model(tmp_path):
             assert data["age_seconds"] is not None
         finally:
             await service._cleanup()
+
+
+# ------------------------------------------------ Phase 3B：Action Runtime 端点
+
+
+async def test_action_endpoints_require_enabled_service(tmp_path):
+    async with api_server(tmp_path) as (client, bot, server):
+        await client.login()
+        status, payload = await client.post(
+            "/api/v1/minecraft/look_at", body={"x": 1, "y": 2, "z": 3}
+        )
+        assert status == 503 and error_code(payload) == "minecraft.disabled"
+        status, payload = await client.post("/api/v1/minecraft/stop", body={})
+        assert status == 503 and error_code(payload) == "minecraft.disabled"
+
+
+async def test_look_at_validates_locally_and_translates_runtime_errors(tmp_path):
+    async with api_server(tmp_path) as (client, bot, server):
+        await client.login()
+        service = MinecraftService(
+            bot,
+            MinecraftConfig(enabled=True, auto_start_runtime=False, runtime_port=65530),
+        )
+        bot.minecraft = service
+        try:
+            # 非法坐标 → 422（本地校验，无需 runtime）
+            status, payload = await client.post(
+                "/api/v1/minecraft/look_at", body={"x": "abc", "y": 1, "z": 2}
+            )
+            assert status == 422 and error_code(payload) == "minecraft.action_invalid"
+            # 合法坐标但 runtime 不可达 → 503 runtime_down
+            status, payload = await client.post(
+                "/api/v1/minecraft/look_at", body={"x": 1, "y": 2, "z": 3}
+            )
+            assert status == 503 and error_code(payload) == "minecraft.runtime_down"
+        finally:
+            await service._cleanup()
+
+
+async def test_look_at_and_stop_reach_runtime(tmp_path):
+    from tests.test_minecraft_service import FakeRuntime
+
+    fake = FakeRuntime()
+    await fake.start()
+    try:
+        fake.stop_cancelled = ["act_running"]
+        async with api_server(tmp_path) as (client, bot, server):
+            await client.login()
+            service = MinecraftService(
+                bot,
+                MinecraftConfig(enabled=True, auto_start_runtime=False, runtime_port=fake.port),
+            )
+            bot.minecraft = service
+            try:
+                status, payload = await client.post(
+                    "/api/v1/minecraft/look_at", body={"x": 10, "y": 64, "z": -5}
+                )
+                assert status == 200
+                data = payload["data"]
+                assert data["status"] == "SUCCEEDED" and data["action"] == "look_at"
+                assert str(data["action_id"]).startswith("act_")
+                assert fake.look_at_calls == [{"x": 10.0, "y": 64.0, "z": -5.0}]
+
+                status, payload = await client.post("/api/v1/minecraft/stop", body={})
+                assert status == 200
+                assert payload["data"]["cancelled"] == ["act_running"]
+                assert payload["data"]["status"] == "IDLE"
+            finally:
+                await service._cleanup()
+    finally:
+        await fake.stop()
+
+
+async def test_minecraft_projection_includes_action_block(tmp_path):
+    async with api_server(tmp_path) as (client, bot, server):
+        await client.login()
+        # 未启用：读端点恒 200，动作视图是 IDLE
+        status, payload = await client.get("/api/v1/minecraft")
+        assert status == 200
+        assert payload["data"]["action"]["status"] == "IDLE"
+
+        # 启用后：动作事件驱动镜像（started → RUNNING）
+        service = MinecraftService(
+            bot,
+            MinecraftConfig(
+                enabled=True,
+                auto_start_runtime=False,
+                external_callback_token="act-test-token",
+            ),
+        )
+        bot.minecraft = service
+        try:
+            await client.post(
+                "/api/v1/minecraft/events",
+                body={
+                    "event": "minecraft.action.started",
+                    "session_id": "s1",
+                    "timestamp": 1.0,
+                    "action": "look_at",
+                    "action_id": "act_mirror",
+                },
+                headers={"Authorization": "Bearer act-test-token"},
+                csrf=False,
+            )
+            status, payload = await client.get("/api/v1/minecraft")
+            action = payload["data"]["action"]
+            assert action["status"] == "RUNNING" and action["action_id"] == "act_mirror"
+        finally:
+            await service._cleanup()

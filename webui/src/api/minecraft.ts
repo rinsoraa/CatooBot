@@ -5,12 +5,14 @@ import { api } from '@/api/client'
 import type {
   MinecraftJoinResult,
   MinecraftLeaveResult,
+  MinecraftLookAtResult,
   MinecraftOverview,
+  MinecraftStopResult,
   MinecraftWorldView,
 } from '@/types/minecraft'
 
 export const minecraftApi = {
-  /** 连接层一屏投影（状态机 + 世界状态 + runtime 健康）。 */
+  /** 连接层一屏投影（状态机 + 世界状态 + runtime 健康 + 动作视图）。 */
   overview() {
     return api.get<MinecraftOverview>('/minecraft')
   },
@@ -25,5 +27,13 @@ export const minecraftApi = {
   /** 主动离开（幂等）。 */
   leave() {
     return api.post<MinecraftLeaveResult>('/minecraft/leave', {})
+  },
+  /** 让罐头看向世界坐标（Phase 3B SAFE 动作：不改世界、不移动）。 */
+  lookAt(x: number, y: number, z: number) {
+    return api.post<MinecraftLookAtResult>('/minecraft/look_at', { x, y, z })
+  },
+  /** 最高优先级安全停止（幂等）：取消进行中动作，返回被取消的 action_id 列表。 */
+  stop() {
+    return api.post<MinecraftStopResult>('/minecraft/stop', {})
   },
 }

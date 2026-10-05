@@ -17,7 +17,7 @@ from pydantic import BaseModel, Field, field_validator
 
 
 class MinecraftEventType(str, Enum):  # noqa: UP042 - pydantic-friendly str enum
-    """任务书规定的九种 Bridge 事件。"""
+    """任务书规定的九种 Bridge 事件 + Phase 3B 的 Action 生命周期事件。"""
 
     CONNECTING = "minecraft.connecting"
     CONNECTED = "minecraft.connected"
@@ -28,6 +28,12 @@ class MinecraftEventType(str, Enum):  # noqa: UP042 - pydantic-friendly str enum
     KICKED = "minecraft.kicked"
     DISCONNECTED = "minecraft.disconnected"
     ERROR = "minecraft.error"
+    # Phase 3B：Action Runtime 生命周期（action_id / action / status …）
+    ACTION_STARTED = "minecraft.action.started"
+    ACTION_COMPLETED = "minecraft.action.completed"
+    ACTION_FAILED = "minecraft.action.failed"
+    ACTION_CANCELLED = "minecraft.action.cancelled"
+    ACTION_TIMEOUT = "minecraft.action.timeout"
 
 
 #: 合法事件名字符串（回调载荷的 ``event`` 字段必须是其中之一）

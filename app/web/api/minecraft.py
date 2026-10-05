@@ -52,6 +52,15 @@ _DISABLED_SNAPSHOT: dict[str, Any] = {
         "kicked_reason": None,
         "connected_at": None,
     },
+    # Phase 3B：动作视图（未启用 = 永远 IDLE）
+    "action": {
+        "action": None,
+        "action_id": None,
+        "status": "IDLE",
+        "started_at": None,
+        "finished_at": None,
+        "elapsed_ms": None,
+    },
     "last_event": None,
 }
 
@@ -114,6 +123,26 @@ class MinecraftApiRoutes(WebContext):
             raise _translate(exc) from exc
         return ok(result, request=request)
 
+    # ------------------------------------------- Action Runtime（Phase 3B）
+
+    async def _v1_minecraft_look_at(self, request: web.Request) -> web.Response:
+        """让罐头看向世界坐标（SAFE 动作：不改世界、不移动）。"""
+        body = await read_json(request)
+        try:
+            result = await _service(self._bot).look_at(body.get("x"), body.get("y"), body.get("z"))
+        except MinecraftBridgeError as exc:
+            raise _translate(exc) from exc
+        return ok(result, request=request)
+
+    async def _v1_minecraft_stop(self, request: web.Request) -> web.Response:
+        """最高优先级安全停止（幂等）：取消进行中动作，返回被取消的 action_id 列表。"""
+        await read_json(request, required=False)
+        try:
+            result = await _service(self._bot).stop_action()
+        except MinecraftBridgeError as exc:
+            raise _translate(exc) from exc
+        return ok(result, request=request)
+
     # ------------------------------------------------------- bridge callbacks
 
     async def _v1_minecraft_events(self, request: web.Request) -> web.Response:
@@ -138,4 +167,6 @@ class MinecraftApiRoutes(WebContext):
         app.router.add_get(f"{API_PREFIX}/minecraft/world", wrap(self._v1_minecraft_world))
         app.router.add_post(f"{API_PREFIX}/minecraft/join", wrap(self._v1_minecraft_join))
         app.router.add_post(f"{API_PREFIX}/minecraft/leave", wrap(self._v1_minecraft_leave))
+        app.router.add_post(f"{API_PREFIX}/minecraft/look_at", wrap(self._v1_minecraft_look_at))
+        app.router.add_post(f"{API_PREFIX}/minecraft/stop", wrap(self._v1_minecraft_stop))
         app.router.add_post(f"{API_PREFIX}/minecraft/events", wrap(self._v1_minecraft_events))
