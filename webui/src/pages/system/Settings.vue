@@ -15,6 +15,7 @@ import ErrorState from '@/components/ErrorState.vue'
 import LoadingState from '@/components/LoadingState.vue'
 import SectionHeader from '@/components/SectionHeader.vue'
 import ConfigField from '@/components/config/ConfigField.vue'
+import ConfigNav from '@/components/config/ConfigNav.vue'
 import ConfigSearch from '@/components/config/ConfigSearch.vue'
 import ConfigSection from '@/components/config/ConfigSection.vue'
 import ConfigSourceBadge from '@/components/config/ConfigSourceBadge.vue'
@@ -47,11 +48,13 @@ const visibleFields = computed<ConfigFieldMeta[]>(() =>
 
 const groups = computed(() => {
   const order = store.schema?.areas ?? []
-  const map = new Map<string, ConfigFieldMeta[]>()
+  const map = new Map<string, Map<string, ConfigFieldMeta[]>>()
   for (const field of visibleFields.value) {
-    const list = map.get(field.area)
-    if (list) list.push(field)
-    else map.set(field.area, [field])
+    const sections = map.get(field.area) ?? new Map<string, ConfigFieldMeta[]>()
+    const list = sections.get(field.section) ?? []
+    list.push(field)
+    sections.set(field.section, list)
+    map.set(field.area, sections)
   }
   const rank = (area: string): number => {
     const index = order.indexOf(area)
@@ -59,8 +62,32 @@ const groups = computed(() => {
   }
   return [...map.entries()]
     .sort((left, right) => rank(left[0]) - rank(right[0]))
-    .map(([area, items]) => ({ area, items }))
+    .map(([area, sections]) => ({
+      area,
+      sections: [...sections.entries()].map(([section, items]) => ({
+        section,
+        label: items[0]?.section_label || section,
+        items,
+      })),
+    }))
 })
+
+/** 导航栏数据：区域 → 配置类（只含当前级别可见的项） */
+const navSections = computed(() =>
+  groups.value.flatMap((group) =>
+    group.sections.map((section) => ({
+      area: group.area,
+      section: section.section,
+      label: section.label,
+      count: section.items.length,
+    })),
+  ),
+)
+
+/** 配置类锚点 id（与 ConfigNav 保持同一规则） */
+function sectionAnchor(section: string): string {
+  return `section-${section.replace(/[.[\]<>]/g, '-')}`
+}
 
 const unusedCount = computed(
   () =>
@@ -220,6 +247,8 @@ watch(
 
     <ConfigSearch :fields="store.fields" @select="focusField" />
 
+    <ConfigNav :sections="navSections" />
+
     <div v-if="isExpert" class="cb-settings__expert" data-test="expert-warning" role="status">
       <p class="cb-settings__expert-title">
         <span aria-hidden="true">⚠</span> 专家模式
@@ -245,36 +274,49 @@ watch(
         v-for="group in groups"
         :key="group.area"
         :title="group.area"
-        :fields="group.items"
+        :fields="group.sections.flatMap((section) => section.items)"
       >
-        <div
-          v-for="field in group.items"
-          :id="`field-${field.key}`"
-          :key="field.key"
-          class="cb-settings__field"
-          :class="{ 'cb-settings__field--focus': focusKey === field.key }"
-          data-test="settings-field"
-          :data-key="field.key"
+        <section
+          v-for="section in group.sections"
+          :id="sectionAnchor(section.section)"
+          :key="section.section"
+          class="cb-settings__section"
+          :data-section="section.section"
         >
-          <ConfigField
-            :field="field"
-            :value="store.draftValue(field.key)"
-            :disabled="field.sensitive"
-            @update:value="store.setValue(field.key, $event)"
-          />
-          <div class="cb-settings__meta">
-            <ConfigSourceBadge
-              :source="store.effectiveByKey.get(field.key)?.source"
-              :field-key="field.key"
-            />
-            <ConfigStatusBadge
+          <header class="cb-settings__section-head">
+            <h4 class="cb-settings__section-title">{{ section.label }}</h4>
+            <code class="cb-settings__section-path">{{ section.section }}</code>
+            <span class="cb-settings__section-count">共 {{ section.items.length }} 项</span>
+          </header>
+          <div
+            v-for="field in section.items"
+            :id="`field-${field.key}`"
+            :key="field.key"
+            class="cb-settings__field"
+            :class="{ 'cb-settings__field--focus': focusKey === field.key }"
+            data-test="settings-field"
+            :data-key="field.key"
+          >
+            <ConfigField
               :field="field"
-              :effective="store.effectiveByKey.get(field.key)"
-              :dirty="store.isDirtyKey(field.key)"
-              :pending-restart="store.restartPending.pending.includes(field.key)"
+              :value="store.draftValue(field.key)"
+              :disabled="field.sensitive"
+              @update:value="store.setValue(field.key, $event)"
             />
+            <div class="cb-settings__meta">
+              <ConfigSourceBadge
+                :source="store.effectiveByKey.get(field.key)?.source"
+                :field-key="field.key"
+              />
+              <ConfigStatusBadge
+                :field="field"
+                :effective="store.effectiveByKey.get(field.key)"
+                :dirty="store.isDirtyKey(field.key)"
+                :pending-restart="store.restartPending.pending.includes(field.key)"
+              />
+            </div>
           </div>
-        </div>
+        </section>
       </ConfigSection>
     </template>
 
@@ -355,6 +397,40 @@ watch(
 
 .cb-settings__expert-title {
   color: var(--cb-warning);
+}
+
+.cb-settings__section {
+  display: flex;
+  flex-direction: column;
+  gap: var(--cb-space-2);
+  padding-top: var(--cb-space-3);
+  scroll-margin-top: var(--cb-space-5);
+}
+
+.cb-settings__section + .cb-settings__section {
+  border-top: 1px dashed var(--cb-border);
+}
+
+.cb-settings__section-head {
+  display: flex;
+  align-items: baseline;
+  gap: var(--cb-space-2);
+}
+
+.cb-settings__section-title {
+  color: var(--cb-text);
+  font-size: var(--cb-text-md);
+}
+
+.cb-settings__section-path {
+  color: var(--cb-text-faint);
+  font-size: var(--cb-text-xs);
+}
+
+.cb-settings__section-count {
+  margin-left: auto;
+  color: var(--cb-text-faint);
+  font-size: var(--cb-text-xs);
 }
 
 .cb-settings__field {

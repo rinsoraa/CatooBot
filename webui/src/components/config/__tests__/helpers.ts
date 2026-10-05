@@ -85,6 +85,8 @@ export function makeField(overrides: Partial<ConfigFieldMeta> = {}): ConfigField
     sensitive: false,
     choices: [],
     hidden: false,
+    section: 'bot',
+    section_label: '机器人',
     ...overrides,
   }
 }

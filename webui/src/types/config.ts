@@ -37,6 +37,9 @@ export interface ConfigFieldMeta {
   sensitive: boolean
   choices: string[]
   hidden: boolean
+  /** 所属配置类（点分路径，如 behavior.initiative）与中文类名 —— 导航栏按它分组 */
+  section: string
+  section_label: string
 }
 
 export interface ConfigSchema {

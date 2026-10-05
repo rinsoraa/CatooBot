@@ -93,6 +93,42 @@ class TestConfigSchema:
             assert sample["restart_required"] is True
             assert sample["area"] == "运行"
 
+    async def test_every_item_is_annotated_and_carries_its_class(self, tmp_path) -> None:  # type: ignore[no-untyped-def]
+        """可读性契约：每一项都有中文标签与一句人话说明，每一项都带所属配置类与中文类名。
+
+        设置页的导航栏按 `section` 分组、按 `section_label` 显示；任何人都能据此
+        判断"这一项管什么、什么时候该动它"。
+        """
+        async with api_server(tmp_path) as (client, _bot, _server):
+            await client.login()
+            _status, payload = await client.get("/api/v1/config/schema?include=unused")
+            items = payload["data"]["items"]
+            assert items
+
+            missing_label = [row["key"] for row in items if not row["label"].strip()]
+            assert not missing_label, missing_label
+            # 没有中文标签的叶子会退化成英文叶子名（含下划线/空格）
+            fallback = [row["key"] for row in items if "_" in row["label"] and " " in row["label"]]
+            assert not fallback, f"缺少中文标签: {fallback}"
+
+            missing_note = [row["key"] for row in items if "：" not in row["description"]]
+            assert not missing_note, f"缺少说明: {missing_note}"
+
+            missing_section = [row["key"] for row in items if not row["section"]]
+            assert not missing_section, missing_section
+            assert all(row["section_label"] for row in items)
+            # 类名不能只是路径回退（英文点分路径）
+            untranslated = {
+                row["section"] for row in items if row["section_label"] == row["section"]
+            }
+            assert not untranslated, f"缺少中文类名: {sorted(untranslated)}"
+
+            sample = next(
+                row for row in items if row["key"] == "behavior.initiative.core_friend.daily_limit"
+            )
+            assert sample["section"] == "behavior.initiative.core_friend"
+            assert sample["section_label"] == "主动聊天（核心好友）"
+
     async def test_unused_keys_are_hidden_but_queryable(self, tmp_path) -> None:  # type: ignore[no-untyped-def]
         async with api_server(tmp_path) as (client, _bot, _server):
             await client.login()
