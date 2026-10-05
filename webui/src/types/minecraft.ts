@@ -90,8 +90,16 @@ export interface MinecraftStopResult {
 
 export interface MinecraftPathfinderInfo {
   goal: string | null
-  target: { x: number; y: number; z: number } | null
+  /** GoalFollow 时带 username；GoalNear 时只有坐标。 */
+  target: { username?: string | null; x: number; y: number; z: number } | null
+  distance: number | null
   moving: boolean
+}
+
+export interface MinecraftFollowPlayerResult {
+  action_id: string
+  action: string
+  status: MinecraftActionStatus
 }
 
 export interface MinecraftMoveToResult {

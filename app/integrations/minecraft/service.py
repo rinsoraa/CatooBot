@@ -123,6 +123,33 @@ class MinecraftPathNotFound(MinecraftBridgeError):
         super().__init__(message, code="minecraft.path_not_found")
 
 
+class MinecraftPlayerNotFound(MinecraftBridgeError):
+    """Phase 3D：跟随目标玩家不存在（不在线/不在视野内）——不启动 Pathfinder。"""
+
+    status = 404
+
+    def __init__(self, message: str = "找不到该玩家") -> None:
+        super().__init__(message, code="minecraft.player_not_found")
+
+
+class MinecraftPlayerLost(MinecraftBridgeError):
+    """Phase 3D：跟随目标消失超过宽限期（持续动作失败，通常经事件上报）。"""
+
+    status = 500
+
+    def __init__(self, message: str = "跟随目标已消失") -> None:
+        super().__init__(message, code="minecraft.player_lost")
+
+
+class MinecraftFollowTargetTooFar(MinecraftBridgeError):
+    """Phase 3D：目标超过最大追逐距离（不追到世界尽头）。"""
+
+    status = 500
+
+    def __init__(self, message: str = "跟随目标距离超过上限") -> None:
+        super().__init__(message, code="minecraft.follow_target_too_far")
+
+
 #: runtime 业务错误码 → 稳定错误（action.* 必须先于通用 409 判断）
 def _translate(exc: MinecraftRuntimeError) -> MinecraftBridgeError:
     if exc.unreachable:
@@ -137,6 +164,14 @@ def _translate(exc: MinecraftRuntimeError) -> MinecraftBridgeError:
         return MinecraftActionFailed(str(exc))
     if exc.code == "path.not_found":
         return MinecraftPathNotFound(str(exc))
+    if exc.code == "player.not_found":
+        return MinecraftPlayerNotFound(str(exc))
+    # player.lost / follow.target_too_far 发生在持续动作的后台阶段，正常经事件上报；
+    # 这里保留映射，任何同步路径出现它们时也能得到稳定错误码。
+    if exc.code == "player.lost":
+        return MinecraftPlayerLost(str(exc))
+    if exc.code == "follow.target_too_far":
+        return MinecraftFollowTargetTooFar(str(exc))
     if exc.status == 409:
         return MinecraftBusy(str(exc))
     if exc.code in {"target.invalid", "chat.empty", "chat.too_long"}:
@@ -165,8 +200,19 @@ ACTION_IDLE: dict[str, Any] = {
     "elapsed_ms": None,
 }
 
-#: 空闲 Pathfinder 诊断（Phase 3C；未启用/无 bot 时）
-PATHFINDER_IDLE: dict[str, Any] = {"goal": None, "target": None, "moving": False}
+#: 空闲 Pathfinder 诊断（Phase 3C/3D；未启用/无 bot 时）
+PATHFINDER_IDLE: dict[str, Any] = {
+    "goal": None,
+    "target": None,
+    "distance": None,
+    "moving": False,
+}
+
+#: follow_player 的默认与边界（与 runtime 同规则）
+FOLLOW_DEFAULT_DISTANCE = 2.5
+FOLLOW_MIN_DISTANCE = 1.5
+FOLLOW_MAX_DISTANCE = 6.0
+FOLLOW_MAX_USERNAME_CHARS = 16
 
 
 class _RuntimeProcess:
@@ -410,6 +456,11 @@ class MinecraftService:
         env["MC_AUTH_FILE"] = str(self._runtime_dir() / "auth.json")
         # Phase 3C：move_to 的最大距离（runtime 侧与 Service 侧同规则）
         env["MC_MOVE_MAX_DISTANCE"] = str(self.config.action.move_to.max_distance)
+        # Phase 3D：follow_player 的超时与最大追逐距离
+        env["MC_FOLLOW_TIMEOUT_MS"] = str(int(self.config.action.follow_player.timeout * 1000))
+        env["MC_FOLLOW_MAX_CHASE_DISTANCE"] = str(
+            self.config.action.follow_player.max_chase_distance
+        )
         if self.callback_url:
             env["MC_CALLBACK_URL"] = self.callback_url
             env["MC_CALLBACK_TOKEN"] = self.callback_token or ""
@@ -587,6 +638,40 @@ class MinecraftService:
         try:
             await self._ensure_runtime()
             return await self._client.move_to(coords["x"], coords["y"], coords["z"])
+        except MinecraftRuntimeError as exc:
+            if exc.unreachable:
+                self._mark_runtime_down(str(exc))
+            raise _translate(exc) from exc
+
+    async def follow_player(self, username: Any, distance: Any = None) -> dict[str, Any]:
+        """动态跟随玩家（Phase 3D · LOW · 持续型动作）。
+
+        验证（§二十）：username 非空 / ≤16 字符 / 无控制字符；distance 1.5~6
+        （默认 2.5）；Minecraft 必须 ONLINE（镜像判定）。启动成功即返回 ``RUNNING``
+        ——终态（STOP / 超时 / 目标丢失 / 超距离）经 action 事件异步送达。
+        """
+        self._require_enabled()
+        if not isinstance(username, str) or not username.strip():
+            raise MinecraftActionInvalid("username 不能为空")
+        if len(username) > FOLLOW_MAX_USERNAME_CHARS:
+            raise MinecraftActionInvalid(f"username 最长 {FOLLOW_MAX_USERNAME_CHARS} 个字符")
+        if any(ord(ch) < 32 or ord(ch) == 127 for ch in username):
+            raise MinecraftActionInvalid("username 不能包含控制字符")
+        raw_distance = FOLLOW_DEFAULT_DISTANCE if distance is None or distance == "" else distance
+        if isinstance(raw_distance, bool) or not isinstance(raw_distance, (int, float)):
+            raise MinecraftActionInvalid("distance 必须是数字")
+        target_distance = float(raw_distance)
+        if not math.isfinite(target_distance) or not (
+            FOLLOW_MIN_DISTANCE <= target_distance <= FOLLOW_MAX_DISTANCE
+        ):
+            raise MinecraftActionInvalid(
+                f"distance 必须在 {FOLLOW_MIN_DISTANCE:g}~{FOLLOW_MAX_DISTANCE:g} 格之间"
+            )
+        if str(self._mirror.get("status", "DISCONNECTED")) != "ONLINE":
+            raise MinecraftNotConnected("罐头不在世界里，无法跟随")
+        try:
+            await self._ensure_runtime()
+            return await self._client.follow_player(username, target_distance)
         except MinecraftRuntimeError as exc:
             if exc.unreachable:
                 self._mark_runtime_down(str(exc))

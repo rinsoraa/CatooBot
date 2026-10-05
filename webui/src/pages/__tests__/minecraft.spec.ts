@@ -41,7 +41,7 @@ const ONLINE_OVERVIEW = {
     finished_at: null,
     elapsed_ms: null,
   },
-  pathfinder: { goal: null, target: null, moving: false },
+  pathfinder: { goal: null, target: null, distance: null, moving: false },
   last_event: null,
 }
 
@@ -113,6 +113,9 @@ function makeHandler(overrides: { join?: MockReply; leave?: MockReply } = {}) {
           distance_to_target: 0.4,
         },
       })
+    }
+    if (url.pathname === '/api/v1/minecraft/follow_player' && request.method === 'POST') {
+      return ok({ action_id: 'act_follow_ui', action: 'follow_player', status: 'RUNNING' })
     }
     if (url.pathname === '/api/v1/minecraft/stop' && request.method === 'POST') {
       return ok({ status: 'IDLE', cancelled: [] })
@@ -396,5 +399,71 @@ describe('Minecraft 页 · move_to（Phase 3C）', () => {
     await wrapper.get('[data-test="mc-move-to"]').trigger('click')
     await flushAll()
     expect(calls.some((c) => c.url.endsWith('/minecraft/move_to'))).toBe(false)
+  })
+})
+
+describe('Minecraft 页 · follow_player（Phase 3D）', () => {
+  it('FOLLOW 提交玩家名与距离到 /minecraft/follow_player', async () => {
+    const { wrapper, calls } = await mountPage(makeHandler())
+    await flushAll()
+    await wrapper.get('[data-test="mc-follow-username"]').setValue('空凛')
+    await wrapper.get('[data-test="mc-follow-distance"]').setValue('3')
+    await wrapper.get('[data-test="mc-follow"]').trigger('click')
+    await flushAll()
+    const call = calls.find((c) => c.url.endsWith('/minecraft/follow_player'))
+    expect(call).toBeTruthy()
+    expect(call?.body).toEqual({ username: '空凛', distance: 3 })
+  })
+
+  it('跟随中显示 Following 与距离（GoalFollow 诊断）', async () => {
+    const overview = {
+      ...ONLINE_OVERVIEW,
+      action: {
+        action: 'follow_player',
+        action_id: 'act_follow_running',
+        status: 'RUNNING',
+        started_at: 1700000000,
+        finished_at: null,
+        elapsed_ms: 4200,
+      },
+      pathfinder: {
+        goal: 'GoalFollow',
+        target: { username: '空凛', x: 10.4, y: 64.0, z: -5.6 },
+        distance: 2.5,
+        moving: true,
+      },
+    }
+    const { wrapper } = await mountPage((request) => {
+      const url = new URL(request.url, 'http://localhost')
+      if (url.pathname === '/api/v1/minecraft') return ok(overview)
+      return fail(404, 'resource.not_found', 'no')
+    })
+    await flushAll()
+    const following = wrapper.get('[data-test="mc-following"]').text()
+    expect(following).toContain('Following:')
+    expect(following).toContain('空凛')
+    expect(following).toContain('2.5')
+    expect(following).toContain('正在移动')
+    expect(wrapper.get('[data-test="mc-action-name"]').text()).toContain('follow_player')
+  })
+
+  it('离线时 FOLLOW 与输入禁用；空玩家名本地拦截', async () => {
+    const offline = {
+      ...ONLINE_OVERVIEW,
+      connection: { ...ONLINE_OVERVIEW.connection, status: 'DISCONNECTED' },
+    }
+    const first = await mountPage((request) => {
+      const url = new URL(request.url, 'http://localhost')
+      if (url.pathname === '/api/v1/minecraft') return ok(offline)
+      return fail(404, 'resource.not_found', 'no')
+    })
+    await flushAll()
+    expect((first.wrapper.get('[data-test="mc-follow"]').element as HTMLButtonElement).disabled).toBe(true)
+
+    const { wrapper, calls } = await mountPage(makeHandler())
+    await flushAll()
+    await wrapper.get('[data-test="mc-follow"]').trigger('click') // 玩家名空
+    await flushAll()
+    expect(calls.some((c) => c.url.endsWith('/minecraft/follow_player'))).toBe(false)
   })
 })

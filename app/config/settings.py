@@ -845,10 +845,20 @@ class MoveToConfig(BaseModel):
     max_distance: float = Field(default=64.0, gt=0, le=1024)
 
 
+class FollowPlayerConfig(BaseModel):
+    """Phase 3D：follow_player（动态跟随）的参数与安全门。"""
+
+    #: 跟随 Action 的最长运行时长（秒）；不许无限运行（10~600，第一版不支持 0）
+    timeout: float = Field(default=120.0, ge=10.0, le=600.0)
+    #: 最大追逐距离（格）：与目标直线距离超过它就失败，不追到世界尽头
+    max_chase_distance: float = Field(default=64.0, gt=0, le=1024)
+
+
 class MinecraftActionConfig(BaseModel):
     """Action Runtime 的动作级配置（Phase 3C 起）。"""
 
     move_to: MoveToConfig = Field(default_factory=MoveToConfig)
+    follow_player: FollowPlayerConfig = Field(default_factory=FollowPlayerConfig)
 
 
 class MinecraftConfig(BaseModel):

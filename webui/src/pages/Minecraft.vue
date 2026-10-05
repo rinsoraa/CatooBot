@@ -53,6 +53,7 @@ const action = computed<MinecraftActionView | null>(() => overview.value?.action
 // Phase 3C：Pathfinder 诊断 + move_to 目标输入
 const pathfinder = computed<MinecraftPathfinderInfo | null>(() => overview.value?.pathfinder ?? null)
 const moveTarget = reactive({ x: '', y: '', z: '' })
+const followTarget = reactive({ username: '', distance: '2.5' })
 
 function phaseState(): StatusState {
   if (phase.value === 'ONLINE') return 'ok'
@@ -165,6 +166,33 @@ async function moveTo(): Promise<void> {
     await load(true)
   } catch (caught) {
     toast.error('移动失败', errorMessage(caught))
+  } finally {
+    working.value = false
+  }
+}
+
+async function followPlayer(): Promise<void> {
+  const username = followTarget.username.trim()
+  if (!username) {
+    toast.error('缺少玩家名', '先填写要跟随的玩家 username')
+    return
+  }
+  if (username.length > 16) {
+    toast.error('玩家名过长', 'username 最长 16 个字符')
+    return
+  }
+  const distance = Number(followTarget.distance === '' ? '2.5' : followTarget.distance)
+  if (!Number.isFinite(distance) || distance < 1.5 || distance > 6) {
+    toast.error('距离不合法', 'distance 必须在 1.5 ~ 6 格之间')
+    return
+  }
+  working.value = true
+  try {
+    const result = await minecraftApi.followPlayer(username, distance)
+    toast.success('follow_player 已执行', `${result.action} · ${result.status}（持续跟随，STOP 可停）`)
+    await load(true)
+  } catch (caught) {
+    toast.error('跟随失败', errorMessage(caught))
   } finally {
     working.value = false
   }
@@ -426,6 +454,48 @@ onUnmounted(stopPolling)
             {{ Math.round(pathfinder.target.z) }}
             <template v-if="pathfinder.moving">（正在移动）</template>
           </p>
+          <p
+            v-if="pathfinder?.goal === 'GoalFollow' && pathfinder.target"
+            class="cb-caption"
+            data-test="mc-following"
+          >
+            Following: {{ pathfinder.target.username ?? '—' }} · Distance:
+            {{ display(pathfinder.distance) }}
+            <template v-if="pathfinder.moving">（正在移动）</template>
+          </p>
+          <div class="minecraft__form" data-test="mc-follow-form">
+            <label class="minecraft__field minecraft__field--port">
+              <span>Player</span>
+              <input
+                v-model="followTarget.username"
+                type="text"
+                placeholder="空凛"
+                :disabled="working || !isOnline"
+                data-test="mc-follow-username"
+              />
+            </label>
+            <label class="minecraft__field minecraft__field--coord">
+              <span>Distance</span>
+              <input
+                v-model="followTarget.distance"
+                type="number"
+                step="0.5"
+                min="1.5"
+                max="6"
+                :disabled="working || !isOnline"
+                data-test="mc-follow-distance"
+              />
+            </label>
+            <button
+              type="button"
+              class="minecraft__button minecraft__button--primary"
+              :disabled="working || !isOnline"
+              data-test="mc-follow"
+              @click="followPlayer"
+            >
+              FOLLOW
+            </button>
+          </div>
           <div class="minecraft__form" data-test="mc-move-form">
             <label class="minecraft__field minecraft__field--coord">
               <span>Target X</span>

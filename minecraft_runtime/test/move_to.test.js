@@ -51,9 +51,9 @@ function main() {
     assert(typeof def.validate === 'function', '有参数校验')
     assert(typeof def.run === 'function', '有执行体')
     assert(typeof def.cleanup === 'function', '有 cleanup（停止/超时/断开时清 Goal）')
-    // 本阶段只允许新增 move_to：注册表仍是 look_at / chat / stop / move_to
+    // 注册表只允许已批准的动作（Phase 3D 起含 follow_player）
     assert(
-      Object.keys(ACTION_REGISTRY).sort().join(',') === 'chat,look_at,move_to,stop',
+      Object.keys(ACTION_REGISTRY).sort().join(',') === 'chat,follow_player,look_at,move_to,stop',
       `注册表不含额外动作（得到 ${Object.keys(ACTION_REGISTRY).sort().join(',')}）`,
     )
   }

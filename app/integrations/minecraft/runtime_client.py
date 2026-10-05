@@ -69,6 +69,12 @@ class MinecraftRuntimeClient:
         """非破坏性导航到世界坐标（Phase 3C：LOW；GoalNear 半径/禁挖禁放在 runtime 侧）。"""
         return await self._request("POST", "/minecraft/move_to", body={"x": x, "y": y, "z": z})
 
+    async def follow_player(self, username: str, distance: float) -> dict[str, Any]:
+        """动态跟随玩家（Phase 3D：GoalFollow + dynamic；启动即返回 RUNNING）。"""
+        return await self._request(
+            "POST", "/minecraft/follow_player", body={"username": username, "distance": distance}
+        )
+
     async def stop(self) -> dict[str, Any]:
         """最高优先级安全停止（Phase 3B）：取消进行中动作，幂等。"""
         return await self._request("POST", "/minecraft/stop", body={})

@@ -96,6 +96,52 @@ function makeHarness() {
         throw new ActionError('无法找到到达目标的非破坏性路径', 'path.not_found', 500)
       },
     },
+    // Phase 3D：持续型（detached）动作
+    slow_detached: {
+      exclusive: true,
+      timeout_ms: 5000,
+      detached: true,
+      cleaned: 0,
+      async start() {
+        return { started: true }
+      },
+      wait(bot, params, token, state) {
+        gates.detached = gates.detached || deferred()
+        return gates.detached.promise
+      },
+      cleanup() {
+        this.cleaned += 1
+      },
+    },
+    hang_detached: {
+      exclusive: true,
+      timeout_ms: 60,
+      detached: true,
+      async start() {},
+      wait() {
+        return new Promise(() => {}) // 永不结束 → 必然超时
+      },
+    },
+    failing_detached: {
+      exclusive: true,
+      timeout_ms: 5000,
+      detached: true,
+      async start() {},
+      wait() {
+        return Promise.reject(new ActionError('跟随目标消失了', 'player.lost', 500))
+      },
+    },
+    bad_start_detached: {
+      exclusive: true,
+      timeout_ms: 5000,
+      detached: true,
+      async start() {
+        throw new ActionError('找不到玩家', 'player.not_found', 404)
+      },
+      wait() {
+        return new Promise(() => {})
+      },
+    },
     slow_cleanup: {
       exclusive: true,
       timeout_ms: 1000,
@@ -451,6 +497,64 @@ async function main() {
     assert(failed[0].data.code === 'path.not_found', 'failed 事件带 code（不透明内部错误对象不外泄）')
     assert(/\(RuntimeError/.test(JSON.stringify(failed[0].data)) === false, '不带 Pathfinder 内部错误名/堆栈')
     assert(runtime.snapshot().active_count === 0, '失败后无僵尸动作')
+  }
+
+  console.log('[action-test] detached（持续型）动作：启动即 RUNNING，终态由事件送达（3D）')
+  {
+    const { runtime, events, actions } = makeHarness()
+    const t0 = Date.now()
+    const result = await runtime.execute('slow_detached', {})
+    assert(Date.now() - t0 < 300, 'execute 立即返回（不阻塞调用方）')
+    assert(result.status === 'RUNNING', `启动返回 RUNNING（得到 ${result.status}）`)
+    assert(runtime.snapshot().active_count === 1, '动作仍在后台进行')
+    assert(eventsOf(events, 'minecraft.action.completed').length === 0, '没有伪造的完成事件')
+    assert(eventsOf(events, 'minecraft.action.started').length === 1, 'started 事件已发')
+
+    runtime.stop()
+    await sleep(50)
+    assert(eventsOf(events, 'minecraft.action.cancelled').length === 1, 'STOP → 后台落定 CANCELLED 事件')
+    assert(runtime.snapshot().active_count === 0, '无僵尸动作')
+    assert(actions.slow_detached.cleaned === 1, 'cleanup 恰好一次')
+    assert(runtime.currentView().status === 'CANCELLED', 'currentView = CANCELLED')
+  }
+
+  console.log('[action-test] detached：后台失败 → FAILED 事件带 code（3D）')
+  {
+    const { runtime, events } = makeHarness()
+    const result = await runtime.execute('failing_detached', {})
+    assert(result.status === 'RUNNING', '启动仍返回 RUNNING（失败在后台发生）')
+    await sleep(80)
+    const failed = eventsOf(events, 'minecraft.action.failed')
+    assert(failed.length === 1 && failed[0].data.code === 'player.lost', 'FAILED 事件带 player.lost')
+    assert(runtime.snapshot().active_count === 0, '失败后出清')
+    assert(runtime.currentView().status === 'FAILED', 'currentView = FAILED')
+  }
+
+  console.log('[action-test] detached：启动阶段抛错仍同步反馈（404）')
+  {
+    const { runtime, events } = makeHarness()
+    let failure = null
+    try {
+      await runtime.execute('bad_start_detached', {})
+    } catch (error) {
+      failure = error
+    }
+    assert(
+      failure instanceof ActionError && failure.code === 'player.not_found' && failure.status === 404,
+      `start 抛错同步反馈（得到 ${failure && failure.code}/${failure && failure.status}）`,
+    )
+    assert(eventsOf(events, 'minecraft.action.failed').length === 1, 'FAILED 事件已发')
+    assert(runtime.snapshot().active_count === 0, '无残留动作')
+  }
+
+  console.log('[action-test] detached：超时 → TIMEOUT + 出清（3D）')
+  {
+    const { runtime, events } = makeHarness()
+    const result = await runtime.execute('hang_detached', {})
+    assert(result.status === 'RUNNING', '启动返回 RUNNING')
+    await sleep(200)
+    assert(eventsOf(events, 'minecraft.action.timeout').length === 1, '超时事件')
+    assert(runtime.snapshot().active_count === 0, '超时后出清')
   }
 
   clearInterval(keepAlive)

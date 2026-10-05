@@ -112,6 +112,7 @@ v0.4 行为引擎（回复延迟/分段/作息，规格不在 docs/specs/）标 
 | [MINECRAFT_PHASE2.md](MINECRAFT_PHASE2.md) | Minecraft 世界感知（Phase 2）：Raw Snapshot/语义模型/分层缓存/感知事件/World Debug | 已实现 |
 | [MINECRAFT_PHASE3B.md](MINECRAFT_PHASE3B.md) | Minecraft Safe Action Layer（Phase 3B）：Action Runtime/状态机/安全停止/look_at · stop | 已实现 |
 | [MINECRAFT_PHASE3C.md](MINECRAFT_PHASE3C.md) | Minecraft Navigation Runtime（Phase 3C）：move_to 非破坏性导航/Pathfinder/STOP 真停/超时 | 已实现 |
+| [MINECRAFT_PHASE3D.md](MINECRAFT_PHASE3D.md) | Minecraft 动态跟随（Phase 3D）：follow_player/GoalFollow dynamic/目标丢失宽限/最大追逐距离 | 已实现 |
 | bible_source_罐头.txt | 内置角色的人物档案源文件（Bible 编译器输入） | **本地内容资产**：按「Character Bible 不得上传」约束，已移至 `config/bible_source_罐头.txt`（`config/` 不在发布镜像内） |
 
 ## 运维速查

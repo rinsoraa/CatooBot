@@ -14,8 +14,11 @@ from app.integrations.minecraft.service import (
     MinecraftActionBusy,
     MinecraftActionFailed,
     MinecraftActionInvalid,
+    MinecraftFollowTargetTooFar,
     MinecraftNotConnected,
     MinecraftPathNotFound,
+    MinecraftPlayerLost,
+    MinecraftPlayerNotFound,
     MinecraftRuntimeDown,
     MinecraftService,
 )
@@ -381,4 +384,116 @@ async def test_move_to_mirror_survives_runtime_down(make_service) -> None:
     service = make_service(make_config(None))
     with pytest.raises(MinecraftRuntimeDown):
         await service.move_to(1, 2, 3)
-    assert service.snapshot()["pathfinder"] == {"goal": None, "target": None, "moving": False}
+    assert service.snapshot()["pathfinder"] == {
+        "goal": None,
+        "target": None,
+        "distance": None,
+        "moving": False,
+    }
+
+
+# ----------------------------------------------------------- Phase 3D：follow_player
+# §二十二 的 Node Unit 命名用例（registered/exclusive/risk/timeout/invalid_username/
+# invalid_distance/target_not_found/cleanup_clears_goal）在 Node 侧实现
+# （minecraft_runtime/test/follow_player.test.js）；这里覆盖服务层语义与错误翻译。
+
+
+async def _online_service(fake_runtime: FakeRuntime, make_service) -> MinecraftService:
+    fake_runtime.online = True
+    service = make_service(make_config(fake_runtime))
+    await service.status()  # 让镜像变成 ONLINE（follow 的 Service 层要求）
+    return service
+
+
+async def test_follow_player_success(fake_runtime: FakeRuntime, make_service) -> None:
+    service = await _online_service(fake_runtime, make_service)
+    result = await service.follow_player("空凛")
+    assert result["status"] == "RUNNING"  # 持续型：启动即返回，终态经事件送达
+    assert result["action"] == "follow_player"
+    assert str(result["action_id"]).startswith("act_")
+    assert fake_runtime.follow_player_calls == [{"username": "空凛", "distance": 2.5}]
+
+
+async def test_follow_player_custom_distance(fake_runtime: FakeRuntime, make_service) -> None:
+    service = await _online_service(fake_runtime, make_service)
+    await service.follow_player("空凛", 4)
+    assert fake_runtime.follow_player_calls == [{"username": "空凛", "distance": 4.0}]
+
+
+async def test_follow_player_invalid_username(fake_runtime: FakeRuntime, make_service) -> None:
+    service = await _online_service(fake_runtime, make_service)
+    for bad in ("", "   ", "a" * 17, "bad\nname", "bad\u0000name", 123, None):
+        with pytest.raises(MinecraftActionInvalid):
+            await service.follow_player(bad)  # type: ignore[arg-type]
+    assert fake_runtime.follow_player_calls == []  # 本地校验先于任何网络往返
+
+
+async def test_follow_player_invalid_distance(fake_runtime: FakeRuntime, make_service) -> None:
+    service = await _online_service(fake_runtime, make_service)
+    for bad in (1.0, 1.49, 6.01, 9, float("nan"), float("inf"), "2.5"):
+        with pytest.raises(MinecraftActionInvalid):
+            await service.follow_player("空凛", bad)  # type: ignore[arg-type]
+    assert fake_runtime.follow_player_calls == []
+
+
+async def test_follow_player_requires_online(fake_runtime: FakeRuntime, make_service) -> None:
+    """Service 层验证 Minecraft ONLINE：镜像不是 ONLINE 时直接拒绝。"""
+    service = make_service(make_config(fake_runtime))  # 未调用 status() → 镜像 DISCONNECTED
+    with pytest.raises(MinecraftNotConnected, match="无法跟随"):
+        await service.follow_player("空凛")
+    assert fake_runtime.follow_player_calls == []
+
+
+async def test_follow_player_target_not_found(fake_runtime: FakeRuntime, make_service) -> None:
+    service = await _online_service(fake_runtime, make_service)
+    fake_runtime.follow_player_plan.append({"error": ("player.not_found", 404)})
+    with pytest.raises(MinecraftPlayerNotFound) as excinfo:
+        await service.follow_player("不存在的人")
+    assert excinfo.value.code == "minecraft.player_not_found"
+    assert excinfo.value.status == 404
+
+
+async def test_follow_player_lost_and_too_far_translated(
+    fake_runtime: FakeRuntime, make_service
+) -> None:
+    """player.lost / follow.target_too_far 通常经事件上报；同步路径也保持稳定错误码。"""
+    service = await _online_service(fake_runtime, make_service)
+    fake_runtime.follow_player_plan.append({"error": ("player.lost", 500)})
+    with pytest.raises(MinecraftPlayerLost) as lost:
+        await service.follow_player("空凛")
+    assert lost.value.code == "minecraft.player_lost"
+
+    fake_runtime.follow_player_plan.append({"error": ("follow.target_too_far", 500)})
+    with pytest.raises(MinecraftFollowTargetTooFar) as far:
+        await service.follow_player("空凛")
+    assert far.value.code == "minecraft.follow_target_too_far"
+
+
+async def test_follow_player_mirror_shows_who_is_followed(
+    fake_runtime: FakeRuntime, make_service
+) -> None:
+    """§十二：跟随期间 status.pathfinder 必须能看出在跟谁、距离多少。"""
+    service = await _online_service(fake_runtime, make_service)
+    fake_runtime.pathfinder_state = {
+        "goal": "GoalFollow",
+        "target": {"username": "空凛", "x": 123.5, "y": 64.0, "z": -230.25},
+        "distance": 2.5,
+        "moving": True,
+    }
+    snapshot = await service.status()
+    pathfinder = snapshot["pathfinder"]
+    assert pathfinder["goal"] == "GoalFollow"
+    assert pathfinder["target"]["username"] == "空凛"
+    assert pathfinder["distance"] == 2.5
+    assert pathfinder["moving"] is True
+
+    # 终态（STOP/超时/丢失）之后镜像回落：goal null、moving false
+    fake_runtime.pathfinder_state = {
+        "goal": None,
+        "target": None,
+        "distance": None,
+        "moving": False,
+    }
+    settled = await service.status()
+    assert settled["pathfinder"]["goal"] is None
+    assert settled["pathfinder"]["moving"] is False

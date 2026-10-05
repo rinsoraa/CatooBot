@@ -156,6 +156,8 @@ async function main() {
       MC_AUTH_FILE: authFile,
       MC_CONNECT_TIMEOUT: '30',
       MC_MOVE_TIMEOUT_MS: '2500', // Test C 依赖：可达的 12–16 格约需 3s+ → 确定性超时
+      MC_FOLLOW_TIMEOUT_MS: '8000', // Test C 的 3s 宽限必须在超时之前完成；Test E 等 8s
+      MC_FOLLOW_MAX_CHASE_DISTANCE: '16', // Test D 用 30 格验证「超上限即失败」
     },
     stdio: ['ignore', 'pipe', 'pipe'],
   })
@@ -512,6 +514,189 @@ async function main() {
         const moveSettled = (await request(runtimePort, 'GET', '/minecraft/status')).body
         assert(moveSettled.status === 'ONLINE', 'Test A/B/C 后连接仍 ONLINE')
         assert(moveSettled.action.active_count === 0, 'Test A/B/C 后无僵尸动作')
+      }
+
+      // ---------------- Phase 3D：follow_player（Test A 跟随 / B STOP / C 丢失 / D 太远 / E 超时） ----------------
+      if (cycle === 1) {
+        const botPosNow = async () =>
+          (await request(runtimePort, 'GET', '/minecraft/status')).body.position
+        const tpTarget = (target, x, y, z) => target.bot.chat(`/tp ${Math.round(x)} ${Math.round(y)} ${Math.round(z)}`)
+
+        const followee = await fake.spawnObserver('Followee')
+        try {
+          // ---- Test A：follow + 目标移动 → 继续跟随（目标移动 ≠ action 结束） ----
+          const beforeFollow = await botPosNow()
+          // 目标先站到罐头旁边（3 格内，进入 chase 上限）
+          tpTarget(followee, beforeFollow.x + 3, beforeFollow.y, beforeFollow.z)
+
+          const followStart = await request(runtimePort, 'POST', '/minecraft/follow_player', {
+            username: 'Followee',
+          })
+          assert(
+            followStart.status === 200 && followStart.body.status === 'RUNNING',
+            `Test A：follow_player 启动 → RUNNING（得到 ${JSON.stringify(followStart.body)}）`,
+          )
+          assert(String(followStart.body.action_id).startsWith('act_'), 'Test A：action_id 由 runtime 生成')
+          await waitFor(async () => {
+            const s = await request(runtimePort, 'GET', '/minecraft/status')
+            return Boolean(s.body.pathfinder && s.body.pathfinder.goal === 'GoalFollow')
+          }, 'Pathfinder 进入 GoalFollow', 5000)
+
+          const pfState = (await request(runtimePort, 'GET', '/minecraft/status')).body
+          assert(pfState.pathfinder.goal === 'GoalFollow', 'Test A：status.pathfinder.goal = GoalFollow')
+          assert(
+            pfState.pathfinder.target && pfState.pathfinder.target.username === 'Followee',
+            `Test A：诊断能看出正在跟谁（得到 ${JSON.stringify(pfState.pathfinder.target)}）`,
+          )
+          assert(pfState.pathfinder.distance === 2.5, `Test A：跟随距离 2.5（得到 ${pfState.pathfinder.distance}）`)
+
+          // 目标移动两次（/tp 到约 7 格开外）→ 罐头必须真的走过去并继续跟（action 仍在 RUNNING）。
+          // 真实地形可能让某些落点不可达 → 每个 hop 换落点重试（最多 3 次）。
+          const hopOffsets = [
+            [-5, 5],
+            [6, -4],
+            [-6, -2],
+            [4, 6],
+          ]
+          for (let hop = 1; hop <= 2; hop += 1) {
+            if (hop === 2) hopOffsets.reverse() // 第二跳换个方向，避免同一条路
+            let reached = false
+            for (const [ox, oz] of hopOffsets.slice(0, 3)) {
+              const botPos = await botPosNow()
+              tpTarget(followee, botPos.x + ox, botPos.y, botPos.z + oz)
+              try {
+                await waitFor(async () => {
+                  const s = await request(runtimePort, 'GET', '/minecraft/status')
+                  const me = s.body.position
+                  const targetPosition = s.body.pathfinder && s.body.pathfinder.target
+                  if (!me || !targetPosition) return false
+                  const gap = Math.hypot(me.x - targetPosition.x, me.z - targetPosition.z)
+                  return gap <= 4
+                }, `第 ${hop} 跳后跟到目标附近`, 9000)
+                reached = true
+                break
+              } catch {
+                /* 该落点不可达：换一个 */
+              }
+            }
+            assert(reached, `Test A：目标第 ${hop} 次移动后罐头跟上（继续跟随）`)
+            const stillRunning = (await request(runtimePort, 'GET', '/minecraft/status')).body
+            assert(
+              stillRunning.action && stillRunning.action.status === 'RUNNING',
+              `Test A：目标移动不结束 action（仍是 ${stillRunning.action && stillRunning.action.status}）`,
+            )
+          }
+          const afterFollow = await botPosNow()
+          const followMoved = Math.hypot(afterFollow.x - beforeFollow.x, afterFollow.z - beforeFollow.z)
+          assert(followMoved >= 1, `Test A：罐头真的移动了（水平位移 ${followMoved.toFixed(1)} 格）`)
+          console.log(`[e2e] follow_player ✓ 目标移动两跳后仍在跟随（位移 ${followMoved.toFixed(1)} 格）`)
+
+          // ---- Test B：STOP → CANCELLED + goal null + moving false + 位置停住 ----
+          const stopFollow = await request(runtimePort, 'POST', '/minecraft/stop', {})
+          assert(stopFollow.body.cancelled.length === 1, `Test B：STOP 取消 follow（得到 ${JSON.stringify(stopFollow.body)}）`)
+          await waitFor(
+            () => events.some((e) => e.event === 'minecraft.action.cancelled' && e.action === 'follow_player'),
+            'follow cancelled 事件',
+          )
+          const stoppedFollow = (await request(runtimePort, 'GET', '/minecraft/status')).body
+          assert(stoppedFollow.pathfinder.goal === null, 'Test B：goal == null')
+          assert(stoppedFollow.pathfinder.moving === false, 'Test B：isMoving == false')
+          await sleep(400)
+          const laterFollow = (await request(runtimePort, 'GET', '/minecraft/status')).body
+          const followDrift = Math.hypot(
+            laterFollow.position.x - stoppedFollow.position.x,
+            laterFollow.position.z - stoppedFollow.position.z,
+          )
+          assert(followDrift <= 0.3, `Test B：停止后位置不再漂移（${followDrift.toFixed(2)} 格）`)
+          console.log('[e2e] follow STOP ✓ goal=null moving=false 位置已停')
+        } finally {
+          followee.close()
+        }
+
+        // ---- Test C：玩家消失 → 3s grace → FAILED player_lost（goal 清空） ----
+        const ghost = await fake.spawnObserver('Ghost')
+        const botForGhost = await botPosNow()
+        tpTarget(ghost, botForGhost.x + 3, botForGhost.y, botForGhost.z)
+        await sleep(500)
+        const lostPromise = request(runtimePort, 'POST', '/minecraft/follow_player', { username: 'Ghost' })
+        await waitFor(async () => {
+          const s = await request(runtimePort, 'GET', '/minecraft/status')
+          return Boolean(s.body.pathfinder && s.body.pathfinder.goal === 'GoalFollow')
+        }, 'Ghost 跟随建立', 5000)
+        const lostStarted = await lostPromise
+        assert(
+          lostStarted.status === 200 && lostStarted.body.status === 'RUNNING',
+          `Test C：持续型动作启动即返回 RUNNING（得到 ${JSON.stringify(lostStarted.body)}）`,
+        )
+        ghost.bot.quit() // 玩家消失
+        await waitFor(
+          () => events.some((e) => e.event === 'minecraft.action.failed' && e.code === 'player.lost'),
+          'player_lost failed 事件',
+          10000,
+        )
+        const afterLost = (await request(runtimePort, 'GET', '/minecraft/status')).body
+        assert(afterLost.action.status === 'FAILED', `Test C：终态 FAILED（得到 ${afterLost.action.status}）`)
+        assert(afterLost.pathfinder.goal === null, 'Test C：player_lost 后 goal 清空（动作自清理）')
+        console.log('[e2e] follow player_lost ✓ 宽限 3s 后 FAILED + goal 清空')
+
+        // ---- Test D：目标超过最大追逐距离 → FAILED follow_target_too_far ----
+        const farTarget = await fake.spawnObserver('FarTarget')
+        try {
+          const botForFar = await botPosNow()
+          tpTarget(farTarget, botForFar.x + 30, botForFar.y, botForFar.z) // 30 > E2E 的 chase 上限 16
+          await sleep(500)
+          const farResp = await request(runtimePort, 'POST', '/minecraft/follow_player', { username: 'FarTarget' })
+          assert(
+            farResp.status === 200 && farResp.body.status === 'RUNNING',
+            `Test D：启动即 RUNNING（得到 ${JSON.stringify(farResp.body)}）`,
+          )
+          await waitFor(
+            () =>
+              events.some(
+                (e) => e.event === 'minecraft.action.failed' && e.code === 'follow.target_too_far',
+              ),
+            'follow_target_too_far failed 事件',
+            10000,
+          )
+          const afterFar = (await request(runtimePort, 'GET', '/minecraft/status')).body
+          assert(afterFar.action.status === 'FAILED', `Test D：终态 FAILED（得到 ${afterFar.action.status}）`)
+          assert(afterFar.pathfinder.goal === null, 'Test D：失败后 goal 清空')
+          console.log('[e2e] follow target_too_far ✓ 超上限即失败，不追到世界尽头')
+        } finally {
+          farTarget.close()
+        }
+
+        // ---- Test E：超时 → TIMEOUT + goal 清空（E2E 用 MC_FOLLOW_TIMEOUT_MS=8000） ----
+        const slowTarget = await fake.spawnObserver('SlowTarget')
+        try {
+          const botForSlow = await botPosNow()
+          tpTarget(slowTarget, botForSlow.x + 3, botForSlow.y, botForSlow.z)
+          await sleep(500)
+          const timeoutResp = await request(runtimePort, 'POST', '/minecraft/follow_player', {
+            username: 'SlowTarget',
+          })
+          assert(
+            timeoutResp.status === 200 && timeoutResp.body.status === 'RUNNING',
+            `Test E：启动即 RUNNING（得到 ${JSON.stringify(timeoutResp.body)}）`,
+          )
+          await waitFor(
+            () => events.some((e) => e.event === 'minecraft.action.timeout' && e.action === 'follow_player'),
+            'follow timeout 事件（8s）',
+            15000,
+          )
+          const afterTimeout = (await request(runtimePort, 'GET', '/minecraft/status')).body
+          assert(afterTimeout.action.status === 'TIMEOUT', `Test E：终态 TIMEOUT（得到 ${afterTimeout.action.status}）`)
+          assert(afterTimeout.pathfinder.goal === null, 'Test E：超时后 goal 清空')
+          assert(afterTimeout.pathfinder.moving === false, 'Test E：超时后 isMoving == false')
+          console.log('[e2e] follow TIMEOUT ✓ goal=null moving=false')
+        } finally {
+          slowTarget.close()
+        }
+
+        // 跟随测试收尾：无僵尸动作 + 连接仍 ONLINE
+        const followSettled = (await request(runtimePort, 'GET', '/minecraft/status')).body
+        assert(followSettled.status === 'ONLINE', 'Test A–E 后连接仍 ONLINE')
+        assert(followSettled.action.active_count === 0, 'Test A–E 后无僵尸动作')
       }
 
       // 重复 connect 必须被拒绝（不产生第二个 session）

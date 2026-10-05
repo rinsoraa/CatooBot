@@ -6,7 +6,8 @@
  * （默认 127.0.0.1:25565，见 SMOKE_HOST / SMOKE_PORT / SMOKE_USERNAME 环境变量），
  * 依次验证：
  *   join → spawn → move_to（近距离）→ SUCCEEDED → move_to（远一点）→ STOP
- *   → CANCELLED 且位置停住 → 主动离开。
+ *   → CANCELLED 且位置停住 → follow_player（§二十九：跟一个真实第二个客户端）
+ *   → 目标走动后继续跟 → STOP 真正停住 → 主动离开。
  *
  * 认证：默认用 minecraft_runtime/auth.json（本地文件，绝不进 Git）。
  * 服务器没开 / 连不上 → 打印 NOT AVAILABLE 并以 0 退出（文档记录用）；
@@ -226,6 +227,89 @@ async function main() {
       } else {
         console.log('[smoke] 远端目标未能开始移动（地形导致 no-path），跳过 STOP 段')
         await movePromise.catch(() => {})
+      }
+    }
+
+    // ---- Phase 3D §二十九：follow_player 真实验证（第二个客户端当目标） ----
+    const mineflayer = require('mineflayer')
+    const targetName = process.env.SMOKE_FOLLOW_TARGET || 'SmokeTgt'
+    console.log(`[smoke] 跟随测试：拉起目标客户端 ${targetName}`)
+    const targetBot = mineflayer.createBot({
+      host: HOST,
+      port: PORT,
+      username: targetName,
+      hideErrors: true,
+      auth: 'offline',
+    })
+    const targetSpawned = await new Promise((resolve) => {
+      const timer = setTimeout(() => resolve(false), 30000)
+      targetBot.once('spawn', () => {
+        clearTimeout(timer)
+        resolve(true)
+      })
+      targetBot.on('error', () => {
+        clearTimeout(timer)
+        resolve(false)
+      })
+    })
+    if (!targetSpawned) {
+      console.log('[smoke] 目标客户端进不了服务器（在线模式/白名单？）——跳过 follow 段')
+      try {
+        targetBot.quit()
+      } catch {
+        /* ignore */
+      }
+    } else {
+      const meNow = (await request(runtimePort, 'GET', '/minecraft/status')).body.position
+      const before = (await request(runtimePort, 'GET', '/minecraft/status')).body.position
+      const followResp = await request(runtimePort, 'POST', '/minecraft/follow_player', {
+        username: targetName,
+      })
+      check(
+        followResp.status === 200 && followResp.body.status === 'RUNNING',
+        `follow_player 启动 → RUNNING（${JSON.stringify(followResp.body)}）`,
+      )
+      // 目标往前走一段（真实走动），罐头应当跟上且 action 仍在 RUNNING
+      targetBot.look(meNow.x, meNow.y, meNow.z, true)
+      targetBot.setControlState('forward', true)
+      targetBot.setControlState('sprint', true)
+      await sleep(2500)
+      targetBot.setControlState('forward', false)
+      targetBot.setControlState('sprint', false)
+      await sleep(1500)
+      const during = (await request(runtimePort, 'GET', '/minecraft/status')).body
+      const targetEntity = targetBot.entity ? targetBot.entity.position : null
+      const gap = targetEntity
+        ? Math.hypot(during.position.x - targetEntity.x, during.position.z - targetEntity.z)
+        : null
+      check(
+        during.action && during.action.status === 'RUNNING',
+        `目标移动后 follow 仍在运行（${during.action && during.action.status}）`,
+      )
+      check(
+        during.pathfinder && during.pathfinder.goal === 'GoalFollow',
+        `status.pathfinder.goal = GoalFollow（${during.pathfinder && during.pathfinder.goal}）`,
+      )
+      check(gap !== null && gap <= 12, `跟到目标附近（gap=${gap === null ? '-' : gap.toFixed(1)} 格）`)
+      const moved = Math.hypot(during.position.x - before.x, during.position.z - before.z)
+      check(moved >= 1, `罐头真的跟走了（位移 ${moved.toFixed(1)} 格）`)
+
+      const stopFollow = await request(runtimePort, 'POST', '/minecraft/stop', {})
+      check(stopFollow.body.cancelled.length === 1, 'STOP 取消跟随')
+      await sleep(400)
+      const stoppedFollow = (await request(runtimePort, 'GET', '/minecraft/status')).body
+      check(stoppedFollow.pathfinder.goal === null, '跟随 STOP 后 goal == null')
+      check(stoppedFollow.pathfinder.moving === false, '跟随 STOP 后 isMoving == false')
+      await sleep(600)
+      const laterFollow = (await request(runtimePort, 'GET', '/minecraft/status')).body
+      check(
+        Math.hypot(laterFollow.position.x - stoppedFollow.position.x, laterFollow.position.z - stoppedFollow.position.z) <= 0.3,
+        '跟随 STOP 后位置不再漂移',
+      )
+      try {
+        targetBot.quit()
+      } catch {
+        /* ignore */
       }
     }
 

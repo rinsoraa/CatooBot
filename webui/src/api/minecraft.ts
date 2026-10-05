@@ -3,6 +3,7 @@
 import { api } from '@/api/client'
 
 import type {
+  MinecraftFollowPlayerResult,
   MinecraftJoinResult,
   MinecraftLeaveResult,
   MinecraftLookAtResult,
@@ -36,6 +37,13 @@ export const minecraftApi = {
   /** Phase 3C：非破坏性导航到世界坐标（禁挖/禁放；不可达 → path_not_found）。 */
   moveTo(x: number, y: number, z: number) {
     return api.post<MinecraftMoveToResult>('/minecraft/move_to', { x, y, z })
+  },
+  /** Phase 3D：动态跟随玩家（持续型动作：启动即返回 RUNNING，终态经事件/轮询呈现）。 */
+  followPlayer(username: string, distance: number) {
+    return api.post<MinecraftFollowPlayerResult>('/minecraft/follow_player', {
+      username,
+      distance,
+    })
   },
   /** 最高优先级安全停止（幂等）：取消进行中动作，返回被取消的 action_id 列表。 */
   stop() {

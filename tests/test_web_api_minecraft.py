@@ -369,3 +369,77 @@ async def test_move_to_endpoint_validates_and_translates(tmp_path):
                 await service._cleanup()
     finally:
         await fake.stop()
+
+
+# ------------------------------------------------ Phase 3D：follow_player 端点
+
+
+async def test_follow_player_endpoint_disabled(tmp_path):
+    async with api_server(tmp_path) as (client, bot, server):
+        await client.login()
+        status, payload = await client.post(
+            "/api/v1/minecraft/follow_player", body={"username": "空凛"}
+        )
+        assert status == 503 and error_code(payload) == "minecraft.disabled"
+
+
+async def test_follow_player_endpoint_validates(tmp_path):
+    async with api_server(tmp_path) as (client, bot, server):
+        await client.login()
+        service = MinecraftService(
+            bot,
+            MinecraftConfig(enabled=True, auto_start_runtime=False, runtime_port=65530),
+        )
+        bot.minecraft = service
+        try:
+            status, payload = await client.post(
+                "/api/v1/minecraft/follow_player", body={"username": "  "}
+            )
+            assert status == 422 and error_code(payload) == "minecraft.action_invalid"
+            status, payload = await client.post(
+                "/api/v1/minecraft/follow_player", body={"username": "空凛", "distance": 9}
+            )
+            assert status == 422 and error_code(payload) == "minecraft.action_invalid"
+            # 镜像不是 ONLINE → 409（Service 层在线校验）
+            status, payload = await client.post(
+                "/api/v1/minecraft/follow_player", body={"username": "空凛"}
+            )
+            assert status == 409 and error_code(payload) == "minecraft.not_connected"
+        finally:
+            await service._cleanup()
+
+
+async def test_follow_player_endpoint_reaches_runtime(tmp_path):
+    from tests.test_minecraft_service import FakeRuntime
+
+    fake = FakeRuntime()
+    await fake.start()
+    try:
+        fake.online = True
+        async with api_server(tmp_path) as (client, bot, server):
+            await client.login()
+            service = MinecraftService(
+                bot,
+                MinecraftConfig(enabled=True, auto_start_runtime=False, runtime_port=fake.port),
+            )
+            bot.minecraft = service
+            try:
+                await service.status()  # 镜像 → ONLINE
+                status, payload = await client.post(
+                    "/api/v1/minecraft/follow_player", body={"username": "空凛", "distance": 3}
+                )
+                assert status == 200
+                assert payload["data"]["status"] == "RUNNING"
+                assert payload["data"]["action"] == "follow_player"
+                assert fake.follow_player_calls == [{"username": "空凛", "distance": 3.0}]
+
+                # 目标不存在 → 404 minecraft.player_not_found
+                fake.follow_player_plan.append({"error": ("player.not_found", 404)})
+                status, payload = await client.post(
+                    "/api/v1/minecraft/follow_player", body={"username": "路人"}
+                )
+                assert status == 404 and error_code(payload) == "minecraft.player_not_found"
+            finally:
+                await service._cleanup()
+    finally:
+        await fake.stop()

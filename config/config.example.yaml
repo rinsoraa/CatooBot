@@ -573,3 +573,6 @@ minecraft:
   action:
     move_to:
       max_distance: 64           # 单次 move_to 的最大距离（格）；不允许数千米长距离
+    follow_player:
+      timeout: 120               # 跟随最长持续多少秒（10~600；到点自动停下并清 Goal）
+      max_chase_distance: 64     # 离目标超过多少格就放弃追逐（不追到世界尽头）

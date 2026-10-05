@@ -50,7 +50,15 @@ class FakeRuntime:
         # Phase 3C：move_to + Pathfinder 诊断
         self.move_to_calls: list[dict[str, Any]] = []
         self.move_to_plan: list[dict[str, Any]] = []  # 依次消费；空 = 默认 SUCCEEDED
-        self.pathfinder_state: dict[str, Any] = {"goal": None, "target": None, "moving": False}
+        # Phase 3D：follow_player（持续型：默认返回 RUNNING）
+        self.follow_player_calls: list[dict[str, Any]] = []
+        self.follow_player_plan: list[dict[str, Any]] = []
+        self.pathfinder_state: dict[str, Any] = {
+            "goal": None,
+            "target": None,
+            "distance": None,
+            "moving": False,
+        }
         self._runner: web.AppRunner | None = None
 
     async def start(self) -> None:
@@ -63,6 +71,7 @@ class FakeRuntime:
         app.router.add_get("/minecraft/world/snapshot", self._world_snapshot)
         app.router.add_post("/minecraft/look_at", self._look_at)
         app.router.add_post("/minecraft/move_to", self._move_to)
+        app.router.add_post("/minecraft/follow_player", self._follow_player)
         app.router.add_post("/minecraft/stop", self._stop)
         self._runner = web.AppRunner(app, access_log=None)
         await self._runner.setup()
@@ -180,6 +189,25 @@ class FakeRuntime:
                 },
             )
         return web.json_response(response)
+
+    async def _follow_player(self, request: web.Request) -> web.Response:
+        body = await request.json()
+        self.follow_player_calls.append(body)
+        plan = self.follow_player_plan.pop(0) if self.follow_player_plan else {"status": "RUNNING"}
+        if "error" in plan:
+            code, status = plan["error"]
+            return web.json_response(
+                {"ok": False, "error": {"code": code, "message": f"{code}（fake runtime）"}},
+                status=status,
+            )
+        return web.json_response(
+            {
+                "ok": True,
+                "action_id": plan.get("action_id", "act_follow_1"),
+                "action": "follow_player",
+                "status": plan["status"],
+            }
+        )
 
     async def _stop(self, request: web.Request) -> web.Response:
         self.stop_calls += 1

@@ -24,6 +24,15 @@
  *     未来 move_to/follow（Pathfinder Goal）、dig/place 等有副作用的动作，
  *     真正的终止必须由自己的 cleanup() 实现（stop() 会先 cleanup 再报 CANCELLED）。
  *
+ * 持续型动作（Phase 3D，``detached: true``）：follow_player 这类动作正常不会
+ * 自行结束，不能阻塞 HTTP 调用方。注册表用 ``start``/``wait`` 两阶段替代 ``run``：
+ *   - ``start(bot, params, token)``：启动阶段（解析目标、建立 Goal）——抛错仍然
+ *     同步反馈给调用方（如 player.not_found → 404）；
+ *   - 启动成功 → execute 立刻返回 ``status: RUNNING``，**终态（STOP/超时/目标丢失…）
+ *     由 action 事件异步送达**；
+ *   - ``wait(bot, params, token, state)``：后台生命周期（state 来自 start 的返回值），
+ *     resolve = 自行收尾（罕见），reject = 失败原因（ActionCancelled 走取消语义）。
+ *
  * 本模块不依赖任何 Minecraft 对象：bot 通过 getBot() 注入，动作由调用方注册。
  */
 
@@ -262,6 +271,31 @@ function createActionRuntime({ registry, getBot, isOnline, emit, log, now = () =
     }
 
     try {
+      if (def.detached) {
+        // 持续型动作：启动阶段同步语义（失败仍反馈给调用方），启动成功即返回 RUNNING；
+        // 终态在后台按同一套规则落定并发事件（不阻塞调用方）。
+        const followState = await def.start(getBot(), validated, controller.token)
+        const lifecycle = Promise.resolve(
+          def.wait(getBot(), validated, controller.token, followState),
+        )
+        void runCancellable(lifecycle, controller.token).then(
+          () => finish(controller, STATES.SUCCEEDED, {}), // 持续动作自行收尾（仅防御）
+          (error) => {
+            if (error instanceof ActionCancelled) {
+              const status = cancellationStatus(error.reason)
+              runCleanup(controller)
+              finish(controller, status, { reason: error.reason })
+              return
+            }
+            const message = String(error && error.message ? error.message : error)
+            finish(controller, STATES.FAILED, {
+              error: message,
+              ...(error instanceof ActionError ? { code: error.code } : {}),
+            })
+          },
+        )
+        return { action_id: record.action_id, action: name, status: STATES.RUNNING }
+      }
       const value = await runCancellable(def.run(getBot(), validated, controller.token), controller.token)
       // race 防线（Phase 3B.1 §六）：stop/cancelAll/timeout 与底层完成同时到达时，
       // 终态只能是 CANCELLED/TIMEOUT —— 绝不出现「记录 CANCELLED、响应 SUCCEEDED」双终态。

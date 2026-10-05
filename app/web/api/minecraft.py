@@ -52,8 +52,8 @@ _DISABLED_SNAPSHOT: dict[str, Any] = {
         "kicked_reason": None,
         "connected_at": None,
     },
-    # Phase 3C：Pathfinder 诊断（未启用 = 永不动）
-    "pathfinder": {"goal": None, "target": None, "moving": False},
+    # Phase 3C/3D：Pathfinder 诊断（未启用 = 永不动）
+    "pathfinder": {"goal": None, "target": None, "distance": None, "moving": False},
     # Phase 3B：动作视图（未启用 = 永远 IDLE）
     "action": {
         "action": None,
@@ -145,6 +145,17 @@ class MinecraftApiRoutes(WebContext):
             raise _translate(exc) from exc
         return ok(result, request=request)
 
+    async def _v1_minecraft_follow_player(self, request: web.Request) -> web.Response:
+        """动态跟随玩家（Phase 3D）：启动即返回 RUNNING，终态经事件/状态呈现。"""
+        body = await read_json(request)
+        try:
+            result = await _service(self._bot).follow_player(
+                body.get("username"), body.get("distance")
+            )
+        except MinecraftBridgeError as exc:
+            raise _translate(exc) from exc
+        return ok(result, request=request)
+
     async def _v1_minecraft_stop(self, request: web.Request) -> web.Response:
         """最高优先级安全停止（幂等）：取消进行中动作，返回被取消的 action_id 列表。"""
         await read_json(request, required=False)
@@ -180,5 +191,8 @@ class MinecraftApiRoutes(WebContext):
         app.router.add_post(f"{API_PREFIX}/minecraft/leave", wrap(self._v1_minecraft_leave))
         app.router.add_post(f"{API_PREFIX}/minecraft/look_at", wrap(self._v1_minecraft_look_at))
         app.router.add_post(f"{API_PREFIX}/minecraft/move_to", wrap(self._v1_minecraft_move_to))
+        app.router.add_post(
+            f"{API_PREFIX}/minecraft/follow_player", wrap(self._v1_minecraft_follow_player)
+        )
         app.router.add_post(f"{API_PREFIX}/minecraft/stop", wrap(self._v1_minecraft_stop))
         app.router.add_post(f"{API_PREFIX}/minecraft/events", wrap(self._v1_minecraft_events))

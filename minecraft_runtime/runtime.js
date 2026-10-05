@@ -48,6 +48,25 @@ const CHAT_MAX_CHARS = 256
 const MOVE_TO_RADIUS = 1.5 // GoalNear 半径：进入约 1.5 格即视为到达
 const MOVE_MAX_DISTANCE = Number.parseFloat(process.env.MC_MOVE_MAX_DISTANCE || '64')
 const MOVE_TIMEOUT_MS = Number.parseInt(process.env.MC_MOVE_TIMEOUT_MS || '30000', 10)
+
+// Phase 3D：follow_player（动态跟随）
+const FOLLOW_DEFAULT_DISTANCE = 2.5
+const FOLLOW_MIN_DISTANCE = 1.5
+const FOLLOW_MAX_DISTANCE = 6
+const FOLLOW_TIMEOUT_MS = Number.parseInt(process.env.MC_FOLLOW_TIMEOUT_MS || '120000', 10)
+const FOLLOW_MAX_CHASE_DISTANCE = Number.parseFloat(
+  process.env.MC_FOLLOW_MAX_CHASE_DISTANCE || '64',
+)
+//: 目标丢失宽限期：允许实体短暂刷新，连续超过才 FAILED player_lost（每次调用读取，便于测试）
+function followLostGraceMs() {
+  const raw = Number.parseInt(process.env.MC_FOLLOW_LOST_GRACE_MS || '', 10)
+  return Number.isFinite(raw) && raw > 0 ? raw : 3000
+}
+
+function followMaxChaseDistance() {
+  const raw = Number.parseFloat(process.env.MC_FOLLOW_MAX_CHASE_DISTANCE || '')
+  return Number.isFinite(raw) && raw > 0 ? raw : FOLLOW_MAX_CHASE_DISTANCE
+}
 const CONNECT_TIMEOUT_MS = Math.max(5, CONNECT_TIMEOUT_S) * 1000
 const EVENT_RETRY_DELAYS_MS = [0, 1000, 2000, 4000, 8000, 16000]
 const EVENT_QUEUE_MAX = 200
@@ -542,27 +561,48 @@ function validateWorldCoords(params) {
   return coords
 }
 
-/** Phase 3C §三：非破坏性 Movement 配置（禁止挖/放，目标不可达 → NO_PATH）。 */
+/** Phase 3C §三 / 3D §二：非破坏性 Movement 配置（禁止挖/放，目标不可达 → NO_PATH）。
+ *
+ * ``allow1by1towers=false`` 是 Phase 3D 的显式硬化：该能力需要放方块才能爬 1×1 高塔，
+ * 不能依赖「scafoldingBlocks 为空所以碰巧不能搭塔」——现在所有导航动作都明确不允许修改世界。 */
 function configureMovements(movements) {
   movements.canDig = false // 绝不为了到达目标挖方块
   movements.scafoldingBlocks = [] // 绝不搭桥/搭塔（默认值含泥土/圆石，会主动放方块）
+  movements.allow1by1towers = false // 显式：不放方块搭 1×1 塔（普通 1 格跳跃不受影响）
   movements.canOpenDoors = false // 保守默认：不开门
   return movements
 }
 
-/** 当前 Pathfinder 诊断（goal 类型/目标坐标/是否在移动）——只读，供 status 与 WebUI。 */
+/** 当前 Pathfinder 诊断（goal 类型/目标/跟随距离/是否在移动）——只读，供 status 与 WebUI。
+ *
+ * Phase 3D §十二：跟随期间必须能看出「在跟谁、距离多少」——GoalFollow 走
+ * username 分支；GoalNear（move_to）走坐标分支。 */
 function pathfinderStatus() {
   const bot = state.bot
   const pf = bot && bot.pathfinder
-  if (!pf) return { goal: null, target: null, moving: false }
+  if (!pf) return { goal: null, target: null, distance: null, moving: false }
   const goal = pf.goal || null
-  const target =
-    goal && Number.isFinite(goal.x) && Number.isFinite(goal.y) && Number.isFinite(goal.z)
-      ? { x: round2(goal.x), y: round2(goal.y), z: round2(goal.z) }
-      : null
+  let target = null
+  let distance = null
+  if (goal) {
+    const entity = goal.entity || null
+    if (entity && entity.position) {
+      // GoalFollow：目标是活 entity（玩家移动时 pathfinder 自动重规划）
+      target = {
+        username: entity.username ?? entity.name ?? null,
+        x: round2(entity.position.x),
+        y: round2(entity.position.y),
+        z: round2(entity.position.z),
+      }
+    } else if (Number.isFinite(goal.x) && Number.isFinite(goal.y) && Number.isFinite(goal.z)) {
+      target = { x: round2(goal.x), y: round2(goal.y), z: round2(goal.z) }
+    }
+    if (Number.isFinite(goal.rangeSq)) distance = round2(Math.sqrt(goal.rangeSq))
+  }
   return {
     goal: goal ? goal.constructor.name : null,
     target,
+    distance,
     moving: Boolean(typeof pf.isMoving === 'function' && pf.isMoving()),
   }
 }
@@ -672,6 +712,142 @@ const ACTION_REGISTRY = {
             bot.pathfinder.setGoal(null)
           } catch (error) {
             log('warn', 'move_to cleanup setGoal(null) failed', { error: error.message })
+          }
+        }
+        if (bot && typeof bot.clearControlStates === 'function') bot.clearControlStates()
+      },
+    },
+    follow_player: {
+      // Phase 3D：动态跟随（LOW；不改世界，但属于持续自动移动 → exclusive + STOP + timeout）
+      exclusive: true,
+      timeout_ms: FOLLOW_TIMEOUT_MS,
+      risk: 'LOW',
+      detached: true, // 持续型动作：启动即返回 RUNNING，终态由事件送达（§八）
+      validate(params) {
+        const username = String(params.username ?? '')
+        if (!username.trim()) {
+          throw new ActionError('username 不能为空', 'action.invalid', 400)
+        }
+        if (username.length > 16) {
+          throw new ActionError('username 最长 16 个字符', 'action.invalid', 400)
+        }
+        // 控制字符（含换行/制表/空格类不可见字符）一律拒绝
+        // eslint-disable-next-line no-control-regex
+        if (/[\u0000-\u001f\u007f]/.test(username)) {
+          throw new ActionError('username 不能包含控制字符', 'action.invalid', 400)
+        }
+        const raw = params.distance
+        const distance =
+          raw === undefined || raw === null || raw === '' ? FOLLOW_DEFAULT_DISTANCE : raw
+        if (typeof distance !== 'number' || !Number.isFinite(distance)) {
+          throw new ActionError('distance 必须是数字', 'action.invalid', 400)
+        }
+        if (distance < FOLLOW_MIN_DISTANCE || distance > FOLLOW_MAX_DISTANCE) {
+          throw new ActionError(
+            `distance 必须在 ${FOLLOW_MIN_DISTANCE}~${FOLLOW_MAX_DISTANCE} 格之间`,
+            'action.invalid',
+            400,
+          )
+        }
+        return { username, distance }
+      },
+      async start(bot, params) {
+        const { username, distance } = params
+        // §五：玩家目标解析——player 与 player.entity 都要存在，否则 player_not_found（404，
+        // 且绝不启动 Pathfinder）；启动阶段抛错会同步反馈给调用方
+        const player = bot.players[username]
+        const targetEntity = player && player.entity ? player.entity : null
+        if (!targetEntity) {
+          throw new ActionError(`找不到玩家 ${username}（不在线或不在视野内）`, 'player.not_found', 404)
+        }
+        // §六/§七/§十三：官方 Dynamic Goal——持活 entity 引用，玩家移动时由 pathfinder
+        // 通过 goal.hasChanged() 自动重规划（绝不缓存静态坐标、绝不手写轮询 setGoal）
+        bot.pathfinder.setGoal(new goals.GoalFollow(targetEntity, distance), true)
+        log('info', 'follow started', { username, distance })
+        return { targetEntity, lastSeenAt: Date.now() }
+      },
+      wait(bot, params, token, followState) {
+        const { username, distance } = params
+        const resolveEntity = () => {
+          const player = bot.players[username]
+          return player && player.entity ? player.entity : null
+        }
+        let targetEntity = followState.targetEntity
+        let lastSeenAt = followState.lastSeenAt
+        const graceMs = followLostGraceMs()
+        const chaseLimit = followMaxChaseDistance()
+        return new Promise((resolvePromise, rejectPromise) => {
+          let settled = false
+          let lastSeenAt = Date.now()
+          const finish = (error) => {
+            if (settled) return
+            settled = true
+            clearInterval(timer)
+            if (error) rejectPromise(error)
+            else resolvePromise()
+          }
+          const fail = (message, code, status) => {
+            // 失败时动作自己清 Goal（与 move_to 一致：绝不留残余导航意图）
+            try {
+              bot.pathfinder.setGoal(null)
+            } catch (cleanupError) {
+              log('warn', 'follow failure cleanup failed', { error: cleanupError.message })
+            }
+            finish(new ActionError(message, code, status))
+          }
+          const timer = setInterval(() => {
+            if (token && token.cancelled) {
+              // 取消（stop/disconnect/shutdown/timeout）由上层按 CANCELLED/TIMEOUT 收尾 + cleanup
+              finish(null)
+              return
+            }
+            const entity = resolveEntity()
+            if (!entity) {
+              // §十 E/§十六：玩家瞬间被移除一帧不算失败；连续超过宽限期才 FAILED player_lost
+              if (Date.now() - lastSeenAt > graceMs) {
+                fail(
+                  `跟随目标 ${username} 已消失超过 ${Math.round(graceMs / 1000)} 秒`,
+                  'player.lost',
+                  500,
+                )
+              }
+              return
+            }
+            lastSeenAt = Date.now()
+            // §十五：只有旧 entity 失效（服务器重建引用）才重绑 Dynamic Goal；
+            // 正常移动绝不 setGoal（那是 pathfinder goal_moved 的职责）
+            if (entity !== targetEntity) {
+              targetEntity = entity
+              try {
+                bot.pathfinder.setGoal(new goals.GoalFollow(targetEntity, distance), true)
+              } catch (error) {
+                fail(`重建跟随目标失败：${error.message}`, 'action.failed', 500)
+                return
+              }
+            }
+            // §十七：最大追逐距离——目标跑太远就失败，不追到世界尽头
+            const self = bot.entity ? bot.entity.position : null
+            const targetPosition = targetEntity.position
+            if (self && targetPosition) {
+              const gap = self.distanceTo(targetPosition)
+              if (gap > chaseLimit) {
+                fail(
+                  `跟随目标距离 ${gap.toFixed(1)} 格，超过上限 ${chaseLimit} 格`,
+                  'follow.target_too_far',
+                  500,
+                )
+              }
+            }
+          }, 250)
+        })
+      },
+      cleanup(bot) {
+        // 与 move_to 相同的两件套：先硬清 Goal（真正停止导航），再清控制位
+        if (bot && bot.pathfinder) {
+          try {
+            bot.pathfinder.setGoal(null)
+          } catch (error) {
+            log('warn', 'follow cleanup setGoal(null) failed', { error: error.message })
           }
         }
         if (bot && typeof bot.clearControlStates === 'function') bot.clearControlStates()
@@ -1111,6 +1287,16 @@ async function handleRequest(request, response) {
       jsonResponse(response, 200, { ok: true, ...result })
       return
     }
+    if (request.method === 'POST' && path === '/minecraft/follow_player') {
+      // Phase 3D：动态跟随（GoalFollow + dynamic；STOP/timeout/disconnect 都会真停）
+      const body = await readBody(request)
+      const result = await actionRuntime.execute('follow_player', {
+        username: body.username,
+        distance: body.distance,
+      })
+      jsonResponse(response, 200, { ok: true, ...result })
+      return
+    }
     if (request.method === 'POST' && path === '/minecraft/stop') {
       // 最高优先级安全停止：幂等、无 bot 也安全，返回被取消的 action_id 列表
       await readBody(request).catch(() => ({}))
@@ -1196,6 +1382,14 @@ module.exports = {
     radius: MOVE_TO_RADIUS,
     maxDistance: MOVE_MAX_DISTANCE,
     timeoutMs: MOVE_TIMEOUT_MS,
+  },
+  FOLLOW_DEFAULTS: {
+    distance: FOLLOW_DEFAULT_DISTANCE,
+    minDistance: FOLLOW_MIN_DISTANCE,
+    maxDistance: FOLLOW_MAX_DISTANCE,
+    timeoutMs: FOLLOW_TIMEOUT_MS,
+    maxChaseDistance: FOLLOW_MAX_CHASE_DISTANCE,
+    lostGraceMs: 3000,
   },
 }
 

@@ -867,3 +867,33 @@ async def test_movement_during_move_to_keeps_perception_quiet():
     assert len(changed) == 1
     assert changed[0]["changed_blocks"] == 1
     assert changed[0]["near_diff"]["kind"] == WORLD_CHANGE
+
+
+# =========================================== Phase 3D：follow 期间的感知（§二十八）
+
+
+async def test_follow_period_window_shifts_stay_quiet():
+    """跟随期间目标+罐头持续移动：多帧窗口平移只能 WINDOW_SHIFT / changed_blocks==0；
+    重叠区真实变化仍按 Phase 2.1/3A 规则检测。"""
+    clock, advance = make_clock()
+    perception, client, events = make_perception(clock, advance, change_block_threshold=1)
+    client.payload = _grid_payload((200, 100))
+    await perception.poll({"near"})  # prime
+
+    # 四帧连续平移（模拟跟随中的位移），每帧都要安静
+    for step, anchor in enumerate(((203, 100), (206, 101), (209, 103), (212, 104))):
+        advance(2.0)
+        client.payload = _grid_payload(anchor)
+        events = await perception.poll({"near"})
+        world_events = [name for name, _ in events if name == "minecraft.world.changed"]
+        assert world_events == [], f"跟随第 {step + 1} 帧不得有 world.changed"
+        assert perception.last_diff is not None
+        assert perception.last_diff.kind == WINDOW_SHIFT
+        assert perception.last_diff.changed_blocks == 0
+
+    # 跟随中重叠区真实变化：照常触发
+    advance(2.0)
+    client.payload = _grid_payload((214, 104), overrides={(213, 104): "stone"})
+    events = await perception.poll({"near"})
+    changed = [data for name, data in events if name == "minecraft.world.changed"]
+    assert len(changed) == 1 and changed[0]["changed_blocks"] == 1
