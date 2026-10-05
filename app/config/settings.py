@@ -861,6 +861,30 @@ class MinecraftActionConfig(BaseModel):
     follow_player: FollowPlayerConfig = Field(default_factory=FollowPlayerConfig)
 
 
+class MinecraftAgentToolsConfig(BaseModel):
+    """Phase 3E：LLM Tool 层能做什么（任务书 §三十一）。
+
+    与风险分级（§十三）一一对应：SAFE / LOW 本阶段有对应 Tool；MEDIUM/HIGH/DESTRUCTIVE
+    现在**没有任何动作**，先按 false 把门装好，等 Phase 4 再实现。
+    """
+
+    #: Minecraft 工具总开关（关掉 = 模型完全碰不到 Minecraft）
+    enabled: bool = True
+    #: SAFE：只读查询 / 说话 / 朝向 / 停止
+    allow_safe: bool = True
+    #: LOW：非破坏性移动与跟随（还必须「用户明确要求」，见 §十五）
+    allow_low: bool = True
+    allow_medium: bool = False  # 尚未实现任何 MEDIUM 动作
+    allow_high: bool = False  # 尚未实现任何 HIGH 动作
+    allow_destructive: bool = False  # 尚未实现任何 DESTRUCTIVE 动作
+
+
+class MinecraftAgentConfig(BaseModel):
+    """Phase 3E：Minecraft Agent Bridge（LLM ↔ 已存在的动作能力）。"""
+
+    tools: MinecraftAgentToolsConfig = Field(default_factory=MinecraftAgentToolsConfig)
+
+
 class MinecraftConfig(BaseModel):
     """Minecraft 连接层（Phase 1）：Bridge runtime（mineflayer 子进程）的托管参数。
 
@@ -902,6 +926,8 @@ class MinecraftConfig(BaseModel):
     world_change_block_threshold: int = Field(default=10, ge=1, le=1000)
     #: Phase 3C：动作级配置（move_to 的安全门）
     action: MinecraftActionConfig = Field(default_factory=MinecraftActionConfig)
+    #: Phase 3E：Agent Bridge（六个 LLM Tool 的权限门）
+    agent: MinecraftAgentConfig = Field(default_factory=MinecraftAgentConfig)
 
 
 class AppConfig(BaseModel):

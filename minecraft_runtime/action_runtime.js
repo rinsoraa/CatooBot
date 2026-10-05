@@ -24,8 +24,9 @@
  *     未来 move_to/follow（Pathfinder Goal）、dig/place 等有副作用的动作，
  *     真正的终止必须由自己的 cleanup() 实现（stop() 会先 cleanup 再报 CANCELLED）。
  *
- * 持续型动作（Phase 3D，``detached: true``）：follow_player 这类动作正常不会
- * 自行结束，不能阻塞 HTTP 调用方。注册表用 ``start``/``wait`` 两阶段替代 ``run``：
+ * 持续型动作（Phase 3D 引入，Phase 3E 起 move_to 也用它）：follow_player / move_to
+ * 这类导航动作要几十秒才结束，绝不能阻塞 HTTP 调用方（LLM Tool 必须立刻拿到 RUNNING）。
+ * 注册表用 ``start``/``wait`` 两阶段替代 ``run``：
  *   - ``start(bot, params, token)``：启动阶段（解析目标、建立 Goal）——抛错仍然
  *     同步反馈给调用方（如 player.not_found → 404）；
  *   - 启动成功 → execute 立刻返回 ``status: RUNNING``，**终态（STOP/超时/目标丢失…）
@@ -279,7 +280,12 @@ function createActionRuntime({ registry, getBot, isOnline, emit, log, now = () =
           def.wait(getBot(), validated, controller.token, followState),
         )
         void runCancellable(lifecycle, controller.token).then(
-          () => finish(controller, STATES.SUCCEEDED, {}), // 持续动作自行收尾（仅防御）
+          // 自行收尾（罕见）：与同步路径同形——结果包在 ``result`` 里，
+          // 这样 move_to 的终点位置在事件里的形状和 HTTP 响应完全一致。
+          (value) =>
+            finish(controller, STATES.SUCCEEDED, {
+              result: value && typeof value === 'object' ? value : {},
+            }),
           (error) => {
             if (error instanceof ActionCancelled) {
               const status = cancellationStatus(error.reason)

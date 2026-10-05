@@ -50,6 +50,8 @@ export interface MinecraftOverview {
   action?: MinecraftActionView
   /** Phase 3C：Pathfinder 诊断（goal 类型 / 目标坐标 / 是否在移动）。 */
   pathfinder?: MinecraftPathfinderInfo
+  /** Phase 3E：LLM Tool Debug（六个工具的风险/开关/是否允许 + Agent 上下文）。 */
+  agent?: MinecraftAgentView
   last_event: Record<string, unknown> | null
 }
 
@@ -171,6 +173,59 @@ export interface MinecraftSemantic {
   players?: MinecraftWorldPlayer[]
   entities?: MinecraftWorldEntity[]
   points_of_interest?: MinecraftWorldPoi[]
+}
+
+// ---------------- Phase 3E · LLM Agent（Tool Debug + Context） ----------------
+
+export type MinecraftActionRisk = 'SAFE' | 'LOW' | 'MEDIUM' | 'HIGH' | 'DESTRUCTIVE'
+
+/** 一个 Minecraft Tool 的只读行：风险 / 是否注册启用 / 现在是否允许（§三十）。 */
+export interface MinecraftAgentToolRow {
+  name: string
+  risk: MinecraftActionRisk
+  enabled: boolean
+  allowed: boolean
+  /** 被拒时的稳定错误码（minecraft.offline / minecraft.action_busy …）。 */
+  reason: string
+}
+
+export interface MinecraftAgentLastAction {
+  action: string | null
+  action_id: string | null
+  status: MinecraftActionStatus
+  code: string
+  error: string
+  result: Record<string, unknown> | null
+  at: number
+}
+
+/** Agent 当前上下文（§十九/§四十八）：只读，来自事件 + 感知层实时读取。 */
+export interface MinecraftAgentContext {
+  online: boolean
+  username: string
+  current_action: { action: string | null; action_id: string | null; status: string } | null
+  last_action: MinecraftAgentLastAction | null
+  /** 最近一次成功动作的一句话描述（§二十二）。 */
+  activity: string
+  updated_at: number
+  available?: boolean
+  dimension?: string | null
+  position?: MinecraftPosition | null
+  biome?: string | null
+  players?: { name: string; distance: number | null; direction: string | null }[]
+}
+
+export interface MinecraftAgentPolicy {
+  enabled: boolean
+  risk_flags: Record<MinecraftActionRisk, boolean>
+  registered: Record<string, MinecraftActionRisk>
+}
+
+export interface MinecraftAgentView {
+  enabled: boolean
+  context: Partial<MinecraftAgentContext>
+  policy: Partial<MinecraftAgentPolicy>
+  tools: MinecraftAgentToolRow[]
 }
 
 export interface MinecraftWorldView {

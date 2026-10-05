@@ -323,15 +323,40 @@ Minecraft 连接层（Bridge runtime 为独立 Node.js 进程，见 `docs/MINECR
 
 | 方法与路径 | 说明 | 请求 / 查询 | 响应 `data` |
 |---|---|---|---|
-| `GET /api/v1/minecraft` | 连接层一屏投影 | — | `{enabled, auth_configured, runtime: {running, pid, managed, restarts, down, log_tail: []}, connection: {status, session_id, host, port, username, auth_mode, dimension, position: {x,y,z}, health, last_error, kicked_reason, connected_at}, action: {action, action_id, status, started_at, finished_at, elapsed_ms}, pathfinder: {goal, target:{username?|x,y,z}|null, distance, moving}, last_event}`；runtime 不可达时以本地镜像降级呈现 |
+| `GET /api/v1/minecraft` | 连接层一屏投影 | — | `{enabled, auth_configured, runtime: {running, pid, managed, restarts, down, log_tail: []}, connection: {status, session_id, host, port, username, auth_mode, dimension, position: {x,y,z}, health, last_error, kicked_reason, connected_at}, action: {action, action_id, status, started_at, finished_at, elapsed_ms, result, error, code}, pathfinder: {goal, target:{username?|x,y,z}|null, distance, moving}, agent, last_event}`；runtime 不可达时以本地镜像降级呈现 |
 | `POST /api/v1/minecraft/join` | 加入服务器（进世界由事件异步确认） | `{"host": "...", "port": 25565}`（port 省略=25565） | `{"session_id", "status"}`（`CONNECTING`/`AUTHENTICATING`）；校验失败 422 `minecraft.invalid_target`，已有会话 409 `minecraft.session_active`，runtime 不可用 503 `minecraft.runtime_down` |
 | `POST /api/v1/minecraft/leave` | 主动离开（幂等：不在任何服务器也成功） | — | `{"ok", "status"}`；状态最终由事件流确认 |
 | `POST /api/v1/minecraft/look_at` | **Phase 3B SAFE 动作**：让罐头看向世界坐标（不改世界、不移动；yaw/pitch 数学在 runtime） | `{"x": 120, "y": 65, "z": -230}` | `{action_id, action:"look_at", status}`；status ∈ `SUCCEEDED`/`TIMEOUT`/`CANCELLED`；非法坐标 422 `minecraft.action_invalid`，不在世界 409 `minecraft.not_connected`，前台忙 409 `minecraft.action_busy`，执行失败 500 `minecraft.action_failed` |
 | `POST /api/v1/minecraft/stop` | **Phase 3B 安全停止**（幂等、最高优先级）：取消进行中动作并清空移动控制位 | — | `{status:"IDLE", cancelled:[action_id…]}`；runtime 不可达也返回成功 |
-| `POST /api/v1/minecraft/move_to` | **Phase 3C 非破坏性导航**（LOW；禁止挖/放/搭桥；Stop 可取消） | `{"x": 120, "y": 64, "z": -230}` | `{action_id, action:"move_to", status, result:{target, final_position, distance_to_target}}`；status ∈ `SUCCEEDED`/`TIMEOUT`/`CANCELLED`；坐标/距离非法 422 `minecraft.action_invalid`（距当前位置 > `minecraft.action.move_to.max_distance`，默认 64），不可达 500 `minecraft.path_not_found`，前台忙 409 `minecraft.action_busy` |
+| `POST /api/v1/minecraft/move_to` | **Phase 3C 非破坏性导航**（LOW；禁止挖/放/搭桥；Stop 可取消）。**Phase 3E 起为持续型动作**——启动即返回 `RUNNING`，终点/失败经事件送达（与 follow_player 同语义） | `{"x": 120, "y": 64, "z": -230}` | `{action_id, action:"move_to", status:"RUNNING"}`；坐标/距离非法 422 `minecraft.action_invalid`（距当前位置 > `minecraft.action.move_to.max_distance`，默认 64），启动阶段不可达 500 `minecraft.path_not_found`，前台忙 409 `minecraft.action_busy`；到达后见 `action.result{distance_to_target…}`，无路径转为 `minecraft.action.failed`（`code=path.not_found`），超时/取消为 `TIMEOUT`/`CANCELLED` 事件 |
 | `POST /api/v1/minecraft/follow_player` | **Phase 3D 动态跟随**（LOW；GoalFollow + dynamic；持续型动作——**启动即返回 RUNNING**，终态经事件/状态呈现；STOP/timeout/disconnect 都会真停） | `{"username": "空凛", "distance": 2.5}`（distance 1.5~6，缺省 2.5） | `{action_id, action:"follow_player", status:"RUNNING"}`；启动失败：找不到玩家 404 `minecraft.player_not_found`，离线 409 `minecraft.not_connected`，参数非法 422 `minecraft.action_invalid`，前台忙 409 `minecraft.action_busy`；运行中失败经 `minecraft.action.failed` 事件带 `player_lost` / `follow.target_too_far` |
 | `GET /api/v1/minecraft/world` | World Debug 只读视图（Phase 2）：Semantic World Model + raw snapshot + 分层缓存元信息 | — | `{available, online, captured_at, age_seconds, layers: {near/local/extended: {age_seconds}}, semantic, raw}`；未启用/未在线恒 200 且 `available:false`（读端点不做 503） |
 | `POST /api/v1/minecraft/events` | **Bridge runtime 事件回调**（服务间通道，不是给浏览器的） | 事件载荷（`minecraft.connecting|connected|spawned|chat|player_joined|player_left|kicked|disconnected|error` + `session_id` + `timestamp` + 上下文） | `{"accepted": true}` |
+
+`GET /minecraft` 的 `agent` 块（Phase 3E，只读，供连接页的 LLM Tool Debug 面板）：
+
+```json
+{
+  "enabled": true,
+  "context": {
+    "online": true, "username": "Catodayo", "dimension": "minecraft:overworld",
+    "position": {"x": 120.5, "y": 64.0, "z": -230.5}, "biome": "plains",
+    "players": [{"name": "空凛", "distance": 6.4, "direction": "front_right"}],
+    "current_action": {"action": "follow_player", "action_id": "act_…", "status": "RUNNING"},
+    "last_action": {"action": "move_to", "action_id": "act_…", "status": "FAILED",
+                    "code": "minecraft.path_not_found", "error": "…", "result": null, "at": 1730000000.0},
+    "activity": "刚走到 (126, 64, -228)", "updated_at": 1730000000.0
+  },
+  "policy": {"enabled": true, "risk_flags": {"SAFE": true, "LOW": true, "MEDIUM": false, …},
+             "registered": {"minecraft_move_to": "LOW", …}},
+  "tools": [{"name": "minecraft_move_to", "risk": "LOW", "enabled": true,
+             "allowed": false, "reason": "minecraft.action_busy"}]
+}
+```
+
+`allowed` 表示「用户此刻明确要求时会不会被放行」（`reason` 是被拒的稳定错误码：
+`minecraft.disabled` / `minecraft.offline` / `minecraft.action_busy` /
+`tool.disabled` / `tool.unregistered`）。只读投影，不含任何执行入口。
 
 `/minecraft/events` 安全模型：**免会话 Cookie、免 CSRF**（本机 runtime 进程没有浏览器会话），
 改用启动时生成的共享密钥做 Bearer 认证（`Authorization: Bearer <token>`；豁免与校验点在

@@ -350,16 +350,16 @@ async def test_move_to_endpoint_validates_and_translates(tmp_path):
                     "/api/v1/minecraft/move_to", body={"x": "abc", "y": 1, "z": 2}
                 )
                 assert status == 422 and error_code(payload) == "minecraft.action_invalid"
-                # 正常移动 → 200 + result
+                # 正常移动 → 200 + 启动即 RUNNING（Phase 3E：终点经事件送达）
                 status, payload = await client.post(
                     "/api/v1/minecraft/move_to", body={"x": 10, "y": 64, "z": -5}
                 )
                 assert status == 200
                 data = payload["data"]
-                assert data["action"] == "move_to" and data["status"] == "SUCCEEDED"
-                assert "distance_to_target" in data["result"]
+                assert data["action"] == "move_to" and data["status"] == "RUNNING"
+                assert str(data["action_id"]).startswith("act_")
                 assert fake.move_to_calls == [{"x": 10.0, "y": 64.0, "z": -5.0}]
-                # 无路径 → 500 minecraft.path_not_found
+                # 启动阶段同步拒绝（runtime 词表照旧翻译）→ 500 minecraft.path_not_found
                 fake.move_to_plan.append({"error": ("path.not_found", 500)})
                 status, payload = await client.post(
                     "/api/v1/minecraft/move_to", body={"x": 12, "y": 64, "z": -5}
@@ -369,6 +369,55 @@ async def test_move_to_endpoint_validates_and_translates(tmp_path):
                 await service._cleanup()
     finally:
         await fake.stop()
+
+
+# ------------------------------------------------ Phase 3E：Agent 只读投影
+
+
+async def test_minecraft_projection_includes_agent_block(tmp_path):
+    """§三十/§四十八：GET /minecraft 带 LLM Tool Debug（六个工具的风险/开关/是否允许）。"""
+    async with api_server(tmp_path) as (client, bot, server):
+        await client.login()
+        # 未启用：仍然 200，agent 块如实说「都不可用」
+        status, payload = await client.get("/api/v1/minecraft")
+        assert status == 200
+        agent = payload["data"]["agent"]
+        assert agent["enabled"] is False
+        assert {row["name"] for row in agent["tools"]} == {
+            "minecraft_world",
+            "minecraft_chat",
+            "minecraft_look_at",
+            "minecraft_move_to",
+            "minecraft_follow_player",
+            "minecraft_stop",
+        }
+        assert all(row["allowed"] is False for row in agent["tools"])
+        assert all(row["reason"] == "minecraft.disabled" for row in agent["tools"])
+
+        # 启用 Tool Runtime + 装配 bridge：SAFE 允许、LOW 因「不在世界」被拒（reason 如实）
+        await bot.tools.start()  # 注册六个 minecraft_* 工具（api_server 不跑 Bot.start）
+        service = MinecraftService(bot, MinecraftConfig(enabled=True, auto_start_runtime=False))
+        bot.minecraft = service
+        try:
+            from app.integrations.minecraft.agent import MinecraftAgentBridge
+
+            service.agent = MinecraftAgentBridge(service)
+            status, payload = await client.get("/api/v1/minecraft")
+            assert status == 200
+            agent = payload["data"]["agent"]
+            assert agent["enabled"] is True
+            rows = {row["name"]: row for row in agent["tools"]}
+            assert rows["minecraft_world"]["allowed"] is True
+            assert rows["minecraft_world"]["risk"] == "SAFE"
+            assert rows["minecraft_move_to"]["risk"] == "LOW"
+            # 不在世界里：需要世界的动作被拒，理由就是稳定错误码
+            assert rows["minecraft_move_to"]["allowed"] is False
+            assert rows["minecraft_move_to"]["reason"] == "minecraft.offline"
+            assert rows["minecraft_stop"]["allowed"] is True  # 停止永远可用
+            assert agent["context"]["online"] is False
+            assert agent["policy"]["risk_flags"]["MEDIUM"] is False
+        finally:
+            await service._cleanup()
 
 
 # ------------------------------------------------ Phase 3D：follow_player 端点

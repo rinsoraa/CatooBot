@@ -41,7 +41,39 @@ const ONLINE_OVERVIEW = {
     finished_at: null,
     elapsed_ms: null,
   },
-  pathfinder: { goal: null, target: null, distance: null, moving: false },
+  agent: {
+    enabled: true,
+    context: {
+      online: true,
+      username: 'Catodayo',
+      dimension: 'minecraft:overworld',
+      position: { x: 120.5, y: 64, z: -230.5 },
+      biome: 'plains',
+      players: [{ name: '空凛', distance: 6.4, direction: 'front_right' }],
+      current_action: { action: 'follow_player', action_id: 'act_follow_1', status: 'RUNNING' },
+      last_action: {
+        action: 'move_to',
+        action_id: 'act_move_0',
+        status: 'FAILED',
+        code: 'minecraft.path_not_found',
+        error: '无法找到到达目标的非破坏性路径',
+        result: null,
+        at: 1700000000,
+      },
+      activity: '',
+      updated_at: 1700000000,
+    },
+    policy: { enabled: true, risk_flags: { SAFE: true, LOW: true }, registered: {} },
+    tools: [
+      { name: 'minecraft_chat', risk: 'SAFE', enabled: true, allowed: true, reason: '' },
+      { name: 'minecraft_follow_player', risk: 'LOW', enabled: true, allowed: false, reason: 'minecraft.action_busy' },
+      { name: 'minecraft_look_at', risk: 'SAFE', enabled: true, allowed: true, reason: '' },
+      { name: 'minecraft_move_to', risk: 'LOW', enabled: true, allowed: false, reason: 'minecraft.action_busy' },
+      { name: 'minecraft_stop', risk: 'SAFE', enabled: true, allowed: true, reason: '' },
+      // 注册表里被关掉的工具（enabled=false）也如实带原因
+      { name: 'minecraft_world', risk: 'SAFE', enabled: false, allowed: false, reason: 'tool.disabled' },
+    ],
+  },
   last_event: null,
 }
 
@@ -124,12 +156,17 @@ function makeHandler(overrides: { join?: MockReply; leave?: MockReply } = {}) {
   }
 }
 
+//: 挂载过的页面，测试结束统一卸载——页面有 3s 轮询定时器，
+//: 不卸载会在环境拆除后继续回调（document is not defined）。
+const mounted: VueWrapper[] = []
+
 async function mountPage(
   handler: (request: MockRequest) => MockReply,
 ): Promise<{ wrapper: VueWrapper; calls: MockRequest[] }> {
   const pinia = useFreshPinia()
   const calls = installFetch(handler)
   const wrapper = mount(Minecraft, { global: { plugins: [pinia] } })
+  mounted.push(wrapper)
   await flushAll()
   return { wrapper, calls }
 }
@@ -140,6 +177,9 @@ beforeEach(() => {
 
 afterEach(() => {
   useToast().clear()
+  for (const wrapper of mounted.splice(0)) {
+    wrapper.unmount()
+  }
 })
 
 describe('Minecraft 页', () => {
@@ -399,6 +439,64 @@ describe('Minecraft 页 · move_to（Phase 3C）', () => {
     await wrapper.get('[data-test="mc-move-to"]').trigger('click')
     await flushAll()
     expect(calls.some((c) => c.url.endsWith('/minecraft/move_to'))).toBe(false)
+  })
+})
+
+describe('Minecraft 页 · LLM Tool Debug（Phase 3E）', () => {
+  it('列出六个工具的 风险 / 启用 / 是否允许 与 Agent 上下文', async () => {
+    const { wrapper } = await mountPage((request) => {
+      const url = new URL(request.url, 'http://localhost')
+      if (url.pathname === '/api/v1/minecraft') return ok(ONLINE_OVERVIEW)
+      return fail(404, 'resource.not_found', 'no')
+    })
+    await flushAll()
+
+    const panel = wrapper.get('[data-test="mc-agent-tools"]')
+    expect(panel.text()).toContain('minecraft_world')
+    expect(panel.text()).toContain('minecraft_move_to')
+    expect(panel.text()).toContain('SAFE')
+    expect(panel.text()).toContain('LOW')
+    // 被拒的工具要如实显示稳定错误码
+    expect(panel.text()).toContain('minecraft.action_busy')
+    // 被关掉的工具显示原因而不是「允许」
+    expect(wrapper.get('[data-test="mc-agent-tool-minecraft_world"]').text()).toContain(
+      'tool.disabled',
+    )
+    expect(wrapper.get('[data-test="mc-agent-tool-minecraft_stop"]').text()).toContain('允许')
+
+    expect(wrapper.get('[data-test="mc-agent-online"]').text()).toContain('在线')
+    expect(wrapper.get('[data-test="mc-agent-dimension"]').text()).toContain('minecraft:overworld')
+    expect(wrapper.get('[data-test="mc-agent-position"]').text()).toContain('121')
+    expect(wrapper.get('[data-test="mc-agent-players"]').text()).toContain('空凛 6.4 格')
+    expect(wrapper.get('[data-test="mc-agent-current"]').text()).toContain('follow_player · RUNNING')
+    expect(wrapper.get('[data-test="mc-agent-last"]').text()).toContain('minecraft.path_not_found')
+  })
+
+  it('Minecraft 未启用时面板说明六个工具都不可用', async () => {
+    const overview = {
+      ...ONLINE_OVERVIEW,
+      agent: {
+        enabled: false,
+        context: {},
+        policy: {},
+        tools: [
+          {
+          name: 'minecraft_world',
+          risk: 'SAFE',
+          enabled: false,
+          allowed: false,
+          reason: 'minecraft.disabled',
+        },
+        ],
+      },
+    }
+    const { wrapper } = await mountPage((request) => {
+      const url = new URL(request.url, 'http://localhost')
+      if (url.pathname === '/api/v1/minecraft') return ok(overview)
+      return fail(404, 'resource.not_found', 'no')
+    })
+    await flushAll()
+    expect(wrapper.get('[data-test="mc-agent"]').text()).toContain('minecraft.disabled')
   })
 })
 

@@ -576,3 +576,14 @@ minecraft:
     follow_player:
       timeout: 120               # 跟随最长持续多少秒（10~600；到点自动停下并清 Goal）
       max_chase_distance: 64     # 离目标超过多少格就放弃追逐（不追到世界尽头）
+  # ---- LLM 工具权限（Phase 3E）：模型能用哪些 Minecraft 动作
+  # 风险分级：SAFE（只读/说话/朝向/停止）、LOW（非破坏性移动与跟随，还需用户明确要求）；
+  # MEDIUM/HIGH/DESTRUCTIVE 本阶段没有任何动作，先保持 false 把门装好。
+  agent:
+    tools:
+      enabled: true          # 关掉 = 模型完全碰不到 Minecraft（WebUI 连接页不受影响）
+      allow_safe: true       # minecraft_world / chat / look_at / stop
+      allow_low: true        # minecraft_move_to / follow_player（非破坏性导航）
+      allow_medium: false    # 暂无实现
+      allow_high: false      # 暂无实现
+      allow_destructive: false  # 暂无实现

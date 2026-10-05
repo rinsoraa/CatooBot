@@ -49,7 +49,12 @@ function main() {
     assert(def.risk === 'LOW', `risk = LOW（得到 ${def.risk}）`)
     assert(def.timeout_ms === 30000, `默认 timeout = 30s（得到 ${def.timeout_ms}）`)
     assert(typeof def.validate === 'function', '有参数校验')
-    assert(typeof def.run === 'function', '有执行体')
+    // Phase 3E：move_to 与 follow_player 同为持续型动作 —— start/wait 两阶段
+    // （导航几十秒，绝不能让 HTTP 调用方/LLM Tool 阻塞等待）
+    assert(def.detached === true, 'detached = true（启动即返回 RUNNING）')
+    assert(typeof def.start === 'function', '有启动阶段（start）')
+    assert(typeof def.wait === 'function', '有生命周期（wait）')
+    assert(typeof def.run !== 'function', '没有阻塞式执行体（run）')
     assert(typeof def.cleanup === 'function', '有 cleanup（停止/超时/断开时清 Goal）')
     // 注册表只允许已批准的动作（Phase 3D 起含 follow_player）
     assert(

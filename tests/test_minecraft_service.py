@@ -166,7 +166,8 @@ class FakeRuntime:
     async def _move_to(self, request: web.Request) -> web.Response:
         body = await request.json()
         self.move_to_calls.append(body)
-        plan = self.move_to_plan.pop(0) if self.move_to_plan else {"status": "SUCCEEDED"}
+        # Phase 3E：move_to 是持续型动作——默认启动即 RUNNING，终点由事件送达
+        plan = self.move_to_plan.pop(0) if self.move_to_plan else {"status": "RUNNING"}
         if "error" in plan:
             code, status = plan["error"]
             return web.json_response(
@@ -179,7 +180,7 @@ class FakeRuntime:
             "action": "move_to",
             "status": plan["status"],
         }
-        if plan["status"] == "SUCCEEDED":
+        if plan.get("result") is not None or plan["status"] == "SUCCEEDED":
             response["result"] = plan.get(
                 "result",
                 {

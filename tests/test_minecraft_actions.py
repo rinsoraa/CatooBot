@@ -288,19 +288,70 @@ async def test_chat_still_works_and_is_an_action(fake_runtime: FakeRuntime, make
 # 说明：§十九 里的 test_move_to_registers_as_exclusive / test_move_to_validates_coordinates
 # 在 Node 侧实现（minecraft_runtime/test/move_to.test.js：注册表属性与校验器直测）；
 # 这里覆盖服务层语义与错误翻译。
+# Phase 3E：move_to 与 follow_player 同为持续型动作（HTTP 启动即 RUNNING，
+# 终点/失败经 action 事件送达）——下面的断言按这个契约更新。
 
 
-async def test_move_to_success(fake_runtime: FakeRuntime, make_service) -> None:
+async def test_move_to_returns_running(fake_runtime: FakeRuntime, make_service) -> None:
     service = make_service(make_config(fake_runtime))
     result = await service.move_to(120, 64, -230)
-    assert result["status"] == "SUCCEEDED"
+    # 启动成功即返回 RUNNING（§三十三：绝不等导航完成）
+    assert result["status"] == "RUNNING"
     assert result["action"] == "move_to"
     assert str(result["action_id"]).startswith("act_")
-    # §八：result 带 target / final_position / distance_to_target
-    payload = result["result"]
-    assert payload["target"] == {"x": 120.0, "y": 64.0, "z": -230.0}
-    assert "final_position" in payload and "distance_to_target" in payload
     assert fake_runtime.move_to_calls == [{"x": 120.0, "y": 64.0, "z": -230.0}]
+
+
+async def test_move_to_terminal_result_arrives_via_event(
+    fake_runtime: FakeRuntime, make_service
+) -> None:
+    """终点位置只经 ``minecraft.action.completed`` 事件回来（HTTP 早已返回 RUNNING）。"""
+    service = make_service(make_config(fake_runtime))
+    await service.receive_event(
+        action_event(
+            "minecraft.action.started", action="move_to", action_id="act_moving", status="RUNNING"
+        )
+    )
+    assert service.snapshot()["action"]["status"] == "RUNNING"
+    await service.receive_event(
+        action_event(
+            "minecraft.action.completed",
+            action="move_to",
+            action_id="act_moving",
+            status="SUCCEEDED",
+            result={
+                "target": {"x": 120.0, "y": 64.0, "z": -230.0},
+                "final_position": {"x": 119.6, "y": 64.0, "z": -230.4},
+                "distance_to_target": 0.42,
+            },
+        )
+    )
+    action = service.snapshot()["action"]
+    assert action["status"] == "SUCCEEDED"
+    assert action["result"]["distance_to_target"] == 0.42
+    assert action["result"]["final_position"]["x"] == 119.6
+    assert action["error"] is None and action["code"] is None
+
+
+async def test_move_to_failure_code_arrives_via_event(
+    fake_runtime: FakeRuntime, make_service
+) -> None:
+    """无路径这类失败改为终态事件（runtime 词表原样留在镜像里）。"""
+    service = make_service(make_config(fake_runtime))
+    await service.receive_event(
+        action_event(
+            "minecraft.action.failed",
+            action="move_to",
+            action_id="act_moving",
+            status="FAILED",
+            code="path.not_found",
+            error="无法找到到达目标的非破坏性路径",
+        )
+    )
+    action = service.snapshot()["action"]
+    assert action["status"] == "FAILED"
+    assert action["code"] == "path.not_found"
+    assert "非破坏性路径" in action["error"]
 
 
 async def test_move_to_rejects_too_far(fake_runtime: FakeRuntime, make_service) -> None:
@@ -314,7 +365,7 @@ async def test_move_to_rejects_too_far(fake_runtime: FakeRuntime, make_service) 
 
     # 边界内正常通过（64 格以内）
     result = await service.move_to(60, 2, 3)  # 59 格
-    assert result["status"] == "SUCCEEDED"
+    assert result["status"] == "RUNNING"
 
 
 async def test_move_to_rejects_offline(fake_runtime: FakeRuntime, make_service) -> None:
@@ -335,6 +386,7 @@ async def test_move_to_busy(fake_runtime: FakeRuntime, make_service) -> None:
 
 
 async def test_move_to_timeout(fake_runtime: FakeRuntime, make_service) -> None:
+    """超时后 runtime 回的是**事件**；若启动阶段就同步回 TIMEOUT（防御），服务照样透传。"""
     fake_runtime.move_to_plan.append({"status": "TIMEOUT", "action_id": "act_move_timeout"})
     service = make_service(make_config(fake_runtime))
     result = await service.move_to(1, 2, 3)
@@ -343,7 +395,11 @@ async def test_move_to_timeout(fake_runtime: FakeRuntime, make_service) -> None:
 
 
 async def test_move_to_no_path(fake_runtime: FakeRuntime, make_service) -> None:
-    """§十：目标不可达 → 500 minecraft.path_not_found（绝不自动挖/搭/绕圈）。"""
+    """§十：目标不可达 → ``minecraft.path_not_found``（绝不自动挖/搭/绕圈）。
+
+    正常路径下这发生在启动之后（终态事件）；这里是 runtime 在启动阶段就同步
+    拒绝时的错误翻译（防御性，词表不变）。
+    """
     fake_runtime.move_to_plan.append({"error": ("path.not_found", 500)})
     service = make_service(make_config(fake_runtime))
     with pytest.raises(MinecraftPathNotFound) as excinfo:

@@ -329,6 +329,8 @@ class MinecraftService:
         self._runtime_down = False
         # 状态镜像：来自事件回调 + 对账轮询，绝不自行发明状态
         self._mirror: dict[str, Any] = {"status": "DISCONNECTED"}
+        #: Phase 3E：Agent Bridge（由 Bot 装配；持有它 = 六个 LLM Tool 的判定与上下文）
+        self.agent: Any = None
         self._last_event: dict[str, Any] | None = None
         self._recent_event_keys: deque[str] = deque(maxlen=256)
         # 回调共享密钥：auto_start 时随进程环境注入；外部托管时用配置值
@@ -395,6 +397,9 @@ class MinecraftService:
                 )
                 self._perception_task = asyncio.create_task(self._perception_loop())
             self._started = True
+            if self.agent is not None:
+                # Phase 3E：Agent 上下文跟着 action 事件走（绝不触发新的 Agent Turn）
+                self.add_listener(self.agent.apply_event)
             self._poll_task = asyncio.create_task(self._poll_loop())
             log.info(
                 "[Minecraft] bridge ready (runtime_port=%d, callback=%s, auth=%s, perception=%s)",
@@ -819,7 +824,11 @@ class MinecraftService:
             self._apply_action_event(event)
 
     def _apply_action_event(self, event: MinecraftBridgeEvent) -> None:
-        """Phase 3B：动作生命周期镜像（started/终态 → WebUI 的 Current Action）。"""
+        """Phase 3B：动作生命周期镜像（started/终态 → WebUI 的 Current Action）。
+
+        Phase 3E：终态额外保留 ``result`` 与 ``error``/``code``——move_to 等持续型
+        动作的终点位置与失败原因只在这里出现（HTTP 早已返回 RUNNING）。
+        """
         data = event.data
         self._mirror["action"] = {
             "action": data.get("action"),
@@ -830,6 +839,9 @@ class MinecraftService:
                 None if event.type_name == "minecraft.action.started" else event.timestamp
             ),
             "elapsed_ms": data.get("elapsed_ms"),
+            "result": data.get("result") if isinstance(data.get("result"), dict) else None,
+            "error": data.get("error"),
+            "code": data.get("code"),
         }
 
     # ----------------------------------------------------------------- 对账轮询

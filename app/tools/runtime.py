@@ -84,6 +84,11 @@ class ToolRuntime:
     def _register_builtins(self) -> None:
         from app.tools.builtins import (
             CalculatorTool,
+            MinecraftChatTool,
+            MinecraftFollowPlayerTool,
+            MinecraftLookAtTool,
+            MinecraftMoveToTool,
+            MinecraftStopTool,
             MinecraftWorldTool,
             QueryImageMemoryTool,
             TimeTool,
@@ -95,7 +100,13 @@ class ToolRuntime:
         builders = (
             ("time", lambda: TimeTool()),
             ("calculator", lambda: CalculatorTool()),
+            # Phase 3E：Minecraft 感知与行动的正式 LLM Tool 面（§二）
             ("minecraft_world", lambda: MinecraftWorldTool()),
+            ("minecraft_chat", lambda: MinecraftChatTool()),
+            ("minecraft_look_at", lambda: MinecraftLookAtTool()),
+            ("minecraft_move_to", lambda: MinecraftMoveToTool()),
+            ("minecraft_follow_player", lambda: MinecraftFollowPlayerTool()),
+            ("minecraft_stop", lambda: MinecraftStopTool()),
             ("query_image_memory", lambda: QueryImageMemoryTool()),
             (
                 "weather",

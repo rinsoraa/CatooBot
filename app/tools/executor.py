@@ -141,6 +141,10 @@ class ToolExecutor:
             )
         except ToolError as exc:
             self._log.info("[Tool] %s blocked: %s", call.name, exc)
+            # 被拦下的尝试同样消耗本轮预算（2026-10-06 Phase 3E 复盘）：否则「循环守卫
+            # 拦住 → 不记账 → 模型再要一次 → 又拦住」会一直转到 30s 时间预算耗尽，
+            # 而每次都是真实的模型往返。记上账，done 循环立刻按 max_calls_per_turn 收敛。
+            budget.register(call)
             await self._record(trace, status="blocked", error_type=exc.error_type, started=started)
             return ToolResult(
                 tool_name=call.name,

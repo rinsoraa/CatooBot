@@ -207,12 +207,23 @@ def build_semantic_model(raw: RawSnapshot) -> dict[str, Any]:
     model["terrain"] = terrain
 
     # ---- players（原样投影，方向沿用 runtime 计算）
+    # Phase 3E：带上世界坐标——「罐头你过来」要靠它算出移动目标（§四十一），
+    # 方向/距离仍由 runtime 计算，绝不让模型自己从坐标推断方位。
     model["players"] = [
         {
             "name": player.username,
             "direction": player.relative_direction,
             "distance": round(player.distance, 1),
             "compass": player.compass,
+            "position": (
+                {
+                    "x": round(player.pos.x, 1),
+                    "y": round(player.pos.y, 1),
+                    "z": round(player.pos.z, 1),
+                }
+                if player.pos is not None
+                else None
+            ),
         }
         for player in raw.players[:20]
     ]

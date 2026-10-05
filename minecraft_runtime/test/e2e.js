@@ -394,26 +394,42 @@ async function main() {
             y: moveOrigin.y,
             z: moveOrigin.z + dz,
           })
-          if (resp.status === 200 && resp.body.status === 'SUCCEEDED') {
-            moveOk = resp.body
-            moveDir = [dx, dz]
-            break
+          // Phase 3E：move_to 是持续型动作——HTTP 立刻返回 RUNNING（不阻塞 30s），
+          // 终点/失败由 action 事件送达（与 follow_player 同一套语义）。
+          if (!(resp.status === 200 && resp.body.status === 'RUNNING')) {
+            moveFail = resp // 同步拒绝（busy / 超距离 / 非法坐标）
+            continue
           }
-          moveFail = resp
+          const actionId = resp.body.action_id
+          try {
+            await waitFor(
+              () =>
+                events.some(
+                  (e) => e.event === 'minecraft.action.completed' && e.action_id === actionId,
+                ),
+              'move_to completed 事件',
+              20000,
+            )
+          } catch (error) {
+            // no-path / 失败：换个方向重试（失败原因由 failed 事件记录）
+            moveFail = {
+              body: { error: String(error && error.message ? error.message : error) },
+            }
+            continue
+          }
+          const completed = events.find(
+            (e) => e.event === 'minecraft.action.completed' && e.action_id === actionId,
+          )
+          moveOk = { ...resp.body, result: completed && completed.result }
+          moveDir = [dx, dz]
+          break
         }
         assert(moveOk, `Test A：至少一个方向的 move_to 成功（最后失败：${JSON.stringify(moveFail && moveFail.body)}）`)
-        assert(moveOk.result && typeof moveOk.result.distance_to_target === 'number', 'Test A：result 带 distance_to_target')
-        assert(moveOk.result.distance_to_target <= 2.2, `Test A：到达目标附近（${moveOk.result.distance_to_target} 格）`)
-        await waitFor(
-          () =>
-            events.some(
-              (e) =>
-                e.event === 'minecraft.action.completed' &&
-                e.action === 'move_to' &&
-                e.action_id === moveOk.action_id,
-            ),
-          'move_to completed 事件',
+        assert(
+          moveOk.result && typeof moveOk.result.distance_to_target === 'number',
+          'Test A：completed 事件带 distance_to_target',
         )
+        assert(moveOk.result.distance_to_target <= 2.2, `Test A：到达目标附近（${moveOk.result.distance_to_target} 格）`)
         const movedStatus = (await request(runtimePort, 'GET', '/minecraft/status')).body
         const movedDistance = Math.hypot(
           movedStatus.position.x - moveOrigin.x,
@@ -438,7 +454,12 @@ async function main() {
         for (const distance of [20, 15, 25, 12]) {
           const farOrigin = (await request(runtimePort, 'GET', '/minecraft/status')).body.position
           const target = { x: farOrigin.x + ux * distance, y: farOrigin.y, z: farOrigin.z + uz * distance }
-          const movePromise = request(runtimePort, 'POST', '/minecraft/move_to', target)
+          const startResp = await request(runtimePort, 'POST', '/minecraft/move_to', target)
+          assert(
+            startResp.status === 200 && startResp.body.status === 'RUNNING',
+            `Test B：move_to 启动即 RUNNING（得到 ${JSON.stringify(startResp.body)}）`,
+          )
+          const moveId = startResp.body.action_id
           let started = false
           try {
             await waitFor(async () => {
@@ -447,19 +468,20 @@ async function main() {
             }, '导航开始', 4000)
             started = true
           } catch {
-            await movePromise.catch(() => {}) // 该方向没能开始移动（no-path 等）：换个比例重试
+            // 该方向没能开始移动（no-path 等）：换个比例重试
           }
           if (!started) continue
+          const running = (await request(runtimePort, 'GET', '/minecraft/status')).body
+          if (running.action.status !== 'RUNNING') continue // 已经跑完：换个比例重试
 
           const stopResult = await request(runtimePort, 'POST', '/minecraft/stop', {})
           assert(
-            stopResult.body.cancelled.length === 1,
+            stopResult.body.cancelled.length === 1 && stopResult.body.cancelled[0] === moveId,
             `Test B：stop 取消 move_to（得到 ${JSON.stringify(stopResult.body)}）`,
           )
-          const moveResp = await movePromise
-          assert(moveResp.body.status === 'CANCELLED', `Test B：move_to → CANCELLED（得到 ${moveResp.body.status}）`)
           await waitFor(
-            () => events.some((e) => e.event === 'minecraft.action.cancelled' && e.action === 'move_to'),
+            () =>
+              events.some((e) => e.event === 'minecraft.action.cancelled' && e.action_id === moveId),
             'move_to cancelled 事件',
           )
           // §十一：不能只验证 Action 状态——还要验证 goal 清空、isMoving=false、位置停住
@@ -491,18 +513,32 @@ async function main() {
           }
           const resp = await request(runtimePort, 'POST', '/minecraft/move_to', target)
           timeoutFail = resp
-          if (resp.status === 200 && resp.body.status === 'TIMEOUT') {
-            await waitFor(
-              () => events.some((e) => e.event === 'minecraft.action.timeout' && e.action === 'move_to'),
-              'move_to timeout 事件',
-            )
+          if (resp.status === 200 && resp.body.status === 'RUNNING') {
+            try {
+              await waitFor(
+                () =>
+                  events.some(
+                    (e) =>
+                      e.event === 'minecraft.action.timeout' && e.action_id === resp.body.action_id,
+                  ),
+                'move_to timeout 事件',
+                15000,
+              )
+            } catch (error) {
+              // 超时前就自己结束了（走完了 / no-path）：换个更远的比例重试
+              timeoutFail = {
+                body: { error: String(error && error.message ? error.message : error) },
+              }
+              continue
+            }
             const after = (await request(runtimePort, 'GET', '/minecraft/status')).body
+            assert(after.action.status === 'TIMEOUT', `Test C：终态 TIMEOUT（得到 ${after.action.status}）`)
             assert(after.pathfinder.goal === null, 'Test C：超时后 goal == null')
             assert(after.pathfinder.moving === false, 'Test C：超时后 isMoving == false')
             timeoutVerified = true
             break
           }
-          // no-path 等非 TIMEOUT 结果：换个更远的比例重试
+          // 同步拒绝：换个更远的比例重试
         }
         assert(
           timeoutVerified,

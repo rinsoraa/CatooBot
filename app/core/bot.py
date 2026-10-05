@@ -322,8 +322,12 @@ class Bot:
                 from app.integrations.minecraft.service import MinecraftService
 
                 self.minecraft = MinecraftService(self, config.minecraft, clock=self._clock)
-                # 只读世界视图暴露给工具上下文（minecraft_world 工具用）
-                self.character.minecraft = self.minecraft
+                # Phase 3E：LLM Tool 的唯一入口（判定 → Service → 结构化结果）
+                from app.integrations.minecraft.agent import MinecraftAgentBridge
+
+                self.minecraft.agent = MinecraftAgentBridge(self.minecraft, clock=self._clock)
+                # Agent Bridge 暴露给工具上下文 / 每轮 prompt 上下文
+                self.character.minecraft_agent = self.minecraft.agent
             except Exception:  # noqa: BLE001 - minecraft trouble must not stop startup
                 self.log.exception("Minecraft bridge initialization failed; continuing without it")
                 self.minecraft = None

@@ -3,6 +3,34 @@
 本文件记录 CatooBot 的版本演进。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号见 `pyproject.toml`；日期取自真实提交历史（本仓库 2026-09-30 起）。
 
+## [Unreleased] — Minecraft Phase 3E · Minecraft Action Tools & Agent Bridge
+
+- **罐头的大模型第一次能安全地使用 Minecraft 身体**：六个正式 Tool 进入 CatooBot 的
+  Tool Registry —— `minecraft_world`（只读世界）/ `minecraft_chat` / `minecraft_look_at` /
+  `minecraft_stop`（SAFE）/ `minecraft_move_to` / `minecraft_follow_player`（LOW）。
+  挖、放、攻击、合成、背包/容器等**一律没有 Tool**（Phase 4 才做）。
+- **LLM 不直接碰 runtime**：路径固定为 Tool → `MinecraftActionPolicy` → `MinecraftService`
+  → Action Runtime（`action_id`/timeout/取消/cleanup/事件/日志全部沿用既有机制）；
+  Tool 层没有 HTTP、没有 mineflayer、没有 pathfinder（源码级测试断言）。
+- **风险分级 + Policy 门**：SAFE 自动允许；**LOW 必须有用户明确要求**（意图门认"这一轮是不是
+  用户发起的对话"这一结构事实，Tool Layer 不做 NLP）——模型自己在自主回合里推理出"我应该跟过去"
+  也会被拒；离线/未启用/前台忙/跟随目标不在附近各有稳定错误码；配置 `minecraft.agent.tools.*`
+  （`allow_safe/allow_low` 默认 true，MEDIUM 及以上默认 false 且尚无实现）。
+- **持续型动作**：`move_to` 与 `follow_player` 启动即返回 `RUNNING + action_id`，绝不阻塞请求
+  （导航最长 30s、跟随最长 120s）；终点/失败/超时/取消经 `minecraft.action.*` 事件回到
+  CatooBot 的 Minecraft Context。为此 `move_to` 由同步语义改为与 follow 同款的 `start`/`wait`
+  两阶段——**动作语义（非破坏性、距离上限、超时、STOP、cleanup）一行未改**。
+- **Minecraft Context**：事件驱动地维护"正在做什么 / 上一次动作 / 刚做成了什么"，世界事实
+  （坐标/附近玩家）按需现取；每轮给模型注入一行紧凑处境（≈150–240 字符），
+  Raw Snapshot 与历史快照永不进上下文；**Action 事件绝不自动开新的 Agent 回合**。
+- **顺手修掉的循环收敛缺口**：被循环守卫拦下的工具调用现在也消耗本轮调用预算，
+  否则「拦住 → 不记账 → 模型再要一次 → 又拦住」会一直转到时间预算耗尽。
+- **WebUI**：连接页新增「LLM Tool Debug（只读）」——六个工具的风险/启用/是否允许与原因，
+  加上 Agent 上下文（在线/维度/坐标/附近玩家/当前与最近动作）；`GET /api/v1/minecraft`
+  新增 `agent` 块；MOVE TO 按钮文案改为"已开始移动（到达/失败由事件更新）"。
+- 新增 `tests/test_minecraft_agent_tools.py`（44）+ `tests/test_minecraft_agent_e2e.py`（9，
+  自然语言闭环：你过来 → world → move_to；跟着我 → follow RUNNING；停 → stop 取消）。
+
 ## [Unreleased] — v2.1 · Console World Log: Change-Driven Reporting
 
 - **审计结论**：刷屏来自 `SandboxRuntime.tick()` 末尾的 `narrate().world(...)`

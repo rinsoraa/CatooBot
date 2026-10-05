@@ -71,7 +71,8 @@ class CharacterRuntime:
         self.tools = tools  # optional ToolRuntime: enables contextual tool use
         self.agent = agent  # optional AgentRuntime: enables multi-step goals
         self.sandbox: Any = None  # optional SandboxRuntime (v2.0): her life
-        self.minecraft: Any = None  # optional MinecraftService (Phase 2): world view
+        # Phase 3E：Minecraft Agent Bridge（LLM Tool 的唯一入口；Bot 装配）
+        self.minecraft_agent: Any = None
         self.builder = CharacterContextBuilder()
         self.processor = CharacterResponseProcessor(logger=self._log)
         self.expression_store: Any = None  # optional ExpressionStore (Task 22)
@@ -159,6 +160,7 @@ class CharacterRuntime:
             time_context=time_context,
             extra_instruction=extra_instruction,
             world=await self._world_context(),
+            minecraft=self._minecraft_context(),
             media_context=media_context,
             facts=facts,
             expressions=expressions,
@@ -311,10 +313,16 @@ class CharacterRuntime:
             # read-only retrieval handle for query_image_memory — the tool goes
             # through the manager, never the raw database.
             metadata["memory"] = self.memory
-        if getattr(self, "minecraft", None) is not None:
-            # read-only world view for the minecraft_world tool (Phase 2):
-            # perception snapshots only — no Minecraft actions exist to call.
-            metadata["minecraft_world"] = self.minecraft
+        bridge = getattr(self, "minecraft_agent", None)
+        if bridge is not None:
+            # 延迟导入：Minecraft 模块（aiohttp/桥接）只在真的接了游戏时才进这条路径
+            from app.integrations.minecraft.agent import INTENT_KEY
+
+            # Phase 3E：六个 Minecraft Tool 的唯一入口（判定 → Service → 结构化结果）
+            metadata["minecraft"] = bridge
+            # 意图门（§十五）：这一轮是用户发起的对话 = 用户明确请求的场域；
+            # 后台/自主回合没有这个标记，LOW 动作一律被拒。
+            metadata[INTENT_KEY] = True
         return ToolContext(
             user_id=str(user_id),
             group_id=str(group_id) if group_id is not None else None,
@@ -503,6 +511,17 @@ class CharacterRuntime:
         await self.states.update(activity=activity, current_focus=current_focus)
 
     # ---------------------------------------------------------------- world
+
+    def _minecraft_context(self) -> str:
+        """她此刻在 Minecraft 里的一行处境（Phase 3E §十九；没有就完全静默）。"""
+        bridge = getattr(self, "minecraft_agent", None)
+        if bridge is None or not getattr(bridge, "enabled", False):
+            return ""
+        try:
+            return bridge.context_line()
+        except Exception:  # noqa: BLE001 - 游戏状态绝不拖垮聊天
+            self._log.debug("Minecraft context unavailable", exc_info=True)
+            return ""
 
     async def _world_context(self) -> dict | None:
         """Everything the prompt legitimately needs about her own life.

@@ -156,13 +156,22 @@ class ToolAdminService:
         if tool is None:
             return {"ok": False, "error": f"unknown tool: {name}"}
 
+        # Phase 3E：管理台手点 = 人明确要求（LOW 动作的意图门因此放行），
+        # 并把 Minecraft Agent Bridge 放进上下文（六个 minecraft_* 工具靠它执行）
+        from app.integrations.minecraft.agent import BRIDGE_KEY, INTENT_KEY
         from app.tools.policy import TurnBudget
 
+        metadata: dict[str, Any] = {}
+        bridge = getattr(getattr(self.bot, "minecraft", None), "agent", None)
+        if bridge is not None:
+            metadata[BRIDGE_KEY] = bridge
+            metadata[INTENT_KEY] = True
         context = ToolContext(
             user_id="webui-admin",
             session_id="webui:test",
             character_name=self.bot.character.personas.persona.identity.name,
             timezone=self.bot.config.character.timezone,
+            metadata=metadata,
         )
         budget = TurnBudget(
             max_calls=1, max_execution_time=self.bot.config.tools.max_execution_time

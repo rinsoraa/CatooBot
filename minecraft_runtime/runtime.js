@@ -648,9 +648,12 @@ const ACTION_REGISTRY = {
     },
     move_to: {
       // Phase 3C：非破坏性导航（LOW；不挖不放，目标不可达 → NO_PATH）
+      // Phase 3E：改为持续型（detached）——导航要几十秒，绝不能阻塞调用方；
+      // 启动即 RUNNING，终点/失败经 action 事件送达（与 follow_player 同一套语义）。
       exclusive: true,
       timeout_ms: MOVE_TIMEOUT_MS,
       risk: 'LOW',
+      detached: true,
       validate(params) {
         const coords = validateWorldCoords(params)
         // 最大移动距离（相对当前玩家位置；第一版 64 格，可配置）——不允许多千格长距离
@@ -671,11 +674,16 @@ const ACTION_REGISTRY = {
         }
         return coords
       },
-      async run(bot, params) {
-        const goal = new goals.GoalNear(params.x, params.y, params.z, MOVE_TO_RADIUS)
+      async start(bot, params) {
+        // Phase 3E：启动阶段无副作用——只把 Goal 对象建好。真正的 setGoal 由 wait 里的
+        // goto 完成（goto 在其 Promise 体内同步登记 Goal，先于 HTTP 响应写出），
+        // 因此调用方拿到 RUNNING 时导航已经就位。
+        return { goal: new goals.GoalNear(params.x, params.y, params.z, MOVE_TO_RADIUS) }
+      },
+      async wait(bot, params, token, state) {
         try {
           // goto 在 goal_reached 时 resolve；noPath/内部超时/被改目标都以具名错误 reject
-          await bot.pathfinder.goto(goal)
+          await bot.pathfinder.goto(state.goal)
         } catch (error) {
           // 失败也清 Goal：绝不留残余的导航意图（任务书 §十：不自动绕圈/换目标）
           try {
@@ -1281,7 +1289,8 @@ async function handleRequest(request, response) {
       return
     }
     if (request.method === 'POST' && path === '/minecraft/move_to') {
-      // Phase 3C：非破坏性导航（禁 dig/place；不可达 → 500 path.not_found）
+      // Phase 3C 起：非破坏性导航（禁 dig/place）；Phase 3E 起为持续型动作——
+      // 启动即返回 RUNNING，终点/失败经 minecraft.action.* 事件送达
       const body = await readBody(request)
       const result = await actionRuntime.execute('move_to', { x: body.x, y: body.y, z: body.z })
       jsonResponse(response, 200, { ok: true, ...result })

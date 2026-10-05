@@ -17,6 +17,8 @@ import StatusBadge, { type StatusState } from '@/components/StatusBadge.vue'
 import { toast } from '@/composables/toast'
 import type {
   MinecraftActionView,
+  MinecraftAgentContext,
+  MinecraftAgentToolRow,
   MinecraftOverview,
   MinecraftPathfinderInfo,
   MinecraftWorldView,
@@ -52,6 +54,34 @@ const canLeave = computed(() => isActive.value)
 const action = computed<MinecraftActionView | null>(() => overview.value?.action ?? null)
 // Phase 3C：Pathfinder 诊断 + move_to 目标输入
 const pathfinder = computed<MinecraftPathfinderInfo | null>(() => overview.value?.pathfinder ?? null)
+// Phase 3E：LLM Tool Debug（六个工具的风险/开关/是否允许 + Agent 上下文）
+const agentTools = computed<MinecraftAgentToolRow[]>(() => overview.value?.agent?.tools ?? [])
+const agentContext = computed<Partial<MinecraftAgentContext>>(
+  () => overview.value?.agent?.context ?? {},
+)
+
+/** 风险等级 → 状态徽标的语义色（SAFE 绿 / LOW 黄 / 更高风险红）。 */
+function riskState(risk: string): StatusState {
+  if (risk === 'SAFE') return 'ok'
+  if (risk === 'LOW') return 'warn'
+  return 'error'
+}
+
+/** 工具是否允许 + 被拒原因（只读展示，不做任何执行）。 */
+function toolState(row: MinecraftAgentToolRow): StatusState {
+  if (!row.enabled) return 'idle'
+  return row.allowed ? 'ok' : 'warn'
+}
+
+function toolLabel(row: MinecraftAgentToolRow): string {
+  // 允许 → 「允许」；否则如实显示原因（minecraft.offline / tool.disabled …）
+  return row.allowed ? '允许' : row.reason || '不允许'
+}
+
+function playerLabel(player: { name: string; distance: number | null }): string {
+  const gap = player.distance === null || player.distance === undefined ? '' : ` ${player.distance} 格`
+  return `${player.name}${gap}`
+}
 const moveTarget = reactive({ x: '', y: '', z: '' })
 const followTarget = reactive({ username: '', distance: '2.5' })
 
@@ -162,7 +192,8 @@ async function moveTo(): Promise<void> {
   working.value = true
   try {
     const result = await minecraftApi.moveTo(x, y, z)
-    toast.success('move_to 已执行', `${result.action} · ${result.status}`)
+    // Phase 3E：导航是持续动作——启动即 RUNNING，终点由 Minecraft 事件确认
+    toast.success('已开始移动', `${result.action} · ${result.status}（到达/失败会由事件更新）`)
     await load(true)
   } catch (caught) {
     toast.error('移动失败', errorMessage(caught))
@@ -542,6 +573,93 @@ onUnmounted(stopPolling)
           <p class="cb-caption">
             Look At Test 看向罐头附近 (+5, 0, +5) 的测试坐标（SAFE 动作，不改世界、不移动）；
             STOP 是最高优先级安全停止：取消进行中的动作并清空移动控制位（幂等）。
+          </p>
+        </section>
+
+        <section class="minecraft__card cb-card" data-test="mc-agent">
+          <SectionHeader
+            title="LLM Tool Debug（只读）"
+            description="模型能用的 Minecraft 工具、风险分级与当前是否允许；上下文随 action 事件更新，此面板只读。"
+          />
+          <dl class="minecraft__facts" data-test="mc-agent-context">
+            <div>
+              <dt>Online</dt>
+              <dd data-test="mc-agent-online">{{ agentContext.online ? '在线' : '不在世界' }}</dd>
+            </div>
+            <div>
+              <dt>Dimension</dt>
+              <dd data-test="mc-agent-dimension">{{ display(agentContext.dimension) }}</dd>
+            </div>
+            <div>
+              <dt>Position</dt>
+              <dd data-test="mc-agent-position">
+                {{
+                  agentContext.position
+                    ? `${Math.round(agentContext.position.x)} ${Math.round(agentContext.position.y)} ${Math.round(agentContext.position.z)}`
+                    : '—'
+                }}
+              </dd>
+            </div>
+            <div>
+              <dt>Nearby Players</dt>
+              <dd data-test="mc-agent-players">
+                {{
+                  agentContext.players && agentContext.players.length
+                    ? agentContext.players.map(playerLabel).join('、')
+                    : '—'
+                }}
+              </dd>
+            </div>
+            <div>
+              <dt>Current Action</dt>
+              <dd data-test="mc-agent-current">
+                {{
+                  agentContext.current_action
+                    ? `${agentContext.current_action.action} · ${agentContext.current_action.status}`
+                    : '—'
+                }}
+              </dd>
+            </div>
+            <div>
+              <dt>Last Action</dt>
+              <dd data-test="mc-agent-last">
+                {{
+                  agentContext.last_action
+                    ? `${agentContext.last_action.action} · ${agentContext.last_action.status}${
+                        agentContext.last_action.code ? `（${agentContext.last_action.code}）` : ''
+                      }`
+                    : '—'
+                }}
+              </dd>
+            </div>
+            <div>
+              <dt>Activity</dt>
+              <dd data-test="mc-agent-activity">{{ display(agentContext.activity) }}</dd>
+            </div>
+          </dl>
+
+          <table class="minecraft__table" data-test="mc-agent-tools">
+            <thead>
+              <tr>
+                <th scope="col">Tool</th>
+                <th scope="col">Risk</th>
+                <th scope="col">状态</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-for="row in agentTools" :key="row.name" :data-test="`mc-agent-tool-${row.name}`">
+                <td><code>{{ row.name }}</code></td>
+                <td><StatusBadge :state="riskState(row.risk)" :label="row.risk" /></td>
+                <td><StatusBadge :state="toolState(row)" :label="toolLabel(row)" /></td>
+              </tr>
+              <tr v-if="!agentTools.length">
+                <td colspan="3" class="cb-caption">Minecraft 未启用：六个工具都不可用。</td>
+              </tr>
+            </tbody>
+          </table>
+          <p class="cb-caption">
+            LOW 动作（移动 / 跟随）只有在用户明确要求的对话里才会执行；模型自己想动也会被拒。
+            本阶段没有挖、放、攻击、合成等任何破坏世界的能力。
           </p>
         </section>
 

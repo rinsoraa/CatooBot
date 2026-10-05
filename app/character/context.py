@@ -123,6 +123,7 @@ class CharacterContextBuilder:
         time_context: TimeContext | None = None,
         extra_instruction: str | None = None,
         world: dict | None = None,
+        minecraft: str = "",
         media_context: str = "",
         facts: str = "",
         expressions: str = "",
@@ -185,6 +186,12 @@ class CharacterContextBuilder:
         if world_block:
             system_parts.append(world_block)
         trace("world", bool(world_block), "world runtime on/off")
+
+        # 3b'. Minecraft（Phase 3E §十九）：她此刻在游戏里的处境 + 正在做的动作。
+        # 只是一行事实，随时可以调工具问最新状态；绝不把世界快照堆进历史。
+        if minecraft:
+            system_parts.append(minecraft)
+        trace("minecraft", bool(minecraft), "minecraft off/offline")
 
         # 3c. Character continuity (v1.2): the short-timescale "same person"
         # state — current interest, unfinished things, last exchange (v1.2 §52-§54).

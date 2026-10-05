@@ -154,6 +154,14 @@ Target X [ ]  Target Y [ ]  Target Z [ ]
 ```
 
 - 2026-10-05 执行：`127.0.0.1:25565` 无响应（操作者的 NeoForge 服务器当时未运行）。
+
+> **Phase 3E 变更（2026-10-06）**：`move_to` 改为**持续型动作**（`detached: true`）——
+> HTTP 启动即返回 `{status:"RUNNING", action_id}`，终点/失败经 `minecraft.action.completed`
+> / `minecraft.action.failed`（`code=path.not_found`）/ `timeout` / `cancelled` 事件送达；
+> 目的：LLM Tool 与任何调用方都不被最长 30s 的导航阻塞（Phase 3E §三十三/§三十七）。
+> 动作语义本身（非破坏性寻路、max_distance、GoalNear r=1.5、30s 超时、cleanup 清 Goal、
+> 不可达即失败、STOP 真停）**一行未改**；E2E Test A/B/C 的断言改为"HTTP RUNNING + 事件终态"。
+> 详见 `docs/MINECRAFT_PHASE3E.md` §五。
 - 脚本已就绪：`node minecraft_runtime/test/smoke_real_server.js`
   （环境变量 `SMOKE_HOST/SMOKE_PORT`，认证用本地 `minecraft_runtime/auth.json`）
   ——服务器开启后重跑即可得到 PASS/FAIL；连接成功但移动异常会给出 FAIL 与运行时日志尾部。

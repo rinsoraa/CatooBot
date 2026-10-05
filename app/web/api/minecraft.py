@@ -16,6 +16,7 @@ from typing import Any
 
 from aiohttp import web
 
+from app.integrations.minecraft.agent import ACTION_RISK
 from app.integrations.minecraft.service import (
     MinecraftBridgeError,
     MinecraftDisabled,
@@ -64,7 +65,57 @@ _DISABLED_SNAPSHOT: dict[str, Any] = {
         "elapsed_ms": None,
     },
     "last_event": None,
+    # Phase 3E：LLM Tool Debug（未启用 = 六个工具都不可用）
+    "agent": {
+        "enabled": False,
+        "context": {},
+        "policy": {},
+        "tools": [
+            {
+                "name": name,
+                "risk": risk,
+                "enabled": False,
+                "allowed": False,
+                "reason": "minecraft.disabled",
+            }
+            for name, risk in sorted(ACTION_RISK.items())
+        ],
+    },
 }
+
+
+def _agent_tools(bridge: Any, tools_runtime: Any = None) -> list[dict[str, Any]]:
+    """六个 Minecraft Tool 的只读行：风险 / 注册开关 / 现在是否允许（§三十）。"""
+    rows: list[dict[str, Any]] = []
+    registry = getattr(tools_runtime, "registry", None)
+    for name, risk in sorted(ACTION_RISK.items()):
+        tool = registry.maybe_get(name) if registry is not None else None
+        enabled = bool(tool is not None and registry is not None and registry.is_enabled(name))
+        # 判定用「用户现在就明确要求」这一最宽松的合法前提：得到的是
+        # 「在线且不忙时它会不会被放行」——正是调试要看的
+        decision = bridge.policy.check(
+            name,
+            {},
+            bridge.gate_facts(explicit_intent=True),
+        )
+        if tool is None:
+            reason = "tool.unregistered"
+        elif not enabled:
+            reason = "tool.disabled"
+        elif not decision.allowed:
+            reason = decision.code
+        else:
+            reason = ""
+        rows.append(
+            {
+                "name": name,
+                "risk": risk,
+                "enabled": enabled,
+                "allowed": enabled and decision.allowed,
+                "reason": reason,
+            }
+        )
+    return rows
 
 
 def _service(bot: Any) -> MinecraftService:
@@ -93,7 +144,15 @@ class MinecraftApiRoutes(WebContext):
             data = await service.status()
         except MinecraftBridgeError as exc:
             raise _translate(exc) from exc
+        data["agent"] = self._agent_view(service)
         return ok(data, request=request)
+
+    def _agent_view(self, service: MinecraftService) -> dict[str, Any]:
+        """Phase 3E：Agent 只读投影（上下文 + 六个工具的风险/开关/是否允许）。"""
+        bridge = getattr(service, "agent", None)
+        if bridge is None:
+            return {"enabled": False, "context": {}, "policy": {}, "tools": []}
+        return bridge.snapshot(tools=_agent_tools(bridge, getattr(self._bot, "tools", None)))
 
     async def _v1_minecraft_world(self, request: web.Request) -> web.Response:
         """World Debug 只读视图（Phase 2）：语义模型 + raw snapshot + 缓存元信息。"""
