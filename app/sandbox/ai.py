@@ -29,9 +29,13 @@ PROMPT_TEMPLATE = """你正在扮演角色「{name}」的生活决策助手。
 class SandboxAIDecider:
     """Callable(payload) -> SandboxDecision | None, built on the shared engine."""
 
-    def __init__(self, engine: Any, *, timeout: float = 20.0) -> None:
+    def __init__(self, engine: Any, *, timeout: float = 20.0, model: str = "") -> None:
         self._engine = engine
         self._timeout = timeout
+        #: 可选钉住的裁决模型（配置 sandbox.decision_model / models.decision）。
+        #: 微决策是高频简单选择，钉到轻模型能让「思考」的占用可预期（2026-10-05 复盘：
+        #: 该旋钮此前被忽略，裁决每次都从主力模型开始、被预算截断后白白级联降级）。
+        self._model = model
         #: injected by the runtime from the CharacterDefinition
         self._character_line = ""
         self._name = ""
@@ -65,8 +69,12 @@ class SandboxAIDecider:
             messages=[ChatMessage.user(f"{base}\n\n{prompt}")],
             temperature=0.2,
             metadata={"purpose": "sandbox"},
-            max_tokens=500,
+            # 推理模型先花 completion 预算思考：500 会被推理打满 → 空正文 → 级联降级。
+            # 给足「推理 + 一个 JSON」的余量（上限不是目标值，模型该短还是短）。
+            max_tokens=1200,
         )
+        if self._model:
+            request = request.with_model(self._model)
         try:
             response = await self._engine.chat(request)
         except AIError as exc:

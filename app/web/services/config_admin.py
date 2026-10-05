@@ -494,18 +494,17 @@ class ConfigAdminService:
         )
         if target is None:
             return f"没有使用 provider「{name}」的模型"
-        from app.ai.models import AIRequest, ChatMessage
+        from app.ai.probe import probe_request, truncated_by_budget
 
-        request = AIRequest(
-            messages=[ChatMessage.user("ping")],
-            model=target.spec.name,
-            temperature=0.0,
-            max_tokens=8,
-        )
+        request = probe_request(target.spec.name)
         started = time.perf_counter()
         try:
             response = await self.bot.ai.chat(request)
         except AIError as exc:
+            elapsed = (time.perf_counter() - started) * 1000
+            if truncated_by_budget(exc):
+                # 端点是活的，只是探测预算被推理占满（2026-10-05 复盘）
+                return f"✅ {name} 连通正常（{elapsed:.0f}ms；探测预算被推理占满，未产出正文）"
             return f"❌ {name} 测试失败：{exc}"
         elapsed = (time.perf_counter() - started) * 1000
         return f"✅ {name} 正常（{elapsed:.0f}ms，模型 {response.model or target.spec.model}）"

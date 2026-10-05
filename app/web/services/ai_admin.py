@@ -18,7 +18,7 @@ from typing import TYPE_CHECKING, Any
 from urllib.parse import urlsplit
 
 import app.ai.providers  # noqa: F401 - importing registers built-in provider types
-from app.ai.models import AIRequest, ChatMessage
+from app.ai.probe import PROBE_DEGRADED_NOTE, PROBE_PROMPT, probe_request, truncated_by_budget
 from app.ai.provider import _PROVIDER_FACTORIES
 from app.config.settings import load_config, write_overrides
 from app.utils.logger import redact
@@ -463,16 +463,27 @@ class AIAdminService:
         """
         if not any(m.name == name for m in self._ai.models):
             raise not_found(f"模型「{name}」不存在", code="ai.model_unknown")
-        request = AIRequest(
-            messages=[ChatMessage.user(prompt or "ping")],
-            model=name,
-            temperature=0.0,
-            max_tokens=8,
-        )
+        request = probe_request(name, prompt=prompt or PROBE_PROMPT)
         started = time.perf_counter()
         try:
             response = await self.bot.ai.router.chat(request)
         except Exception as exc:  # noqa: BLE001 - the test's whole job is to report failures
+            if truncated_by_budget(exc):
+                # 上游已回应（200 + completion tokens），只是探测预算被推理占满：
+                # 端点是活的，不能报成失败（2026-10-05 复盘：8-token 探针对推理模型恒假失败）
+                return {
+                    "ok": True,
+                    "requested_model": name,
+                    "model": name,
+                    "provider": getattr(exc, "provider", "") or "",
+                    "provider_model": getattr(exc, "model", "") or "",
+                    "latency_ms": _elapsed_ms(started),
+                    "http_status": 200,
+                    "http_status_source": "upstream",
+                    "error_type": "empty_finish_length",
+                    "message": PROBE_DEGRADED_NOTE,
+                    "response": "",
+                }
             status, source = http_status_for(exc)
             return {
                 "ok": False,

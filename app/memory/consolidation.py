@@ -357,7 +357,8 @@ class MemoryConsolidator:
             ],
             temperature=0.1,
             metadata={"purpose": "consolidation"},
-            max_tokens=400,
+            # 压缩输出是小 JSON，但推理要花 completion 预算（2026-10-05 复盘）
+            max_tokens=900,
         )
         try:
             response = await asyncio.wait_for(self._engine.chat(request), timeout=_LLM_TIMEOUT)

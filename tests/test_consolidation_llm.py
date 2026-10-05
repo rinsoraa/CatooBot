@@ -93,6 +93,8 @@ class TestLlmCompression:
     async def test_model_writes_the_semantic_memory(self, tmp_path) -> None:
         report, manager, database, provider = await seed_and_consolidate(tmp_path, use_llm=True)
         try:
+            # 推理预算护栏（2026-10-05 复盘：400 会被推理打满 → 静默退化为规则）
+            assert provider.calls[0]["max_tokens"] == 900
             memory = await semantic_memory(manager)
             assert memory.content == (
                 "用户把自己的网站页面做完了，还加上了音乐播放器"

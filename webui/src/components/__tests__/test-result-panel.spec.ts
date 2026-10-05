@@ -60,6 +60,27 @@ describe('TestResultPanel', () => {
     expect(wrapper.find('[data-test="test-reply"]').exists()).toBe(false)
   })
 
+  it('labels a success-with-note as 说明 instead of 错误信息', () => {
+    // 探针命中的是「上游活着，只是推理占满预算」：ok=true 且仍带 message
+    const degraded = mount(TestResultPanel, {
+      props: {
+        result: makeResult({
+          error_type: 'empty_finish_length',
+          message: '连通正常；本次探测的 256-token 预算被推理过程占满（未产出正文）。',
+        }),
+      },
+    })
+    expect(degraded.text()).toContain('成功')
+    expect(degraded.get('[data-test="test-message-label"]').text()).toBe('说明')
+    expect(degraded.text()).not.toContain('错误信息')
+    expect(degraded.get('[data-test="test-message"]').text()).toContain('连通正常')
+
+    const failure = mount(TestResultPanel, {
+      props: { result: makeResult({ ok: false, error_type: 'HTTPError', message: '上游 500' }) },
+    })
+    expect(failure.get('[data-test="test-message-label"]').text()).toBe('错误信息')
+  })
+
   it('notes when the HTTP status was derived from the error class', () => {
     const derived = mount(TestResultPanel, {
       props: {

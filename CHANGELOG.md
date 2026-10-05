@@ -961,6 +961,27 @@
 - 相对路径（贴纸库/媒体/日志/插件目录）一律按 `PROJECT_ROOT` 解析：
   从别的工作目录启动也不会换掉数据位置（任务 25）。
 
+### AI 与运行时（2026-10-05 复盘：推理预算 · 探针误报 · 决策钉模型）
+- **症状**：后台持续出现 `Empty content from model=cn:deepseek-v4.1-flash finish=length`
+  （当天 22 次，其中 17 次 completion=500、4 次 completion=8）；每次都白白级联
+  primary→secondary→fallback，一次多花 10–15s。
+- **根因**：推理模型的 `reasoning_content` 与正文**共用 completion 预算**——预算给少
+  （沙盒裁决 500 / 探针 8）必然「思考吃满、正文为空」；沙盒裁决又**没接**
+  `sandbox.decision_model` 旋钮，每次都从主力推理模型开始撞。**不关推理**，只把预算与
+  模型钉按调用点真实成本对齐。
+- **决策类预算上调**：沙盒裁决 500→**1200**；对话回复 `conversation_max_response_chars + 800`；
+  意图判定 300→**800**；记忆整理 400→**900**（上限不是目标值，模型该短还是短）。
+- **沙盒裁决接通模型钉**（`sandbox.decision_model` ← `models.decision`，实盘 `fallback`
+  = `cn:minimax-m3`）：高频微决策不再从推理主力模型起步；钉错/被禁用时仍按既有语义
+  回落到确定性选择、不影响世界。
+- **统一探针 `app/ai/probe.py`**：模型钉死 / 温度 0 / 预算 256；「上游已回应、只是预算被
+  推理占满（finish=length）」判为**连通正常（degraded）**并如实说明「真实调用使用各自
+  完整预算，不受影响」——模型测试、凭据测试、provider 快检三处都不再误报失败；
+  `finish=stop` 的空正文仍是真异常。
+- **WebUI**：测试结果面板在成功但带说明时标签显示「说明」，不再写「错误信息」。
+- 新增 `tests/test_ai_probe.py`（12）+ `tests/test_web_api_ai.py::TestProbeDegraded`（4），
+  总测试 1937。
+
 ### 社交与行为
 - **回复效果回流**（任务 20，迁移 18）：每回合记录观察 → 结算
   `engaged / ambient / silence / unknown`（保守极性、只记 0/−1）→ 时间衰减加权的参与度 EMA
@@ -995,6 +1016,8 @@
 - `[Watchdog]` 卡顿告警带上了「正在执行：… / 任务栈：…」线索，可直接定位阻塞来源。
 - `/social/group` 显示「因 poor_timing 连续 N 次未开口」（defer 只推迟、不否决）。
 - 模型页 `ai_empty_finish_length` 停止增长（`ai.max_tokens` 建议 2048 起）。
+- 后台不再刷 `Empty content from model=… finish=length`（决策预算已按调用点上调，沙盒裁决
+  直接走 `cn:minimax-m3`，不再级联降级）。
 - `/memory/health` 无红条，`[Memory.Extract]` 无 `parse_failed`。
 
 ## [2.0.0] — 2026-10-01 · Character Life Sandbox

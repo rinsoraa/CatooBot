@@ -98,6 +98,11 @@ class TestBasicConversation:
             assert response.world_revision == runtime.world_revision
             assert response.cognitive_revision == runtime.cognitive_revision
             assert provider.calls, "the model was asked once"
+            # 推理预算护栏（2026-10-05 复盘：+80 会被推理打满 → 空正文 → 级联降级）
+            assert (
+                provider.calls[0]["max_tokens"]
+                == int(runtime.config.conversation_max_response_chars) + 800
+            )
             prompt = provider.calls[0]["last_user"]
             assert "在干嘛呢" in prompt  # §14: the message itself
             assert "不要创造过去发生过的事件" in prompt  # §38 boundaries

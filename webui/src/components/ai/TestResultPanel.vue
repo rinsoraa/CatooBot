@@ -26,6 +26,8 @@ const props = withDefaults(
 const replyText = computed(() => props.result?.response || props.result?.reply || '')
 const hasReply = computed(() => replyText.value.length > 0)
 const hasMessage = computed(() => Boolean(props.result?.message))
+//: 成功但带说明（如「探测预算被推理占满、连通正常」）时不能写「错误信息」
+const messageLabel = computed(() => (props.result?.ok ? "说明" : "错误信息"))
 const modelNote = computed(() => {
   const result = props.result
   if (!result) return ''
@@ -87,7 +89,7 @@ const httpNote = computed(() => {
       </dl>
 
       <div v-if="hasMessage" class="test-result__block">
-        <p class="cb-caption">错误信息</p>
+        <p class="cb-caption" data-test="test-message-label">{{ messageLabel }}</p>
         <p class="test-result__message" data-test="test-message">{{ result.message }}</p>
       </div>
 

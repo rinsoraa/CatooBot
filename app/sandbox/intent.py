@@ -455,7 +455,8 @@ class DecisionCoordinator:
             messages=[ChatMessage.user(prompt)],
             temperature=0.1,
             metadata={"purpose": "sandbox_decision"},
-            max_tokens=300,
+            # 300 会被推理打满 → 空 JSON → 静默退化为规则（2026-10-05 复盘：给推理留位）
+            max_tokens=800,
         )
         model = str(getattr(rt.config, "decision_model", "") or "")
         if model:

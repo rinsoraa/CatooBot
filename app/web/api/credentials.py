@@ -20,7 +20,7 @@ from typing import Any
 
 from aiohttp import web
 
-from app.ai.models import AIRequest, ChatMessage
+from app.ai.probe import PROBE_DEGRADED_NOTE, probe_request, truncated_by_budget
 from app.ai.provider import create_provider
 from app.config import env_store
 from app.tools.credentials import MASK, CredentialManager
@@ -331,16 +331,28 @@ class CredentialApiRoutes(WebContext):
             )
         except ValueError as exc:
             raise bad_request(redact(str(exc)), code="ai.provider_unknown") from exc
-        request_obj = AIRequest(
-            messages=[ChatMessage.user("ping")],
-            model=model_id,
-            temperature=0.0,
-            max_tokens=8,
-        )
+        request_obj = probe_request(model_id)
         started = time.perf_counter()
         try:
             response = await provider.chat(request_obj)
         except Exception as exc:  # noqa: BLE001 - the endpoint's job is to report the failure
+            if truncated_by_budget(exc):
+                # 上游已回应（200 + completion tokens），只是探测预算被推理占满：
+                # 凭据/端点是通的，不能报成失败（2026-10-05 复盘）
+                return ok(
+                    {
+                        "ok": True,
+                        "provider": provider_name,
+                        "model": model_id,
+                        "latency_ms": round((time.perf_counter() - started) * 1000, 1),
+                        "error_type": "empty_finish_length",
+                        "message": PROBE_DEGRADED_NOTE,
+                        "reply": "",
+                        "http_status": 200,
+                        "http_status_source": "upstream",
+                    },
+                    request=request,
+                )
             result: dict[str, Any] = {
                 "ok": False,
                 "provider": provider_name,

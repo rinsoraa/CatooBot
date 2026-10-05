@@ -17,6 +17,7 @@ from unittest import mock
 
 import pytest
 
+from app.ai.errors import EmptyResponseError
 from app.ai.models import AIRequest, AIResponse
 from app.ai.provider import AIProvider, register_provider_type
 from app.config import env_store
@@ -29,13 +30,18 @@ from tests.api_harness import ApiClient, api_server, error_code
 
 TEST_KEY = "CATOOBOT_TEST_KEY_A"
 TEST_KEY_BOOM = "CATOOBOT_TEST_KEY_BOOM"
+TEST_KEY_TRUNCATED = "CATOOBOT_TEST_KEY_TRUNCATED"
 ONEBOT_TOKEN = "CATOOBOT_ONEBOT_ACCESS_TOKEN"
 #: written into os.environ by tests / the API; always cleaned up
-_ENV_NAMES = (TEST_KEY, TEST_KEY_BOOM, ONEBOT_TOKEN)
+_ENV_NAMES = (TEST_KEY, TEST_KEY_BOOM, TEST_KEY_TRUNCATED, ONEBOT_TOKEN)
 
 
 class FakeProvider(AIProvider):
-    """Offline provider: returns "pong", or fails when the key says ``sk-boom``."""
+    """Offline provider: returns "pong"; 失败或「推理占满预算」由 key 控制。
+
+    * ``sk-boom``      → RuntimeError（真失败）
+    * ``sk-truncated`` → EmptyResponseError(finish=length)（上游 200，只是预算被推理占满）
+    """
 
     def __init__(self, **kwargs: Any) -> None:
         self.name = str(kwargs.get("name", "fake"))
@@ -46,6 +52,13 @@ class FakeProvider(AIProvider):
     async def chat(self, request: AIRequest) -> AIResponse:
         if self._api_key == "sk-boom":
             raise RuntimeError("synthetic provider failure")
+        if self._api_key == "sk-truncated":
+            raise EmptyResponseError(
+                self.name,
+                request.model or "",
+                finish_reason="length",
+                reasoning_chars=1500,
+            )
         return AIResponse(content="pong", model=request.model or "", provider=self.name)
 
     async def close(self) -> None:
@@ -671,3 +684,77 @@ class TestCredentials:
                 "/api/v1/credentials/test", body={"provider": "ghost", "value": "sk-x"}
             )
             assert status == 404 and error_code(payload) == "ai.provider_unknown"
+
+
+class TestProbeDegraded:
+    """2026-10-05 复盘：8-token 探针对推理模型恒假失败。
+
+    上游已回应（200 + completion tokens）只是预算被推理占满（finish=length）时，
+    探针必须报「连通正常（degraded）」而不是失败。
+    """
+
+    async def test_model_test_treats_reasoning_truncation_as_connected(
+        self, tmp_path: Path
+    ) -> None:
+        os.environ[TEST_KEY_TRUNCATED] = "sk-truncated"
+        async with ai_server(
+            tmp_path, config_overrides=fake_ai_block(env_name=TEST_KEY_TRUNCATED)
+        ) as (client, bot, _s):
+            await client.login()
+            status, _ = await client.patch("/api/v1/config", body={"values": {"ai.enabled": True}})
+            assert status == 200 and "fast" in bot.ai.router.states
+            status, payload = await client.post("/api/v1/ai/models/fast/test", body={})
+            assert status == 200
+            data = payload["data"]
+            assert data["ok"] is True, data
+            assert data["error_type"] == "empty_finish_length"
+            assert "连通正常" in data["message"]
+            assert data["http_status"] == 200 and data["http_status_source"] == "upstream"
+            assert data["response"] == ""
+            assert "sk-truncated" not in json.dumps(payload)
+
+    async def test_model_test_real_failure_is_still_a_failure(self, tmp_path: Path) -> None:
+        """对照组：真失败（RuntimeError）仍然是 ok=False。"""
+        os.environ[TEST_KEY_BOOM] = "sk-boom"
+        async with ai_server(tmp_path, config_overrides=fake_ai_block(env_name=TEST_KEY_BOOM)) as (
+            client,
+            _bot,
+            _s,
+        ):
+            await client.login()
+            await client.patch("/api/v1/config", body={"values": {"ai.enabled": True}})
+            status, payload = await client.post("/api/v1/ai/models/fast/test", body={})
+            assert status == 200
+            assert payload["data"]["ok"] is False
+            assert payload["data"]["error_type"] != "empty_finish_length"
+
+    async def test_credentials_test_treats_reasoning_truncation_as_connected(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(env_store, "env_path", lambda: tmp_path / ".env")
+        async with ai_server(tmp_path, config_overrides=fake_ai_block()) as (client, _bot, _s):
+            await client.login()
+            status, payload = await client.post(
+                "/api/v1/credentials/test",
+                body={"provider": "fakep", "model": "fake-model", "value": "sk-truncated"},
+            )
+            assert status == 200
+            data = payload["data"]
+            assert data["ok"] is True, data
+            assert data["error_type"] == "empty_finish_length"
+            assert "连通正常" in data["message"]
+            assert data["reply"] == "" and data["http_status"] == 200
+
+    async def test_provider_quick_test_reports_degraded(self, tmp_path: Path) -> None:
+        """ConfigAdminService.test_provider（配置页的 provider 快检）同样不误报。"""
+        from app.web.services.config_admin import ConfigAdminService
+
+        os.environ[TEST_KEY_TRUNCATED] = "sk-truncated"
+        async with ai_server(
+            tmp_path, config_overrides=fake_ai_block(env_name=TEST_KEY_TRUNCATED)
+        ) as (client, bot, _s):
+            await client.login()
+            await client.patch("/api/v1/config", body={"values": {"ai.enabled": True}})
+            message = await ConfigAdminService(bot).test_provider("fakep")
+            assert message.startswith("✅"), message
+            assert "连通正常" in message

@@ -240,7 +240,7 @@ class Bot:
                     bible=bible,
                     bot=self,
                     clock=self._clock,
-                    ai_decider=SandboxAIDecider(self.ai),
+                    ai_decider=SandboxAIDecider(self.ai, model=config.sandbox.decision_model),
                     ai_engine=self.ai,
                 )
                 self.lifecycle_manager = CharacterLifecycleManager(self.database, clock=self._clock)

@@ -142,7 +142,7 @@ W2 需在 `AdminService` 增只读方法；`runtime/tick` 复用 `RuntimeSchedul
 | `GET /api/v1/credentials` | 凭据总览（按域分组） | — | `{"items": [{"domain": "ai", "ref": "OPENAI_API_KEY", "masked": "sk-***abcd", "configured": true}, {"domain": "onebot", "ref": "CATOOBOT_ONEBOT_ACCESS_TOKEN", ...}, {"domain": "tool", "ref": "weather_api_key", ...}]}` |
 | `PUT /api/v1/credentials/{domain}/{ref}` | 写入/轮换 | `{"value": "…", "confirm"?: "…"}` | `{"saved": true, "ref", "masked", "restart_required": bool}` |
 | `DELETE /api/v1/credentials/{domain}/{ref}` | 删除（AJ Key 场景建议同时把对应 provider 的 `api_key_env` 置空，需 `confirm`） | — | `{"deleted": true}` |
-| `POST /api/v1/credentials/test` | 用给定 provider 现测一次（不落盘）；若 `value` 缺省则用已存 Key | `{"provider": "openai", "model"?: "gpt-4o-mini", "value"?: "…"}` | `{"ok": true, "latency_ms": 412, "model": "…", "reply": "pong"}` / `{"ok": false, "code": "ai.test_failed", "message": "…"}` |
+| `POST /api/v1/credentials/test` | 用给定 provider 现测一次（不落盘）；若 `value` 缺省则用已存 Key | `{"provider": "openai", "model"?: "gpt-4o-mini", "value"?: "…"}` | `{"ok": true, "latency_ms": 412, "model": "…", "reply": "pong"}` / `{"ok": true, "error_type": "empty_finish_length", "message": "连通正常…", "reply": "", "http_status": 200}`（推理占满探测预算，见 §6 要点）/ `{"ok": false, "code": "ai.test_failed", "message": "…"}` |
 
 `domain` ∈ `ai / onebot / tool / embedding / web`；`ref` 受限字符集 `[A-Z0-9_]+`（tool 例外，见既有命名）。
 > 今日缺口：AI Key 无任何写入路径（`app/ai/engine.py:106` 只读环境变量），W2 必须补齐；
@@ -174,6 +174,11 @@ W2 需在 `AdminService` 增只读方法；`runtime/tick` 复用 `RuntimeSchedul
   其中 `model` 是配置里的别名、`provider_model` 是真正作答的服务商模型 id（故障转移后两者可能不同）。
   `http_status_source` ∈ `upstream`（Provider 真的回了状态）/ `error_class`（由错误分类推导的规范状态）/ `""`（无 HTTP 语义，如超时/连接失败）。
   成功时 `response` 是模型回复文本且 `message` 为空，失败时相反。
+  **第三种形状（2026-10-05 复盘）**：`ok=true` 且 `error_type="empty_finish_length"`、`response=""`，
+  由 `message` 说明——上游确实回应了（200 + completion tokens），只是这次 256-token 探测预算
+  被推理过程（`reasoning_content`）占满、没产出正文；端点与凭据本身是通的。
+  `http_status` 仍是 200 且 `http_status_source="upstream"`，前端按**成功 + 说明**展示
+  （结果面板标签为「说明」而非「错误信息」），不要按失败渲染。
   若整条故障转移链都被尝试过（例如唯一的模型返回 5xx），路由器抛出 `AllModelsFailedError`：
   此时 `http_status` 为 `null`、`http_status_source` 为 `""`，上游细节（含真实状态码文本）保留在 `message` 里。
 测试是**诊断请求**：不写 Memory / Conversation / Experience，也不改 Relationship。

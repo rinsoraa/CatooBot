@@ -170,6 +170,8 @@ class TestLlmDecisionPath:
             decision = result["decision"]
             assert decision["accepted"] and decision["source"] == "llm"
             assert runtime.decisions.llm_calls == 1
+            # 推理预算护栏（2026-10-05 复盘：300 会被推理打满 → 空 JSON → 静默退化）
+            assert provider.calls[0]["max_tokens"] == 800
             # the model only saw a candidate list
             prompt = provider.calls[0]["last_user"]
             assert "action:play_minecraft" in prompt and "continue_current_action" in prompt

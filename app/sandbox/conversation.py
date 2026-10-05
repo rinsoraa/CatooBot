@@ -271,7 +271,9 @@ class ConversationRuntime:
             messages=[ChatMessage.user(prompt)],
             temperature=0.6,
             metadata={"purpose": "conversation_response", "turn_id": turn.turn_id},
-            max_tokens=int(getattr(rt.config, "conversation_max_response_chars", 400)) + 80,
+            # 角色回复本身很短，但推理模型先花 completion 预算思考：+80 没给推理留位
+            # （2026-10-05 复盘），这里留 800 token 的思考余量。
+            max_tokens=int(getattr(rt.config, "conversation_max_response_chars", 400)) + 800,
         )
         model = str(getattr(rt.config, "conversation_model", "") or "")
         if model:

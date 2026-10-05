@@ -44,6 +44,8 @@ class MockAIProvider(AIProvider):
                 "n_messages": len(request.messages),
                 "messages": list(request.messages),
                 "last_user": request.messages[-1].content,
+                # budget assertions live in the call-site tests (2026-10-05 复盘)
+                "max_tokens": request.max_tokens,
             }
         )
         outcome = self._next(request.model, request)
