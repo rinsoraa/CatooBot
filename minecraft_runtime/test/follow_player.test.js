@@ -106,9 +106,11 @@ async function main() {
   {
     const def = ACTION_REGISTRY.follow_player
     assert(Boolean(def), 'test_follow_player_registered：follow_player 已注册')
+    // Phase 4B 起注册表多了 dig（MEDIUM，单方块）——仍是白名单，破坏类动作只有它一个
     assert(
-      Object.keys(ACTION_REGISTRY).sort().join(',') === 'chat,follow_player,look_at,move_to,stop',
-      `注册表 = chat/look_at/move_to/follow_player/stop（得到 ${Object.keys(ACTION_REGISTRY).sort().join(',')}）`,
+      Object.keys(ACTION_REGISTRY).sort().join(',') ===
+        'chat,dig,follow_player,look_at,move_to,stop',
+      `注册表 = chat/look_at/move_to/follow_player/stop/dig（得到 ${Object.keys(ACTION_REGISTRY).sort().join(',')}）`,
     )
     assert(def.exclusive === true, 'test_follow_player_exclusive：exclusive = true')
     assert(def.risk === 'LOW', `test_follow_player_risk_low：risk = LOW（得到 ${def.risk}）`)

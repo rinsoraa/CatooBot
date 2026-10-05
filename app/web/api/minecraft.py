@@ -92,6 +92,28 @@ _DISABLED_SNAPSHOT: dict[str, Any] = {
 }
 
 
+#: Minecraft Tool 的稳定错误码 → HTTP 语义（开发调试入口用；与 Service 侧一致）
+_TOOL_STATUS: dict[str, int] = {
+    "minecraft.disabled": 503,
+    "minecraft.offline": 409,
+    "minecraft.not_connected": 409,
+    "minecraft.action_busy": 409,
+    "minecraft.action_invalid": 422,
+    "minecraft.action_not_allowed": 403,
+    "minecraft.user_not_trusted": 403,
+    "minecraft.confirmation_required": 409,
+    "minecraft.confirmation_invalid": 409,
+    "minecraft.confirmation_expired": 409,
+    "minecraft.confirmation_mismatch": 409,
+    "minecraft.confirmation_not_user_turn": 409,
+    "minecraft.block_not_found": 404,
+    "minecraft.block_changed": 409,
+    "minecraft.block_not_diggable": 422,
+    "minecraft.block_too_far": 422,
+    "minecraft.block_break_unconfirmed": 500,
+}
+
+
 def _agent_tools(bridge: Any, tools_runtime: Any = None) -> list[dict[str, Any]]:
     """六个 Minecraft Tool 的只读行：风险 / 注册开关 / 现在是否允许（§三十）。"""
     rows: list[dict[str, Any]] = []
@@ -232,6 +254,49 @@ class MinecraftApiRoutes(WebContext):
             raise _translate(exc) from exc
         return ok(result, request=request)
 
+    async def _v1_minecraft_dig(self, request: web.Request) -> web.Response:
+        """Phase 4B：破坏**一个**指定方块（开发调试入口）。
+
+        §三十七：WebUI 的动作按钮可以跳过「这一轮是不是用户对话」的判断（它本来就是
+        开发者直接调用动作），但**不能**跳过 MEDIUM 确认门 —— 第一次调用只会得到
+        409 ``minecraft.confirmation_required``（``detail`` 里带待确认信息），
+        必须由用户在新的对话回合里说「确认」之后才会真正执行。
+        """
+        try:
+            service = _service(self._bot)
+        except MinecraftBridgeError as exc:
+            raise _translate(exc) from exc
+        bridge = getattr(service, "agent", None)
+        if bridge is None:
+            raise ApiError(503, "minecraft.disabled", "Minecraft Agent 未装配")
+        body = await read_json(request)
+        arguments = {
+            "x": body.get("x"),
+            "y": body.get("y"),
+            "z": body.get("z"),
+            "expected_block": body.get("expected_block"),
+        }
+        # 先做参数校验（垃圾参数不该挂出一条待确认），再进确认门
+        try:
+            service.validate_dig(
+                arguments["x"], arguments["y"], arguments["z"], arguments["expected_block"]
+            )
+        except MinecraftBridgeError as exc:
+            raise _translate(exc) from exc
+        result = await bridge.invoke_developer(
+            "minecraft_dig",
+            arguments,
+            lambda svc: svc.dig(
+                arguments["x"], arguments["y"], arguments["z"], arguments["expected_block"]
+            ),
+        )
+        if not result.success:
+            code = result.error_type or "minecraft.action_failed"
+            raise ApiError(
+                _TOOL_STATUS.get(code, 500), code, result.error or code, detail=result.data
+            )
+        return ok(result.data, request=request)
+
     # ------------------------------------------- Confirmation Gate（Phase 4A）
 
     async def _v1_minecraft_confirm(self, request: web.Request) -> web.Response:
@@ -251,11 +316,20 @@ class MinecraftApiRoutes(WebContext):
         action = str(body.get("action") or "").strip()
         confirmation_id = str(body.get("confirmation_id") or "").strip()
         if action == "create_test":
-            # 开发/验收用：造一条 PENDING（不是授权；消费仍要用户回合 + 全套校验）
+            # 开发/验收用：造一条 PENDING。**只允许测试专用工具名**（minecraft_test_*）——
+            # 生产动作（minecraft_dig 之类）的确认只能由「真实用户回合里发起该动作」创建，
+            # 否则管理台就能凭空造出一条可被用户回合消费的正式授权（Phase 4B §一）。
             tool = str(body.get("tool") or "").strip()
             if not tool:
                 raise bad_request(
                     "create_test 需要 tool", code="minecraft.action_invalid", field="tool"
+                )
+            if not tool.startswith("minecraft_test_"):
+                raise bad_request(
+                    "create_test 只能创建测试专用工具（minecraft_test_* 前缀）的确认；"
+                    "正式动作的确认必须来自用户回合",
+                    code="minecraft.confirmation_invalid",
+                    field="tool",
                 )
             risk = str(body.get("risk") or bridge.policy.risk_of(tool) or "MEDIUM").upper()
             arguments = body.get("arguments") if isinstance(body.get("arguments"), dict) else {}
@@ -321,3 +395,4 @@ class MinecraftApiRoutes(WebContext):
         app.router.add_post(
             f"{API_PREFIX}/minecraft/agent/confirm", wrap(self._v1_minecraft_confirm)
         )
+        app.router.add_post(f"{API_PREFIX}/minecraft/dig", wrap(self._v1_minecraft_dig))

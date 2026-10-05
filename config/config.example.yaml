@@ -571,6 +571,9 @@ minecraft:
   world_change_block_threshold: 10   # 触发 world.changed 的方块变化数
   # ---- 动作安全门（Phase 3C）
   action:
+    dig:
+      timeout: 30                # 单次挖掘最长秒数（5~120）；到点 TIMEOUT + 停止挖掘
+      max_distance: 5            # 最大挖掘距离（格，眼睛→方块中心）；超出的方块直接拒绝
     move_to:
       max_distance: 64           # 单次 move_to 的最大距离（格）；不允许数千米长距离
     follow_player:

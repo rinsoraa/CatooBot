@@ -76,10 +76,14 @@ class ChatStack:
         )
         await self.tools.start()
         self.runtime.tools = self.tools
+        # Phase 4B：dig 是 MEDIUM —— 游戏内流程测试要显式打开 allow_medium
         self.service.config = MinecraftConfig(
             enabled=True,
             auto_start_runtime=False,
-            agent={"tools": {"enabled": True}, "trusted_players": self.trusted},
+            agent={
+                "tools": {"enabled": True, "allow_medium": True},
+                "trusted_players": self.trusted,
+            },
         )
         self.bridge = MinecraftAgentBridge(self.service)
         self.runtime.minecraft_agent = self.bridge

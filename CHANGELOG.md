@@ -3,6 +3,36 @@
 本文件记录 CatooBot 的版本演进。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号见 `pyproject.toml`；日期取自真实提交历史（本仓库 2026-09-30 起）。
 
+## [Unreleased] — Minecraft Phase 4B · Single-Block Dig
+
+- **第一个真正修改 Minecraft 世界的动作 `minecraft_dig`**（MEDIUM）：破坏**一个**明确指定的
+  方块。参数 `{x, y, z, expected_block}`（`additionalProperties: false`），风险表加 MEDIUM，
+  执行前 runtime 用实时状态复检（方块存在 / 与 expected_block 一致 / 可挖 / 距离），
+  挖完再读一次 `blockAt` 确认真的没了（`block_break_unconfirmed` 绝不假装成功）。
+- **一次只挖一块**：没有连续挖矿/矿物搜索/自动换目标/自动换工具/捡掉落/导航；
+  目标超出 5 格直接拒绝（不把 dig 和导航耦合）；`exclusive` —— 不能边挖边走。
+- **新错误码**（全部结构化、带 detail）：`minecraft.block_not_found`、`minecraft.block_changed`
+  （带 `expected`/`actual`）、`minecraft.block_not_diggable`、`minecraft.block_too_far`、
+  `minecraft.block_break_unconfirmed`；Mineflayer 的中断/异常统一翻译，绝不外泄原始文本。
+- **Phase 4A Debug 硬化**：`POST /minecraft/agent/confirm` 的 `create_test` 只能创建
+  `minecraft_test_*` 测试专用工具的确认——正式动作（dig）的确认只能来自真实用户回合，
+  管理台不可能凭空造出一条可被消费的授权。
+- **确认门照旧**：`allow_medium`（默认 false）→ USER 回合 → 可信玩家（游戏内）→ 忙 →
+  需要确认（挂 PENDING）→ 用户说「确认」→ 相同参数再调用 → 消费 → 执行；参数/方块名变了
+  → mismatch 并作废重挂；过期 → expired 并重挂。
+- **感知联动**：方块被挖掉后，WorldPerception 的 near diff 真的看到那次移除
+  （`world.changed`，阈值 1 时 `changed_blocks >= 1`）；挖成功后 Agent Context 的
+  `activity` 变成「刚挖掉了 minecraft:stone」（不写长期记忆）。
+- **WebUI**：连接页新增 Dig Test 面板（X/Y/Z/Expected Block + DIG/STOP）；`POST
+  /api/v1/minecraft/dig` 走正式链路且**必须过确认门**（点 DIG 只会得到 409
+  `confirmation_required` 与待确认信息）。
+- 配置：`minecraft.action.dig.timeout`（5~120s，默认 30）与 `max_distance`（≤6，默认 5）。
+- 测试：新增 `minecraft_runtime/test/dig.test.js`（54 checks）、`tests/test_minecraft_dig.py`（12）、
+  `tests/test_minecraft_dig_flow.py`（15）、dig 的确认门用例（24）；flying-squid E2E 增加
+  dig Test A–D（真挖 + block_changed + not_found + too_far，含感知同步）；真实服务器 smoke
+  脚本（`test/smoke_real_server.js`）增加 dig/STOP/block_changed 段（本机服务器未开，
+  跑出来如实打印 `REAL SERVER: NOT AVAILABLE`）。
+
 ## [Unreleased] — Minecraft Phase 4A · Action Confirmation Gate & Minecraft Chat User Bridge
 
 - **游戏内玩家说话 = USER 回合**（新 `MinecraftChatBridge`）：Minecraft 玩家在服务器里说

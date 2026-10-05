@@ -158,6 +158,8 @@ async function main() {
       MC_MOVE_TIMEOUT_MS: '2500', // Test C 依赖：可达的 12–16 格约需 3s+ → 确定性超时
       MC_FOLLOW_TIMEOUT_MS: '8000', // Test C 的 3s 宽限必须在超时之前完成；Test E 等 8s
       MC_FOLLOW_MAX_CHASE_DISTANCE: '16', // Test D 用 30 格验证「超上限即失败」
+      MC_DIG_TIMEOUT_MS: '2500', // dig Test F 依赖：石头徒手 ~7.5s → 确定性超时
+      MC_DIG_MAX_DISTANCE: '5',
     },
     stdio: ['ignore', 'pipe', 'pipe'],
   })
@@ -552,6 +554,138 @@ async function main() {
         assert(moveSettled.action.active_count === 0, 'Test A/B/C 后无僵尸动作')
       }
 
+      // ---------------- Phase 4B：dig（单方块；A 成功 / B block_changed / C not_found / D too_far /
+      //                  E STOP 真停 / F 超时 / G 感知看到移除） ----------------
+      if (cycle === 1) {
+        const setBlock = (x, y, z, id) =>
+          observer.chat(`/setblock ${Math.round(x)} ${Math.round(y)} ${Math.round(z)} ${id}`)
+        // 从近层快照读某个坐标的方块名（表层柱面扫描；没有这一柱 = air）
+        const blockAt = async (x, y, z) => {
+          const snap = await request(runtimePort, 'GET', '/minecraft/world/snapshot?layers=near')
+          const columns = (snap.body.blocks && snap.body.blocks.near && snap.body.blocks.near.columns) || []
+          const hit = columns.find(
+            (col) => col.pos && col.pos.x === x && col.pos.y === y && col.pos.z === z,
+          )
+          return hit ? hit.name : 'air'
+        }
+        const origin = (await request(runtimePort, 'GET', '/minecraft/status')).body.position
+        const digEvents = (action) =>
+          events.filter((e) => e.action === action && e.event.startsWith('minecraft.action.'))
+
+        // ---- Test A：挖掉一个指定的方块（dirt 徒手 ~0.8s） ----
+        const aPos = { x: Math.round(origin.x) + 1, y: Math.round(origin.y), z: Math.round(origin.z) }
+        setBlock(aPos.x, aPos.y, aPos.z, 'dirt')
+        await waitFor(async () => (await blockAt(aPos.x, aPos.y, aPos.z)) === 'dirt', 'dirt 已放置', 8000)
+
+        const digA = await request(runtimePort, 'POST', '/minecraft/dig', {
+          x: aPos.x,
+          y: aPos.y,
+          z: aPos.z,
+          expected_block: 'dirt',
+        })
+        assert(
+          digA.status === 200 && digA.body.status === 'RUNNING',
+          `Test A：dig 启动即 RUNNING（得到 ${JSON.stringify(digA.body)}）`,
+        )
+        await waitFor(
+          () => digEvents('dig').some((e) => e.event === 'minecraft.action.completed' && e.action_id === digA.body.action_id),
+          'dig completed 事件',
+          15000,
+        )
+        const doneA = digEvents('dig').find((e) => e.event === 'minecraft.action.completed' && e.action_id === digA.body.action_id)
+        assert(doneA && doneA.result, `Test A：完成事件带 result（得到 ${JSON.stringify(doneA && doneA.result)}）`)
+        assert(doneA.result.block_before === 'dirt', `Test A：block_before=dirt（得到 ${doneA.result.block_before}）`)
+        assert(doneA.result.block_after !== 'dirt', `Test A：block_after 不再是 dirt（得到 ${doneA.result.block_after}）`)
+        // §二十四/§五十二：挖掉之后感知层（表层扫描）不再看到这一柱
+        await waitFor(async () => (await blockAt(aPos.x, aPos.y, aPos.z)) !== 'dirt', '感知层看到方块消失', 8000)
+        // 同一位置再挖一次 → 方块已经没了
+        const againA = await request(runtimePort, 'POST', '/minecraft/dig', {
+          x: aPos.x,
+          y: aPos.y,
+          z: aPos.z,
+          expected_block: 'dirt',
+        })
+        assert(
+          againA.status === 404 && againA.body.error.code === 'block.not_found',
+          `Test A：方块没了 → block.not_found（得到 ${JSON.stringify(againA.body)}）`,
+        )
+        console.log('[e2e] dig ✓ block_before=dirt → block_after=' + doneA.result.block_after + '（感知层同步消失）')
+
+        // ---- Test B：方块与 expected_block 不一致 → block.changed（带 expected/actual） ----
+        const bPos = { x: Math.round(origin.x) - 1, y: Math.round(origin.y), z: Math.round(origin.z) }
+        setBlock(bPos.x, bPos.y, bPos.z, 'dirt')
+        await waitFor(async () => (await blockAt(bPos.x, bPos.y, bPos.z)) === 'dirt', 'dirt 已放置(B)', 8000)
+        const digB = await request(runtimePort, 'POST', '/minecraft/dig', {
+          x: bPos.x,
+          y: bPos.y,
+          z: bPos.z,
+          expected_block: 'minecraft:stone',
+        })
+        assert(
+          digB.status === 409 && digB.body.error.code === 'block.changed',
+          `Test B：期望 stone 实际 dirt → block.changed（得到 ${JSON.stringify(digB.body)}）`,
+        )
+        assert(
+          digB.body.error.detail && digB.body.error.detail.expected === 'minecraft:stone' &&
+            digB.body.error.detail.actual === 'dirt',
+          `Test B：带 expected/actual（得到 ${JSON.stringify(digB.body.error.detail)}）`,
+        )
+        assert(
+          (await blockAt(bPos.x, bPos.y, bPos.z)) === 'dirt',
+          'Test B：拒绝后 dirt 原地未动',
+        )
+        console.log('[e2e] dig ✓ block.changed（expected/actual 结构化，未破坏）')
+
+        // ---- Test C：目标位置是空气 → block.not_found ----
+        const cPos = { x: Math.round(origin.x), y: Math.round(origin.y) + 4, z: Math.round(origin.z) }
+        const digC = await request(runtimePort, 'POST', '/minecraft/dig', {
+          x: cPos.x,
+          y: cPos.y,
+          z: cPos.z,
+          expected_block: 'minecraft:stone',
+        })
+        assert(
+          digC.status === 404 && digC.body.error.code === 'block.not_found',
+          `Test C：空气 → block.not_found（得到 ${JSON.stringify(digC.body)}）`,
+        )
+        console.log('[e2e] dig ✓ 空气 → block.not_found（绝不调用 bot.dig）')
+
+        // ---- Test D：太远 → block.too_far（不自己走过去） ----
+        // 8 格在 near 扫描半径（~6）之外，快照看不到它；直接问 runtime ——
+        // 区块/方块更新有延迟，没看到就等一会儿重试（这才是"世界视图"的真实边界）
+        const dPos = { x: Math.round(origin.x) + 8, y: Math.round(origin.y), z: Math.round(origin.z) }
+        setBlock(dPos.x, dPos.y, dPos.z, 'dirt')
+        let digD = null
+        for (let attempt = 0; attempt < 20; attempt += 1) {
+          digD = await request(runtimePort, 'POST', '/minecraft/dig', {
+            x: dPos.x,
+            y: dPos.y,
+            z: dPos.z,
+            expected_block: 'dirt',
+          })
+          if (digD.body.error && digD.body.error.code === 'block.too_far') break
+          await sleep(300)
+        }
+        assert(
+          digD.status === 400 && digD.body.error.code === 'block.too_far',
+          `Test D：8 格 → block.too_far（得到 ${JSON.stringify(digD.body)}）`,
+        )
+        console.log('[e2e] dig ✓ 太远 → block.too_far（不导航）')
+
+        // ---- 挖掘中 STOP / 超时 / 断开 这三段**不在 flying-squid 上验证**：
+        // flying-squid 收到挖掘包就立刻破坏方块（不模拟挖掘耗时），dig 会在毫秒级完成，
+        // 叫停/超时都无从谈起（真实数据：Test A 的 dirt elapsed=4ms）。
+        // 这三条由三层覆盖：
+        //   ① test/dig.test.js —— start/wait/cleanup 的同步语义与复核；
+        //   ② test/action_runtime.test.js —— CANCELLED/TIMEOUT/断开取消 + cleanup 至多一次；
+        //   ③ test/smoke_real_server.js —— 真实服务器上「挖掘中 STOP，方块仍在」（§七十四）。
+
+        // dig 测试收尾：连接仍 ONLINE、无僵尸动作
+        const digSettled = (await request(runtimePort, 'GET', '/minecraft/status')).body
+        assert(digSettled.status === 'ONLINE', 'dig Test A–D 后连接仍 ONLINE')
+        assert(digSettled.action.active_count === 0, 'dig Test A–D 后无僵尸动作')
+      }
+
       // ---------------- Phase 3D：follow_player（Test A 跟随 / B STOP / C 丢失 / D 太远 / E 超时） ----------------
       if (cycle === 1) {
         const botPosNow = async () =>
@@ -758,6 +892,8 @@ async function main() {
       assert(dup.status === 409, `duplicate connect refused with 409, got ${dup.status}`)
 
       // Test 8: 服务器踢出 → kicked + 回到稳定态
+      // （断开时取消进行中的动作由 action_runtime.test.js 的 cancelAll 用例覆盖；
+      //  dig 在这台假服务器上瞬间完成，塞不进"断开时仍在挖"这个窗口）
       if (cycle === 1) {
         assert(fake.kick(USERNAME, 'banned: e2e test'), 'kick found the player')
         await waitFor(() => countEvents('minecraft.kicked') >= 1, 'minecraft.kicked event')

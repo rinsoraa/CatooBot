@@ -19,10 +19,19 @@ log = get_logger("CatooBot.Minecraft.Client")
 class MinecraftRuntimeError(Exception):
     """runtime 调用失败。``code`` 是 runtime 的业务错误码（如 ``session.active``）。"""
 
-    def __init__(self, message: str, *, code: str = "runtime.error", status: int = 0) -> None:
+    def __init__(
+        self,
+        message: str,
+        *,
+        code: str = "runtime.error",
+        status: int = 0,
+        detail: dict[str, Any] | None = None,
+    ) -> None:
         super().__init__(message)
         self.code = code
         self.status = status
+        #: 稳定错误码之外的结构化细节（如 block.changed 的 expected/actual）
+        self.detail = detail or {}
 
     @property
     def unreachable(self) -> bool:
@@ -75,6 +84,14 @@ class MinecraftRuntimeClient:
             "POST", "/minecraft/follow_player", body={"username": username, "distance": distance}
         )
 
+    async def dig(self, x: float, y: float, z: float, expected_block: str) -> dict[str, Any]:
+        """破坏一个指定方块（Phase 4B：启动即返回 RUNNING，终态经事件送达）。"""
+        return await self._request(
+            "POST",
+            "/minecraft/dig",
+            body={"x": x, "y": y, "z": z, "expected_block": expected_block},
+        )
+
     async def stop(self) -> dict[str, Any]:
         """最高优先级安全停止（Phase 3B）：取消进行中动作，幂等。"""
         return await self._request("POST", "/minecraft/stop", body={})
@@ -106,12 +123,18 @@ class MinecraftRuntimeClient:
                 if response.status >= 400:
                     message = "runtime 拒绝了请求"
                     code = "runtime.error"
+                    detail: dict[str, Any] = {}
                     if isinstance(payload, dict):
                         error = payload.get("error")
                         if isinstance(error, dict):
                             message = str(error.get("message") or message)
                             code = str(error.get("code") or code)
-                    raise MinecraftRuntimeError(message, code=code, status=response.status)
+                            raw_detail = error.get("detail")
+                            if isinstance(raw_detail, dict):
+                                detail = raw_detail
+                    raise MinecraftRuntimeError(
+                        message, code=code, status=response.status, detail=detail
+                    )
                 return payload
         except aiohttp.ClientError as exc:
             raise MinecraftRuntimeError(

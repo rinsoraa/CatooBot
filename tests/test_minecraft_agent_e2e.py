@@ -153,10 +153,14 @@ async def test_test_c_stop_cancels_the_running_follow() -> None:
 # ----------------------------------------------------------- 安全边界
 
 
-async def test_model_cannot_dig_place_attack_or_craft() -> None:
-    """§五十：这些 Tool 压根不存在——模型调用只会得到「未知工具」。"""
+async def test_model_cannot_place_attack_or_craft() -> None:
+    """§五十/§六十八：这些 Tool 压根不存在——模型调用只会得到「未知工具」。
+
+    （minecraft_dig 从 Phase 4B 起是**真实**的 MEDIUM 工具，由确认门保护；
+    这里只验证尚未实现的破坏类动作。）
+    """
     service = FakeMinecraftService()
-    for forbidden in ("minecraft_dig", "minecraft_place", "minecraft_attack", "minecraft_craft"):
+    for forbidden in ("minecraft_place", "minecraft_attack", "minecraft_craft"):
         runtime, engine, _provider, _bridge, context = await make_stack(
             script=[decide(forbidden, x=1, y=2, z=3), "我不会做那个。"],
             service=service,

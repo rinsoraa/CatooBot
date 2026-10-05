@@ -153,6 +153,13 @@ class FakeMinecraftService:
             raise outcome
         return {"action_id": "act_follow_1", "action": "follow_player", **outcome}
 
+    async def dig(self, x: Any, y: Any, z: Any, expected_block: Any) -> dict[str, Any]:
+        self._record("dig", x=x, y=y, z=z, expected_block=expected_block)
+        outcome = self._next("dig", {"status": "RUNNING", "action_id": "act_dig_1"})
+        if isinstance(outcome, Exception):
+            raise outcome
+        return {"action_id": "act_dig_1", "action": "dig", **outcome}
+
     async def stop_action(self) -> dict[str, Any]:
         self._record("stop")
         outcome = self._next("stop", {"ok": True, "status": "IDLE", "cancelled": []})
@@ -267,7 +274,8 @@ async def test_minecraft_stop_tool_registered() -> None:
     assert tool.metadata.input_schema["properties"] == {}
 
 
-async def test_all_six_tools_share_one_risk_table() -> None:
+async def test_all_seven_tools_share_one_risk_table() -> None:
+    """Phase 4B 起七个生产 Tool（含 MEDIUM 的 minecraft_dig）。"""
     runtime = await _runtime()
     for name in ACTION_RISK:
         tool = runtime.registry.maybe_get(name)
@@ -278,6 +286,7 @@ async def test_all_six_tools_share_one_risk_table() -> None:
     assert runtime.registry.names() == [
         "calculator",
         "minecraft_chat",
+        "minecraft_dig",
         "minecraft_follow_player",
         "minecraft_look_at",
         "minecraft_move_to",
@@ -375,8 +384,10 @@ def test_busy_foreground_action_is_rejected() -> None:
 
 
 def test_unknown_tool_is_rejected() -> None:
-    decision = policy().check("minecraft_dig", {}, online_facts())
-    assert not decision.allowed and decision.code == "minecraft.action_invalid"
+    # place/attack/craft 这类还没有实现的动作：风险表里没有名字 → 拒绝
+    for unknown in ("minecraft_place", "minecraft_attack", "minecraft_craft"):
+        decision = policy().check(unknown, {}, online_facts())
+        assert not decision.allowed and decision.code == "minecraft.action_invalid", unknown
 
 
 def test_follow_target_must_be_visible() -> None:
@@ -388,13 +399,17 @@ def test_follow_target_must_be_visible() -> None:
     assert policy().check("minecraft_follow_player", {"username": "空凛"}, online_facts()).allowed
 
 
-def test_policy_never_allows_unimplemented_risk_levels() -> None:
-    # MEDIUM/HIGH/DESTRUCTIVE 现在没有任何 Tool；就算将来加了也必须显式开开关
+def test_risk_flags_gate_every_level() -> None:
     table = policy()
-    assert table.risk_of("minecraft_dig") == ""
+    # Phase 4B：dig 是 MEDIUM，风险开关默认关闭 → 配置视角先拦一道
+    assert table.risk_of("minecraft_dig") == "MEDIUM"
+    assert table.allowed_by_config("minecraft_dig") is False
+    assert policy(allow_medium=True).allowed_by_config("minecraft_dig") is True
+    # 还没实现的等级：风险表里没有名字，开了开关也不放行
+    assert table.risk_of("minecraft_attack") == ""
+    assert policy(allow_high=True).allowed_by_config("minecraft_attack") is False
     assert table.allowed_by_config("minecraft_world") is True
     assert table.allowed_by_config("minecraft_move_to") is True
-    assert table.allowed_by_config("minecraft_dig") is False
 
 
 # --------------------------------------------------- §36 Tool → Service 边界

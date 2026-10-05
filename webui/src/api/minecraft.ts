@@ -49,6 +49,15 @@ export const minecraftApi = {
   stop() {
     return api.post<MinecraftStopResult>('/minecraft/stop', {})
   },
+  /** Phase 4B：破坏一个指定方块（开发者调试入口；**必须**过 MEDIUM 确认门）。 */
+  dig(x: number, y: number, z: number, expectedBlock: string) {
+    return api.post<Record<string, unknown>>('/minecraft/dig', {
+      x,
+      y,
+      z,
+      expected_block: expectedBlock,
+    })
+  },
   /** Phase 4A：确认门 Debug（只能缩小授权：造测试条 / 取消 / 置过期）。 */
   confirm(action: 'create_test' | 'cancel' | 'expire', body: Record<string, unknown> = {}) {
     return api.post<Record<string, unknown>>('/minecraft/agent/confirm', { action, ...body })

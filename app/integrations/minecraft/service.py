@@ -44,9 +44,17 @@ class MinecraftBridgeError(Exception):
 
     status = 400
 
-    def __init__(self, message: str, *, code: str = "minecraft.error") -> None:
+    def __init__(
+        self,
+        message: str,
+        *,
+        code: str = "minecraft.error",
+        detail: dict[str, Any] | None = None,
+    ) -> None:
         super().__init__(message)
         self.code = code
+        #: 结构化补充（当前用于 dig 的 block.changed：expected/actual）
+        self.detail: dict[str, Any] = dict(detail or {})
 
 
 class MinecraftDisabled(MinecraftBridgeError):
@@ -151,6 +159,61 @@ class MinecraftFollowTargetTooFar(MinecraftBridgeError):
 
 
 #: runtime 业务错误码 → 稳定错误（action.* 必须先于通用 409 判断）
+class MinecraftBlockNotFound(MinecraftBridgeError):
+    """目标位置没有可破坏的方块（空气也算没有）。"""
+
+    status = 404
+
+    def __init__(self, message: str = "目标位置没有方块") -> None:
+        super().__init__(message, code="minecraft.block_not_found")
+
+
+class MinecraftBlockChanged(MinecraftBridgeError):
+    """方块与用户确认时不一致：确认的是「这个位置的这个方块」，不是「这里现在的东西」。"""
+
+    status = 409
+
+    def __init__(
+        self,
+        message: str = "方块已经变了",
+        *,
+        expected: str = "",
+        actual: str = "",
+    ) -> None:
+        super().__init__(
+            message,
+            code="minecraft.block_changed",
+            detail={"expected": expected, "actual": actual},
+        )
+
+
+class MinecraftBlockNotDiggable(MinecraftBridgeError):
+    """当前状态下挖不动（工具不对/被保护）——不换工具、不走近、不找角度。"""
+
+    status = 400
+
+    def __init__(self, message: str = "当前状态下挖不动这个方块") -> None:
+        super().__init__(message, code="minecraft.block_not_diggable")
+
+
+class MinecraftBlockTooFar(MinecraftBridgeError):
+    """目标超出挖掘距离——本阶段不会自己走过去。"""
+
+    status = 400
+
+    def __init__(self, message: str = "目标方块太远") -> None:
+        super().__init__(message, code="minecraft.block_too_far")
+
+
+class MinecraftBlockBreakUnconfirmed(MinecraftBridgeError):
+    """dig 结束后方块仍在原位：客户端状态与服务器不同步，不能报成功。"""
+
+    status = 500
+
+    def __init__(self, message: str = "未能确认方块已被破坏") -> None:
+        super().__init__(message, code="minecraft.block_break_unconfirmed")
+
+
 def _translate(exc: MinecraftRuntimeError) -> MinecraftBridgeError:
     if exc.unreachable:
         return MinecraftRuntimeDown(str(exc))
@@ -164,6 +227,20 @@ def _translate(exc: MinecraftRuntimeError) -> MinecraftBridgeError:
         return MinecraftActionFailed(str(exc))
     if exc.code == "path.not_found":
         return MinecraftPathNotFound(str(exc))
+    if exc.code == "block.not_found":
+        return MinecraftBlockNotFound(str(exc))
+    if exc.code == "block.changed":
+        return MinecraftBlockChanged(
+            str(exc),
+            expected=str(exc.detail.get("expected") or ""),
+            actual=str(exc.detail.get("actual") or ""),
+        )
+    if exc.code == "block.not_diggable":
+        return MinecraftBlockNotDiggable(str(exc))
+    if exc.code == "block.too_far":
+        return MinecraftBlockTooFar(str(exc))
+    if exc.code == "block.break_unconfirmed":
+        return MinecraftBlockBreakUnconfirmed(str(exc))
     if exc.code == "player.not_found":
         return MinecraftPlayerNotFound(str(exc))
     # player.lost / follow.target_too_far 发生在持续动作的后台阶段，正常经事件上报；
@@ -213,6 +290,9 @@ FOLLOW_DEFAULT_DISTANCE = 2.5
 FOLLOW_MIN_DISTANCE = 1.5
 FOLLOW_MAX_DISTANCE = 6.0
 FOLLOW_MAX_USERNAME_CHARS = 16
+
+#: dig 的 expected_block 长度上限（minecraft:xxx 之类）
+DIG_MAX_BLOCK_CHARS = 64
 
 
 class _RuntimeProcess:
@@ -463,6 +543,9 @@ class MinecraftService:
         env = dict(os.environ)
         env["MC_RUNTIME_PORT"] = str(self.config.runtime_port)
         env["MC_CONNECT_TIMEOUT"] = str(self.config.connect_timeout_seconds)
+        # Phase 4B：dig 的安全门（超时/距离）随进程环境注入 runtime
+        env["MC_DIG_TIMEOUT_MS"] = str(int(self.config.action.dig.timeout * 1000))
+        env["MC_DIG_MAX_DISTANCE"] = str(self.config.action.dig.max_distance)
         env["MC_AUTH_FILE"] = str(self._runtime_dir() / "auth.json")
         # Phase 3C：move_to 的最大距离（runtime 侧与 Service 侧同规则）
         env["MC_MOVE_MAX_DISTANCE"] = str(self.config.action.move_to.max_distance)
@@ -682,6 +765,49 @@ class MinecraftService:
         try:
             await self._ensure_runtime()
             return await self._client.follow_player(username, target_distance)
+        except MinecraftRuntimeError as exc:
+            if exc.unreachable:
+                self._mark_runtime_down(str(exc))
+            raise _translate(exc) from exc
+
+    @staticmethod
+    def validate_dig(x: Any, y: Any, z: Any, expected_block: Any) -> tuple[dict[str, float], str]:
+        """dig 的参数校验（纯函数，抛 :class:`MinecraftActionInvalid`）。
+
+        调用方（WebUI 调试端点）先校验再进确认门：垃圾参数不该挂出一条待确认。
+        """
+        coords: dict[str, float] = {}
+        for name, value in (("x", x), ("y", y), ("z", z)):
+            if isinstance(value, bool) or not isinstance(value, (int, float)):
+                raise MinecraftActionInvalid(f"坐标 {name} 必须是数字")
+            if not math.isfinite(float(value)):
+                raise MinecraftActionInvalid(f"坐标 {name} 必须是有限数字")
+            coords[name] = float(value)
+        if abs(coords["x"]) > 3.0e7 or abs(coords["z"]) > 3.0e7 or not -512 <= coords["y"] <= 2048:
+            raise MinecraftActionInvalid("坐标超出 Minecraft 世界边界")
+        if not isinstance(expected_block, str) or not expected_block.strip():
+            raise MinecraftActionInvalid("expected_block 必须是非空字符串（先看清目标方块再动手）")
+        if len(expected_block) > DIG_MAX_BLOCK_CHARS:
+            raise MinecraftActionInvalid(f"expected_block 最长 {DIG_MAX_BLOCK_CHARS} 个字符")
+        # 控制字符检查看**原始**值（与 follow_player 的 username 同规则）：
+        # 带换行/制表的方块名一定是模型拼错了，宁可让它重来
+        if any(ord(ch) < 32 or ord(ch) == 127 for ch in expected_block):
+            raise MinecraftActionInvalid("expected_block 不能包含控制字符")
+        return coords, expected_block.strip()
+
+    async def dig(self, x: Any, y: Any, z: Any, expected_block: Any) -> dict[str, Any]:
+        """破坏**一个**明确指定的方块（Phase 4B · MEDIUM · 需要用户确认）。
+
+        只做类型/格式校验与 runtime 调用；世界层面的校验（方块存在 / 与 expected_block 一致 /
+        可挖 / 距离上限）由 runtime 在真正执行前用**实时状态**判定——确认是授权，不代替校验。
+        返回 ``{action_id, action, status:"RUNNING"}``，终态经 action 事件送达
+        （成功带 ``result{position, block_before, block_after}``）。
+        """
+        self._require_enabled()
+        coords, expected = self.validate_dig(x, y, z, expected_block)
+        try:
+            await self._ensure_runtime()
+            return await self._client.dig(coords["x"], coords["y"], coords["z"], expected)
         except MinecraftRuntimeError as exc:
             if exc.unreachable:
                 self._mark_runtime_down(str(exc))

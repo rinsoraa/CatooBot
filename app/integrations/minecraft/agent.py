@@ -48,6 +48,9 @@ log = logging.getLogger("CatooBot.Minecraft.Agent")
 
 #: ToolContext.metadata 里的桥接对象键（tool 通过它拿到 service/policy/context）
 BRIDGE_KEY = "minecraft"
+#: 开发者调试入口使用的固定身份（WebUI 动作按钮；不是任何真实用户/会话）
+DEVELOPER_USER_ID = "webui-developer"
+DEVELOPER_SESSION_ID = "webui:developer"
 #: ToolContext.metadata 里的「本轮来自游戏内玩家」的用户名（Phase 4A 信任门用）
 PLAYER_KEY = "minecraft_player"
 #: ToolContext.metadata 里的「本轮由用户明确发起」标记（意图门用；缺省 = 不允许 LOW）。
@@ -60,7 +63,7 @@ TURN_ORIGIN_KEY = "turn_origin"
 #: 正式风险分级（§十三）。本阶段只落地 SAFE / LOW；MEDIUM/HIGH/DESTRUCTIVE 等 Phase 4。
 RISK_LEVELS = ("SAFE", "LOW", "MEDIUM", "HIGH", "DESTRUCTIVE")
 
-#: 六个已批准 Tool 的风险等级（§二）——注册表之外的任何名字都不放行
+#: 已批准 Tool 的风险等级（§二）——注册表之外的任何名字都不放行
 ACTION_RISK: dict[str, str] = {
     "minecraft_world": "SAFE",
     "minecraft_chat": "SAFE",
@@ -68,6 +71,8 @@ ACTION_RISK: dict[str, str] = {
     "minecraft_stop": "SAFE",
     "minecraft_move_to": "LOW",
     "minecraft_follow_player": "LOW",
+    # Phase 4B：第一个世界修改动作（单方块，MEDIUM → 必须用户确认）
+    "minecraft_dig": "MEDIUM",
 }
 
 #: Tool → Action Runtime 动作名（chat 也走统一生命周期）
@@ -77,6 +82,7 @@ TOOL_ACTION: dict[str, str] = {
     "minecraft_move_to": "move_to",
     "minecraft_follow_player": "follow_player",
     "minecraft_stop": "stop",
+    "minecraft_dig": "dig",
 }
 
 #: 离线也能用的 Tool：minecraft_world（离线也要能回答「我不在游戏里」）
@@ -85,9 +91,11 @@ TOOL_ACTION: dict[str, str] = {
 #: 这样新增动作不需要记得去改一张「需要在线」的名单。
 OFFLINE_TOOLS: frozenset[str] = frozenset({"minecraft_world", "minecraft_stop"})
 
-#: 独占前台动作（runtime 同一时间只允许一个）：忙 → minecraft.action_busy（§二十六）
-EXCLUSIVE_TOOLS: frozenset[str] = frozenset(
-    {"minecraft_look_at", "minecraft_move_to", "minecraft_follow_player"}
+#: **非**独占的 Tool：只有它们能与前台动作并存（chat 是唯一允许并存的通信动作，
+#: world 只读，stop 是控制面）。其余一律独占 —— **默认独占**，Phase 4B/4C 加动作
+#: 时不会漏掉「不能边挖边走」这类互斥约束。
+NON_EXCLUSIVE_TOOLS: frozenset[str] = frozenset(
+    {"minecraft_world", "minecraft_chat", "minecraft_stop"}
 )
 
 #: 需要「用户明确要求」才能执行的风险等级（§十四/§十五）
@@ -115,6 +123,14 @@ RUNTIME_ERROR_CODES: dict[str, str] = {
     "player.lost": "minecraft.player_lost",
     "follow.target_too_far": "minecraft.follow_target_too_far",
     "session.active": "minecraft.action_busy",
+    # Phase 4B：dig 的目标校验失败（§三十）
+    "block.not_found": "minecraft.block_not_found",
+    "block.changed": "minecraft.block_changed",
+    "block.not_diggable": "minecraft.block_not_diggable",
+    "block.too_far": "minecraft.block_too_far",
+    "block.break_unconfirmed": "minecraft.block_break_unconfirmed",
+    "block.dig_aborted": "minecraft.action_failed",
+    "block.invalid": "minecraft.action_invalid",
 }
 
 #: 一句话活动（§二十二：SUCCEEDED → minecraft.activity）。只写事实，不写情绪。
@@ -124,6 +140,7 @@ _ACTIVITY_TEMPLATES: dict[str, str] = {
     "look_at": "刚看向 {where}",
     "chat": "刚在服务器里说过话",
     "stop": "刚把 Minecraft 行动停下来了",
+    "dig": "刚挖掉了 {block}",
 }
 
 _TERMINAL_STATUSES = frozenset({"SUCCEEDED", "FAILED", "CANCELLED", "TIMEOUT"})
@@ -260,7 +277,7 @@ class MinecraftActionPolicy:
                 f"玩家「{facts.minecraft_player}」还不在可信名单里，罐头不会执行这个动作",
                 turn_origin=origin,
             )
-        if tool in EXCLUSIVE_TOOLS and facts.busy:
+        if tool not in NON_EXCLUSIVE_TOOLS and facts.busy:
             return self._reject(
                 tool,
                 risk,
@@ -410,8 +427,11 @@ class MinecraftAgentContext:
         result = record.get("result") or {}
         where = _format_position(result.get("final_position") or result.get("target"))
         who = str(result.get("username") or "").strip()
+        block = str(result.get("block_before") or "").strip()
         try:
-            return template.format(where=where or "目标位置", who=who or "对方")
+            return template.format(
+                where=where or "目标位置", who=who or "对方", block=block or "一个方块"
+            )
         except (KeyError, IndexError):  # pragma: no cover - 模板是常量，坏不了
             return "刚做完一个 Minecraft 动作"
 
@@ -539,6 +559,56 @@ class MinecraftAgentBridge:
             ),
         )
 
+    def check_developer(
+        self, tool: str, arguments: Mapping[str, Any] | None = None
+    ) -> PolicyDecision:
+        """开发者调试判定（§三十七/§七十二）：管理员**显式点击**视为「用户要求」。
+
+        只跳过「这一轮是不是用户发起的对话」这一条（WebUI 的动作按钮本来就没有对话），
+        其余门照旧：风险开关 / 在线 / 忙碌 / **确认门**。它**不能**代替用户确认 ——
+        MEDIUM 动作在这里同样只会得到 `minecraft.confirmation_required`。
+        """
+        return self.policy.check(
+            tool,
+            arguments,
+            self.gate_facts(explicit_intent=True, turn_origin=TurnOrigin.SYSTEM.value),
+        )
+
+    async def invoke_developer(
+        self,
+        tool: str,
+        arguments: Mapping[str, Any],
+        call: Callable[[MinecraftService], Awaitable[dict[str, Any]]],
+    ) -> ToolResult:
+        """开发者调试执行：判定（显式意图）→ 确认门 → 执行面。"""
+        decision = self.check_developer(tool, arguments)
+        if not decision.allowed:
+            if decision.code != CODE_REQUIRED:
+                return self.denial(tool, decision)
+            dev = ToolContext(
+                user_id=DEVELOPER_USER_ID,
+                session_id=DEVELOPER_SESSION_ID,
+                metadata={
+                    BRIDGE_KEY: self,
+                    TURN_ORIGIN_KEY: TurnOrigin.SYSTEM.value,
+                    INTENT_KEY: True,
+                },
+            )
+            outcome = self._resolve_confirmation(tool, arguments, dev)
+            if not outcome.ok:
+                return self._confirmation_failure(tool, arguments, dev, outcome)
+        log.info("[MC Tool] requested tool=%s args=%s (developer)", tool, _preview(arguments))
+        try:
+            payload = await call(self.service)
+        except MinecraftBridgeError as exc:
+            code = _stable_code(getattr(exc, "code", ""))
+            log.info("[MC Tool] failed tool=%s code=%s", tool, code)
+            return _failure(tool, code, str(exc), detail=getattr(exc, "detail", None))
+        except Exception:  # noqa: BLE001 - 调试入口同样不抛给上层
+            log.exception("[MC Tool] crashed tool=%s (developer)", tool)
+            return _failure(tool, "minecraft.action_failed", "Minecraft 调用失败")
+        return self._success(tool, payload)
+
     def denial(self, tool: str, decision: PolicyDecision) -> ToolResult:
         """策略拒绝 → 结构化失败（§二十七）。"""
         return _failure(tool, decision.code, decision.message)
@@ -572,7 +642,8 @@ class MinecraftAgentBridge:
         except MinecraftBridgeError as exc:
             code = _stable_code(getattr(exc, "code", ""))
             log.info("[MC Tool] failed tool=%s code=%s", tool, code)
-            return _failure(tool, code, str(exc))
+            detail = getattr(exc, "detail", None)
+            return _failure(tool, code, str(exc), detail=detail)
         except Exception as exc:  # noqa: BLE001 - 工具层永不抛给模型
             log.exception("[MC Tool] crashed tool=%s", tool)
             return _failure(
@@ -804,8 +875,16 @@ def minecraft_player(context: ToolContext) -> str:
 
 
 def _confirmation_summary(tool: str, risk: str, arguments: Mapping[str, Any] | None) -> str:
-    """给用户/界面看的一句话（不含机密、不含正文）。"""
-    preview = _preview(arguments or {})
+    """给用户/界面看的一句话（不含机密、不含正文）。
+
+    用户确认的是**具体动作**，所以摘要要说清"挖哪个方块"这种关键信息。
+    """
+    args = dict(arguments or {})
+    if tool == "minecraft_dig":
+        block = str(args.get("expected_block") or "方块")
+        where = _format_position(args)
+        return f"挖掉 {block}（{where}）" if where else f"挖掉 {block}"
+    preview = _preview(args)
     return f"{tool}（{risk}）" + (f"：{preview}" if preview else "")
 
 
@@ -822,9 +901,18 @@ def _stable_code(code: Any) -> str:
 
 
 def _failure(
-    tool: str, code: str, message: str, *, extra: Mapping[str, Any] | None = None
+    tool: str,
+    code: str,
+    message: str,
+    *,
+    extra: Mapping[str, Any] | None = None,
+    detail: Mapping[str, Any] | None = None,
 ) -> ToolResult:
-    data: dict[str, Any] = {"ok": False, "error": {"code": code, "message": message}}
+    error: dict[str, Any] = {"code": code, "message": message}
+    if detail:
+        # §十四：block.changed 这类失败要带上 expected/actual，模型才知道发生了什么
+        error["detail"] = dict(detail)
+    data: dict[str, Any] = {"ok": False, "error": error}
     data.update(extra or {})
     return ToolResult(
         tool_name=tool,

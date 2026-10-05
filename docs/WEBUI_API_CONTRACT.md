@@ -48,7 +48,7 @@
 | `ai.*` | Provider/模型（`ai.provider_unknown`、`ai.model_unknown`、`ai.test_failed`、`ai.no_key`） |
 | `world.*` | 沙盒/角色（`world.not_running`、`world.confirm_required`、`world.busy`） |
 | `memory.*` / `social.*` / `media.*` / `tools.*` / `agent.*` | 各领域动作冲突/不存在 |
-| `minecraft.*` | Minecraft 连接层（`minecraft.disabled`、`minecraft.runtime_down`、`minecraft.invalid_target`、`minecraft.session_active`、`minecraft.not_connected`、`minecraft.bad_event`、`minecraft.chat_empty`、`minecraft.action_busy`、`minecraft.action_invalid`、`minecraft.action_failed`、`minecraft.path_not_found`、`minecraft.player_not_found`、`minecraft.player_lost`、`minecraft.follow_target_too_far`、`minecraft.action_not_allowed`、`minecraft.confirmation_required`、`minecraft.confirmation_invalid`、`minecraft.confirmation_expired`、`minecraft.confirmation_mismatch`、`minecraft.confirmation_not_user_turn`、`minecraft.user_not_trusted`） |
+| `minecraft.*` | Minecraft 连接层（`minecraft.disabled`、`minecraft.runtime_down`、`minecraft.invalid_target`、`minecraft.session_active`、`minecraft.not_connected`、`minecraft.bad_event`、`minecraft.chat_empty`、`minecraft.action_busy`、`minecraft.action_invalid`、`minecraft.action_failed`、`minecraft.path_not_found`、`minecraft.player_not_found`、`minecraft.player_lost`、`minecraft.follow_target_too_far`、`minecraft.action_not_allowed`、`minecraft.block_not_found`、`minecraft.block_changed`、`minecraft.block_not_diggable`、`minecraft.block_too_far`、`minecraft.block_break_unconfirmed`、`minecraft.confirmation_required`、`minecraft.confirmation_invalid`、`minecraft.confirmation_expired`、`minecraft.confirmation_mismatch`、`minecraft.confirmation_not_user_turn`、`minecraft.user_not_trusted`） |
 | `internal.*` | 兜底 |
 
 ### 1.3 关键设计决策（与今日现状的差异，必须实现）
@@ -332,7 +332,8 @@ Minecraft 连接层（Bridge runtime 为独立 Node.js 进程，见 `docs/MINECR
 | `POST /api/v1/minecraft/follow_player` | **Phase 3D 动态跟随**（LOW；GoalFollow + dynamic；持续型动作——**启动即返回 RUNNING**，终态经事件/状态呈现；STOP/timeout/disconnect 都会真停） | `{"username": "空凛", "distance": 2.5}`（distance 1.5~6，缺省 2.5） | `{action_id, action:"follow_player", status:"RUNNING"}`；启动失败：找不到玩家 404 `minecraft.player_not_found`，离线 409 `minecraft.not_connected`，参数非法 422 `minecraft.action_invalid`，前台忙 409 `minecraft.action_busy`；运行中失败经 `minecraft.action.failed` 事件带 `player_lost` / `follow.target_too_far` |
 | `GET /api/v1/minecraft/world` | World Debug 只读视图（Phase 2）：Semantic World Model + raw snapshot + 分层缓存元信息 | — | `{available, online, captured_at, age_seconds, layers: {near/local/extended: {age_seconds}}, semantic, raw}`；未启用/未在线恒 200 且 `available:false`（读端点不做 503） |
 | `POST /api/v1/minecraft/events` | **Bridge runtime 事件回调**（服务间通道，不是给浏览器的） | 事件载荷（`minecraft.connecting|connected|spawned|chat|player_joined|player_left|kicked|disconnected|error` + `session_id` + `timestamp` + 上下文） | `{"accepted": true}` |
-| `POST /api/v1/minecraft/agent/confirm` | **Phase 4A 确认门 Debug**：只能**缩小**授权（造测试条 / 取消 / 置过期）。没有 `confirm`/`consume` —— 真正的确认必须由用户在新回合里说「确认」 | `{"action": "create_test\|cancel\|expire", "confirmation_id"?, "tool"?, "risk"?, "arguments"?, "session_id"?, "user_id"?}`（`create_test` 需要 `tool`） | `create_test` → `{"created": true, "confirmation": {confirmation_id, tool, risk, summary, expires_at, status}}`；`cancel`/`expire` → `{"confirmation_id", "status": "CANCELLED\|EXPIRED"}`；非法 action 400 `minecraft.confirmation_invalid`，已不是 PENDING 404 同码，Minecraft 未启用 503 `minecraft.disabled` |
+| `POST /api/v1/minecraft/dig` | **Phase 4B 破坏单方块**（MEDIUM；真实修改世界）。开发者调试入口：跳过「这一轮是不是用户对话」的判断，但**必须**过确认门 | `{"x": 120, "y": 64, "z": -230, "expected_block": "minecraft:stone"}` | 第一次 → 409 `minecraft.confirmation_required`（`detail.confirmation` 带待确认信息）；确认后（用户在对话里说「确认」）→ `{ok, action:"dig", action_id, status:"RUNNING"}`；参数非法 422 `minecraft.action_invalid`，目标不存在 404 `minecraft.block_not_found`，与确认时不一致 409 `minecraft.block_changed`（`error.detail.expected/actual`），挖不动 422 `minecraft.block_not_diggable`，太远 422 `minecraft.block_too_far`，未确认破坏 500 `minecraft.block_break_unconfirmed` |
+| `POST /api/v1/minecraft/agent/confirm` | **Phase 4A 确认门 Debug**（`create_test` 只接受 `minecraft_test_*` 测试专用工具名，正式动作一律 400）：只能**缩小**授权（造测试条 / 取消 / 置过期）。没有 `confirm`/`consume` —— 真正的确认必须由用户在新回合里说「确认」 | `{"action": "create_test\|cancel\|expire", "confirmation_id"?, "tool"?, "risk"?, "arguments"?, "session_id"?, "user_id"?}`（`create_test` 需要 `tool`） | `create_test` → `{"created": true, "confirmation": {confirmation_id, tool, risk, summary, expires_at, status}}`；`cancel`/`expire` → `{"confirmation_id", "status": "CANCELLED\|EXPIRED"}`；非法 action 400 `minecraft.confirmation_invalid`，已不是 PENDING 404 同码，Minecraft 未启用 503 `minecraft.disabled` |
 
 `GET /minecraft` 的 `agent` 块（Phase 3E，只读，供连接页的 LLM Tool Debug 面板）：
 
@@ -354,6 +355,9 @@ Minecraft 连接层（Bridge runtime 为独立 Node.js 进程，见 `docs/MINECR
              "allowed": false, "reason": "minecraft.action_busy"}]
 }
 ```
+
+Phase 4B 起 `tools` 里多了 `minecraft_dig`（MEDIUM）：它的 `allowed` 只有在
+`allow_medium`（默认 false）打开时才会为真，且**即使 allowed 也要用户确认**才能执行。
 
 `allowed` 表示「用户此刻明确要求时会不会被放行」（`reason` 是被拒的稳定错误码：
 `minecraft.disabled` / `minecraft.offline` / `minecraft.action_busy` /

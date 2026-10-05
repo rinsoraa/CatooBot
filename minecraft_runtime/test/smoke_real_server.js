@@ -123,10 +123,18 @@ async function main() {
 
   const runtimePort = await freePort()
   const callbackPort = await freePort()
+  const events = []
   const receiver = http.createServer((req, res) => {
     let raw = ''
     req.on('data', (chunk) => (raw += chunk))
-    req.on('end', () => res.writeHead(200).end('{"ok":true}'))
+    req.on('end', () => {
+      try {
+        events.push(JSON.parse(raw))
+      } catch {
+        /* 非 JSON 丢弃 */
+      }
+      res.writeHead(200).end('{"ok":true}')
+    })
   })
   await new Promise((resolve) => receiver.listen(callbackPort, '127.0.0.1', resolve))
 
@@ -199,25 +207,35 @@ async function main() {
       const ux = movedDir[0] / dirLen
       const uz = movedDir[1] / dirLen
       const now = (await request(runtimePort, 'GET', '/minecraft/status')).body.position
-      const movePromise = request(runtimePort, 'POST', '/minecraft/move_to', {
+      const moveResp = await request(runtimePort, 'POST', '/minecraft/move_to', {
         x: now.x + ux * 25,
         y: now.y,
         z: now.z + uz * 25,
       })
+      // Phase 3E 起 move_to 是持续型动作：启动即 RUNNING，终态经事件
+      check(
+        moveResp.status === 200 && moveResp.body.status === 'RUNNING',
+        `move_to 启动 → RUNNING（${JSON.stringify(moveResp.body)}）`,
+      )
+      const moveId = moveResp.body.action_id
       let started = false
-      for (const distance of [25, 18, 30]) {
-        void distance
-        started = await waitFor(async () => {
+      try {
+        await waitFor(async () => {
           const snap = await request(runtimePort, 'GET', '/minecraft/status')
           return Boolean(snap.body.pathfinder && snap.body.pathfinder.moving)
         }, '导航开始', 8000)
-        if (started) break
+        started = true
+      } catch {
+        /* 地形导致立刻结束：跳过 STOP 段 */
       }
       if (started) {
         const stop = await request(runtimePort, 'POST', '/minecraft/stop', {})
-        const moveResp = await movePromise
-        check(stop.body.cancelled.length === 1, 'STOP 取消了移动中的 move_to')
-        check(moveResp.body.status === 'CANCELLED', `move_to → ${moveResp.body.status}`)
+        check(stop.body.cancelled.includes(moveId), 'STOP 取消了移动中的 move_to')
+        await waitFor(
+          () => events.some((e) => e.event === 'minecraft.action.cancelled' && e.action_id === moveId),
+          'move_to cancelled 事件',
+          8000,
+        )
         const stopped = (await request(runtimePort, 'GET', '/minecraft/status')).body
         check(stopped.pathfinder.goal === null, 'goal == null')
         check(stopped.pathfinder.moving === false, 'isMoving == false')
@@ -225,8 +243,125 @@ async function main() {
         const later = (await request(runtimePort, 'GET', '/minecraft/status')).body
         check(distance2d(later.position, stopped.position) <= 0.3, '停止后位置不再漂移')
       } else {
-        console.log('[smoke] 远端目标未能开始移动（地形导致 no-path），跳过 STOP 段')
-        await movePromise.catch(() => {})
+        console.log('[smoke] 目标未能开始移动（地形导致 no-path），跳过 STOP 段')
+      }
+    }
+
+    // ---- Phase 4B 硬门禁：单方块 dig 真实验证（§七十三-§七十五） ----
+    const snapshot = async (layers) =>
+      (await request(runtimePort, 'GET', `/minecraft/world/snapshot?layers=${layers}`)).body
+    const blockAt = async (pos) => {
+      const snap = await snapshot('near')
+      const columns = (snap.blocks && snap.blocks.near && snap.blocks.near.columns) || []
+      const hit = columns.find(
+        (col) => col.pos && col.pos.x === pos.x && col.pos.y === pos.y && col.pos.z === pos.z,
+      )
+      return hit ? hit.name : null
+    }
+    // 徒手可挖（不需要工具）且够慢的方块：STOP 段要有时间叫停
+    const HAND_DIGGABLE = ['dirt', 'grass_block', 'sand', 'gravel', 'clay', 'snow', 'oak_log']
+    const SLOW_BY_HAND = ['oak_log', 'spruce_log', 'stone', 'cobblestone', 'andesite', 'coal_ore']
+
+    const near = await snapshot('near')
+    const columns = (near.blocks && near.blocks.near && near.blocks.near.columns) || []
+    const reachable = columns
+      .filter((col) => col.distance !== undefined && col.distance <= 4 && col.pos)
+      .sort((a, b) => a.distance - b.distance)
+    const target = reachable.find((col) => HAND_DIGGABLE.includes(col.name))
+    if (!target) {
+      console.log('[smoke] 附近没有可直接挖的方块（dirt/grass/log…）——跳过 dig 段')
+    } else {
+      const pos = target.pos
+      console.log(`[smoke] dig 目标：${target.name} @ ${JSON.stringify(pos)}（${target.distance} 格）`)
+
+      // §七十五：先故意报错方块名 → block.changed（结构化 expected/actual，且不破坏）
+      const wrong = await request(runtimePort, 'POST', '/minecraft/dig', {
+        x: pos.x,
+        y: pos.y,
+        z: pos.z,
+        expected_block: 'minecraft:bedrock',
+      })
+      check(
+        wrong.status === 409 && wrong.body.error && wrong.body.error.code === 'block.changed',
+        `expected_block 不符 → block.changed（${JSON.stringify(wrong.body && wrong.body.error)}）`,
+      )
+      check(
+        wrong.body.error &&
+          wrong.body.error.detail &&
+          wrong.body.error.detail.expected === 'minecraft:bedrock' &&
+          wrong.body.error.detail.actual === target.name,
+        'block.changed 带 expected/actual',
+      )
+      check((await blockAt(pos)) === target.name, '拒绝后目标方块原地未动')
+
+      // §七十三：真挖 → 事件 → 世界真的变了
+      const digResp = await request(runtimePort, 'POST', '/minecraft/dig', {
+        x: pos.x,
+        y: pos.y,
+        z: pos.z,
+        expected_block: target.name,
+      })
+      check(
+        digResp.status === 200 && digResp.body.status === 'RUNNING',
+        `dig 启动 → RUNNING（${JSON.stringify(digResp.body)}）`,
+      )
+      const digId = digResp.body.action_id
+      let done = null
+      try {
+        done = await waitFor(async () => {
+          const hit = events.filter(
+            (e) => e.event === 'minecraft.action.completed' && e.action_id === digId,
+          )
+          return hit.length ? hit[0] : false
+        }, 'dig completed 事件', 60000)
+      } catch {
+        const failedEvent = events.find(
+          (e) => e.event === 'minecraft.action.failed' && e.action_id === digId,
+        )
+        check(false, `dig 未完成（${JSON.stringify(failedEvent && failedEvent.error)}）`)
+      }
+      if (done) {
+        check(done.result && done.result.block_before === target.name, `block_before=${target.name}`)
+        check(done.result && done.result.block_after !== target.name, `block_after=${done.result.block_after}`)
+        await waitFor(async () => (await blockAt(pos)) !== target.name, '感知到方块变化', 15000)
+        check(true, 'WorldPerception 看到方块被移除（near diff）')
+        const reDig = await request(runtimePort, 'POST', '/minecraft/dig', {
+          x: pos.x,
+          y: pos.y,
+          z: pos.z,
+          expected_block: target.name,
+        })
+        check(
+          reDig.body.error && reDig.body.error.code === 'block.not_found',
+          `同一位置再挖 → block.not_found（${JSON.stringify(reDig.body && reDig.body.error)}）`,
+        )
+      }
+
+      // §七十四：STOP 真的停（要一个够慢的方块；没有就如实跳过）
+      const slow = reachable.find((col) => SLOW_BY_HAND.includes(col.name))
+      if (!slow) {
+        console.log('[smoke] 附近没有"徒手要挖几秒"的方块——跳过 STOP 段（不伪造结论）')
+      } else {
+        const slowPos = slow.pos
+        const stopDig = await request(runtimePort, 'POST', '/minecraft/dig', {
+          x: slowPos.x,
+          y: slowPos.y,
+          z: slowPos.z,
+          expected_block: slow.name,
+        })
+        check(
+          stopDig.status === 200 && stopDig.body.status === 'RUNNING',
+          `STOP 段：dig ${slow.name} 启动 → RUNNING`,
+        )
+        await waitFor(
+          () => events.some((e) => e.event === 'minecraft.action.started' && e.action_id === stopDig.body.action_id),
+          'dig started 事件',
+          8000,
+        )
+        const stop = await request(runtimePort, 'POST', '/minecraft/stop', {})
+        check(stop.body.cancelled.includes(stopDig.body.action_id), 'STOP 取消了挖掘中的 dig')
+        await sleep(800)
+        check((await blockAt(slowPos)) === slow.name, 'STOP 后方块仍在（没有继续破坏）')
       }
     }
 

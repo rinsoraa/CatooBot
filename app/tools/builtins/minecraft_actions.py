@@ -30,8 +30,11 @@ from app.tools.models import ToolContext, ToolMetadata, ToolResult
 ACTION_TOOL_TIMEOUT = 15.0
 
 
-class _ActionTool(ToolBase):
-    """五个动作工具的公共骨架：桥 → 判定 → 调用 → 结构化结果。"""
+class ActionTool(ToolBase):
+    """Minecraft 动作工具的公共骨架：桥 → 判定（含确认门）→ Service → 结构化结果。
+
+    ``minecraft_dig``（Phase 4B）也复用这个骨架——它和这五个工具的唯一区别是风险等级。
+    """
 
     #: 传给 MinecraftService 的调用（在子类里用 lambda 绑定参数）
     async def _call(
@@ -105,7 +108,7 @@ CHAT_METADATA = ToolMetadata(
 )
 
 
-class MinecraftChatTool(_ActionTool):
+class MinecraftChatTool(ActionTool):
     metadata = CHAT_METADATA
 
     async def _call(self, service: MinecraftService, arguments: dict[str, Any]) -> dict[str, Any]:
@@ -133,7 +136,7 @@ LOOK_AT_METADATA = ToolMetadata(
 )
 
 
-class MinecraftLookAtTool(_ActionTool):
+class MinecraftLookAtTool(ActionTool):
     metadata = LOOK_AT_METADATA
 
     async def _call(self, service: MinecraftService, arguments: dict[str, Any]) -> dict[str, Any]:
@@ -173,7 +176,7 @@ MOVE_TO_METADATA = ToolMetadata(
 )
 
 
-class MinecraftMoveToTool(_ActionTool):
+class MinecraftMoveToTool(ActionTool):
     metadata = MOVE_TO_METADATA
 
     async def _call(self, service: MinecraftService, arguments: dict[str, Any]) -> dict[str, Any]:
@@ -223,7 +226,7 @@ FOLLOW_METADATA = ToolMetadata(
 )
 
 
-class MinecraftFollowPlayerTool(_ActionTool):
+class MinecraftFollowPlayerTool(ActionTool):
     metadata = FOLLOW_METADATA
 
     async def _call(self, service: MinecraftService, arguments: dict[str, Any]) -> dict[str, Any]:
@@ -261,7 +264,7 @@ STOP_METADATA = ToolMetadata(
 )
 
 
-class MinecraftStopTool(_ActionTool):
+class MinecraftStopTool(ActionTool):
     metadata = STOP_METADATA
 
     async def _call(self, service: MinecraftService, arguments: dict[str, Any]) -> dict[str, Any]:
@@ -272,6 +275,7 @@ class MinecraftStopTool(_ActionTool):
 
 
 __all__ = [
+    "ActionTool",
     "MinecraftChatTool",
     "MinecraftFollowPlayerTool",
     "MinecraftLookAtTool",

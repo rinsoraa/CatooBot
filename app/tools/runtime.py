@@ -85,6 +85,7 @@ class ToolRuntime:
         from app.tools.builtins import (
             CalculatorTool,
             MinecraftChatTool,
+            MinecraftDigTool,
             MinecraftFollowPlayerTool,
             MinecraftLookAtTool,
             MinecraftMoveToTool,
@@ -107,6 +108,8 @@ class ToolRuntime:
             ("minecraft_move_to", lambda: MinecraftMoveToTool()),
             ("minecraft_follow_player", lambda: MinecraftFollowPlayerTool()),
             ("minecraft_stop", lambda: MinecraftStopTool()),
+            # Phase 4B：第一个世界修改动作（MEDIUM；必须用户确认，只挖单块）
+            ("minecraft_dig", lambda: MinecraftDigTool()),
             ("query_image_memory", lambda: QueryImageMemoryTool()),
             (
                 "weather",

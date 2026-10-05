@@ -49,6 +49,20 @@ const MOVE_TO_RADIUS = 1.5 // GoalNear 半径：进入约 1.5 格即视为到达
 const MOVE_MAX_DISTANCE = Number.parseFloat(process.env.MC_MOVE_MAX_DISTANCE || '64')
 const MOVE_TIMEOUT_MS = Number.parseInt(process.env.MC_MOVE_TIMEOUT_MS || '30000', 10)
 
+// Phase 4B：dig（第一个世界修改动作；单方块、MEDIUM、需要确认）
+const DIG_DEFAULT_TIMEOUT_MS = Number.parseInt(process.env.MC_DIG_TIMEOUT_MS || '30000', 10)
+const DIG_MAX_DISTANCE = Number.parseFloat(process.env.MC_DIG_MAX_DISTANCE || '5')
+//: 每次调用读取：测量与 mineflayer 的 canDigBlock 同口径（眼睛 → 方块中心）
+function digTimeoutMs() {
+  const raw = Number.parseInt(process.env.MC_DIG_TIMEOUT_MS || '', 10)
+  return Number.isFinite(raw) && raw > 0 ? raw : DIG_DEFAULT_TIMEOUT_MS
+}
+
+function digMaxDistance() {
+  const raw = Number.parseFloat(process.env.MC_DIG_MAX_DISTANCE || '')
+  return Number.isFinite(raw) && raw > 0 ? raw : DIG_MAX_DISTANCE
+}
+
 // Phase 3D：follow_player（动态跟随）
 const FOLLOW_DEFAULT_DISTANCE = 2.5
 const FOLLOW_MIN_DISTANCE = 1.5
@@ -725,6 +739,107 @@ const ACTION_REGISTRY = {
         if (bot && typeof bot.clearControlStates === 'function') bot.clearControlStates()
       },
     },
+    dig: {
+      // Phase 4B：破坏**一个明确指定的方块**（MEDIUM；真实修改世界 → exclusive + STOP + timeout）
+      // 只做一件事：把用户确认过的那个方块挖掉。不找矿、不换目标、不导航、不换工具、不捡掉落。
+      exclusive: true,
+      timeout_ms: DIG_DEFAULT_TIMEOUT_MS,
+      risk: 'MEDIUM',
+      detached: true, // 挖掘可能持续数秒~数十秒：启动即 RUNNING，终态经事件送达
+      validate(params) {
+        const coords = validateWorldCoords(params)
+        const expected = params.expected_block
+        if (typeof expected !== 'string' || !expected.trim()) {
+          throw new ActionError('expected_block 不能为空', 'block.invalid', 400)
+        }
+        if (expected.length > 64) {
+          throw new ActionError('expected_block 过长', 'block.invalid', 400)
+        }
+        return { ...coords, expected_block: expected.trim() }
+      },
+      async start(bot, params) {
+        // §十三-§十七：真正的执行前校验（同步反馈）——确认是授权，不代替校验。
+        // 在线门由 ActionRuntime.execute 统一把守（未在线根本到不了这里）。
+        if (bot === null || bot.entity === null) {
+          throw new ActionError('罐头还没有进入世界', 'action.not_online', 400)
+        }
+        const position = new Vec3(params.x, params.y, params.z)
+        const block = bot.blockAt(position)
+        if (!block || isAir(block.name)) {
+          throw new ActionError(
+            `目标位置没有方块（${params.x},${params.y},${params.z}）`,
+            'block.not_found',
+            404,
+          )
+        }
+        if (block.name !== params.expected_block) {
+          // §十四：用户确认的是「这个位置的这个方块」，世界变了就必须拒绝
+          throw new ActionError(
+            `方块已经变了：期望 ${params.expected_block}，实际 ${block.name}`,
+            'block.changed',
+            409,
+            { expected: params.expected_block, actual: block.name },
+          )
+        }
+        const center = position.offset(0.5, 0.5, 0.5)
+        const eyes = bot.entity.position.offset(0, 1.65, 0)
+        const distance = eyes.distanceTo(center)
+        const maxDistance = digMaxDistance()
+        if (distance > maxDistance) {
+          throw new ActionError(
+            `目标方块距离 ${distance.toFixed(1)} 格，超过上限 ${maxDistance} 格（本阶段不会自己走过去）`,
+            'block.too_far',
+            400,
+          )
+        }
+        if (typeof bot.canDigBlock === 'function' && !bot.canDigBlock(block)) {
+          // 挖不动（工具不对/被保护）：不换工具、不找角度、不走近——如实失败
+          throw new ActionError('当前状态下挖不动这个方块', 'block.not_diggable', 400)
+        }
+        return { block, position, blockName: block.name }
+      },
+      async wait(bot, params, token, state) {
+        try {
+          // forceLook=true：由 Mineflayer 负责朝向（Python 层绝不碰 yaw/pitch）
+          await bot.dig(state.block, true)
+        } catch (error) {
+          if (token && token.cancelled) throw new ActionCancelled(token.reason)
+          const message = String(error && error.message ? error.message : error)
+          if (/digging aborted|Digging aborted/i.test(message)) {
+            // §三十一：被中断（stop/disconnect/超时）由上面的 cancelled 分支处理；
+            // 这里是"没人叫停但挖掘被服务器打断" → 稳定失败码
+            throw new ActionError(
+              '挖掘被中断（方块可能已经消失或服务器拒绝）',
+              'block.dig_aborted',
+              500,
+            )
+          }
+          throw new ActionError(`挖掘失败：${message}`, 'action.failed', 500)
+        }
+        // §二十二/§二十三：不信 Promise —— 重新读一次方块，确认真的没了
+        const after = bot.blockAt(state.position)
+        const afterName = after ? after.name : 'air'
+        if (after && after.name === state.blockName) {
+          throw new ActionError('方块仍在原位，未能确认破坏结果', 'block.break_unconfirmed', 500)
+        }
+        return {
+          position: { x: params.x, y: params.y, z: params.z },
+          block_before: state.blockName,
+          block_after: afterName,
+        }
+      },
+      cleanup(bot) {
+        // §二十：取消/超时/断开/退出都必须真的停止挖掘（至多一次，由 ActionRuntime 保证）
+        if (bot && typeof bot.stopDigging === 'function') {
+          try {
+            bot.stopDigging()
+          } catch (error) {
+            log('warn', 'dig cleanup stopDigging failed', { error: error.message })
+          }
+        }
+        if (bot && typeof bot.clearControlStates === 'function') bot.clearControlStates()
+      },
+    },
     follow_player: {
       // Phase 3D：动态跟随（LOW；不改世界，但属于持续自动移动 → exclusive + STOP + timeout）
       exclusive: true,
@@ -1296,6 +1411,18 @@ async function handleRequest(request, response) {
       jsonResponse(response, 200, { ok: true, ...result })
       return
     }
+    if (request.method === 'POST' && path === '/minecraft/dig') {
+      // Phase 4B：破坏单方块（MEDIUM）。启动即 RUNNING，结果经事件送达。
+      const body = await readBody(request)
+      const result = await actionRuntime.execute('dig', {
+        x: body.x,
+        y: body.y,
+        z: body.z,
+        expected_block: body.expected_block,
+      })
+      jsonResponse(response, 200, { ok: true, ...result })
+      return
+    }
     if (request.method === 'POST' && path === '/minecraft/follow_player') {
       // Phase 3D：动态跟随（GoalFollow + dynamic；STOP/timeout/disconnect 都会真停）
       const body = await readBody(request)
@@ -1391,6 +1518,10 @@ module.exports = {
     radius: MOVE_TO_RADIUS,
     maxDistance: MOVE_MAX_DISTANCE,
     timeoutMs: MOVE_TIMEOUT_MS,
+  },
+  DIG_DEFAULTS: {
+    timeoutMs: DIG_DEFAULT_TIMEOUT_MS,
+    maxDistance: DIG_MAX_DISTANCE,
   },
   FOLLOW_DEFAULTS: {
     distance: FOLLOW_DEFAULT_DISTANCE,

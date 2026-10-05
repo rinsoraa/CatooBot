@@ -390,6 +390,7 @@ async def test_minecraft_projection_includes_agent_block(tmp_path):
             "minecraft_move_to",
             "minecraft_follow_player",
             "minecraft_stop",
+            "minecraft_dig",
         }
         assert all(row["allowed"] is False for row in agent["tools"])
         assert all(row["reason"] == "minecraft.disabled" for row in agent["tools"])
@@ -435,15 +436,21 @@ async def test_confirmation_endpoint_only_shrinks_authority(tmp_path):
             bridge = MinecraftAgentBridge(service)
             service.agent = bridge
 
-            # 未装配 bridge 时（真实未启用）→ 503 minecraft.disabled
-            # 这里已装配，先造一条测试确认
+            # §一/§三十八：create_test 绝不能为正式动作（minecraft_dig）造确认
             status, payload = await client.post(
                 "/api/v1/minecraft/agent/confirm",
                 body={"action": "create_test", "tool": "minecraft_dig", "risk": "MEDIUM"},
             )
+            assert status == 400 and error_code(payload) == "minecraft.confirmation_invalid"
+
+            # 测试专用名字可以造（生产注册表里没有这个动作，永远无法消费）
+            status, payload = await client.post(
+                "/api/v1/minecraft/agent/confirm",
+                body={"action": "create_test", "tool": "minecraft_test_medium"},
+            )
             assert status == 200
             created = payload["data"]["confirmation"]
-            assert created["status"] == "PENDING" and created["tool"] == "minecraft_dig"
+            assert created["status"] == "PENDING" and created["tool"] == "minecraft_test_medium"
 
             # 只读投影里能看到它（WebUI 的 Pending Confirmation 面板）
             status, payload = await client.get("/api/v1/minecraft")
@@ -489,6 +496,91 @@ async def test_confirmation_endpoint_requires_minecraft(tmp_path):
         await client.login()
         status, payload = await client.post(
             "/api/v1/minecraft/agent/confirm", body={"action": "create_test"}
+        )
+        assert status == 503 and error_code(payload) == "minecraft.disabled"
+
+
+# ------------------------------------------------ Phase 4B：dig 端点
+
+
+async def test_dig_endpoint_requires_confirmation(tmp_path):
+    """§三十七：WebUI 的 DIG 也必须过 MEDIUM 确认门——第一次只会得到 409。"""
+    from tests.test_minecraft_service import FakeRuntime
+
+    fake = FakeRuntime()
+    await fake.start()
+    try:
+        async with api_server(tmp_path) as (client, bot, server):
+            await client.login()
+            service = MinecraftService(
+                bot,
+                MinecraftConfig(
+                    enabled=True,
+                    auto_start_runtime=False,
+                    runtime_port=fake.port,
+                    agent={"tools": {"allow_medium": True}},
+                ),
+            )
+            bot.minecraft = service
+            try:
+                from app.integrations.minecraft.agent import MinecraftAgentBridge
+
+                service.agent = MinecraftAgentBridge(service)
+
+                # 参数不合法 → 422（且不挂确认）
+                status, payload = await client.post(
+                    "/api/v1/minecraft/dig", body={"x": 1, "y": 64, "z": 2}
+                )
+                assert status == 422 and error_code(payload) == "minecraft.action_invalid"
+                assert service.agent.confirmations.pending() == []
+
+                # 先让 Agent 上下文进入在线态（dig 需要在线；否则先被在线门拦下）
+                fake.online = True
+                await service.status()
+                from app.integrations.minecraft.events import parse_bridge_event
+
+                service.agent.apply_event(
+                    parse_bridge_event(
+                        {
+                            "event": "minecraft.spawned",
+                            "session_id": "s1",
+                            "timestamp": 1.0,
+                            "username": "Catodayo",
+                        }
+                    )
+                )
+                # 第一次请求 → 需要确认（不执行）
+                status, payload = await client.post(
+                    "/api/v1/minecraft/dig",
+                    body={"x": 1, "y": 64, "z": 2, "expected_block": "minecraft:stone"},
+                )
+                assert status == 409
+                assert error_code(payload) == "minecraft.confirmation_required"
+                detail = payload["error"]["detail"] if "error" in payload else payload.get("detail")
+                assert detail["confirmation"]["tool"] == "minecraft_dig"
+                assert fake.dig_calls == [], "确认前绝不挖"
+
+                # 管理台也不能替用户确认：没有 confirm/consume
+                status, payload = await client.post(
+                    "/api/v1/minecraft/agent/confirm",
+                    body={
+                        "action": "confirm",
+                        "confirmation_id": detail["confirmation"]["confirmation_id"],
+                    },
+                )
+                assert status == 400 and error_code(payload) == "minecraft.confirmation_invalid"
+                assert fake.dig_calls == []
+            finally:
+                await service._cleanup()
+    finally:
+        await fake.stop()
+
+
+async def test_dig_endpoint_disabled_without_minecraft(tmp_path):
+    async with api_server(tmp_path) as (client, bot, server):
+        await client.login()
+        status, payload = await client.post(
+            "/api/v1/minecraft/dig", body={"x": 1, "y": 64, "z": 2, "expected_block": "stone"}
         )
         assert status == 503 and error_code(payload) == "minecraft.disabled"
 

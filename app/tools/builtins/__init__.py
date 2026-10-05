@@ -13,6 +13,7 @@ from app.tools.builtins.minecraft_actions import (
     MinecraftMoveToTool,
     MinecraftStopTool,
 )
+from app.tools.builtins.minecraft_dig import MinecraftDigTool
 from app.tools.builtins.minecraft_world import MinecraftWorldTool
 from app.tools.builtins.providers import WeatherTool, WebSearchTool
 from app.tools.builtins.query_image_memory import QueryImageMemoryTool
@@ -21,6 +22,7 @@ from app.tools.builtins.time import TimeTool
 __all__ = [
     "CalculatorTool",
     "MinecraftChatTool",
+    "MinecraftDigTool",
     "MinecraftFollowPlayerTool",
     "MinecraftLookAtTool",
     "MinecraftMoveToTool",

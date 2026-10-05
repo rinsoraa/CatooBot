@@ -120,6 +120,8 @@ function playerLabel(player: { name: string; distance: number | null }): string 
 }
 const moveTarget = reactive({ x: '', y: '', z: '' })
 const followTarget = reactive({ username: '', distance: '2.5' })
+// Phase 4B：Dig Test（第一个世界修改动作；必须过 MEDIUM 确认门）
+const digTarget = reactive({ x: '', y: '', z: '', expectedBlock: '' })
 
 function phaseState(): StatusState {
   if (phase.value === 'ONLINE') return 'ok'
@@ -238,6 +240,59 @@ async function moveTo(): Promise<void> {
   }
 }
 
+function prefillDigTarget(): void {
+  // 默认填「脚下前方」的一个可挖方块，只为开发调试方便
+  const position = connection.value?.position
+  if (!position) return
+  if (digTarget.x === '' && digTarget.y === '' && digTarget.z === '') {
+    digTarget.x = String(Math.round(position.x) + 2)
+    digTarget.y = String(Math.round(position.y) - 1)
+    digTarget.z = String(Math.round(position.z))
+  }
+  if (!digTarget.expectedBlock) digTarget.expectedBlock = 'minecraft:stone'
+}
+
+async function digBlock(): Promise<void> {
+  const raw = [digTarget.x, digTarget.y, digTarget.z]
+  if (raw.some((value) => String(value).trim() === '')) {
+    toast.error('目标坐标不合法', 'X / Y / Z 都要填写')
+    return
+  }
+  const [x, y, z] = raw.map(Number)
+  if (![x, y, z].every((value) => Number.isFinite(value))) {
+    toast.error('目标坐标不合法', 'X / Y / Z 都必须是数字')
+    return
+  }
+  const expected = digTarget.expectedBlock.trim()
+  if (!expected) {
+    toast.error('缺少方块名', 'expected_block 必填（先看清目标方块再用它的名字）')
+    return
+  }
+  working.value = true
+  try {
+    const result = await minecraftApi.dig(x, y, z, expected)
+    toast.success('已开始挖掘', `${result.action} · ${result.status}（结果会由事件确认）`)
+    await load(true)
+  } catch (caught) {
+    // MEDIUM 动作必须用户确认：这里只会拿到 minecraft.confirmation_required
+    toast.error('DIG 被拒绝', errorMessage(caught))
+    if (caught instanceof ApiError && catchConfirmationId(caught)) {
+      toast.info('已挂起一条待确认', '确认只能由用户在对话里做出；这里只能 CANCEL / EXPIRE')
+    }
+  } finally {
+    working.value = false
+  }
+}
+
+function catchConfirmationId(error: ApiError): string {
+  const detail = error.detail
+  if (detail && typeof detail === 'object' && 'confirmation' in detail) {
+    const confirmation = (detail as { confirmation?: { confirmation_id?: string } }).confirmation
+    return confirmation?.confirmation_id ?? ''
+  }
+  return ''
+}
+
 async function followPlayer(): Promise<void> {
   const username = followTarget.username.trim()
   if (!username) {
@@ -307,6 +362,7 @@ async function load(silent = false): Promise<void> {
     disabled.value = overview.value !== null && !overview.value.enabled
     error.value = ''
     prefillMoveTarget()
+    prefillDigTarget()
   } catch (caught) {
     // 连接层未启用是「功能状态」而不是故障：渲染引导卡，轮询也不必继续。
     if (caught instanceof ApiError && caught.code === 'minecraft.disabled') {
@@ -609,6 +665,58 @@ onUnmounted(stopPolling)
           <p class="cb-caption">
             Look At Test 看向罐头附近 (+5, 0, +5) 的测试坐标（SAFE 动作，不改世界、不移动）；
             STOP 是最高优先级安全停止：取消进行中的动作并清空移动控制位（幂等）。
+          </p>
+        </section>
+
+        <section class="minecraft__card cb-card" data-test="mc-dig">
+          <SectionHeader
+            title="Dig Test（Phase 4B · MEDIUM）"
+            description="破坏一个指定方块：真实修改世界，必须用户确认。WebUI 只能发起（拿到 confirmation_required），真正的确认由用户在对话里做出。"
+          />
+          <div class="minecraft__form" data-test="mc-dig-form">
+            <label class="minecraft__field">
+              <span>X</span>
+              <input v-model="digTarget.x" type="text" inputmode="numeric" data-test="mc-dig-x" />
+            </label>
+            <label class="minecraft__field">
+              <span>Y</span>
+              <input v-model="digTarget.y" type="text" inputmode="numeric" data-test="mc-dig-y" />
+            </label>
+            <label class="minecraft__field">
+              <span>Z</span>
+              <input v-model="digTarget.z" type="text" inputmode="numeric" data-test="mc-dig-z" />
+            </label>
+            <label class="minecraft__field">
+              <span>Expected Block</span>
+              <input
+                v-model="digTarget.expectedBlock"
+                type="text"
+                placeholder="minecraft:stone"
+                data-test="mc-dig-block"
+              />
+            </label>
+            <button
+              type="button"
+              class="minecraft__button"
+              :disabled="working || !isOnline"
+              data-test="mc-dig-run"
+              @click="digBlock"
+            >
+              DIG
+            </button>
+            <button
+              type="button"
+              class="minecraft__button minecraft__button--danger"
+              :disabled="working"
+              data-test="mc-dig-stop"
+              @click="stopAction"
+            >
+              STOP
+            </button>
+          </div>
+          <p class="cb-caption">
+            只会挖掉指定的那一个方块：不找矿、不换目标、不连续挖、不导航、不换工具、不捡掉落物。
+            方块和用 minecraft_world 看到的不一致时会拒绝（block_changed）。
           </p>
         </section>
 

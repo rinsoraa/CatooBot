@@ -854,11 +854,25 @@ class FollowPlayerConfig(BaseModel):
     max_chase_distance: float = Field(default=64.0, gt=0, le=1024)
 
 
+class DigConfig(BaseModel):
+    """Phase 4B：dig（破坏单个方块）的安全门。
+
+    第一版只允许近距离、当前手持工具可挖的单块；不导航、不换工具、不捡掉落物。
+    """
+
+    #: 单次挖掘的超时（秒）；obsidian 之类慢方块留有余量
+    timeout: float = Field(default=30.0, ge=5.0, le=120.0)
+    #: 最大挖掘距离（格，眼睛 → 方块中心，与 mineflayer canDigBlock 同口径）
+    max_distance: float = Field(default=5.0, gt=0, le=6.0)
+
+
 class MinecraftActionConfig(BaseModel):
     """Action Runtime 的动作级配置（Phase 3C 起）。"""
 
     move_to: MoveToConfig = Field(default_factory=MoveToConfig)
     follow_player: FollowPlayerConfig = Field(default_factory=FollowPlayerConfig)
+    #: Phase 4B：第一个世界修改动作
+    dig: DigConfig = Field(default_factory=DigConfig)
 
 
 class MinecraftAgentToolsConfig(BaseModel):

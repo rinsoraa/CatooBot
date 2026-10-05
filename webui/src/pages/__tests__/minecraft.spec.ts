@@ -137,7 +137,9 @@ const DISABLED_OVERVIEW = {
   last_event: null,
 }
 
-function makeHandler(overrides: { join?: MockReply; leave?: MockReply } = {}) {
+function makeHandler(
+  overrides: { join?: MockReply; leave?: MockReply; dig?: MockReply } = {},
+) {
   return (request: MockRequest): MockReply => {
     const url = new URL(request.url, 'http://localhost')
     if (url.pathname === '/api/v1/minecraft' && request.method === 'GET') {
@@ -175,6 +177,9 @@ function makeHandler(overrides: { join?: MockReply; leave?: MockReply } = {}) {
     }
     if (url.pathname === '/api/v1/minecraft/agent/confirm' && request.method === 'POST') {
       return ok({ created: true, confirmation_id: 'cfm_test_1', status: 'CANCELLED' })
+    }
+    if (url.pathname === '/api/v1/minecraft/dig' && request.method === 'POST') {
+      return overrides.dig ?? ok({ ok: true, action: 'dig', action_id: 'act_dig_ui', status: 'RUNNING' })
     }
     return fail(404, 'resource.not_found', `未模拟 ${request.method} ${url.pathname}`)
   }
@@ -521,6 +526,67 @@ describe('Minecraft 页 · LLM Tool Debug（Phase 3E）', () => {
     })
     await flushAll()
     expect(wrapper.get('[data-test="mc-agent"]').text()).toContain('minecraft.disabled')
+  })
+})
+
+describe('Minecraft 页 · Dig Test（Phase 4B）', () => {
+  it('DIG 提交坐标与方块名到 /minecraft/dig（并带上 expected_block）', async () => {
+    const { wrapper, calls } = await mountPage(makeHandler())
+    await flushAll()
+    await wrapper.get('[data-test="mc-dig-x"]').setValue('120')
+    await wrapper.get('[data-test="mc-dig-y"]').setValue('64')
+    await wrapper.get('[data-test="mc-dig-z"]').setValue('-230')
+    await wrapper.get('[data-test="mc-dig-block"]').setValue('minecraft:stone')
+    await wrapper.get('[data-test="mc-dig-run"]').trigger('click')
+    await flushAll()
+    const call = calls.find((c) => c.url.endsWith('/minecraft/dig'))
+    expect(call).toBeTruthy()
+    expect(call?.body).toEqual({
+      x: 120,
+      y: 64,
+      z: -230,
+      expected_block: 'minecraft:stone',
+    })
+  })
+
+  it('缺少方块名时本地拦截（不发请求）', async () => {
+    const { wrapper, calls } = await mountPage(makeHandler())
+    await flushAll()
+    await wrapper.get('[data-test="mc-dig-block"]').setValue('')
+    await wrapper.get('[data-test="mc-dig-run"]').trigger('click')
+    await flushAll()
+    expect(calls.some((c) => c.url.endsWith('/minecraft/dig'))).toBe(false)
+  })
+
+  it('被确认门拒绝时如实报错（不假装成功）', async () => {
+    const denied = {
+      status: 409,
+      body: { code: 'minecraft.confirmation_required', message: '这个 Minecraft 动作需要用户确认' },
+    }
+    const { wrapper } = await mountPage(
+      makeHandler({ dig: fail(denied.status, denied.body.code, denied.body.message) }),
+    )
+    await flushAll()
+    await wrapper.get('[data-test="mc-dig-run"]').trigger('click')
+    await flushAll()
+    expect(wrapper.text()).toContain('需要用户确认')
+    expect(wrapper.text()).not.toContain('已开始挖掘')
+  })
+
+  it('离线时 DIG 禁用', async () => {
+    const overview = {
+      ...ONLINE_OVERVIEW,
+      connection: { ...ONLINE_OVERVIEW.connection, status: 'DISCONNECTED' },
+    }
+    const { wrapper } = await mountPage((request) => {
+      const url = new URL(request.url, 'http://localhost')
+      if (url.pathname === '/api/v1/minecraft') return ok(overview)
+      return fail(404, 'resource.not_found', 'no')
+    })
+    await flushAll()
+    expect((wrapper.get('[data-test="mc-dig-run"]').element as HTMLButtonElement).disabled).toBe(
+      true,
+    )
   })
 })
 

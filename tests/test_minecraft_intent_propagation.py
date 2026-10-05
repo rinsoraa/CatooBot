@@ -18,7 +18,13 @@ from app.ai.engine import AIEngine
 from app.character.persona_manager import PersonaManager
 from app.character.runtime import CharacterRuntime
 from app.character.turn import TurnOrigin
-from app.config.settings import AIConfig, CharacterConfig, DatabaseConfig, ToolsConfig
+from app.config.settings import (
+    AIConfig,
+    CharacterConfig,
+    DatabaseConfig,
+    MinecraftConfig,
+    ToolsConfig,
+)
 from app.database.database import Database
 from app.integrations.minecraft.agent import (
     BRIDGE_KEY,
@@ -67,6 +73,12 @@ class Stack:
         )
         await self.tools.start()
         self.runtime.tools = self.tools
+        # Phase 4B：dig 是 MEDIUM —— 角色级流程测试要显式打开 allow_medium
+        self.service.config = MinecraftConfig(
+            enabled=True,
+            auto_start_runtime=False,
+            agent={"tools": {"enabled": True, "allow_medium": True}, "trusted_players": ["空凛"]},
+        )
         self.bridge = MinecraftAgentBridge(self.service)
         self.runtime.minecraft_agent = self.bridge
         return self
