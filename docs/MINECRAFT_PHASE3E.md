@@ -105,11 +105,15 @@ Tool 已批准？ → minecraft 启用？ → tools 启用？ → 需要在线�
 ```
 
 * **SAFE 自动允许**（`world/ chat / look_at / stop`）。
-* **LOW 只在「用户明确要求」时允许**。意图门认的是**结构性事实**：
-  这一轮是不是用户发起的对话（`ToolContext.metadata["minecraft_explicit_intent"]`，
-  由角色运行时 / 管理台干跑设置在用户回合上）。Tool Layer **不做 NLP**——「用户是不是
-  要让罐头过去」由 LLM 判断（§十六），Policy 只回答「这个调用现在允许吗」。
-  后台/自主回合（没有这个标记）里，模型自己推理出「我应该跟过去」也会被拒（§十五）。
+* **LOW 只在「用户明确要求」时允许**。意图门认的是**结构性事实**：这一轮是不是
+  **用户发起的对话**。事实来源是 `app/character/turn.py` 的 `TurnOrigin`
+  （`USER / INITIATIVE / BACKGROUND / SYSTEM`，**必填**、不可从 `user_text` 推断），
+  在 `CharacterRuntime._tool_context` 里派生出一个布尔
+  `ToolContext.metadata["minecraft_explicit_intent"]` + 一个调试用的
+  `metadata["turn_origin"]`。Tool Layer **不做 NLP**——「用户是不是要让罐头过去」由
+  LLM 判断（§十六），Policy 只回答「这个调用现在允许吗」。
+  主动发言（`compose_initiative` → `INITIATIVE`）、行为页预览（`BACKGROUND`）、
+  管理台干跑（`SYSTEM`）里，模型自己推理出「我应该跟过去」也会被拒（§十五/Phase 3E.1）。
 * **忙时拒绝**：前台独占动作 RUNNING 时再要独占动作 → `minecraft.action_busy`，
   并明确告诉模型「要打断先用 minecraft_stop」；绝不自动取消当前动作（§二十六）。
   `chat` / `stop` / `world` 不受影响。
@@ -117,7 +121,7 @@ Tool 已批准？ → minecraft 启用？ → tools 启用？ → 需要在线�
   nearby players 里（感知可用时）——不猜、不拼、不跟随看不见的玩家（§四十二/§四十三）。
   感知不可用时跳过这一条，交给 runtime 的 `player.not_found`。
 
-日志（§四十七）：`[MC Policy] allowed/rejected tool=… risk=… code=…`、
+日志（§四十七）：`[MC Policy] allowed/rejected tool=… risk=… turn_origin=… code=…`、
 `[MC Tool] requested tool=… args=…`、`[MC Action] action_id=… status=…`。
 绝不打印 token / 密码 / 密钥。
 
@@ -215,7 +219,8 @@ LOW 动作；已在 RUNNING 的动作不要重复调用；用户说"停"优先 s
 | 文件 | 覆盖 |
 |---|---|
 | `tests/test_minecraft_agent_tools.py`（44） | §34 六个 Tool 注册 + schema（无 yaw/pitch、无寻路参数）；§35 Policy（SAFE 允许 / LOW 需意图 / 离线 / 未启用 / 忙 / 未知工具 / 风险开关 / 目标必须可见 / MEDIUM 及以上不可用）；§36 Tool→ **只有** Service（含源码级"不碰 transport"断言）；§37 异步（RUNNING + action_id，<1s）；§38 事件→上下文（started/completed/failed/cancelled/disconnect、稳定错误码、"RUNNING 不许自己完成"）；上下文行紧凑 + 静默；快照；忙门用活上下文 |
-| `tests/test_minecraft_agent_e2e.py`（9） | §39 自然语言闭环：Test A「你过来」→ world → move_to（坐标来自感知）、Test B「跟着我」→ follow RUNNING（<2s）、Test C「停」→ stop 取消 follow；模型调 dig/place/attack/craft → 未知工具且零 Minecraft 调用；自主回合 LOW 被拒 / SAFE 仍可用；重复调用被循环守卫拦下且回合收敛；事件不触发新回合；上下文行确实进入 system prompt |
+| `tests/test_minecraft_intent_propagation.py`（12，Phase 3E.1） | 意图传播完整性：真实 `CharacterRuntime.respond / compose_initiative` → `_tool_context` → 真实 `ToolRuntime` → `MinecraftActionPolicy` → 假 Service；四个来源（USER 放行 / INITIATIVE / BACKGROUND / SYSTEM 拒绝）、`initiative_cannot_execute_move_to`、`initiative_cannot_execute_follow_player`、"字符串不可推断来源"、`respond` 无默认值、SAFE 在非用户回合仍可用、管理台干跑按 SYSTEM |
+| `tests/test_minecraft_agent_e2e.py`（9） | §39 自然语言闭环：Test A「你过来」→ world → move_to（坐标来自感知）、Test B「跟着我」→ follow RUNNING（<2s）、Test C「停」→ stop 取消 follow；模型调 dig/place/attack/craft → 未知工具且零 Minecraft 调用；非用户回合 LOW 被拒 / SAFE 仍可用；重复调用被循环守卫拦下且回合收敛；事件不触发新回合；上下文行确实进入 system prompt |
 | `minecraft_runtime/test/move_to.test.js` | move_to 注册表属性（`detached=true`、有 start/wait、无阻塞 run）、坐标校验、非破坏性配置、超时/半径 |
 | `minecraft_runtime/test/e2e.js`（flying-squid） | Test A/B/C 按持续型语义重写：HTTP 立刻 RUNNING → 等 `completed`（result.distance_to_target ≤ 2.2）/ `cancelled`（goal null + isMoving false + 位置冻结）/ `timeout`（终态 TIMEOUT + goal null） |
 | `tests/test_minecraft_actions.py` | 服务层：move_to 启动即 RUNNING、终点/失败经事件落到镜像（`result`/`error`/`code`）、错误翻译（busy/offline/invalid/path_not_found） |
@@ -255,6 +260,9 @@ LOW 动作；已在 RUNNING 的动作不要重复调用；用户说"停"优先 s
 ## 十、已知限制（§四十四 及其他）
 
 1. **没有 Minecraft 长期记忆**：不新增永久 POI / 地图 / 地点记忆，只有运行期上下文（Phase 4+）。
+   （另注：Minecraft 玩家在游戏里说的话目前经 `sandbox.submit_external` 进沙盒外部事件链，
+   走的是沙盒对话运行时、**不经过 LLM Tool 循环**——所以「MC 聊天里喊罐头过来」这条路径
+   暂时不会调用 `minecraft_move_to`；工具入口是 QQ 消息与用户发起的 WebUI 对话。）
 2. **意图门是结构性的**：它保证「非用户回合不许 LOW」，但不判断用户在用户回合里到底想不想；
    后者由 LLM + prompt 约束负责（§十六）。模型在用户回合里"理解错"仍可能移动——
    所以还有距离上限、非破坏性寻路、STOP 与事件回流兜底。

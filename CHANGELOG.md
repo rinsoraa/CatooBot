@@ -3,6 +3,27 @@
 本文件记录 CatooBot 的版本演进。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号见 `pyproject.toml`；日期取自真实提交历史（本仓库 2026-09-30 起）。
 
+## [Unreleased] — Minecraft Phase 3E.1 · Intent Propagation Integrity
+
+- **修掉 Phase 3E 留下的安全边界缺口**：`CharacterRuntime._tool_context()` 曾**无条件**
+  写 `minecraft_explicit_intent = True`，于是主动发言 / 后台生成 / 管理台干跑也带着
+  "用户明确要求"的标记——LOW 动作（move_to / follow_player）在这些回合里会被放行。
+- **新增结构化事实来源 `TurnOrigin`**（`app/character/turn.py`）：
+  `USER`（真实用户消息）/ `INITIATIVE`（主动发言）/ `BACKGROUND`（后台、行为页预览）/
+  `SYSTEM`（管理台干跑、系统生成）。`respond()` 的 `turn_origin` 是**必填关键字参数**
+  （没有默认值可依赖，来源不明就写不出口），策略层读到的意图布尔**只能**由它派生。
+- **禁止字符串推断**：不做 `user_text == "（主动发起）"` 这类判断——同一句话在不同回合里
+  结论不同（用户回合里写「（主动发起）」仍放行；主动发言回合里写「罐头你过来」仍拒绝）。
+- 调用点全部显式声明：QQ/WebUI 用户消息 = `USER`；`compose_initiative` = `INITIATIVE`；
+  行为页"代打一句话看她怎么回"的预览 = `BACKGROUND`（预览绝不动游戏世界）；
+  管理台工具干跑 = `SYSTEM`（`note` 里说明"LOW 需要用户回合"）。
+- Policy / 六个 Minecraft Tool / Action Runtime / 风险等级**一行未改**；SAFE 动作
+  （查世界、停止）在任何回合都照常可用。
+- 新增 `tests/test_minecraft_intent_propagation.py`（12）：全部走真实
+  `CharacterRuntime` → `_tool_context` → `ToolRuntime` → `MinecraftActionPolicy` → 假 Service
+  链路，含任务书点名的六个用例（user/initiative/background/system × move_to/follow_player）、
+  "字符串不可推断"、`respond` 无默认值、SAFE 不受影响、管理台干跑按系统回合。
+
 ## [Unreleased] — Minecraft Phase 3E · Minecraft Action Tools & Agent Bridge
 
 - **罐头的大模型第一次能安全地使用 Minecraft 身体**：六个正式 Tool 进入 CatooBot 的

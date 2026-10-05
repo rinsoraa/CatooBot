@@ -22,6 +22,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 from app.ai.errors import AIError
+from app.character.turn import TurnOrigin
 from app.message.message import Message
 from app.message.segment import FileSegment, VideoSegment
 from app.plugins.api import PluginApi
@@ -638,6 +639,8 @@ class CharacterPlugin(Plugin):
                 session_id,
                 int(turn.user_id) if str(turn.user_id).isdigit() else turn.user_id,
                 text,
+                # Phase 3E.1：真实用户发来的消息 —— 只有这个来源才允许 LOW Minecraft 动作
+                turn_origin=TurnOrigin.USER,
                 history=history,
                 user_name=turn.nickname or None,
                 is_group=is_group,

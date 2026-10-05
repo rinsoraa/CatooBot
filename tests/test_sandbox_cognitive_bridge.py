@@ -10,6 +10,7 @@ from __future__ import annotations
 import time
 from pathlib import Path
 
+from app.character.turn import TurnOrigin
 from app.config.settings import DatabaseConfig, SandboxConfig
 from app.database.database import Database
 from app.memory.model import Memory, scope_key
@@ -152,7 +153,11 @@ class TestCurrentWorldPrecedence:
         try:
             trace: dict = {}
             await bot.character.respond(
-                "private:777", 777, "冰箱里还有可乐吗？", context_trace=trace
+                "private:777",
+                777,
+                "冰箱里还有可乐吗？",
+                turn_origin=TurnOrigin.USER,
+                context_trace=trace,
             )
             system = provider.calls[0]["messages"][0].content
             # the memory is present as *reference*…
@@ -213,7 +218,9 @@ class TestContinuityInjection:
         bot = await make_chat_bot(tmp_path, provider, sandbox=sandbox)
         try:
             trace: dict = {}
-            await bot.character.respond("private:777", 777, "在做什么？", context_trace=trace)
+            await bot.character.respond(
+                "private:777", 777, "在做什么？", turn_origin=TurnOrigin.USER, context_trace=trace
+            )
             system = provider.calls[0]["messages"][0].content
             assert "【近期延续状态】" in system
             assert "小城" in system  # unfinished project
@@ -238,6 +245,7 @@ class TestContinuityInjection:
                 "private:777",
                 777,
                 "继续聊？",
+                turn_origin=TurnOrigin.USER,
                 continuity=v12_continuity,
                 context_trace=trace,
             )
@@ -278,7 +286,12 @@ class TestNoSandboxMutation:
                 len(sandbox.events.recent(limit=10_000)),
             )
             await bot.character.respond(
-                "private:777", 777, "屋顶做完了吗", context_trace={}, record_interaction=False
+                "private:777",
+                777,
+                "屋顶做完了吗",
+                turn_origin=TurnOrigin.USER,
+                context_trace={},
+                record_interaction=False,
             )
             snapshot_after = (
                 sandbox.character.location,
@@ -377,7 +390,13 @@ class TestExistingLayersSurvive:
             # write a conversation memory through the existing manager path
             await bot.memory.remember("user", "777", "用户喜欢猫", category="preference")
             trace: dict = {}
-            await bot.character.respond("user:777", 777, "还记得我喜欢什么吗", context_trace=trace)
+            await bot.character.respond(
+                "user:777",
+                777,
+                "还记得我喜欢什么吗",
+                turn_origin=TurnOrigin.USER,
+                context_trace=trace,
+            )
             layers = {row["layer"]: row for row in trace["layers"]}
             assert layers["memory"]["included"] is True or layers["conversation_memory"]
             assert "conversation_memory" in layers
@@ -391,7 +410,9 @@ class TestExistingLayersSurvive:
         bot = await make_character_bot(tmp_path, provider, models=["A"])
         try:
             trace: dict = {}
-            reply = await bot.character.respond("private:777", 777, "你好", context_trace=trace)
+            reply = await bot.character.respond(
+                "private:777", 777, "你好", turn_origin=TurnOrigin.USER, context_trace=trace
+            )
             assert reply == "好好好"
             layers = {row["layer"]: row for row in trace["layers"]}
             assert layers["sandbox_memory"]["included"] is False
@@ -440,7 +461,9 @@ class TestInitiativeReusesBridge:
             bot.config.sandbox.enabled = True
             bot.sandbox = None  # sandbox unavailable
             bot.character.sandbox = None
-            reply = await bot.character.respond("private:777", 777, "在吗")
+            reply = await bot.character.respond(
+                "private:777", 777, "在吗", turn_origin=TurnOrigin.USER
+            )
             assert reply == "没事"
         finally:
             await bot.shutdown()

@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING, Any
 
 from app.behavior.presence import PresenceResolver
 from app.character.relationship import Relationship
+from app.character.turn import TurnOrigin
 from app.config.settings import BehaviorConfig
 
 if TYPE_CHECKING:
@@ -203,10 +204,13 @@ class BehaviorService:
         time_ctx = behavior.time_context()
 
         try:
+            # Phase 3E.1：这是**预览**（管理台代打一句话看她会怎么回）——
+            # 按 BACKGROUND 处理：预览绝不改动游戏世界，LOW Minecraft 动作会被意图门拒绝。
             reply = await self.bot.character.respond(
                 f"private:{user_id}",
                 user_id,
                 text,
+                turn_origin=TurnOrigin.BACKGROUND,
                 time_context=time_ctx,
                 record_interaction=False,
             )

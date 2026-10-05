@@ -26,6 +26,7 @@ from app.character.context import CharacterContextBuilder
 from app.character.relationship import RelationshipManager
 from app.character.response import CharacterResponseProcessor
 from app.character.state import StateManager
+from app.character.turn import TurnOrigin
 from app.memory.manager import MemoryManager
 from app.utils.narrator import narrate
 
@@ -99,6 +100,7 @@ class CharacterRuntime:
         user_id: int | str,
         user_text: str,
         *,
+        turn_origin: TurnOrigin,
         history: list[ChatMessage] | None = None,
         user_name: str | None = None,
         is_group: bool = False,
@@ -113,7 +115,13 @@ class CharacterRuntime:
         context_trace: dict | None = None,
         facts_query: str | None = None,
     ) -> str:
-        """Generate one character reply (already screened). Raises AIError."""
+        """Generate one character reply (already screened). Raises AIError.
+
+        ``turn_origin``（Phase 3E.1）是**必填**的回合来源：工具层的 LOW Minecraft 动作
+        只允许在 :attr:`TurnOrigin.USER` 回合里执行，而来源绝不能从 ``user_text`` 猜
+        （主动发言的文本长得跟用户消息一样）。调用方必须如实声明；不确定就传
+        :attr:`TurnOrigin.BACKGROUND`（fail-closed）。
+        """
         persona = self.personas.persona
         state = await self.states.load()
         if record_interaction:
@@ -189,6 +197,7 @@ class CharacterRuntime:
             user_text=user_text,
             is_group=is_group,
             time_context=time_context,
+            turn_origin=turn_origin,
         )
         content = self.processor.sanitize(content_text.strip())
         if content and sandbox is not None and getattr(sandbox, "enabled", False):
@@ -228,6 +237,7 @@ class CharacterRuntime:
         user_id: int | str,
         user_text: str,
         is_group: bool,
+        turn_origin: TurnOrigin,
         time_context: Any = None,
     ) -> str:
         """One AI turn; when tools are on, the bounded tool loop runs here.
@@ -237,7 +247,11 @@ class CharacterRuntime:
         memory (v0.6 §29/§61) — only the reply text returns.
         """
         tool_context = self._tool_context(
-            session_id=session_id, user_id=user_id, time_context=time_context, is_group=is_group
+            session_id=session_id,
+            user_id=user_id,
+            time_context=time_context,
+            is_group=is_group,
+            turn_origin=turn_origin,
         )
         if self.agent is not None and getattr(self.agent, "enabled", False):
             agent_text = await self._try_agent(
@@ -303,9 +317,14 @@ class CharacterRuntime:
         user_id: int | str,
         time_context: Any,
         is_group: bool,
+        turn_origin: TurnOrigin,
         group_id: int | None = None,
     ) -> Any:
-        """Tool context carries only what a tool legitimately needs (spec v0.6 §30)."""
+        """Tool context carries only what a tool legitimately needs (spec v0.6 §30).
+
+        ``turn_origin``（Phase 3E.1）在这里落成两个键：``turn_origin``（日志/排查）
+        与派生的 ``minecraft_explicit_intent``（意图门唯一读的那个布尔）。
+        """
         from app.tools.models import ToolContext
 
         metadata: dict[str, Any] = dict(self._life_metadata())
@@ -316,13 +335,15 @@ class CharacterRuntime:
         bridge = getattr(self, "minecraft_agent", None)
         if bridge is not None:
             # 延迟导入：Minecraft 模块（aiohttp/桥接）只在真的接了游戏时才进这条路径
-            from app.integrations.minecraft.agent import INTENT_KEY
+            from app.integrations.minecraft.agent import INTENT_KEY, TURN_ORIGIN_KEY
 
             # Phase 3E：六个 Minecraft Tool 的唯一入口（判定 → Service → 结构化结果）
             metadata["minecraft"] = bridge
-            # 意图门（§十五）：这一轮是用户发起的对话 = 用户明确请求的场域；
-            # 后台/自主回合没有这个标记，LOW 动作一律被拒。
-            metadata[INTENT_KEY] = True
+            # 意图门（§十五）：**只有用户回合**算"用户明确要求"（Phase 3E.1）。
+            # 这个布尔由 turn_origin 派生，调用方无法手写；主动发言/后台/系统回合
+            # 一律为 False → LOW 动作被拒（fail-closed）。
+            metadata[TURN_ORIGIN_KEY] = turn_origin.value  # 仅日志/排查，不进 LLM
+            metadata[INTENT_KEY] = turn_origin.is_user
         return ToolContext(
             user_id=str(user_id),
             group_id=str(group_id) if group_id is not None else None,
@@ -488,6 +509,8 @@ class CharacterRuntime:
                 session_id,
                 user_id,
                 "（主动发起）",
+                # §八：她是自己开的口，不是用户请求 —— 哪怕正文里出现"过来"也不放行 LOW
+                turn_origin=TurnOrigin.INITIATIVE,
                 history=history,
                 extra_instruction="".join(instruction_parts),
                 record_interaction=False,

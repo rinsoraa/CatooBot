@@ -156,16 +156,19 @@ class ToolAdminService:
         if tool is None:
             return {"ok": False, "error": f"unknown tool: {name}"}
 
-        # Phase 3E：管理台手点 = 人明确要求（LOW 动作的意图门因此放行），
-        # 并把 Minecraft Agent Bridge 放进上下文（六个 minecraft_* 工具靠它执行）
-        from app.integrations.minecraft.agent import BRIDGE_KEY, INTENT_KEY
+        # Phase 3E.1：管理台干跑是**系统回合**（不是用户请求）——意图标记由
+        # turn_origin 派生，LOW Minecraft 动作在这里会被意图门拒绝；要真的让她动，
+        # 请在聊天里以用户身份明确要求（或走 Minecraft 页的动作按钮）。
+        from app.character.turn import TurnOrigin
+        from app.integrations.minecraft.agent import BRIDGE_KEY, INTENT_KEY, TURN_ORIGIN_KEY
         from app.tools.policy import TurnBudget
 
         metadata: dict[str, Any] = {}
         bridge = getattr(getattr(self.bot, "minecraft", None), "agent", None)
         if bridge is not None:
             metadata[BRIDGE_KEY] = bridge
-            metadata[INTENT_KEY] = True
+            metadata[TURN_ORIGIN_KEY] = TurnOrigin.SYSTEM.value
+            metadata[INTENT_KEY] = TurnOrigin.SYSTEM.is_user
         context = ToolContext(
             user_id="webui-admin",
             session_id="webui:test",
@@ -182,11 +185,17 @@ class ToolAdminService:
             context,
             budget,
         )
+        note = "测试结果不会发送到 QQ"
+        if result.error_type == "minecraft.action_not_allowed":
+            note += (
+                "；LOW Minecraft 动作需要「用户发起的对话回合」，管理台干跑按系统回合处理，"
+                "请在聊天里让用户明确要求"
+            )
         return {
             "ok": result.success,
             "result": result.model_dump(),
             "latency_ms": round(result.execution_time * 1000, 2),
-            "note": "测试结果不会发送到 QQ",
+            "note": note,
         }
 
     @staticmethod

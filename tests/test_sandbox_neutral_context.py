@@ -14,6 +14,7 @@ import re
 from pathlib import Path
 
 from app.character.context import CharacterContextBuilder
+from app.character.turn import TurnOrigin
 from app.config.settings import DatabaseConfig, SandboxConfig
 from app.database.database import Database
 from app.sandbox.bible import BibleCompiler
@@ -197,7 +198,11 @@ class TestSandboxContextIsCharacterNeutral:
             try:
                 trace: dict = {}
                 await bot.character.respond(
-                    "private:777", 777, "木工做得怎么样了？", context_trace=trace
+                    "private:777",
+                    777,
+                    "木工做得怎么样了？",
+                    turn_origin=TurnOrigin.USER,
+                    context_trace=trace,
                 )
                 system = provider.calls[0]["messages"][0].content
                 labels = ("【近期延续状态】", "【相关生活记忆】", "【最近发生的经历】")

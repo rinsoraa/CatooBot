@@ -6,6 +6,7 @@ from app.character.persona import Persona
 from app.character.persona_manager import PersonaManager
 from app.character.relationship import RelationshipManager, stage_for_interactions
 from app.character.state import CharacterState, StateManager
+from app.character.turn import TurnOrigin
 from app.config.settings import CharacterConfig
 from tests.ai_mocks import MockAIProvider
 
@@ -140,7 +141,9 @@ class TestRuntime:
         runtime = CharacterRuntime(persona_manager, engine, memory, database=database)
         await runtime.start()
 
-        reply = await runtime.respond("private:9", 9, "我之前说过喜欢什么来着？")
+        reply = await runtime.respond(
+            "private:9", 9, "我之前说过喜欢什么来着？", turn_origin=TurnOrigin.USER
+        )
         assert reply == "当然记得！"
         system = provider.calls[0]["messages"][0].content
         assert "用户喜欢猫" in system
@@ -170,6 +173,6 @@ class TestRuntime:
             database=database,
         )
         await runtime.start()
-        reply = await runtime.respond("private:1", 1, "在吗")
+        reply = await runtime.respond("private:1", 1, "在吗", turn_origin=TurnOrigin.USER)
         assert reply == "嗯嗯"
         await database.close()

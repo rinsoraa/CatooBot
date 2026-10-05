@@ -38,8 +38,12 @@ log = logging.getLogger("CatooBot.Minecraft.Agent")
 
 #: ToolContext.metadata 里的桥接对象键（tool 通过它拿到 service/policy/context）
 BRIDGE_KEY = "minecraft"
-#: ToolContext.metadata 里的「本轮由用户明确发起」标记（意图门用；缺省 = 不允许 LOW）
+#: ToolContext.metadata 里的「本轮由用户明确发起」标记（意图门用；缺省 = 不允许 LOW）。
+#: 它**只能**由 :class:`~app.character.turn.TurnOrigin` 派生（Phase 3E.1），
+#: 任何调用方都不许手写这个键。
 INTENT_KEY = "minecraft_explicit_intent"
+#: 本轮来源（``TurnOrigin`` 的值）；只用于日志与排查，绝不进 LLM（Phase 3E.1 §六/§二十）
+TURN_ORIGIN_KEY = "turn_origin"
 
 #: 正式风险分级（§十三）。本阶段只落地 SAFE / LOW；MEDIUM/HIGH/DESTRUCTIVE 等 Phase 4。
 RISK_LEVELS = ("SAFE", "LOW", "MEDIUM", "HIGH", "DESTRUCTIVE")
@@ -138,6 +142,8 @@ class GateFacts:
     explicit_intent: bool = False
     #: 当前语义世界模型里的附近玩家名（空元组 = 感知不可用，不做该检查）
     nearby_players: tuple[str, ...] = ()
+    #: 本轮来源（仅供日志/审计；判定只读 ``explicit_intent``，绝不读它）
+    turn_origin: str = ""
 
 
 class MinecraftActionPolicy:
@@ -167,20 +173,39 @@ class MinecraftActionPolicy:
     ) -> PolicyDecision:
         """按固定顺序判定（§十二）：Tool → Enabled → Online → Risk → Intent → Busy → Context。"""
         facts = facts or GateFacts()
+        origin = facts.turn_origin
         risk = self.risk_of(tool)
         if not risk:
             return self._reject(
-                tool, risk, "minecraft.action_invalid", f"未注册的 Minecraft 工具：{tool}"
+                tool,
+                risk,
+                "minecraft.action_invalid",
+                f"未注册的 Minecraft 工具：{tool}",
+                turn_origin=origin,
             )
         if not facts.minecraft_enabled:
-            return self._reject(tool, risk, "minecraft.disabled", "Minecraft 连接层未启用")
+            return self._reject(
+                tool, risk, "minecraft.disabled", "Minecraft 连接层未启用", turn_origin=origin
+            )
         if not self.tools.enabled:
-            return self._reject(tool, risk, "minecraft.disabled", "Minecraft 工具未启用")
+            return self._reject(
+                tool, risk, "minecraft.disabled", "Minecraft 工具未启用", turn_origin=origin
+            )
         if tool in NEEDS_ONLINE and not facts.online:
-            return self._reject(tool, risk, "minecraft.offline", "罐头现在不在 Minecraft 世界里")
+            return self._reject(
+                tool,
+                risk,
+                "minecraft.offline",
+                "罐头现在不在 Minecraft 世界里",
+                turn_origin=origin,
+            )
         if not getattr(self.tools, RISK_FLAGS[risk], False):
             return self._reject(
-                tool, risk, "minecraft.action_not_allowed", f"{risk} 级动作未获允许"
+                tool,
+                risk,
+                "minecraft.action_not_allowed",
+                f"{risk} 级动作未获允许",
+                turn_origin=origin,
             )
         if risk in EXPLICIT_INTENT_RISKS and not facts.explicit_intent:
             return self._reject(
@@ -188,6 +213,7 @@ class MinecraftActionPolicy:
                 risk,
                 "minecraft.action_not_allowed",
                 "这需要用户明确要求；不要自己决定移动罐头（可以先用 minecraft_world 看看情况）",
+                turn_origin=origin,
             )
         if tool in EXCLUSIVE_TOOLS and facts.busy:
             return self._reject(
@@ -196,6 +222,7 @@ class MinecraftActionPolicy:
                 "minecraft.action_busy",
                 f"当前正在执行 Minecraft 行动（{facts.busy}）；"
                 "如需打断，先用 minecraft_stop 停止它",
+                turn_origin=origin,
             )
         target = str((arguments or {}).get("username", "")).strip()
         if (
@@ -211,12 +238,26 @@ class MinecraftActionPolicy:
                 risk,
                 "minecraft.player_not_found",
                 f"附近没有叫「{target}」的玩家；现在能看到的只有：{known}",
+                turn_origin=origin,
             )
-        self._log.info("[MC Policy] allowed tool=%s risk=%s", tool, risk)
+        self._log.info(
+            "[MC Policy] allowed tool=%s risk=%s turn_origin=%s",
+            tool,
+            risk,
+            facts.turn_origin or "unknown",
+        )
         return PolicyDecision(allowed=True, tool=tool, risk=risk)
 
-    def _reject(self, tool: str, risk: str, code: str, message: str) -> PolicyDecision:
-        self._log.info("[MC Policy] rejected tool=%s risk=%s code=%s", tool, risk, code)
+    def _reject(
+        self, tool: str, risk: str, code: str, message: str, *, turn_origin: str = ""
+    ) -> PolicyDecision:
+        self._log.info(
+            "[MC Policy] rejected tool=%s risk=%s turn_origin=%s code=%s",
+            tool,
+            risk,
+            turn_origin or "unknown",
+            code,
+        )
         return PolicyDecision(allowed=False, tool=tool, risk=risk, code=code, message=message)
 
     def snapshot(self) -> dict[str, Any]:
@@ -383,7 +424,7 @@ class MinecraftAgentBridge:
             "age_seconds": view.get("age_seconds"),
         }
 
-    def gate_facts(self, *, explicit_intent: bool = False) -> GateFacts:
+    def gate_facts(self, *, explicit_intent: bool = False, turn_origin: str = "") -> GateFacts:
         world = self.world_facts()
         current = self.context.current_action or {}
         busy = ""
@@ -395,6 +436,7 @@ class MinecraftAgentBridge:
             busy=busy,
             explicit_intent=explicit_intent,
             nearby_players=tuple(player["name"] for player in world["players"]),
+            turn_origin=turn_origin,
         )
 
     # ------------------------------------------------------------ 判定/调用
@@ -403,7 +445,11 @@ class MinecraftAgentBridge:
         self, tool: str, arguments: Mapping[str, Any] | None = None, *, context: ToolContext
     ) -> PolicyDecision:
         return self.policy.check(
-            tool, arguments, self.gate_facts(explicit_intent=explicit_intent(context))
+            tool,
+            arguments,
+            self.gate_facts(
+                explicit_intent=explicit_intent(context), turn_origin=turn_origin(context)
+            ),
         )
 
     def denial(self, tool: str, decision: PolicyDecision) -> ToolResult:
@@ -543,8 +589,18 @@ class MinecraftAgentBridge:
 
 
 def explicit_intent(context: ToolContext) -> bool:
-    """本轮是否由用户明确发起（结构性事实；Tool Layer 不做 NLP —— 任务书 §十六）。"""
+    """本轮是否由用户明确发起（结构性事实；Tool Layer 不做 NLP —— 任务书 §十六）。
+
+    该键只能由 :class:`~app.character.turn.TurnOrigin` 派生（Phase 3E.1）；
+    读不到 = 不允许 LOW 动作（fail-closed）。
+    """
     return bool(context.metadata.get(INTENT_KEY, False))
+
+
+def turn_origin(context: ToolContext) -> str:
+    """本轮来源（只用于日志/审计；缺失时返回空串，判定不读它）。"""
+    value = context.metadata.get(TURN_ORIGIN_KEY, "")
+    return str(getattr(value, "value", value) or "")
 
 
 def bridge_from(context: ToolContext) -> MinecraftAgentBridge | None:
