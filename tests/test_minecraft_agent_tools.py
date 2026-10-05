@@ -153,6 +153,29 @@ class FakeMinecraftService:
             raise outcome
         return {"action_id": "act_follow_1", "action": "follow_player", **outcome}
 
+    async def inventory(self) -> dict[str, Any]:
+        self._record("inventory")
+        outcome = self._next(
+            "inventory",
+            {
+                "ok": True,
+                "online": True,
+                "selected_hotbar_slot": 0,
+                "held_item": {"name": "dirt", "count": 12},
+                "items": [{"name": "dirt", "count": 12}, {"name": "sand", "count": 24}],
+            },
+        )
+        if isinstance(outcome, Exception):
+            raise outcome
+        return outcome
+
+    async def place(self, x: Any, y: Any, z: Any, face: Any, expected_item: Any) -> dict[str, Any]:
+        self._record("place", x=x, y=y, z=z, face=face, expected_item=expected_item)
+        outcome = self._next("place", {"status": "RUNNING", "action_id": "act_place_1"})
+        if isinstance(outcome, Exception):
+            raise outcome
+        return {"action_id": "act_place_1", "action": "place", **outcome}
+
     async def dig(self, x: Any, y: Any, z: Any, expected_block: Any) -> dict[str, Any]:
         self._record("dig", x=x, y=y, z=z, expected_block=expected_block)
         outcome = self._next("dig", {"status": "RUNNING", "action_id": "act_dig_1"})
@@ -274,8 +297,8 @@ async def test_minecraft_stop_tool_registered() -> None:
     assert tool.metadata.input_schema["properties"] == {}
 
 
-async def test_all_seven_tools_share_one_risk_table() -> None:
-    """Phase 4B 起七个生产 Tool（含 MEDIUM 的 minecraft_dig）。"""
+async def test_all_tools_share_one_risk_table() -> None:
+    """Phase 4C 起九个生产 Tool（含 SAFE 的 inventory 与 MEDIUM 的 dig/place）。"""
     runtime = await _runtime()
     for name in ACTION_RISK:
         tool = runtime.registry.maybe_get(name)
@@ -288,8 +311,10 @@ async def test_all_seven_tools_share_one_risk_table() -> None:
         "minecraft_chat",
         "minecraft_dig",
         "minecraft_follow_player",
+        "minecraft_inventory",
         "minecraft_look_at",
         "minecraft_move_to",
+        "minecraft_place",
         "minecraft_stop",
         "minecraft_world",
         "query_image_memory",
@@ -384,8 +409,8 @@ def test_busy_foreground_action_is_rejected() -> None:
 
 
 def test_unknown_tool_is_rejected() -> None:
-    # place/attack/craft 这类还没有实现的动作：风险表里没有名字 → 拒绝
-    for unknown in ("minecraft_place", "minecraft_attack", "minecraft_craft"):
+    # attack/craft/eat 这类还没有实现的动作：风险表里没有名字 → 拒绝
+    for unknown in ("minecraft_attack", "minecraft_craft", "minecraft_eat"):
         decision = policy().check(unknown, {}, online_facts())
         assert not decision.allowed and decision.code == "minecraft.action_invalid", unknown
 
@@ -401,10 +426,15 @@ def test_follow_target_must_be_visible() -> None:
 
 def test_risk_flags_gate_every_level() -> None:
     table = policy()
-    # Phase 4B：dig 是 MEDIUM，风险开关默认关闭 → 配置视角先拦一道
+    # Phase 4B/4C：dig 与 place 都是 MEDIUM，风险开关默认关闭 → 配置视角先拦一道
     assert table.risk_of("minecraft_dig") == "MEDIUM"
+    assert table.risk_of("minecraft_place") == "MEDIUM"
+    assert table.risk_of("minecraft_inventory") == "SAFE"
     assert table.allowed_by_config("minecraft_dig") is False
+    assert table.allowed_by_config("minecraft_place") is False
+    assert table.allowed_by_config("minecraft_inventory") is True
     assert policy(allow_medium=True).allowed_by_config("minecraft_dig") is True
+    assert policy(allow_medium=True).allowed_by_config("minecraft_place") is True
     # 还没实现的等级：风险表里没有名字，开了开关也不放行
     assert table.risk_of("minecraft_attack") == ""
     assert policy(allow_high=True).allowed_by_config("minecraft_attack") is False

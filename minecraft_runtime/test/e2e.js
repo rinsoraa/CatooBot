@@ -687,6 +687,91 @@ async function main() {
         assert(digSettled.action.active_count === 0, 'dig Test A–D 后无僵尸动作')
       }
 
+      // ---------------- Phase 4C：inventory（只读）+ place（空手/非法参数的可观察行为） ----------------
+      // 说明：flying-squid 没有 /give，也没有挖掘掉落 → 这台假服务器上 bot 的背包**永远是空的**，
+      // 所以 place 的成功路径只能在真实服务器 smoke 里验证；这里验证它能验证的部分：
+      // 只读切片、参数校验、以及"手里没东西就拒绝"。
+      if (cycle === 1) {
+        const here0 = (await request(runtimePort, 'GET', '/minecraft/status')).body.position
+        const inv = await request(runtimePort, 'GET', '/minecraft/inventory')
+        assert(inv.status === 200 && inv.body.online === true, `inventory 只读在线（${JSON.stringify(inv.body)}）`)
+        assert(
+          Object.keys(inv.body).sort().join(',') === 'held_item,items,ok,online,selected_hotbar_bar_slot'
+            .replace('selected_hotbar_bar_slot', 'selected_hotbar_slot'),
+          `切片只有约定字段（得到 ${Object.keys(inv.body).sort().join(',')}）`,
+        )
+        assert(
+          inv.body.held_item === null && Array.isArray(inv.body.items) && inv.body.items.length === 0,
+          '假服务器上背包是空的（held_item=null, items=[]）',
+        )
+        console.log('[e2e] inventory ✓ 只读切片（online/held_item/items，无 slot/NBT）')
+
+        // 空手 → held.item_missing（绝不自动装备）
+        const emptyHand = await request(runtimePort, 'POST', '/minecraft/place', {
+          x: Math.round(here0.x) + 1,
+          y: Math.round(here0.y),
+          z: Math.round(here0.z),
+          face: 'up',
+          expected_item: 'dirt',
+        })
+        assert(
+          emptyHand.status === 400 && emptyHand.body.error.code === 'held.item_missing',
+          `空手放方块 → held.item_missing（得到 ${JSON.stringify(emptyHand.body)}）`,
+        )
+        console.log('[e2e] place ✓ 空手 → held.item_missing（不自动装备/切槽）')
+
+        // face 非法 → face.invalid（在 validate 阶段，连 world 都不读）
+        const badFace = await request(runtimePort, 'POST', '/minecraft/place', {
+          x: 1,
+          y: 64,
+          z: 1,
+          face: 'north_east',
+          expected_item: 'dirt',
+        })
+        assert(
+          badFace.status === 400 && badFace.body.error.code === 'face.invalid',
+          `非法 face → face.invalid（得到 ${JSON.stringify(badFace.body)}）`,
+        )
+        // 坐标必须整数 → action.invalid
+        const floatCoords = await request(runtimePort, 'POST', '/minecraft/place', {
+          x: 1.5,
+          y: 64,
+          z: 1,
+          face: 'up',
+          expected_item: 'dirt',
+        })
+        assert(
+          floatCoords.status === 400 && floatCoords.body.error.code === 'action.invalid',
+          `小数坐标 → action.invalid（得到 ${JSON.stringify(floatCoords.body)}）`,
+        )
+        console.log('[e2e] place ✓ 参数校验（非法 face / 小数坐标 → 400，不进入放置）')
+
+        // 非独占：移动中也能读背包
+        const moveResp = await request(runtimePort, 'POST', '/minecraft/move_to', {
+          x: here0.x + 6,
+          y: here0.y,
+          z: here0.z,
+        })
+        if (moveResp.status === 200 && moveResp.body.status === 'RUNNING') {
+          const during = await request(runtimePort, 'GET', '/minecraft/inventory')
+          assert(
+            during.status === 200 && during.body.online === true,
+            'move_to 跑着的时候也能读背包（inventory 非独占）',
+          )
+          await request(runtimePort, 'POST', '/minecraft/stop', {})
+          await waitFor(
+            () =>
+              events.some(
+                (e) => e.event === 'minecraft.action.cancelled' && e.action_id === moveResp.body.action_id,
+              ),
+            'move_to cancelled（inventory 段收尾）',
+            10000,
+          )
+        } else {
+          console.log('[e2e] inventory 非独占检查：move_to 没进入 RUNNING，跳过')
+        }
+      }
+
       // ---------------- Phase 3D：follow_player（Test A 跟随 / B STOP / C 丢失 / D 太远 / E 超时） ----------------
       if (cycle === 1) {
         const botPosNow = async () =>

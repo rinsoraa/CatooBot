@@ -56,10 +56,10 @@ function main() {
     assert(typeof def.wait === 'function', '有生命周期（wait）')
     assert(typeof def.run !== 'function', '没有阻塞式执行体（run）')
     assert(typeof def.cleanup === 'function', '有 cleanup（停止/超时/断开时清 Goal）')
-    // 注册表只允许已批准的动作（Phase 4B 起含 dig；连续挖掘/破坏类动作一个都没有）
+    // 注册表只允许已批准的动作（Phase 4B 起含 dig、4C 起含 place；批量/自动类动作一个都没有）
     assert(
       Object.keys(ACTION_REGISTRY).sort().join(',') ===
-        'chat,dig,follow_player,look_at,move_to,stop',
+        'chat,dig,follow_player,look_at,move_to,place,stop',
       `注册表不含额外动作（得到 ${Object.keys(ACTION_REGISTRY).sort().join(',')}）`,
     )
   }

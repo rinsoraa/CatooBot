@@ -357,8 +357,8 @@ async def test_initiative_turn_cannot_dig_and_creates_no_confirmation() -> None:
 # --------------------------------------------------- 生产安全（§二/§六十八）
 
 
-async def test_production_registry_has_exactly_the_seven_tools() -> None:
-    """§六十八：正式生产 Tool 只有这七个；place/attack/craft 等一律不存在。"""
+async def test_production_registry_has_exactly_the_approved_tools() -> None:
+    """§六十八：正式生产 Tool 只有这九个；attack/craft/inventory-mutation 等一律不存在。"""
     runtime = ToolRuntime(ToolsConfig(enabled=True))
     await runtime.start()
     minecraft_tools = [name for name in runtime.registry.names() if name.startswith("minecraft_")]
@@ -366,17 +366,21 @@ async def test_production_registry_has_exactly_the_seven_tools() -> None:
         "minecraft_chat",
         "minecraft_dig",
         "minecraft_follow_player",
+        "minecraft_inventory",
         "minecraft_look_at",
         "minecraft_move_to",
+        "minecraft_place",
         "minecraft_stop",
         "minecraft_world",
     ]
+    # minecraft_inventory 是**只读**切片（Phase 4C 合法）；这里禁的是"改背包"类动作：
+    # 自动装备、移动物品、容器、连续挖掘/采集等都还没有实现。
     for forbidden in (
-        "minecraft_place",
         "minecraft_attack",
         "minecraft_craft",
         "minecraft_eat",
-        "minecraft_inventory",
+        "minecraft_equip",
+        "minecraft_inventory_move",
         "minecraft_container",
         "minecraft_mine",
         "minecraft_collect",
@@ -396,13 +400,17 @@ async def test_risk_table_matches_the_production_tools() -> None:
         "minecraft_move_to",
         "minecraft_follow_player",
         "minecraft_dig",
+        "minecraft_inventory",
+        "minecraft_place",
     }
     assert ACTION_RISK["minecraft_dig"] == "MEDIUM"
+    assert ACTION_RISK["minecraft_place"] == "MEDIUM"
+    assert ACTION_RISK["minecraft_inventory"] == "SAFE"
     assert "-".join(sorted(CONFIRMATION_RISKS)) == "DESTRUCTIVE-HIGH-MEDIUM"
 
 
 def test_risk_table_is_injectable_not_mutated() -> None:
-    """注入风险表不得污染全局表（生产 ACTION_RISK 保持七个工具）。"""
+    """注入风险表不得污染全局表（生产 ACTION_RISK 保持九个工具）。"""
     injected = {**ACTION_RISK, "minecraft_test_medium": "MEDIUM"}
     bridge = MinecraftAgentBridge(FakeMinecraftService(), risk_table=injected)
     assert bridge.policy.risk_of("minecraft_test_medium") == "MEDIUM"

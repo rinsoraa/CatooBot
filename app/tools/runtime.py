@@ -87,8 +87,10 @@ class ToolRuntime:
             MinecraftChatTool,
             MinecraftDigTool,
             MinecraftFollowPlayerTool,
+            MinecraftInventoryTool,
             MinecraftLookAtTool,
             MinecraftMoveToTool,
+            MinecraftPlaceTool,
             MinecraftStopTool,
             MinecraftWorldTool,
             QueryImageMemoryTool,
@@ -110,6 +112,9 @@ class ToolRuntime:
             ("minecraft_stop", lambda: MinecraftStopTool()),
             # Phase 4B：第一个世界修改动作（MEDIUM；必须用户确认，只挖单块）
             ("minecraft_dig", lambda: MinecraftDigTool()),
+            # Phase 4C：只读背包切片（SAFE）+ 放置单方块（MEDIUM，对称于 dig）
+            ("minecraft_inventory", lambda: MinecraftInventoryTool()),
+            ("minecraft_place", lambda: MinecraftPlaceTool()),
             ("query_image_memory", lambda: QueryImageMemoryTool()),
             (
                 "weather",

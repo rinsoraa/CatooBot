@@ -6,7 +6,7 @@
   "main": "runtime.js",
   "scripts": {
     "start": "node runtime.js",
-    "test": "node test/action_runtime.test.js && node test/move_to.test.js && node test/follow_player.test.js && node test/dig.test.js && node test/e2e.js"
+    "test": "node test/action_runtime.test.js && node test/move_to.test.js && node test/follow_player.test.js && node test/dig.test.js && node test/place.test.js && node test/e2e.js"
   },
   "dependencies": {
     "mineflayer": "^4.20.1",

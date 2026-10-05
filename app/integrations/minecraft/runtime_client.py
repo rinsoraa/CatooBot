@@ -84,6 +84,18 @@ class MinecraftRuntimeClient:
             "POST", "/minecraft/follow_player", body={"username": username, "distance": distance}
         )
 
+    async def inventory(self) -> dict[str, Any]:
+        """只读背包切片（Phase 4C：按物品名聚合，无 slot/NBT/window）。"""
+        return await self._request("GET", "/minecraft/inventory")
+
+    async def place(self, x: int, y: int, z: int, face: str, expected_item: str) -> dict[str, Any]:
+        """放置单个方块（Phase 4C：启动即返回 RUNNING，终态经事件送达）。"""
+        return await self._request(
+            "POST",
+            "/minecraft/place",
+            body={"x": x, "y": y, "z": z, "face": face, "expected_item": expected_item},
+        )
+
     async def dig(self, x: float, y: float, z: float, expected_block: str) -> dict[str, Any]:
         """破坏一个指定方块（Phase 4B：启动即返回 RUNNING，终态经事件送达）。"""
         return await self._request(

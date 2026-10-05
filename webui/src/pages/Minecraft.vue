@@ -20,8 +20,10 @@ import type {
   MinecraftAgentContext,
   MinecraftAgentToolRow,
   MinecraftConfirmationView,
+  MinecraftInventoryView,
   MinecraftOverview,
   MinecraftPathfinderInfo,
+  MinecraftPlaceFace,
   MinecraftWorldView,
 } from '@/types/minecraft'
 
@@ -29,6 +31,8 @@ const POLL_INTERVAL_MS = 3000
 
 const overview = ref<MinecraftOverview | null>(null)
 const world = ref<MinecraftWorldView | null>(null)
+// Phase 4C：只读背包切片（Place 面板要看到手里有什么）
+const inventory = ref<MinecraftInventoryView | null>(null)
 const disabled = ref(false)
 const loading = ref(false)
 const error = ref('')
@@ -122,6 +126,24 @@ const moveTarget = reactive({ x: '', y: '', z: '' })
 const followTarget = reactive({ username: '', distance: '2.5' })
 // Phase 4B：Dig Test（第一个世界修改动作；必须过 MEDIUM 确认门）
 const digTarget = reactive({ x: '', y: '', z: '', expectedBlock: '' })
+// Phase 4C：Place Test（对称于 dig；六个 face + 主手物品约束）
+const PLACE_FACES: MinecraftPlaceFace[] = ['up', 'down', 'north', 'south', 'east', 'west']
+const placeTarget = reactive({
+  x: '',
+  y: '',
+  z: '',
+  face: 'up' as MinecraftPlaceFace,
+  expectedItem: '',
+})
+const heldItem = computed(() => inventory.value?.held_item ?? null)
+const inventorySummary = computed(() => {
+  const items = inventory.value?.items ?? []
+  if (!items.length) return '背包是空的'
+  return items
+    .slice(0, 8)
+    .map((item) => `${item.name}×${item.count}`)
+    .join('、')
+})
 
 function phaseState(): StatusState {
   if (phase.value === 'ONLINE') return 'ok'
@@ -252,6 +274,67 @@ function prefillDigTarget(): void {
   if (!digTarget.expectedBlock) digTarget.expectedBlock = 'minecraft:stone'
 }
 
+function prefillPlaceTarget(): void {
+  // 默认填「脚前方一格」的空气位（face=up → 参考方块是它下面那格），期望物品跟随主手
+  const position = connection.value?.position
+  if (position) {
+    if (placeTarget.x === '' && placeTarget.y === '' && placeTarget.z === '') {
+      placeTarget.x = String(Math.round(position.x) + 2)
+      placeTarget.y = String(Math.round(position.y))
+      placeTarget.z = String(Math.round(position.z))
+    }
+  }
+  if (!placeTarget.expectedItem && heldItem.value) {
+    placeTarget.expectedItem = heldItem.value.name
+  }
+}
+
+function useHeldItem(): void {
+  if (heldItem.value) placeTarget.expectedItem = heldItem.value.name
+}
+
+async function placeBlock(): Promise<void> {
+  const raw = [placeTarget.x, placeTarget.y, placeTarget.z]
+  if (raw.some((value) => String(value).trim() === '')) {
+    toast.error('目标坐标不合法', 'X / Y / Z 都要填写（方块坐标是整数）')
+    return
+  }
+  const coords = raw.map(Number)
+  if (!coords.every((value) => Number.isInteger(value))) {
+    toast.error('目标坐标不合法', '方块坐标必须是整数（没有小数）')
+    return
+  }
+  const item = placeTarget.expectedItem.trim()
+  if (!item) {
+    toast.error('缺少物品名', 'expected_item 必填（先用 minecraft_inventory 看主手拿着什么）')
+    return
+  }
+  if (!PLACE_FACES.includes(placeTarget.face)) {
+    toast.error('face 不合法', `只能是 ${PLACE_FACES.join(' / ')}`)
+    return
+  }
+  working.value = true
+  try {
+    const result = await minecraftApi.place(
+      coords[0],
+      coords[1],
+      coords[2],
+      placeTarget.face,
+      item,
+    )
+    toast.success('已开始放置', `${result.action} · ${result.status}（结果会由事件确认）`)
+    await load(true)
+  } catch (caught) {
+    // MEDIUM 动作必须用户确认：这里只会拿到 minecraft.confirmation_required
+    toast.error('PLACE 被拒绝', errorMessage(caught))
+    if (caught instanceof ApiError && catchConfirmationId(caught)) {
+      toast.info('已挂起一条待确认', '确认只能由用户在对话里做出；这里只能 CANCEL / EXPIRE')
+    }
+  } finally {
+    working.value = false
+  }
+}
+
 async function digBlock(): Promise<void> {
   const raw = [digTarget.x, digTarget.y, digTarget.z]
   if (raw.some((value) => String(value).trim() === '')) {
@@ -363,6 +446,7 @@ async function load(silent = false): Promise<void> {
     error.value = ''
     prefillMoveTarget()
     prefillDigTarget()
+    prefillPlaceTarget()
   } catch (caught) {
     // 连接层未启用是「功能状态」而不是故障：渲染引导卡，轮询也不必继续。
     if (caught instanceof ApiError && caught.code === 'minecraft.disabled') {
@@ -382,6 +466,12 @@ async function loadWorld(): Promise<void> {
   // World Debug 数据独立加载：失败不打断连接状态显示（旧数据静默保留）。
   try {
     world.value = await minecraftApi.world()
+  } catch {
+    /* 保留上一份数据 */
+  }
+  // Phase 4C：背包切片（Place 面板要显示主手物品；离线时后端也回 200/online=false）
+  try {
+    inventory.value = await minecraftApi.inventory()
   } catch {
     /* 保留上一份数据 */
   }
@@ -720,6 +810,103 @@ onUnmounted(stopPolling)
           </p>
         </section>
 
+        <section class="minecraft__card cb-card" data-test="mc-place">
+          <SectionHeader
+            title="Place Test（Phase 4C · MEDIUM）"
+            description="放置一个方块：真实修改世界，必须用户确认。expected_item 是主手物品的硬约束（不会自动装备或切槽）。"
+          />
+          <dl class="minecraft__facts" data-test="mc-place-facts">
+            <div>
+              <dt>主手物品</dt>
+              <dd data-test="mc-place-held">
+                {{
+                  heldItem
+                    ? `${heldItem.name} × ${heldItem.count}`
+                    : inventory?.online
+                      ? '空手'
+                      : '不在世界里'
+                }}
+              </dd>
+            </div>
+            <div>
+              <dt>快捷栏槽</dt>
+              <dd data-test="mc-place-slot">
+                {{
+                  inventory?.selected_hotbar_slot === null ||
+                  inventory?.selected_hotbar_slot === undefined
+                    ? '—'
+                    : Number(inventory.selected_hotbar_slot) + 1
+                }}
+              </dd>
+            </div>
+            <div>
+              <dt>背包</dt>
+              <dd data-test="mc-place-inventory">{{ inventorySummary }}</dd>
+            </div>
+          </dl>
+          <div class="minecraft__form" data-test="mc-place-form">
+            <label class="minecraft__field">
+              <span>X</span>
+              <input v-model="placeTarget.x" type="text" inputmode="numeric" data-test="mc-place-x" />
+            </label>
+            <label class="minecraft__field">
+              <span>Y</span>
+              <input v-model="placeTarget.y" type="text" inputmode="numeric" data-test="mc-place-y" />
+            </label>
+            <label class="minecraft__field">
+              <span>Z</span>
+              <input v-model="placeTarget.z" type="text" inputmode="numeric" data-test="mc-place-z" />
+            </label>
+            <label class="minecraft__field">
+              <span>Face</span>
+              <select v-model="placeTarget.face" data-test="mc-place-face">
+                <option v-for="face in PLACE_FACES" :key="face" :value="face">{{ face }}</option>
+              </select>
+            </label>
+            <label class="minecraft__field">
+              <span>Expected Item</span>
+              <input
+                v-model="placeTarget.expectedItem"
+                type="text"
+                placeholder="dirt"
+                data-test="mc-place-item"
+              />
+            </label>
+            <button
+              type="button"
+              class="minecraft__button"
+              :disabled="working"
+              data-test="mc-place-use-held"
+              @click="useHeldItem"
+            >
+              用手持物品填入
+            </button>
+            <button
+              type="button"
+              class="minecraft__button"
+              :disabled="working || !isOnline"
+              data-test="mc-place-run"
+              @click="placeBlock"
+            >
+              PLACE
+            </button>
+            <button
+              type="button"
+              class="minecraft__button minecraft__button--danger"
+              :disabled="working"
+              data-test="mc-place-stop"
+              @click="stopAction"
+            >
+              STOP
+            </button>
+          </div>
+          <p class="cb-caption">
+            只会放掉指定的那一个方块：只往空气里放（不覆盖草/水/雪）、只用主手物品、不导航、
+            不自动找放置面、不换快捷栏、不自动补货、不连续建造。参考方块 = 目标沿 face 反方向一格，
+            必须是实心方块；主手物品与 expected_item 不一致时会拒绝（held_item_changed）。
+          </p>
+        </section>
+
         <section class="minecraft__card cb-card" data-test="mc-agent">
           <SectionHeader
             title="LLM Tool Debug（只读）"
@@ -803,8 +990,9 @@ onUnmounted(stopPolling)
           </table>
           <p class="cb-caption">
             LOW 动作（移动 / 跟随）只有在用户明确要求的对话里才会执行；模型自己想动也会被拒。
-            会修改世界的动作目前只有一个 minecraft_dig（破坏单个方块），它是 MEDIUM：
-            除了用户明确要求，还必须经过确认门。挖矿、放置、攻击、合成等能力都还没有。
+            会修改世界的动作目前只有两个：minecraft_dig（破坏单个方块）与
+            minecraft_place（放置单个方块），它们都是 MEDIUM——除了用户明确要求，
+            还必须经过确认门。连续挖矿/建造、攻击、合成、背包操作等能力都还没有。
           </p>
         </section>
 

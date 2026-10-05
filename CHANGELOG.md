@@ -3,6 +3,44 @@
 本文件记录 CatooBot 的版本演进。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号见 `pyproject.toml`；日期取自真实提交历史（本仓库 2026-09-30 起）。
 
+## [Unreleased] — Minecraft Phase 4C · 单方块 Place + Inventory 只读切片
+
+- **`minecraft_inventory`（SAFE，只读）**：背包切片只有五项——`online` /
+  `selected_hotbar_slot` / `held_item{name,count}` / 按物品名聚合的 `items[{name,count}]`
+  （数量倒序、上限 40 种）；raw slot / NBT / window / 容器 / 盔甲 / cursor 一律不进 LLM。
+  不需要意图/可信/确认，但仍需在线（刻意不进 `OFFLINE_TOOLS`）；非独占（移动中也能读）。
+- **`minecraft_place`（MEDIUM，单方块）**：`{x, y, z, face, expected_item}` ——
+  坐标必须**整数**；`face` 只允许 up/down/north/south/east/west（`reference = target − face_vector`）；
+  `expected_item` 是"当前主手必须拿着这个物品"的**硬约束**（不 equip、不切 hotbar，
+  名字归一化 `minecraft:` 前缀）；只往**空气**里放；参考方块必须是实心；距离 ≤5；
+  执行用 `bot.placeBlock(referenceBlock, faceVector)`，完成后**重新读**目标方块，
+  只有 `air → expected_item` 才算成功（否则 `block_place_unconfirmed`，带 expected/actual）。
+- **确认门沿用 4A/4B**：指纹覆盖 tool+x+y+z+face+expected_item，改任一项即失效并重挂；
+  摘要写清"放什么、放哪里、哪个面"；确认只负责授权，执行前 runtime 仍重新校验
+  （主手物品 / 目标 / 参考 / 距离）。
+- **新错误码**（全部结构化、带 detail）：`minecraft.held_item_missing`、
+  `minecraft.held_item_changed`、`minecraft.target_occupied`、
+  `minecraft.reference_block_missing`、`minecraft.block_unavailable`、
+  `minecraft.block_place_unconfirmed`。
+- **action 行为**：place 与 dig/move_to/follow 互斥（exclusive）、启动即 RUNNING（detached）、
+  cleanup 只清控制位；CANCELLED/TIMEOUT/断开/退出统一走 cleanup 且至多一次，
+  stop 与 placeBlock 同时落定也只有一个终态（有 race 用例）。
+- **感知联动**：放置成功后 WorldPerception 的 near diff 看到 `air → placed block`；
+  Agent Context 的 `activity` 变成「刚放好了 <方块>」。
+- **WebUI**：连接页新增 Place Test 面板（显示主手物品/快捷栏槽/背包摘要；X/Y/Z + Face 下拉 +
+  Expected Item + 用手持物品填入 + PLACE/STOP；小数坐标与空物品名本地拦截）；
+  新增 `GET /api/v1/minecraft/inventory` 与 `POST /api/v1/minecraft/place`
+  （开发者入口，**必须过确认门**）。
+- 配置：`minecraft.action.place.timeout`（默认 30s）与 `max_distance`（默认 5）；
+  **`allow_medium` 默认仍为 false**（dig 与 place 都受它约束）。
+- 测试：`minecraft_runtime/test/place.test.js`（91 checks，含 CANCELLED/TIMEOUT/race）、
+  `tests/test_minecraft_inventory_tool.py`（13）、`tests/test_minecraft_place_tool.py`（16）、
+  API/面板用例若干；flying-squid E2E 增加 inventory 只读 + place 的三类拒绝
+  （空手/非法 face/小数坐标，这台假服务器没有 `/give` 与掉落，bot 永远空手）；
+  真实服务器 smoke 增加 inventory + place 六层证据。
+- **真实服务器（2026-10-06）**：`REAL SERVER: PASS` —— 真放（air → sand）、
+  真实扫描到它、感知输入连续 3 次稳定、手持物品 5→4、并把自己放的那一块挖回。
+
 ## [Unreleased] — Minecraft Phase 4B · Single-Block Dig
 
 - **第一个真正修改 Minecraft 世界的动作 `minecraft_dig`**（MEDIUM）：破坏**一个**明确指定的

@@ -851,12 +851,15 @@ _NOTES: dict[str, str] = {
     "minecraft.agent.tools.allow_safe": "允许 SAFE 动作：查世界 / 说话 / 朝向 / 停止",
     "minecraft.agent.tools.allow_low": "允许 LOW 动作：非破坏性移动与跟随（仍需用户明确要求）",
     "minecraft.agent.tools.allow_medium": (
-        "允许 MEDIUM 动作：minecraft_dig（破坏单方块，会真实修改世界）；打开后仍需用户在对话里确认"
+        "允许 MEDIUM 动作：minecraft_dig（挖单方块）/ minecraft_place（放单方块），"
+        "都会真实修改世界；打开后仍需用户在对话里确认"
     ),
     "minecraft.agent.tools.allow_high": "允许 HIGH 动作（还没有 HIGH 级动作；保持关闭）",
     "minecraft.agent.tools.allow_destructive": (
         "允许 DESTRUCTIVE 动作（还没有这一级动作；保持关闭）"
     ),
+    "minecraft.action.place.timeout": "单次放置最长多少秒（到点按 TIMEOUT 收尾并清理）",
+    "minecraft.action.place.max_distance": "最大交互距离（格）；超出的目标会被拒绝（不自己走过去）",
     "minecraft.action.dig.timeout": "单次挖掘最长多少秒（到点按 TIMEOUT 收尾并停止挖掘）",
     "minecraft.action.dig.max_distance": "最大挖掘距离（格）；超出的方块会被拒绝（不自己走过去）",
     "minecraft.action.move_to.max_distance": "单次移动最远走多少格；超过它会被拒绝（防长距离请求）",
@@ -954,6 +957,7 @@ _SECTION_LABELS: dict[str, str] = {
     "minecraft.agent.confirmation": "高风险动作的用户确认（Phase 4A）",
     "minecraft.agent.chat": "游戏内聊天（Phase 4A）",
     "minecraft.action.dig": "Minecraft 挖掘（dig · 破坏单方块）",
+    "minecraft.action.place": "Minecraft 放置（place · 放单方块）",
     "minecraft.action.move_to": "Minecraft 导航（move_to）",
     "minecraft.action.follow_player": "Minecraft 跟随（follow_player）",
 }

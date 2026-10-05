@@ -391,6 +391,8 @@ async def test_minecraft_projection_includes_agent_block(tmp_path):
             "minecraft_follow_player",
             "minecraft_stop",
             "minecraft_dig",
+            "minecraft_inventory",
+            "minecraft_place",
         }
         assert all(row["allowed"] is False for row in agent["tools"])
         assert all(row["reason"] == "minecraft.disabled" for row in agent["tools"])
@@ -581,6 +583,121 @@ async def test_dig_endpoint_disabled_without_minecraft(tmp_path):
         await client.login()
         status, payload = await client.post(
             "/api/v1/minecraft/dig", body={"x": 1, "y": 64, "z": 2, "expected_block": "stone"}
+        )
+        assert status == 503 and error_code(payload) == "minecraft.disabled"
+
+
+# ------------------------------------------------ Phase 4C：inventory / place
+
+
+async def test_inventory_endpoint_is_read_only_and_always_200(tmp_path):
+    """读端点恒 200：未启用 → online:false；启用后给只读切片（无任何动作）。"""
+    from tests.test_minecraft_service import FakeRuntime
+
+    async with api_server(tmp_path) as (client, bot, server):
+        await client.login()
+        status, payload = await client.get("/api/v1/minecraft/inventory")
+        assert status == 200
+        assert payload["data"] == {
+            "ok": True,
+            "online": False,
+            "selected_hotbar_slot": None,
+            "held_item": None,
+            "items": [],
+        }
+
+        fake = FakeRuntime()
+        await fake.start()
+        try:
+            service = MinecraftService(
+                bot, MinecraftConfig(enabled=True, auto_start_runtime=False, runtime_port=fake.port)
+            )
+            bot.minecraft = service
+            try:
+                status, payload = await client.get("/api/v1/minecraft/inventory")
+                assert status == 200
+                data = payload["data"]
+                assert data["online"] is True and data["held_item"]["name"] == "dirt"
+                assert data["items"] == [{"name": "dirt", "count": 12}]
+                assert set(data) == {"ok", "online", "selected_hotbar_slot", "held_item", "items"}
+                assert fake.place_calls == [], "只读端点绝不触发任何动作"
+            finally:
+                await service._cleanup()
+        finally:
+            await fake.stop()
+
+
+async def test_place_endpoint_requires_confirmation(tmp_path):
+    """§二十六：WebUI 的 PLACE 也必须过 MEDIUM 确认门 —— 第一次只会得到 409。"""
+    from tests.test_minecraft_service import FakeRuntime
+
+    fake = FakeRuntime()
+    await fake.start()
+    try:
+        async with api_server(tmp_path) as (client, bot, server):
+            await client.login()
+            service = MinecraftService(
+                bot,
+                MinecraftConfig(
+                    enabled=True,
+                    auto_start_runtime=False,
+                    runtime_port=fake.port,
+                    agent={"tools": {"allow_medium": True}},
+                ),
+            )
+            bot.minecraft = service
+            try:
+                from app.integrations.minecraft.agent import MinecraftAgentBridge
+                from app.integrations.minecraft.events import parse_bridge_event
+
+                service.agent = MinecraftAgentBridge(service)
+
+                body = {"x": 2, "y": 64, "z": 2, "face": "up", "expected_item": "dirt"}
+                # 参数不合法 → 422（且不挂确认）
+                bad_bodies = [
+                    {"x": 2.5, "y": 64, "z": 2, "face": "up", "expected_item": "dirt"},
+                    {"x": 2, "y": 64, "z": 2, "face": "north_east", "expected_item": "dirt"},
+                    {"x": 2, "y": 64, "z": 2, "face": "up", "expected_item": ""},
+                    {"x": 2, "y": 64, "z": 2, "face": "up"},  # 缺 expected_item
+                    {"y": 64, "z": 2, "face": "up", "expected_item": "dirt"},  # 缺 x
+                ]
+                for bad in bad_bodies:
+                    status, payload = await client.post("/api/v1/minecraft/place", body=bad)
+                    assert status == 422 and error_code(payload) == "minecraft.action_invalid", bad
+                assert service.agent.confirmations.pending() == []
+
+                # 让 Agent 上下文在线（place 需要在线）
+                fake.online = True
+                await service.status()
+                service.agent.apply_event(
+                    parse_bridge_event(
+                        {
+                            "event": "minecraft.spawned",
+                            "session_id": "s1",
+                            "timestamp": 1.0,
+                            "username": "Catodayo",
+                        }
+                    )
+                )
+
+                status, payload = await client.post("/api/v1/minecraft/place", body=body)
+                assert status == 409
+                assert error_code(payload) == "minecraft.confirmation_required"
+                detail = payload.get("detail") or payload["error"]["detail"]
+                assert detail["confirmation"]["tool"] == "minecraft_place"
+                assert fake.place_calls == [], "确认前绝不放置"
+            finally:
+                await service._cleanup()
+    finally:
+        await fake.stop()
+
+
+async def test_place_endpoint_disabled_without_minecraft(tmp_path):
+    async with api_server(tmp_path) as (client, bot, server):
+        await client.login()
+        status, payload = await client.post(
+            "/api/v1/minecraft/place",
+            body={"x": 2, "y": 64, "z": 2, "face": "up", "expected_item": "dirt"},
         )
         assert status == 503 and error_code(payload) == "minecraft.disabled"
 

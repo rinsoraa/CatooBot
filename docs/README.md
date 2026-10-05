@@ -115,7 +115,8 @@ v0.4 行为引擎（回复延迟/分段/作息，规格不在 docs/specs/）标 
 | [MINECRAFT_PHASE3D.md](MINECRAFT_PHASE3D.md) | Minecraft 动态跟随（Phase 3D）：follow_player/GoalFollow dynamic/目标丢失宽限/最大追逐距离 | 已实现 |
 | [MINECRAFT_PHASE3E.md](MINECRAFT_PHASE3E.md) | Minecraft LLM 工具与 Agent Bridge（Phase 3E）：六个 Tool/风险分级/Policy 门/上下文/事件回流/move_to 持续型化 | 已实现 |
 | [MINECRAFT_PHASE4A.md](MINECRAFT_PHASE4A.md) | Minecraft 确认门与游戏内聊天桥（Phase 4A）：MEDIUM/HIGH 的 Confirmation Gate、可信玩家、Minecraft Chat → USER 回合、防循环 | 已实现 |
-| [MINECRAFT_PHASE4B.md](MINECRAFT_PHASE4B.md) | Minecraft 单方块挖掘（Phase 4B）：第一个世界修改动作 minecraft_dig（MEDIUM + 确认 + expected_block + block_changed）、感知联动、真实服务器 smoke | 已实现（真实服务器 smoke 待操作者开服验证） |
+| [MINECRAFT_PHASE4B.md](MINECRAFT_PHASE4B.md) | Minecraft 单方块挖掘（Phase 4B）：第一个世界修改动作 minecraft_dig（MEDIUM + 确认 + expected_block + block_changed）、感知联动、真实服务器 smoke | 已实现（真实服务器 smoke PASS） |
+| [MINECRAFT_PHASE4C.md](MINECRAFT_PHASE4C.md) | Minecraft 背包只读切片 + 单方块放置（Phase 4C）：minecraft_inventory（SAFE）/ minecraft_place（MEDIUM + face 六向 + expected_item 手主持物硬约束 + 二次验证） | 已实现（真实服务器 place PASS） |
 | bible_source_罐头.txt | 内置角色的人物档案源文件（Bible 编译器输入） | **本地内容资产**：按「Character Bible 不得上传」约束，已移至 `config/bible_source_罐头.txt`（`config/` 不在发布镜像内） |
 
 ## 运维速查

@@ -71,10 +71,13 @@ async function main() {
     assert(typeof def.run !== 'function', '没有阻塞式 run')
     assert(typeof def.cleanup === 'function', '有 cleanup（stopDigging + 清控制位）')
     assert(
-      Object.keys(ACTION_REGISTRY).sort().join(',') === 'chat,dig,follow_player,look_at,move_to,stop',
+      Object.keys(ACTION_REGISTRY).sort().join(',') ===
+        'chat,dig,follow_player,look_at,move_to,place,stop',
       `注册表只有已批准动作（得到 ${Object.keys(ACTION_REGISTRY).sort().join(',')}）`,
     )
-    // §三 禁止清单：连续挖掘/范围破坏/其它世界修改动作一个都不许有
+    // §三 禁止清单：连续挖掘/范围破坏/批量放置类动作一个都不许有
+    // （place 从 Phase 4C 起是正式的单方块动作，所以不在禁止清单里；
+    //  place_multiple / build / bridge / schematic 这些批量能力仍然必须不存在）
     for (const forbidden of [
       'mine',
       'mine_ore',
@@ -84,7 +87,7 @@ async function main() {
       'break_area',
       'dig_multiple',
       'auto_mine',
-      'place',
+      'place_multiple',
       'attack',
       'craft',
       'eat',

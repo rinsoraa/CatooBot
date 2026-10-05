@@ -4,6 +4,8 @@ import { api } from '@/api/client'
 
 import type {
   MinecraftFollowPlayerResult,
+  MinecraftInventoryView,
+  MinecraftPlaceFace,
   MinecraftJoinResult,
   MinecraftLeaveResult,
   MinecraftLookAtResult,
@@ -56,6 +58,20 @@ export const minecraftApi = {
       y,
       z,
       expected_block: expectedBlock,
+    })
+  },
+  /** Phase 4C：只读背包切片（选中的槽 / 手持物品 / 聚合物品清单）。 */
+  inventory() {
+    return api.get<MinecraftInventoryView>('/minecraft/inventory')
+  },
+  /** Phase 4C：放置一个方块（开发者调试入口；**必须**过 MEDIUM 确认门）。 */
+  place(x: number, y: number, z: number, face: MinecraftPlaceFace, expectedItem: string) {
+    return api.post<Record<string, unknown>>('/minecraft/place', {
+      x,
+      y,
+      z,
+      face,
+      expected_item: expectedItem,
     })
   },
   /** Phase 4A：确认门 Debug（只能缩小授权：造测试条 / 取消 / 置过期）。 */

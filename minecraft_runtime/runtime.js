@@ -63,6 +63,74 @@ function digMaxDistance() {
   return Number.isFinite(raw) && raw > 0 ? raw : DIG_MAX_DISTANCE
 }
 
+// Phase 4C：place（放置单个方块；MEDIUM，需要确认）+ inventory 只读切片
+const PLACE_DEFAULT_TIMEOUT_MS = Number.parseInt(process.env.MC_PLACE_TIMEOUT_MS || '30000', 10)
+const PLACE_MAX_DISTANCE = Number.parseFloat(process.env.MC_PLACE_MAX_DISTANCE || '5')
+//: 只允许这六个方向（绝不接受任意 {dx,dy,dz} 或浮点方向）
+const PLACE_FACES = Object.freeze({
+  up: { x: 0, y: 1, z: 0 },
+  down: { x: 0, y: -1, z: 0 },
+  north: { x: 0, y: 0, z: -1 },
+  south: { x: 0, y: 0, z: 1 },
+  east: { x: 1, y: 0, z: 0 },
+  west: { x: -1, y: 0, z: 0 },
+})
+const MAX_PLACE_ITEM_CHARS = 64
+//: 背包切片最多列多少种物品（有界；LLM 不需要看全部原始 slot）
+const INVENTORY_MAX_KINDS = 40
+
+function placeTimeoutMs() {
+  const raw = Number.parseInt(process.env.MC_PLACE_TIMEOUT_MS || '', 10)
+  return Number.isFinite(raw) && raw > 0 ? raw : PLACE_DEFAULT_TIMEOUT_MS
+}
+
+function placeMaxDistance() {
+  const raw = Number.parseFloat(process.env.MC_PLACE_MAX_DISTANCE || '')
+  return Number.isFinite(raw) && raw > 0 ? raw : PLACE_MAX_DISTANCE
+}
+
+/** 物品名归一化：`minecraft:dirt` / `dirt` 视为同一个（比较用，回执仍报实际名）。 */
+function normalizeItemName(name) {
+  return String(name ?? '')
+    .trim()
+    .toLowerCase()
+    .replace(/^minecraft:/, '')
+}
+
+/** 只读背包切片（§四）：按物品名聚合，绝不外泄 slot/NBT/window/容器/盔甲/cursor。 */
+function inventorySlice(bot) {
+  // 在线判定只看"有没有 bot"（路由传 state.bot；断线时它是 null）——
+  // 不依赖模块级状态机，便于单测直测。
+  if (bot === null || bot === undefined) {
+    return { ok: true, online: false, selected_hotbar_slot: null, held_item: null, items: [] }
+  }
+  const counts = new Map()
+  let raw = []
+  try {
+    raw = typeof bot.inventory?.items === 'function' ? bot.inventory.items() : []
+  } catch (error) {
+    log('warn', 'inventory read failed', { error: error.message })
+    raw = []
+  }
+  for (const item of raw) {
+    if (!item || !item.name || !item.count) continue
+    const name = normalizeItemName(item.name)
+    counts.set(name, (counts.get(name) || 0) + item.count)
+  }
+  const items = [...counts.entries()]
+    .map(([name, count]) => ({ name, count }))
+    .sort((a, b) => b.count - a.count || a.name.localeCompare(b.name))
+    .slice(0, INVENTORY_MAX_KINDS)
+  const held = bot.heldItem
+  return {
+    ok: true,
+    online: true,
+    selected_hotbar_slot: Number.isInteger(bot.quickBarSlot) ? bot.quickBarSlot : null,
+    held_item: held && held.name ? { name: normalizeItemName(held.name), count: held.count || 0 } : null,
+    items,
+  }
+}
+
 // Phase 3D：follow_player（动态跟随）
 const FOLLOW_DEFAULT_DISTANCE = 2.5
 const FOLLOW_MIN_DISTANCE = 1.5
@@ -840,6 +908,163 @@ const ACTION_REGISTRY = {
         if (bot && typeof bot.clearControlStates === 'function') bot.clearControlStates()
       },
     },
+    place: {
+      // Phase 4C：放置**一个**明确指定的方块（MEDIUM；真实修改世界 → exclusive + STOP + timeout）
+      // 对称于 dig：手里有什么就只能放什么，目标/方向/手持物品都必须明确（§二）。
+      // 不导航、不找放置面、不换 hotbar、不 equip、不补货、不连续放。
+      exclusive: true,
+      timeout_ms: PLACE_DEFAULT_TIMEOUT_MS,
+      risk: 'MEDIUM',
+      detached: true, // 与 dig 同款：启动即 RUNNING，终态经事件送达
+      validate(params) {
+        // §十三：方块坐标必须是**整数**（100.5 这种直接拒绝）
+        const coords = {}
+        for (const name of ['x', 'y', 'z']) {
+          const value = params[name]
+          if (typeof value !== 'number' || !Number.isFinite(value) || !Number.isInteger(value)) {
+            throw new ActionError(`坐标 ${name} 必须是整数`, 'action.invalid', 400)
+          }
+          coords[name] = value
+        }
+        if (Math.abs(coords.x) > 3.0e7 || Math.abs(coords.z) > 3.0e7 || coords.y < -512 || coords.y > 2048) {
+          throw new ActionError('坐标超出 Minecraft 世界边界', 'action.invalid', 400)
+        }
+        // §八：face 只允许六个值
+        const face = String(params.face ?? '').trim().toLowerCase()
+        if (!Object.prototype.hasOwnProperty.call(PLACE_FACES, face)) {
+          throw new ActionError(
+            `face 必须是 ${Object.keys(PLACE_FACES).join('/')} 之一`,
+            'face.invalid',
+            400,
+          )
+        }
+        // §九：expected_item 是"当前主手必须拿着这个物品"的硬约束
+        const expected = params.expected_item
+        if (typeof expected !== 'string' || !expected.trim()) {
+          throw new ActionError('expected_item 不能为空', 'item.invalid', 400)
+        }
+        if (expected.length > MAX_PLACE_ITEM_CHARS) {
+          throw new ActionError('expected_item 过长', 'item.invalid', 400)
+        }
+        return { ...coords, face, expected_item: expected.trim() }
+      },
+      async start(bot, params) {
+        // §十六：解析 target / face / reference → 实时读取 heldItem / referenceBlock / targetBlock → 校验
+        if (bot === null || bot.entity === null) {
+          throw new ActionError('罐头还没有进入世界', 'action.not_online', 400)
+        }
+        const faceVector = PLACE_FACES[params.face]
+        const target = new Vec3(params.x, params.y, params.z)
+        const reference = target.minus(faceVector)
+
+        // §九：主手必须真的拿着 expected_item（不 equip、不切 hotbar）
+        const held = bot.heldItem
+        if (!held || !held.name) {
+          throw new ActionError('主手没有拿任何物品（不会自动装备）', 'held.item_missing', 400)
+        }
+        const heldName = normalizeItemName(held.name)
+        if (heldName !== normalizeItemName(params.expected_item)) {
+          throw new ActionError(
+            `主手拿的是 ${held.name}，不是你确认的 ${params.expected_item}`,
+            'held.item_changed',
+            409,
+            { expected: normalizeItemName(params.expected_item), actual: heldName },
+          )
+        }
+        if (!(held.count > 0)) {
+          throw new ActionError('主手物品数量为 0', 'held.item_missing', 400)
+        }
+
+        const targetBlock = bot.blockAt(target)
+        const referenceBlock = bot.blockAt(reference)
+        if (targetBlock === null || referenceBlock === null) {
+          throw new ActionError(
+            `目标区域没有加载（${params.x},${params.y},${params.z}）`,
+            'block.unavailable',
+            404,
+          )
+        }
+        // §十：第一版只允许放到空气格（不碰 replaceable 语义）
+        if (!isAir(targetBlock.name)) {
+          throw new ActionError(
+            `目标位置已经有方块（${targetBlock.name}），本阶段只往空气里放`,
+            'target.occupied',
+            409,
+            { actual: targetBlock.name },
+          )
+        }
+        if (isAir(referenceBlock.name)) {
+          throw new ActionError('参考方块位置是空气，没有可依附的面', 'reference.missing', 404)
+        }
+        // §十二：距离（眼睛 → 目标方块中心，与 dig 同口径）
+        const center = target.offset(0.5, 0.5, 0.5)
+        const eyes = bot.entity.position.offset(0, 1.65, 0)
+        const distance = eyes.distanceTo(center)
+        const maxDistance = placeMaxDistance()
+        if (distance > maxDistance) {
+          throw new ActionError(
+            `目标位置距离 ${distance.toFixed(1)} 格，超过上限 ${maxDistance} 格（本阶段不会自己走过去）`,
+            'block.too_far',
+            400,
+          )
+        }
+        // §十六 Step 5：本次 action 的不可变快照
+        return {
+          target,
+          reference,
+          referenceBlock,
+          faceVector,
+          face: params.face,
+          expected_item: normalizeItemName(params.expected_item),
+          item_before: { name: heldName, count: held.count || 0 },
+          block_before: targetBlock.name,
+          reference_before: referenceBlock.name,
+        }
+      },
+      async wait(bot, params, token, state) {
+        try {
+          // §十七：交给 Mineflayer（reference block + face vector），不自造右键/packet
+          await bot.placeBlock(state.referenceBlock, state.faceVector)
+        } catch (error) {
+          if (token && token.cancelled) throw new ActionCancelled(token.reason)
+          const message = String(error && error.message ? error.message : error)
+          throw new ActionError(`放置失败：${message}`, 'action.failed', 500)
+        }
+        // §十八/§十九：不把 Promise resolve 当世界真相 —— 重新读一次目标
+        const after = bot.blockAt(state.target)
+        if (after === null) {
+          throw new ActionError('放置后读不到目标位置', 'block.place_unconfirmed', 500)
+        }
+        if (isAir(after.name)) {
+          throw new ActionError('方块没有被放上去（服务器未确认）', 'block.place_unconfirmed', 500)
+        }
+        if (normalizeItemName(after.name) !== state.expected_item) {
+          throw new ActionError(
+            `放上去的是 ${after.name}，不是确认的 ${state.expected_item}`,
+            'block.place_unconfirmed',
+            500,
+            { expected: state.expected_item, actual: normalizeItemName(after.name) },
+          )
+        }
+        // §二十：物品数量只如实上报，不硬编码 -1（creative/modded 都不同）
+        const heldAfter = bot.heldItem
+        const heldAfterName = heldAfter && heldAfter.name ? normalizeItemName(heldAfter.name) : ''
+        return {
+          position: { x: params.x, y: params.y, z: params.z },
+          block_before: state.block_before,
+          block_after: normalizeItemName(after.name),
+          reference_block: state.reference_before,
+          face: state.face,
+          item_before: state.item_before,
+          item_after_count:
+            heldAfterName === state.item_before.name ? (heldAfter.count || 0) : 0,
+        }
+      },
+      cleanup(bot) {
+        // §二十一：place 是短动作，没有 stopPlacing —— 清控制位即可（至多一次由 ActionRuntime 保证）
+        if (bot && typeof bot.clearControlStates === 'function') bot.clearControlStates()
+      },
+    },
     follow_player: {
       // Phase 3D：动态跟随（LOW；不改世界，但属于持续自动移动 → exclusive + STOP + timeout）
       exclusive: true,
@@ -1411,6 +1636,24 @@ async function handleRequest(request, response) {
       jsonResponse(response, 200, { ok: true, ...result })
       return
     }
+    if (request.method === 'GET' && path === '/minecraft/inventory') {
+      // Phase 4C：只读背包切片（按物品名聚合，绝不出 window/slot/NBT）
+      jsonResponse(response, 200, inventorySlice(state.bot))
+      return
+    }
+    if (request.method === 'POST' && path === '/minecraft/place') {
+      // Phase 4C：放置单方块（MEDIUM）。启动即 RUNNING，结果经事件送达。
+      const body = await readBody(request)
+      const result = await actionRuntime.execute('place', {
+        x: body.x,
+        y: body.y,
+        z: body.z,
+        face: body.face,
+        expected_item: body.expected_item,
+      })
+      jsonResponse(response, 200, { ok: true, ...result })
+      return
+    }
     if (request.method === 'POST' && path === '/minecraft/dig') {
       // Phase 4B：破坏单方块（MEDIUM）。启动即 RUNNING，结果经事件送达。
       const body = await readBody(request)
@@ -1519,6 +1762,14 @@ module.exports = {
     maxDistance: MOVE_MAX_DISTANCE,
     timeoutMs: MOVE_TIMEOUT_MS,
   },
+  PLACE_DEFAULTS: {
+    timeoutMs: PLACE_DEFAULT_TIMEOUT_MS,
+    maxDistance: PLACE_MAX_DISTANCE,
+    faces: Object.keys(PLACE_FACES),
+  },
+  PLACE_FACES,
+  normalizeItemName,
+  inventorySlice,
   DIG_DEFAULTS: {
     timeoutMs: DIG_DEFAULT_TIMEOUT_MS,
     maxDistance: DIG_MAX_DISTANCE,

@@ -33,6 +33,7 @@ const path = require('path')
 const fs = require('fs')
 
 const RUNTIME_DIR = path.join(__dirname, '..')
+const { normalizeItemName } = require(path.join(RUNTIME_DIR, 'runtime.js'))
 const HOST = process.env.SMOKE_HOST || '127.0.0.1'
 const PORT = Number.parseInt(process.env.SMOKE_PORT || '25565', 10)
 
@@ -645,6 +646,147 @@ async function main() {
             })
             await sleep(500)
             console.log('[smoke] 已清掉测试用的 oak_log')
+          }
+        }
+      }
+    }
+
+    // ---- 5. Phase 4C 硬门禁：inventory（只读）+ place（单方块，六层证据） ----
+    if (!digReady) {
+      console.log('[smoke] ✗ Phase 4C：runtime 未空闲，place 硬门禁不能执行')
+    } else {
+      const inv = await request(runtimePort, 'GET', '/minecraft/inventory')
+      check(
+        inv.status === 200 && inv.body.online === true,
+        `inventory 只读切片（online=${inv.body && inv.body.online}，`
+          + `${(inv.body && inv.body.items && inv.body.items.length) || 0} 种物品）`,
+      )
+      const held = inv.body ? inv.body.held_item : null
+      console.log(`[smoke] 主手：${held ? `${held.name}×${held.count}` : '空手（没东西可放）'}`)
+
+      // 目标选择：SMOKE_PLACE_TARGET="x,y,z" 优先；否则找"可达的实心方块，其正上方是空气"
+      // （face=up → 参考方块就是那个实心方块，语义最清楚，§三十一）
+      const override = (process.env.SMOKE_PLACE_TARGET || '').trim()
+      const face = (process.env.SMOKE_PLACE_FACE || 'up').trim().toLowerCase()
+      const itemOverride = (process.env.SMOKE_PLACE_ITEM || '').trim()
+      let target = null
+      let reference = null
+      if (override) {
+        const [x, y, z] = override.split(',').map((value) => Number.parseInt(value, 10))
+        if (Number.isFinite(x) && Number.isFinite(y) && Number.isFinite(z)) {
+          const delta = { up: [0, -1, 0], down: [0, 1, 0], north: [0, 0, 1], south: [0, 0, -1], east: [-1, 0, 0], west: [1, 0, 0] }[face]
+          target = { x, y, z }
+          reference = delta ? { x: x + delta[0], y: y + delta[1], z: z + delta[2] } : null
+        } else {
+          console.log(`[smoke] SMOKE_PLACE_TARGET 格式不对（应为 "x,y,z"）：${override}`)
+        }
+      } else {
+        const snapshotNow = await snapshot('near')
+        const columnsNow = (snapshotNow.blocks && snapshotNow.blocks.near && snapshotNow.blocks.near.columns) || []
+        const candidates = columnsNow
+          .filter((col) => col.pos && col.distance !== undefined)
+          .filter((col) => col.distance >= 1.5 && col.distance <= 3.5) // 站得开一点，又能在 5 格内够到上方
+          .sort((a, b) => a.distance - b.distance)
+        const spot = candidates[0]
+        if (spot) {
+          target = { x: spot.pos.x, y: spot.pos.y + 1, z: spot.pos.z }
+          reference = { x: spot.pos.x, y: spot.pos.y, z: spot.pos.z }
+        }
+      }
+
+      if (!held) {
+        console.log(
+          '[smoke] SKIPPED place：主手没有物品（place 不会自动装备/切槽）。'
+            + '请在游戏里手持一个方块后再跑（或设 SMOKE_PLACE_ITEM 之前先手持对应物品）',
+        )
+      } else if (!target || !reference) {
+        console.log('[smoke] SKIPPED place：没找到合适的目标（需要"实心方块 + 其上方是空气"且在 5 格内）')
+      } else {
+        const item = itemOverride || held.name
+        console.log(
+          `[smoke] place 目标：${item} → (${target.x},${target.y},${target.z})，face=${face}，`
+            + `参考方块 (${reference.x},${reference.y},${reference.z})`,
+        )
+        const before = (await request(runtimePort, 'GET', `/minecraft/inventory`)).body.held_item
+        const placeResp = await request(runtimePort, 'POST', '/minecraft/place', {
+          x: target.x,
+          y: target.y,
+          z: target.z,
+          face,
+          expected_item: item,
+        })
+        const placeStarted =
+          placeResp.status === 200 &&
+          placeResp.body.status === 'RUNNING' &&
+          Boolean(placeResp.body.action_id)
+        if (!placeStarted) {
+          console.log(`[smoke]    place 启动失败，完整响应：${JSON.stringify(placeResp)}`)
+          check(false, `place 启动必须 200/RUNNING 且带 action_id（HTTP ${placeResp.status}）`)
+        } else {
+          check(true, `place 启动 → RUNNING（action_id=${placeResp.body.action_id}）`)
+          const placeId = placeResp.body.action_id
+          const terminal = await waitForActionTerminal(placeId, 'place 终态事件', 30000)
+          if (!terminal) {
+            check(false, `place 未在 30s 内进入终态（action_id=${placeId}）`)
+          } else if (terminal.event !== 'minecraft.action.completed') {
+            check(false, `place 终态=${terminal.event}（${terminal.error || terminal.reason || '-'}）`)
+          } else {
+            const result = terminal.result || {}
+            check(
+              result.block_before === 'air' && result.block_after !== 'air',
+              `real place completed（block_before=${result.block_before} → block_after=${result.block_after}）`,
+            )
+            check(
+              normalizeItemName(result.block_after) === normalizeItemName(item),
+              `block_after == expected_item（期望 ${item}，得到 ${result.block_after}）`,
+            )
+            check(
+              result.face === face && result.reference_block,
+              `结果带 reference_block=${result.reference_block} / face=${result.face}`,
+            )
+            // 第二层：真实世界（重新扫描那个坐标）
+            const placed = await waitForValue(
+              async () => {
+                const name = await blockAt(target)
+                return name && name !== 'air' ? name : null
+              },
+              '真实世界出现该方块',
+              10000,
+            )
+            check(Boolean(placed), `world block changed（该位置现在是 ${placed || '未知'}）`)
+            // 第三层：感知输入连续 3 次稳定包含它
+            let stableScans = 0
+            for (let round = 0; round < 3; round += 1) {
+              await sleep(1200)
+              if ((await blockAt(target)) === placed) stableScans += 1
+            }
+            check(stableScans === 3, `WorldPerception input stable（连续 3 次都是 ${placed}，得 ${stableScans}/3）`)
+            // 物品数量：如实记录，不作为硬门禁（creative/modded 行为不同）
+            const after = (await request(runtimePort, 'GET', '/minecraft/inventory')).body.held_item
+            console.log(
+              `[smoke]    手持物品 before=${before ? `${before.name}×${before.count}` : '空'}`
+                + ` after=${after ? `${after.name}×${after.count}` : '空'}`
+                + `（result.item_after_count=${result.item_after_count}）`,
+            )
+
+            // 收尾：把自己放的那一块挖回去（只在自己放的物品徒手可挖时；否则留给操作者处理）
+            const handDiggable = /^(dirt|grass_block|sand|gravel|clay|snow|.*_log|.*_planks|torch)$/
+            if (handDiggable.test(normalizeItemName(placed))) {
+              const cleanup = await request(runtimePort, 'POST', '/minecraft/dig', {
+                x: target.x,
+                y: target.y,
+                z: target.z,
+                expected_block: placed,
+              })
+              if (cleanup.status === 200 && cleanup.body.action_id) {
+                await waitForActionTerminal(cleanup.body.action_id, '清理 dig 终态', 20000)
+                await sleep(600)
+                const left = await blockAt(target)
+                console.log(`[smoke]    已把自己放的那一块挖回（该位置现在 ${left}）`)
+              }
+            } else {
+              console.log(`[smoke]    注意：${placed} 徒手挖不了，留在 (${target.x},${target.y},${target.z})，需要你自己清理`)
+            }
           }
         }
       }

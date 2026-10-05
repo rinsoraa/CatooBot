@@ -138,7 +138,7 @@ const DISABLED_OVERVIEW = {
 }
 
 function makeHandler(
-  overrides: { join?: MockReply; leave?: MockReply; dig?: MockReply } = {},
+  overrides: { join?: MockReply; leave?: MockReply; dig?: MockReply; place?: MockReply } = {},
 ) {
   return (request: MockRequest): MockReply => {
     const url = new URL(request.url, 'http://localhost')
@@ -180,6 +180,24 @@ function makeHandler(
     }
     if (url.pathname === '/api/v1/minecraft/dig' && request.method === 'POST') {
       return overrides.dig ?? ok({ ok: true, action: 'dig', action_id: 'act_dig_ui', status: 'RUNNING' })
+    }
+    if (url.pathname === '/api/v1/minecraft/inventory' && request.method === 'GET') {
+      return ok({
+        ok: true,
+        online: true,
+        selected_hotbar_slot: 0,
+        held_item: { name: 'dirt', count: 12 },
+        items: [
+          { name: 'dirt', count: 12 },
+          { name: 'sand', count: 24 },
+        ],
+      })
+    }
+    if (url.pathname === '/api/v1/minecraft/place' && request.method === 'POST') {
+      return (
+        overrides.place ??
+        ok({ ok: true, action: 'place', action_id: 'act_place_ui', status: 'RUNNING' })
+      )
     }
     return fail(404, 'resource.not_found', `未模拟 ${request.method} ${url.pathname}`)
   }
@@ -587,6 +605,73 @@ describe('Minecraft 页 · Dig Test（Phase 4B）', () => {
     expect((wrapper.get('[data-test="mc-dig-run"]').element as HTMLButtonElement).disabled).toBe(
       true,
     )
+  })
+})
+
+describe('Minecraft 页 · Place Test（Phase 4C）', () => {
+  it('显示主手物品 / 槽位 / 背包摘要', async () => {
+    const { wrapper } = await mountPage(makeHandler())
+    await flushAll()
+    expect(wrapper.get('[data-test="mc-place-held"]').text()).toContain('dirt × 12')
+    expect(wrapper.get('[data-test="mc-place-slot"]').text()).toContain('1')
+    expect(wrapper.get('[data-test="mc-place-inventory"]').text()).toContain('sand×24')
+  })
+
+  it('PLACE 提交坐标 + face + expected_item 到 /minecraft/place', async () => {
+    const { wrapper, calls } = await mountPage(makeHandler())
+    await flushAll()
+    await wrapper.get('[data-test="mc-place-x"]').setValue('100')
+    await wrapper.get('[data-test="mc-place-y"]').setValue('64')
+    await wrapper.get('[data-test="mc-place-z"]').setValue('-230')
+    await wrapper.get('[data-test="mc-place-face"]').setValue('north')
+    await wrapper.get('[data-test="mc-place-item"]').setValue('minecraft:dirt')
+    await wrapper.get('[data-test="mc-place-run"]').trigger('click')
+    await flushAll()
+    const call = calls.find((c) => c.url.endsWith('/minecraft/place'))
+    expect(call).toBeTruthy()
+    expect(call?.body).toEqual({
+      x: 100,
+      y: 64,
+      z: -230,
+      face: 'north',
+      expected_item: 'minecraft:dirt',
+    })
+  })
+
+  it('小数坐标与空物品名本地拦截（不发请求）', async () => {
+    const { wrapper, calls } = await mountPage(makeHandler())
+    await flushAll()
+    await wrapper.get('[data-test="mc-place-x"]').setValue('100.5')
+    await wrapper.get('[data-test="mc-place-run"]').trigger('click')
+    await flushAll()
+    expect(calls.some((c) => c.url.endsWith('/minecraft/place'))).toBe(false)
+
+    await wrapper.get('[data-test="mc-place-x"]').setValue('100')
+    await wrapper.get('[data-test="mc-place-item"]').setValue('')
+    await wrapper.get('[data-test="mc-place-run"]').trigger('click')
+    await flushAll()
+    expect(calls.some((c) => c.url.endsWith('/minecraft/place'))).toBe(false)
+  })
+
+  it('用手持物品填入按钮把主手物品写进 expected_item', async () => {
+    const { wrapper } = await mountPage(makeHandler())
+    await flushAll()
+    await wrapper.get('[data-test="mc-place-item"]').setValue('')
+    await wrapper.get('[data-test="mc-place-use-held"]').trigger('click')
+    await flushAll()
+    expect((wrapper.get('[data-test="mc-place-item"]').element as HTMLInputElement).value).toBe(
+      'dirt',
+    )
+  })
+
+  it('被确认门拒绝时如实报错（不假装成功）', async () => {
+    const denied = fail(409, 'minecraft.confirmation_required', '这个 Minecraft 动作需要用户确认')
+    const { wrapper } = await mountPage(makeHandler({ place: denied }))
+    await flushAll()
+    await wrapper.get('[data-test="mc-place-run"]').trigger('click')
+    await flushAll()
+    expect(wrapper.text()).toContain('需要用户确认')
+    expect(wrapper.text()).not.toContain('已开始放置')
   })
 })
 

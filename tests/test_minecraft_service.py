@@ -56,6 +56,17 @@ class FakeRuntime:
         # Phase 4B：dig（持续型：默认返回 RUNNING）
         self.dig_calls: list[dict[str, Any]] = []
         self.dig_plan: list[dict[str, Any]] = []
+        # Phase 4C：inventory（只读）+ place（持续型）
+        self.inventory_calls = 0
+        self.inventory_payload: dict[str, Any] = {
+            "ok": True,
+            "online": True,
+            "selected_hotbar_slot": 0,
+            "held_item": {"name": "dirt", "count": 12},
+            "items": [{"name": "dirt", "count": 12}],
+        }
+        self.place_calls: list[dict[str, Any]] = []
+        self.place_plan: list[dict[str, Any]] = []
         self.pathfinder_state: dict[str, Any] = {
             "goal": None,
             "target": None,
@@ -76,6 +87,8 @@ class FakeRuntime:
         app.router.add_post("/minecraft/move_to", self._move_to)
         app.router.add_post("/minecraft/follow_player", self._follow_player)
         app.router.add_post("/minecraft/dig", self._dig)
+        app.router.add_get("/minecraft/inventory", self._inventory)
+        app.router.add_post("/minecraft/place", self._place)
         app.router.add_post("/minecraft/stop", self._stop)
         self._runner = web.AppRunner(app, access_log=None)
         await self._runner.setup()
@@ -232,6 +245,32 @@ class FakeRuntime:
                 "ok": True,
                 "action_id": plan.get("action_id", "act_dig_1"),
                 "action": "dig",
+                "status": plan["status"],
+            }
+        )
+
+    async def _inventory(self, request: web.Request) -> web.Response:
+        self.inventory_calls += 1
+        return web.json_response(dict(self.inventory_payload))
+
+    async def _place(self, request: web.Request) -> web.Response:
+        body = await request.json()
+        self.place_calls.append(body)
+        plan = self.place_plan.pop(0) if self.place_plan else {"status": "RUNNING"}
+        if "error" in plan:
+            code, status = plan["error"]
+            payload: dict[str, Any] = {
+                "ok": False,
+                "error": {"code": code, "message": f"{code}（fake runtime）"},
+            }
+            if plan.get("detail"):
+                payload["error"]["detail"] = plan["detail"]
+            return web.json_response(payload, status=status)
+        return web.json_response(
+            {
+                "ok": True,
+                "action_id": plan.get("action_id", "act_place_1"),
+                "action": "place",
                 "status": plan["status"],
             }
         )

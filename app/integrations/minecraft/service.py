@@ -205,6 +205,76 @@ class MinecraftBlockTooFar(MinecraftBridgeError):
         super().__init__(message, code="minecraft.block_too_far")
 
 
+class MinecraftHeldItemMissing(MinecraftBridgeError):
+    """主手没有拿任何（或数量为 0）物品——本阶段不会自动装备/切 hotbar。"""
+
+    status = 400
+
+    def __init__(self, message: str = "主手没有拿着东西") -> None:
+        super().__init__(message, code="minecraft.held_item_missing")
+
+
+class MinecraftHeldItemChanged(MinecraftBridgeError):
+    """主手拿的不是用户确认的那个物品（expected_item 是硬约束）。"""
+
+    status = 409
+
+    def __init__(
+        self, message: str = "主手物品与确认的不一致", *, expected: str = "", actual: str = ""
+    ) -> None:
+        super().__init__(
+            message,
+            code="minecraft.held_item_changed",
+            detail={"expected": expected, "actual": actual},
+        )
+
+
+class MinecraftTargetOccupied(MinecraftBridgeError):
+    """目标位置已经有方块——第一版只往空气里放（不碰 replaceable 语义）。"""
+
+    status = 409
+
+    def __init__(self, message: str = "目标位置已经有方块", *, actual: str = "") -> None:
+        super().__init__(message, code="minecraft.target_occupied", detail={"actual": actual})
+
+
+class MinecraftReferenceBlockMissing(MinecraftBridgeError):
+    """参考方块（target − face 方向那一格）不存在/是空气：没有可依附的面。"""
+
+    status = 404
+
+    def __init__(self, message: str = "参考方块位置没有方块") -> None:
+        super().__init__(message, code="minecraft.reference_block_missing")
+
+
+class MinecraftBlockUnavailable(MinecraftBridgeError):
+    """目标区域没有加载（blockAt 返回 null）——不猜、不放置。"""
+
+    status = 404
+
+    def __init__(self, message: str = "目标区域没有加载") -> None:
+        super().__init__(message, code="minecraft.block_unavailable")
+
+
+class MinecraftBlockPlaceUnconfirmed(MinecraftBridgeError):
+    """placeBlock resolve 了但世界里没出现预期方块：客户端/服务器不同步，不能报成功。"""
+
+    status = 500
+
+    def __init__(
+        self,
+        message: str = "未能确认方块已被放置",
+        *,
+        expected: str = "",
+        actual: str = "",
+    ) -> None:
+        super().__init__(
+            message,
+            code="minecraft.block_place_unconfirmed",
+            detail={"expected": expected, "actual": actual},
+        )
+
+
 class MinecraftBlockBreakUnconfirmed(MinecraftBridgeError):
     """dig 结束后方块仍在原位：客户端状态与服务器不同步，不能报成功。"""
 
@@ -241,6 +311,31 @@ def _translate(exc: MinecraftRuntimeError) -> MinecraftBridgeError:
         return MinecraftBlockTooFar(str(exc))
     if exc.code == "block.break_unconfirmed":
         return MinecraftBlockBreakUnconfirmed(str(exc))
+    # Phase 4C：place 的目标/手持物品校验（§九-§十二）
+    if exc.code == "held.item_missing":
+        return MinecraftHeldItemMissing(str(exc))
+    if exc.code == "held.item_changed":
+        return MinecraftHeldItemChanged(
+            str(exc),
+            expected=str(exc.detail.get("expected") or ""),
+            actual=str(exc.detail.get("actual") or ""),
+        )
+    if exc.code == "target.occupied":
+        return MinecraftTargetOccupied(str(exc), actual=str(exc.detail.get("actual") or ""))
+    if exc.code == "reference.missing":
+        return MinecraftReferenceBlockMissing(str(exc))
+    if exc.code == "block.unavailable":
+        return MinecraftBlockUnavailable(str(exc))
+    if exc.code == "block.place_unconfirmed":
+        return MinecraftBlockPlaceUnconfirmed(
+            str(exc),
+            expected=str(exc.detail.get("expected") or ""),
+            actual=str(exc.detail.get("actual") or ""),
+        )
+    if exc.code == "face.invalid":
+        return MinecraftActionInvalid(str(exc))
+    if exc.code == "item.invalid":
+        return MinecraftActionInvalid(str(exc))
     if exc.code == "player.not_found":
         return MinecraftPlayerNotFound(str(exc))
     # player.lost / follow.target_too_far 发生在持续动作的后台阶段，正常经事件上报；
@@ -293,6 +388,11 @@ FOLLOW_MAX_USERNAME_CHARS = 16
 
 #: dig 的 expected_block 长度上限（minecraft:xxx 之类）
 DIG_MAX_BLOCK_CHARS = 64
+
+#: Phase 4C：place 只允许这六个方向（与 runtime 同一张表，绝不接受任意向量）
+PLACE_FACES: tuple[str, ...] = ("up", "down", "north", "south", "east", "west")
+#: place 的 expected_item 长度上限
+PLACE_MAX_ITEM_CHARS = 64
 
 
 class _RuntimeProcess:
@@ -546,6 +646,9 @@ class MinecraftService:
         # Phase 4B：dig 的安全门（超时/距离）随进程环境注入 runtime
         env["MC_DIG_TIMEOUT_MS"] = str(int(self.config.action.dig.timeout * 1000))
         env["MC_DIG_MAX_DISTANCE"] = str(self.config.action.dig.max_distance)
+        # Phase 4C：place 的安全门
+        env["MC_PLACE_TIMEOUT_MS"] = str(int(self.config.action.place.timeout * 1000))
+        env["MC_PLACE_MAX_DISTANCE"] = str(self.config.action.place.max_distance)
         env["MC_AUTH_FILE"] = str(self._runtime_dir() / "auth.json")
         # Phase 3C：move_to 的最大距离（runtime 侧与 Service 侧同规则）
         env["MC_MOVE_MAX_DISTANCE"] = str(self.config.action.move_to.max_distance)
@@ -794,6 +897,65 @@ class MinecraftService:
         if any(ord(ch) < 32 or ord(ch) == 127 for ch in expected_block):
             raise MinecraftActionInvalid("expected_block 不能包含控制字符")
         return coords, expected_block.strip()
+
+    async def inventory(self) -> dict[str, Any]:
+        """只读背包切片（Phase 4C）：选中的 hotbar 槽 / 手持物品 / 按名字聚合的物品。
+
+        只做投影与错误翻译：没有 slot、没有 NBT、没有 window/容器状态（§四）。
+        """
+        self._require_enabled()
+        try:
+            await self._ensure_runtime()
+            return await self._client.inventory()
+        except MinecraftRuntimeError as exc:
+            if exc.unreachable:
+                self._mark_runtime_down(str(exc))
+            raise _translate(exc) from exc
+
+    @staticmethod
+    def validate_place(
+        x: Any, y: Any, z: Any, face: Any, expected_item: Any
+    ) -> tuple[dict[str, int], str, str]:
+        """place 的参数校验（纯函数，抛 :class:`MinecraftActionInvalid`）。
+
+        §十三：方块坐标必须是**整数**（100.5 直接拒绝）；§八：face 只允许六个值；
+        §九：expected_item 是"主手必须拿着这个物品"的硬约束（非空字符串）。
+        调用方先校验再进确认门：垃圾参数不该挂出一条待确认。
+        """
+        coords: dict[str, int] = {}
+        for name, value in (("x", x), ("y", y), ("z", z)):
+            if isinstance(value, bool) or not isinstance(value, int):
+                raise MinecraftActionInvalid(f"坐标 {name} 必须是整数（方块坐标没有小数）")
+            coords[name] = int(value)
+        if abs(coords["x"]) > 3.0e7 or abs(coords["z"]) > 3.0e7 or not -512 <= coords["y"] <= 2048:
+            raise MinecraftActionInvalid("坐标超出 Minecraft 世界边界")
+        face_name = str(face or "").strip().lower()
+        if face_name not in PLACE_FACES:
+            raise MinecraftActionInvalid(f"face 必须是 {'/'.join(PLACE_FACES)} 之一")
+        if not isinstance(expected_item, str) or not expected_item.strip():
+            raise MinecraftActionInvalid("expected_item 不能为空（先看清主手拿着什么）")
+        if len(expected_item) > PLACE_MAX_ITEM_CHARS:
+            raise MinecraftActionInvalid(f"expected_item 最长 {PLACE_MAX_ITEM_CHARS} 个字符")
+        if any(ord(ch) < 32 or ord(ch) == 127 for ch in expected_item):
+            raise MinecraftActionInvalid("expected_item 不能包含控制字符")
+        return coords, face_name, expected_item.strip()
+
+    async def place(self, x: Any, y: Any, z: Any, face: Any, expected_item: Any) -> dict[str, Any]:
+        """放置**一个**明确指定的方块（Phase 4C · MEDIUM · 需要用户确认）。
+
+        只做类型/格式校验与 runtime 调用；世界层面的校验（主手物品 / 目标是否空气 /
+        参考方块 / 距离）由 runtime 在真正执行前用**实时状态**判定——确认是授权，不代替校验。
+        返回 ``{action_id, action, status:"RUNNING"}``，终态经 action 事件送达。
+        """
+        self._require_enabled()
+        coords, face_name, item = self.validate_place(x, y, z, face, expected_item)
+        try:
+            await self._ensure_runtime()
+            return await self._client.place(coords["x"], coords["y"], coords["z"], face_name, item)
+        except MinecraftRuntimeError as exc:
+            if exc.unreachable:
+                self._mark_runtime_down(str(exc))
+            raise _translate(exc) from exc
 
     async def dig(self, x: Any, y: Any, z: Any, expected_block: Any) -> dict[str, Any]:
         """破坏**一个**明确指定的方块（Phase 4B · MEDIUM · 需要用户确认）。

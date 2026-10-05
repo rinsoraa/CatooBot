@@ -73,6 +73,9 @@ ACTION_RISK: dict[str, str] = {
     "minecraft_follow_player": "LOW",
     # Phase 4B：第一个世界修改动作（单方块，MEDIUM → 必须用户确认）
     "minecraft_dig": "MEDIUM",
+    # Phase 4C：只读背包切片（SAFE）与放置单方块（MEDIUM，对称于 dig）
+    "minecraft_inventory": "SAFE",
+    "minecraft_place": "MEDIUM",
 }
 
 #: Tool → Action Runtime 动作名（chat 也走统一生命周期）
@@ -83,6 +86,7 @@ TOOL_ACTION: dict[str, str] = {
     "minecraft_follow_player": "follow_player",
     "minecraft_stop": "stop",
     "minecraft_dig": "dig",
+    "minecraft_place": "place",
 }
 
 #: 离线也能用的 Tool：minecraft_world（离线也要能回答「我不在游戏里」）
@@ -95,7 +99,7 @@ OFFLINE_TOOLS: frozenset[str] = frozenset({"minecraft_world", "minecraft_stop"})
 #: world 只读，stop 是控制面）。其余一律独占 —— **默认独占**，Phase 4B/4C 加动作
 #: 时不会漏掉「不能边挖边走」这类互斥约束。
 NON_EXCLUSIVE_TOOLS: frozenset[str] = frozenset(
-    {"minecraft_world", "minecraft_chat", "minecraft_stop"}
+    {"minecraft_world", "minecraft_inventory", "minecraft_chat", "minecraft_stop"}
 )
 
 #: 需要「用户明确要求」才能执行的风险等级（§十四/§十五）
@@ -131,6 +135,15 @@ RUNTIME_ERROR_CODES: dict[str, str] = {
     "block.break_unconfirmed": "minecraft.block_break_unconfirmed",
     "block.dig_aborted": "minecraft.action_failed",
     "block.invalid": "minecraft.action_invalid",
+    # Phase 4C：place 的校验失败（§九-§十二/§十九）
+    "held.item_missing": "minecraft.held_item_missing",
+    "held.item_changed": "minecraft.held_item_changed",
+    "target.occupied": "minecraft.target_occupied",
+    "reference.missing": "minecraft.reference_block_missing",
+    "block.unavailable": "minecraft.block_unavailable",
+    "block.place_unconfirmed": "minecraft.block_place_unconfirmed",
+    "face.invalid": "minecraft.action_invalid",
+    "item.invalid": "minecraft.action_invalid",
 }
 
 #: 一句话活动（§二十二：SUCCEEDED → minecraft.activity）。只写事实，不写情绪。
@@ -141,7 +154,11 @@ _ACTIVITY_TEMPLATES: dict[str, str] = {
     "chat": "刚在服务器里说过话",
     "stop": "刚把 Minecraft 行动停下来了",
     "dig": "刚挖掉了 {block}",
+    "place": "刚放好了 {block}",
 }
+
+#: activity 取哪个结果字段当"那个方块"（dig 看挖掉的是什么，place 看放上去的是什么）
+_ACTIVITY_BLOCK_FIELDS: dict[str, str] = {"dig": "block_before", "place": "block_after"}
 
 _TERMINAL_STATUSES = frozenset({"SUCCEEDED", "FAILED", "CANCELLED", "TIMEOUT"})
 
@@ -427,7 +444,8 @@ class MinecraftAgentContext:
         result = record.get("result") or {}
         where = _format_position(result.get("final_position") or result.get("target"))
         who = str(result.get("username") or "").strip()
-        block = str(result.get("block_before") or "").strip()
+        field = _ACTIVITY_BLOCK_FIELDS.get(str(record.get("action") or ""), "block_before")
+        block = str(result.get(field) or "").strip()
         try:
             return template.format(
                 where=where or "目标位置", who=who or "对方", block=block or "一个方块"
@@ -492,6 +510,10 @@ class MinecraftAgentBridge:
     def world_view(self) -> dict[str, Any]:
         """只读世界视图（语义模型；raw snapshot 绝不外泄给 LLM）。"""
         return self.service.world_view()
+
+    async def inventory(self) -> dict[str, Any]:
+        """只读背包切片（Tool → Bridge/Policy → Service → runtime 只读状态，§三十五）。"""
+        return await self.service.inventory()
 
     def world_facts(self) -> dict[str, Any]:
         """从感知层现取世界事实（在线/维度/坐标/附近玩家）。"""
@@ -884,6 +906,12 @@ def _confirmation_summary(tool: str, risk: str, arguments: Mapping[str, Any] | N
         block = str(args.get("expected_block") or "方块")
         where = _format_position(args)
         return f"挖掉 {block}（{where}）" if where else f"挖掉 {block}"
+    if tool == "minecraft_place":
+        item = str(args.get("expected_item") or "方块")
+        where = _format_position(args)
+        face = str(args.get("face") or "")
+        location = f"{where} 的 {face} 面" if where and face else (where or face)
+        return f"放置 {item} 到 {location}" if location else f"放置 {item}"
     preview = _preview(args)
     return f"{tool}（{risk}）" + (f"：{preview}" if preview else "")
 

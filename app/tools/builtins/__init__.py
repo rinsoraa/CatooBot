@@ -14,6 +14,8 @@ from app.tools.builtins.minecraft_actions import (
     MinecraftStopTool,
 )
 from app.tools.builtins.minecraft_dig import MinecraftDigTool
+from app.tools.builtins.minecraft_inventory import MinecraftInventoryTool
+from app.tools.builtins.minecraft_place import MinecraftPlaceTool
 from app.tools.builtins.minecraft_world import MinecraftWorldTool
 from app.tools.builtins.providers import WeatherTool, WebSearchTool
 from app.tools.builtins.query_image_memory import QueryImageMemoryTool
@@ -24,8 +26,10 @@ __all__ = [
     "MinecraftChatTool",
     "MinecraftDigTool",
     "MinecraftFollowPlayerTool",
+    "MinecraftInventoryTool",
     "MinecraftLookAtTool",
     "MinecraftMoveToTool",
+    "MinecraftPlaceTool",
     "MinecraftStopTool",
     "MinecraftWorldTool",
     "QueryImageMemoryTool",

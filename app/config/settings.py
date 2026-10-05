@@ -866,6 +866,18 @@ class DigConfig(BaseModel):
     max_distance: float = Field(default=5.0, gt=0, le=6.0)
 
 
+class PlaceConfig(BaseModel):
+    """Phase 4C：place（放置单个方块）的安全门。
+
+    第一版只往**空气格**放、只用当前主手的物品；不导航、不找放置面、不换 hotbar、不补货。
+    """
+
+    #: 单次放置的超时（秒）
+    timeout: float = Field(default=30.0, ge=5.0, le=120.0)
+    #: 最大交互距离（格，眼睛 → 目标方块中心，与 dig 同口径）
+    max_distance: float = Field(default=5.0, gt=0, le=6.0)
+
+
 class MinecraftActionConfig(BaseModel):
     """Action Runtime 的动作级配置（Phase 3C 起）。"""
 
@@ -873,6 +885,8 @@ class MinecraftActionConfig(BaseModel):
     follow_player: FollowPlayerConfig = Field(default_factory=FollowPlayerConfig)
     #: Phase 4B：第一个世界修改动作
     dig: DigConfig = Field(default_factory=DigConfig)
+    #: Phase 4C：放置单个方块（dig 的对称实现）
+    place: PlaceConfig = Field(default_factory=PlaceConfig)
 
 
 class MinecraftAgentToolsConfig(BaseModel):

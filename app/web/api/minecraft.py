@@ -111,6 +111,13 @@ _TOOL_STATUS: dict[str, int] = {
     "minecraft.block_not_diggable": 422,
     "minecraft.block_too_far": 422,
     "minecraft.block_break_unconfirmed": 500,
+    # Phase 4C：place 的目标/手持物品校验
+    "minecraft.held_item_missing": 409,
+    "minecraft.held_item_changed": 409,
+    "minecraft.target_occupied": 409,
+    "minecraft.reference_block_missing": 404,
+    "minecraft.block_unavailable": 404,
+    "minecraft.block_place_unconfirmed": 500,
 }
 
 
@@ -183,6 +190,30 @@ class MinecraftApiRoutes(WebContext):
         if bridge is None:
             return {"enabled": False, "context": {}, "policy": {}, "tools": []}
         return bridge.snapshot(tools=_agent_tools(bridge, getattr(self._bot, "tools", None)))
+
+    async def _v1_minecraft_inventory(self, request: web.Request) -> web.Response:
+        """Phase 4C：只读背包切片（选中的 hotbar 槽 / 手持物品 / 聚合物品清单）。
+
+        读端点恒 200：Minecraft 未启用/不在世界里时如实返回 ``online: false``
+        （「不在游戏里」是功能状态，不是故障）。
+        """
+        service = getattr(self._bot, "minecraft", None)
+        if service is None or not isinstance(service, MinecraftService):
+            return ok(
+                {
+                    "ok": True,
+                    "online": False,
+                    "selected_hotbar_slot": None,
+                    "held_item": None,
+                    "items": [],
+                },
+                request=request,
+            )
+        try:
+            data = await service.inventory()
+        except MinecraftBridgeError as exc:
+            raise _translate(exc) from exc
+        return ok(data, request=request)
 
     async def _v1_minecraft_world(self, request: web.Request) -> web.Response:
         """World Debug 只读视图（Phase 2）：语义模型 + raw snapshot + 缓存元信息。"""
@@ -297,6 +328,57 @@ class MinecraftApiRoutes(WebContext):
             )
         return ok(result.data, request=request)
 
+    async def _v1_minecraft_place(self, request: web.Request) -> web.Response:
+        """Phase 4C：放置**一个**方块（开发调试入口）。
+
+        与 dig 同规矩（§二十六）：WebUI 可以跳过"这一轮是不是用户对话"的判断，
+        但**不能**跳过 MEDIUM 确认门 —— 第一次调用只会得到 409
+        ``minecraft.confirmation_required``（``detail`` 里带待确认信息）。
+        """
+        try:
+            service = _service(self._bot)
+        except MinecraftBridgeError as exc:
+            raise _translate(exc) from exc
+        bridge = getattr(service, "agent", None)
+        if bridge is None:
+            raise ApiError(503, "minecraft.disabled", "Minecraft Agent 未装配")
+        body = await read_json(request)
+        arguments = {
+            "x": body.get("x"),
+            "y": body.get("y"),
+            "z": body.get("z"),
+            "face": body.get("face"),
+            "expected_item": body.get("expected_item"),
+        }
+        # 先做参数校验（垃圾参数不该挂出一条待确认），再进确认门
+        try:
+            service.validate_place(
+                arguments["x"],
+                arguments["y"],
+                arguments["z"],
+                arguments["face"],
+                arguments["expected_item"],
+            )
+        except MinecraftBridgeError as exc:
+            raise _translate(exc) from exc
+        result = await bridge.invoke_developer(
+            "minecraft_place",
+            arguments,
+            lambda svc: svc.place(
+                arguments["x"],
+                arguments["y"],
+                arguments["z"],
+                arguments["face"],
+                arguments["expected_item"],
+            ),
+        )
+        if not result.success:
+            code = result.error_type or "minecraft.action_failed"
+            raise ApiError(
+                _TOOL_STATUS.get(code, 500), code, result.error or code, detail=result.data
+            )
+        return ok(result.data, request=request)
+
     # ------------------------------------------- Confirmation Gate（Phase 4A）
 
     async def _v1_minecraft_confirm(self, request: web.Request) -> web.Response:
@@ -383,6 +465,7 @@ class MinecraftApiRoutes(WebContext):
         wrap = json_endpoint
         app.router.add_get(f"{API_PREFIX}/minecraft", wrap(self._v1_minecraft_get))
         app.router.add_get(f"{API_PREFIX}/minecraft/world", wrap(self._v1_minecraft_world))
+        app.router.add_get(f"{API_PREFIX}/minecraft/inventory", wrap(self._v1_minecraft_inventory))
         app.router.add_post(f"{API_PREFIX}/minecraft/join", wrap(self._v1_minecraft_join))
         app.router.add_post(f"{API_PREFIX}/minecraft/leave", wrap(self._v1_minecraft_leave))
         app.router.add_post(f"{API_PREFIX}/minecraft/look_at", wrap(self._v1_minecraft_look_at))
@@ -396,3 +479,4 @@ class MinecraftApiRoutes(WebContext):
             f"{API_PREFIX}/minecraft/agent/confirm", wrap(self._v1_minecraft_confirm)
         )
         app.router.add_post(f"{API_PREFIX}/minecraft/dig", wrap(self._v1_minecraft_dig))
+        app.router.add_post(f"{API_PREFIX}/minecraft/place", wrap(self._v1_minecraft_place))

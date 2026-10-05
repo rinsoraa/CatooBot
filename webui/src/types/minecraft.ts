@@ -175,6 +175,25 @@ export interface MinecraftSemantic {
   points_of_interest?: MinecraftWorldPoi[]
 }
 
+// ---------------- Phase 4C · Inventory / Place ----------------
+
+/** 六个放置方向（与 runtime 同一张表；绝不接受任意向量）。 */
+export type MinecraftPlaceFace = 'up' | 'down' | 'north' | 'south' | 'east' | 'west'
+
+export interface MinecraftInventoryItem {
+  name: string
+  count: number
+}
+
+/** 只读背包切片（按物品名聚合；无 slot / NBT / window）。 */
+export interface MinecraftInventoryView {
+  ok: boolean
+  online: boolean
+  selected_hotbar_slot: number | null
+  held_item: MinecraftInventoryItem | null
+  items: MinecraftInventoryItem[]
+}
+
 // ---------------- Phase 3E · LLM Agent（Tool Debug + Context） ----------------
 
 export type MinecraftActionRisk = 'SAFE' | 'LOW' | 'MEDIUM' | 'HIGH' | 'DESTRUCTIVE'
