@@ -55,7 +55,7 @@ const canLeave = computed(() => isActive.value)
 const action = computed<MinecraftActionView | null>(() => overview.value?.action ?? null)
 // Phase 3C：Pathfinder 诊断 + move_to 目标输入
 const pathfinder = computed<MinecraftPathfinderInfo | null>(() => overview.value?.pathfinder ?? null)
-// Phase 3E：LLM Tool Debug（六个工具的风险/开关/是否允许 + Agent 上下文）
+// Phase 3E：LLM Tool Debug（每个工具的风险/开关/是否允许 + Agent 上下文）
 const agentTools = computed<MinecraftAgentToolRow[]>(() => overview.value?.agent?.tools ?? [])
 const agentContext = computed<Partial<MinecraftAgentContext>>(
   () => overview.value?.agent?.context ?? {},
@@ -797,13 +797,14 @@ onUnmounted(stopPolling)
                 <td><StatusBadge :state="toolState(row)" :label="toolLabel(row)" /></td>
               </tr>
               <tr v-if="!agentTools.length">
-                <td colspan="3" class="cb-caption">Minecraft 未启用：六个工具都不可用。</td>
+                <td colspan="3" class="cb-caption">Minecraft 未启用：所有 Minecraft 工具都不可用。</td>
               </tr>
             </tbody>
           </table>
           <p class="cb-caption">
             LOW 动作（移动 / 跟随）只有在用户明确要求的对话里才会执行；模型自己想动也会被拒。
-            本阶段没有挖、放、攻击、合成等任何破坏世界的能力。
+            会修改世界的动作目前只有一个 minecraft_dig（破坏单个方块），它是 MEDIUM：
+            除了用户明确要求，还必须经过确认门。挖矿、放置、攻击、合成等能力都还没有。
           </p>
         </section>
 
@@ -873,7 +874,7 @@ onUnmounted(stopPolling)
               </tr>
               <tr v-if="!confirmations.length">
                 <td colspan="7" class="cb-caption">
-                  没有待确认的动作。本阶段还没有 MEDIUM/HIGH 动作，可用下面的按钮造一条测试确认。
+                  没有待确认的动作（MEDIUM 动作发起后才会出现待确认）。可用下面的按钮造一条测试确认。
                 </td>
               </tr>
             </tbody>

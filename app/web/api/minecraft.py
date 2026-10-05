@@ -73,7 +73,7 @@ _DISABLED_SNAPSHOT: dict[str, Any] = {
         "elapsed_ms": None,
     },
     "last_event": None,
-    # Phase 3E：LLM Tool Debug（未启用 = 六个工具都不可用）
+    # Phase 3E：LLM Tool Debug（未启用 = 所有 Minecraft 工具都不可用）
     "agent": {
         "enabled": False,
         "context": {},
@@ -115,7 +115,7 @@ _TOOL_STATUS: dict[str, int] = {
 
 
 def _agent_tools(bridge: Any, tools_runtime: Any = None) -> list[dict[str, Any]]:
-    """六个 Minecraft Tool 的只读行：风险 / 注册开关 / 现在是否允许（§三十）。"""
+    """每个 Minecraft Tool 的只读行：风险 / 注册开关 / 现在是否允许（§三十）。"""
     rows: list[dict[str, Any]] = []
     registry = getattr(tools_runtime, "registry", None)
     for name, risk in sorted(ACTION_RISK.items()):
@@ -178,7 +178,7 @@ class MinecraftApiRoutes(WebContext):
         return ok(data, request=request)
 
     def _agent_view(self, service: MinecraftService) -> dict[str, Any]:
-        """Phase 3E：Agent 只读投影（上下文 + 六个工具的风险/开关/是否允许）。"""
+        """Phase 3E：Agent 只读投影（上下文 + 每个工具的风险/开关/是否允许）。"""
         bridge = getattr(service, "agent", None)
         if bridge is None:
             return {"enabled": False, "context": {}, "policy": {}, "tools": []}

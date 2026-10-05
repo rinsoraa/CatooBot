@@ -1,6 +1,6 @@
 """Builtin tools shipped with CatooBot.
 
-Phase 3E：Minecraft 六个工具（一个只读 + 五个动作）——动作类 Tool 只经
+Phase 3E 起：Minecraft 工具（只读 world/chat 之外的动作类）——动作类 Tool 只经
 MinecraftService/Action Runtime 执行，判定与错误结构化在
 :mod:`app.integrations.minecraft.agent`。
 """

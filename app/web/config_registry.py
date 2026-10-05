@@ -850,9 +850,13 @@ _NOTES: dict[str, str] = {
     "minecraft.agent.tools.enabled": "LLM 能不能用 Minecraft 工具（关掉 = 模型完全碰不到游戏）",
     "minecraft.agent.tools.allow_safe": "允许 SAFE 动作：查世界 / 说话 / 朝向 / 停止",
     "minecraft.agent.tools.allow_low": "允许 LOW 动作：非破坏性移动与跟随（仍需用户明确要求）",
-    "minecraft.agent.tools.allow_medium": "允许 MEDIUM 动作（本阶段还没有这类动作）",
-    "minecraft.agent.tools.allow_high": "允许 HIGH 动作（本阶段还没有这类动作）",
-    "minecraft.agent.tools.allow_destructive": "允许 DESTRUCTIVE 动作（本阶段还没有这类动作）",
+    "minecraft.agent.tools.allow_medium": (
+        "允许 MEDIUM 动作：minecraft_dig（破坏单方块，会真实修改世界）；打开后仍需用户在对话里确认"
+    ),
+    "minecraft.agent.tools.allow_high": "允许 HIGH 动作（还没有 HIGH 级动作；保持关闭）",
+    "minecraft.agent.tools.allow_destructive": (
+        "允许 DESTRUCTIVE 动作（还没有这一级动作；保持关闭）"
+    ),
     "minecraft.action.dig.timeout": "单次挖掘最长多少秒（到点按 TIMEOUT 收尾并停止挖掘）",
     "minecraft.action.dig.max_distance": "最大挖掘距离（格）；超出的方块会被拒绝（不自己走过去）",
     "minecraft.action.move_to.max_distance": "单次移动最远走多少格；超过它会被拒绝（防长距离请求）",

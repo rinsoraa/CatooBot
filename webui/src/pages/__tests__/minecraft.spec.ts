@@ -472,7 +472,7 @@ describe('Minecraft 页 · move_to（Phase 3C）', () => {
 })
 
 describe('Minecraft 页 · LLM Tool Debug（Phase 3E）', () => {
-  it('列出六个工具的 风险 / 启用 / 是否允许 与 Agent 上下文', async () => {
+  it('列出所有 Minecraft 工具的 风险 / 启用 / 是否允许 与 Agent 上下文', async () => {
     const { wrapper } = await mountPage((request) => {
       const url = new URL(request.url, 'http://localhost')
       if (url.pathname === '/api/v1/minecraft') return ok(ONLINE_OVERVIEW)
@@ -501,7 +501,7 @@ describe('Minecraft 页 · LLM Tool Debug（Phase 3E）', () => {
     expect(wrapper.get('[data-test="mc-agent-last"]').text()).toContain('minecraft.path_not_found')
   })
 
-  it('Minecraft 未启用时面板说明六个工具都不可用', async () => {
+  it('Minecraft 未启用时面板说明所有工具都不可用', async () => {
     const overview = {
       ...ONLINE_OVERVIEW,
       agent: {

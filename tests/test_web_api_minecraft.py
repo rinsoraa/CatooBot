@@ -375,7 +375,7 @@ async def test_move_to_endpoint_validates_and_translates(tmp_path):
 
 
 async def test_minecraft_projection_includes_agent_block(tmp_path):
-    """§三十/§四十八：GET /minecraft 带 LLM Tool Debug（六个工具的风险/开关/是否允许）。"""
+    """§三十/§四十八：GET /minecraft 带 LLM Tool Debug（每个工具的风险/开关/是否允许）。"""
     async with api_server(tmp_path) as (client, bot, server):
         await client.login()
         # 未启用：仍然 200，agent 块如实说「都不可用」
@@ -396,7 +396,7 @@ async def test_minecraft_projection_includes_agent_block(tmp_path):
         assert all(row["reason"] == "minecraft.disabled" for row in agent["tools"])
 
         # 启用 Tool Runtime + 装配 bridge：SAFE 允许、LOW 因「不在世界」被拒（reason 如实）
-        await bot.tools.start()  # 注册六个 minecraft_* 工具（api_server 不跑 Bot.start）
+        await bot.tools.start()  # 注册全部 minecraft_* 工具（api_server 不跑 Bot.start）
         service = MinecraftService(bot, MinecraftConfig(enabled=True, auto_start_runtime=False))
         bot.minecraft = service
         try:

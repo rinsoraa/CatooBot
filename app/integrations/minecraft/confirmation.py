@@ -9,8 +9,10 @@
 * **一次性**：PENDING → CONSUMED，再用同一个 id 就是 `confirmation_invalid`（§十四）；
 * **只活在内存里**：TTL + 有界 + 重启全部失效，绝不让旧授权复活（§三十六）。
 
-本阶段没有 MEDIUM/HIGH 动作（dig/place/attack 等一律不注册），所以这里只提供基础设施；
-`tests/test_minecraft_confirmation.py` 用一个**只在测试里注册**的桩动作把它跑通。
+MEDIUM 已经有真实动作（`minecraft_dig`，Phase 4B），它走的正是这套确认流程；
+HIGH/DESTRUCTIVE 仍没有实现（风险开关默认关闭）。store 自身的单元测试在
+`tests/test_minecraft_confirmation.py`，工具链路上的确认流程在
+`tests/test_minecraft_agent_confirm_gate.py`。
 """
 
 from __future__ import annotations

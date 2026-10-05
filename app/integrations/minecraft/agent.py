@@ -1,6 +1,6 @@
 """Minecraft Agent Bridge（Phase 3E）：LLM Tool → Policy → Service → Action Runtime。
 
-边界（任务书 §三）：LLM 永远不直接碰 runtime / HTTP / Mineflayer。六个 Minecraft Tool
+边界（任务书 §三）：LLM 永远不直接碰 runtime / HTTP / Mineflayer。Minecraft Tool（7 个）
 只能经过这里，而这里只回答三件事：
 
 * **能不能做** —— :class:`MinecraftActionPolicy`：风险分级（SAFE/LOW/…）+ 显式意图门
@@ -461,7 +461,7 @@ def _format_position(value: Any) -> str:
 
 
 class MinecraftAgentBridge:
-    """六个 Minecraft Tool 的唯一入口：判定 → Service → 结构化结果。"""
+    """Minecraft Tool 的唯一入口：判定（含确认门）→ Service → 结构化结果。"""
 
     def __init__(
         self,

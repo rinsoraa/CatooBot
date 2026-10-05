@@ -50,7 +50,7 @@ export interface MinecraftOverview {
   action?: MinecraftActionView
   /** Phase 3C：Pathfinder 诊断（goal 类型 / 目标坐标 / 是否在移动）。 */
   pathfinder?: MinecraftPathfinderInfo
-  /** Phase 3E：LLM Tool Debug（六个工具的风险/开关/是否允许 + Agent 上下文）。 */
+  /** Phase 3E：LLM Tool Debug（每个工具的风险/开关/是否允许 + Agent 上下文）。 */
   agent?: MinecraftAgentView
   last_event: Record<string, unknown> | null
 }
