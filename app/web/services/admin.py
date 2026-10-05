@@ -385,6 +385,10 @@ class AdminService:
             await self.bot.database.set_setting_json(
                 "prompt_overrides", overrides, int(time.time())
             )
+        # 立即生效：提取器持有的是提示词本身，不重新读库
+        extractor = getattr(self.bot, "extractor", None)
+        if extractor is not None and "memory_extraction_prompt" in data:
+            extractor.set_system_prompt(str(data["memory_extraction_prompt"]))
 
     # ------------------------------------------------------------------ logs
 

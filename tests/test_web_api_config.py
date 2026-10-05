@@ -341,3 +341,24 @@ class TestOldUiRegression:
             assert isinstance(html, str)
             status, _ = await client.post("/login", body={"username": "admin", "password": "pw123"})
             assert status in (200, 302)
+
+
+class TestWebUsernameRename:
+    async def test_renaming_the_web_user_renames_the_database_account(self, tmp_path) -> None:  # type: ignore[no-untyped-def]
+        """旧版设置页改名会连数据库账号一起改；v1 的 PATCH /config 必须同样做。"""
+        async with api_server(tmp_path) as (client, bot, _server):
+            await client.login()
+            status, payload = await client.patch(
+                "/api/v1/config", body={"values": {"web.username": "newadmin"}}
+            )
+            assert status == 200, payload
+
+            renamed = await bot.database.fetchone(
+                "SELECT username FROM web_users WHERE username = ?", ("newadmin",)
+            )
+            old = await bot.database.fetchone(
+                "SELECT username FROM web_users WHERE username = ?", ("admin",)
+            )
+            assert renamed is not None
+            assert old is None
+            assert bot.config.web.username == "newadmin"

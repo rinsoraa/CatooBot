@@ -74,6 +74,15 @@ class MemoryExtractor:
         self._tasks: set[asyncio.Task[None]] = set()
         #: consecutive extractions that saved nothing (Task 25 health signal)
         self._zero_streak = 0
+        #: operator-supplied extraction prompt (WebUI 提示词页); empty = built-in
+        self._system_prompt = ""
+
+    def set_system_prompt(self, prompt: str) -> None:
+        """Swap the extraction system prompt (WebUI override; empty = built-in)."""
+        self._system_prompt = str(prompt or "").strip()
+
+    def system_prompt(self) -> str:
+        return self._system_prompt or EXTRACTION_PROMPT
 
     async def schedule(
         self,
@@ -113,7 +122,7 @@ class MemoryExtractor:
     ) -> None:
         scope = "group" if session_id.startswith("group:") else "user"
         ref = session_id.split(":", 1)[-1]
-        prompt = EXTRACTION_PROMPT + f"用户: {user_message}\n角色: {assistant_reply}\n\nJSON:"
+        prompt = self.system_prompt() + f"用户: {user_message}\n角色: {assistant_reply}\n\nJSON:"
         request = AIRequest(
             messages=[ChatMessage.user(prompt)],
             temperature=0.1,

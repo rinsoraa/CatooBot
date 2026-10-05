@@ -187,6 +187,30 @@ const EMPTY_EXTRAS: Partial<WorldData> = {
 interface MountConfig {
   world?: WorldData
   controlReply?: MockReply
+  behaviorTestReply?: MockReply
+  behaviorPreviewReply?: MockReply
+  behaviorTriggerReply?: (action: string) => MockReply
+}
+
+function makePreviewResult() {
+  return {
+    ok: true,
+    time: '深夜 23:30',
+    period: 'night',
+    sleeping: false,
+    dnd: true,
+    state: { mood: 'quiet', activity: '看书', energy: 0.4 },
+    relationship: 'familiar',
+    delay: 3.5,
+    chunks: ['好呀。', '等我看一下。'],
+    initiative: {
+      would_consider: true,
+      blocked_by: '',
+      reason: '未完成的项目',
+      probability: 0.35,
+      simulated_roll: 0.12,
+    },
+  }
 }
 
 function makeHandler(config: MountConfig = {}): (request: MockRequest) => MockReply {
@@ -195,6 +219,29 @@ function makeHandler(config: MountConfig = {}): (request: MockRequest) => MockRe
     if (request.path === '/api/v1/world' && request.method === 'GET') return ok(world)
     if (request.path.startsWith('/api/v1/world/control/') && request.method === 'POST') {
       return config.controlReply ?? ok({ ok: true, reason: '', phase: 'paused' })
+    }
+    if (request.path === '/api/v1/behavior/test-response' && request.method === 'POST') {
+      return (
+        config.behaviorTestReply ??
+        ok({
+          ok: true,
+          reply: '今天挺好的，你呢？',
+          delay: 1.5,
+          chunks: ['今天挺好的，', '你呢？'],
+          state: { mood: 'happy', activity: '看书', energy: 0.6 },
+          time: '下午',
+        })
+      )
+    }
+    if (request.path === '/api/v1/behavior/preview' && request.method === 'POST') {
+      return config.behaviorPreviewReply ?? ok(makePreviewResult())
+    }
+    if (request.path.startsWith('/api/v1/behavior/triggers/') && request.method === 'POST') {
+      const action = request.path.split('/').pop() ?? ''
+      return (
+        config.behaviorTriggerReply?.(action) ??
+        ok({ action, result: { ok: true, state: { mood: 'happy', energy: 0.5, activity: '看书' } } })
+      )
     }
     return fail(404, 'not_found', `未模拟 ${request.method} ${request.path}`)
   }
@@ -335,5 +382,115 @@ describe('World 页', () => {
     await flushAll()
 
     expect(wrapper.get('[data-test="world-control-error"]').text()).toContain('控制失败：世界正忙')
+  })
+})
+
+describe('World 页 · 行为调试（v0.8 对话行为迁移）', () => {
+  it('试跑回复：提交原文并渲染 reply / delay / chunks / state', async () => {
+    const { wrapper, calls } = await mountWorld()
+
+    await wrapper.get('[data-test="behavior-test-input"] textarea').setValue('今天过得怎么样？')
+    await wrapper.get('[data-test="behavior-test-run"]').trigger('click')
+    await flushAll()
+
+    const post = calls.find((call) => call.path === '/api/v1/behavior/test-response')
+    expect(post?.method).toBe('POST')
+    expect(post?.body).toEqual({ text: '今天过得怎么样？' })
+
+    const result = wrapper.get('[data-test="behavior-test-result"]')
+    expect(result.get('[data-test="behavior-test-reply"]').text()).toContain('今天挺好的')
+    expect(result.get('[data-test="behavior-test-delay"]').text()).toContain('1.5')
+    expect(result.get('[data-test="behavior-test-chunks"]').text()).toContain('你呢？')
+    expect(result.get('[data-test="behavior-test-state"]').text()).toContain('mood=happy')
+  })
+
+  it('空文本不发请求，只提示先输入', async () => {
+    const { wrapper, calls } = await mountWorld()
+
+    await wrapper.get('[data-test="behavior-test-run"]').trigger('click')
+    await flushAll()
+
+    expect(calls.filter((call) => call.path === '/api/v1/behavior/test-response')).toHaveLength(0)
+    const { items } = useToast()
+    expect(items.value.some((item) => item.kind === 'warning' && item.message.includes('先输入'))).toBe(true)
+  })
+
+  it('后端拒绝试跑时展示其 message', async () => {
+    const { wrapper } = await mountWorld({
+      behaviorTestReply: fail(400, 'behavior.text_required', '测试回复需要 text'),
+    })
+
+    await wrapper.get('[data-test="behavior-test-input"] textarea').setValue('你好')
+    await wrapper.get('[data-test="behavior-test-run"]').trigger('click')
+    await flushAll()
+
+    expect(wrapper.get('[data-test="behavior-test-error"]').text()).toContain('测试回复需要 text')
+    expect(wrapper.find('[data-test="behavior-test-result"]').exists()).toBe(false)
+  })
+
+  it('mood_up 直接触发：无需确认即可 POST', async () => {
+    const { wrapper, calls } = await mountWorld()
+
+    await wrapper.get('[data-test="behavior-trigger-mood_up"]').trigger('click')
+    await flushAll()
+
+    const posts = calls.filter((call) => call.path === '/api/v1/behavior/triggers/mood_up')
+    expect(posts).toHaveLength(1)
+    expect(wrapper.find('[data-test="confirm"]').exists()).toBe(false)
+    expect(wrapper.get('[data-test="behavior-trigger-result"]').text()).toContain('mood=happy')
+  })
+
+  it('reset_state：确认前零请求，确认后才发出 POST', async () => {
+    const { wrapper, calls } = await mountWorld()
+
+    await wrapper.get('[data-test="behavior-trigger-reset_state"]').trigger('click')
+    expect(wrapper.find('[data-test="confirm"]').exists()).toBe(true)
+    expect(wrapper.get('[role="dialog"]').text()).toContain('不可撤销')
+    expect(calls.filter((call) => call.path.startsWith('/api/v1/behavior/triggers/'))).toHaveLength(0)
+
+    await wrapper.get('[data-test="confirm"]').trigger('click')
+    await flushAll()
+
+    const posts = calls.filter((call) => call.path === '/api/v1/behavior/triggers/reset_state')
+    expect(posts).toHaveLength(1)
+    expect(posts[0]?.method).toBe('POST')
+    expect(posts[0]?.body).toBeNull()
+  })
+
+  it('触发失败展示后端 message', async () => {
+    const { wrapper } = await mountWorld({
+      behaviorTriggerReply: () => fail(400, 'behavior.trigger_unknown', '未知的行为动作：nope'),
+    })
+
+    await wrapper.get('[data-test="behavior-trigger-mood_down"]').trigger('click')
+    await flushAll()
+
+    expect(wrapper.get('[data-test="behavior-trigger-error"]').text()).toContain('未知的行为动作')
+  })
+
+  it('行为模拟器：提交表单字段并渲染延迟 / 主动判定', async () => {
+    const { wrapper, calls } = await mountWorld()
+
+    await wrapper.get('[data-test="behavior-preview-sim-time"] input').setValue('23:30')
+    await wrapper.get('[data-test="behavior-preview-mood"] input').setValue('quiet')
+    await wrapper.get('[data-test="behavior-preview-activity"] input').setValue('看书')
+    await wrapper.get('[data-test="behavior-preview-topic"] input').setValue('未完成的项目')
+    await wrapper.get('[data-test="behavior-preview-run"]').trigger('click')
+    await flushAll()
+
+    const post = calls.find((call) => call.path === '/api/v1/behavior/preview')
+    expect(post?.method).toBe('POST')
+    expect(post?.body).toEqual({
+      sim_time: '23:30',
+      mood: 'quiet',
+      activity: '看书',
+      relationship: 'familiar',
+      topic: '未完成的项目',
+    })
+
+    const result = wrapper.get('[data-test="behavior-preview-result"]')
+    expect(result.get('[data-test="behavior-preview-delay"]').text()).toContain('3.5')
+    expect(result.get('[data-test="behavior-preview-chunks"]').text()).toContain('等我看一下。')
+    expect(result.get('[data-test="behavior-preview-initiative"]').text()).toContain('会考虑')
   })
 })

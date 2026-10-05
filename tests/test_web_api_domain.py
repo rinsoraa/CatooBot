@@ -208,3 +208,102 @@ class TestMemories:
             status, payload = await client.post("/api/v1/memories/987654/activate")
             assert status == 404
             assert error_code(payload) == "memory.not_found"
+
+
+class TestBehaviorDebugPromptsAndCharacterIO:
+    """v0.8 → v1 迁移：行为调试、提示词、角色导入导出必须在新版同样可达。
+
+    旧版分别是 /behavior/test-response、/behavior/preview、/behavior/trigger/*、
+    /prompts、/character/export 与 /character/import（两步式）。危险的一方保留
+    确认门：导入只有带 confirm=import 才真正写入。
+    """
+
+    async def test_test_response_is_a_dry_run(self, tmp_path) -> None:  # type: ignore[no-untyped-def]
+        async with v1_server(tmp_path) as (client, _bot, _server):
+            await client.login()
+            status, payload = await client.post(
+                "/api/v1/behavior/test-response", body={"text": "你好呀"}
+            )
+            assert status == 200
+            assert isinstance(payload["data"], dict)
+
+            status, payload = await client.post("/api/v1/behavior/test-response", body={})
+            assert status == 400
+            assert error_code(payload) == "behavior.text_required"
+
+    async def test_preview_and_triggers(self, tmp_path) -> None:  # type: ignore[no-untyped-def]
+        async with v1_server(tmp_path) as (client, _bot, _server):
+            await client.login()
+            status, payload = await client.post(
+                "/api/v1/behavior/preview", body={"mood": "happy", "topic": "项目"}
+            )
+            assert status == 200 and isinstance(payload["data"], dict)
+
+            status, payload = await client.post("/api/v1/behavior/triggers/mood_up")
+            assert status == 200
+            assert payload["data"]["action"] == "mood_up"
+            assert payload["data"]["result"]["ok"] is True
+
+            status, payload = await client.post("/api/v1/behavior/triggers/nope")
+            assert status == 400
+            assert error_code(payload) == "behavior.trigger_unknown"
+
+    async def test_prompts_round_trip(self, tmp_path) -> None:  # type: ignore[no-untyped-def]
+        async with v1_server(tmp_path) as (client, _bot, _server):
+            await client.login()
+            status, payload = await client.get("/api/v1/prompts")
+            assert status == 200
+            assert {"persona_system_prompt", "memory_extraction_prompt"} <= set(payload["data"])
+
+            status, payload = await client.patch(
+                "/api/v1/prompts",
+                body={"memory_extraction_prompt": "只记住用户明确说过的偏好。"},
+            )
+            assert status == 200
+            assert payload["data"]["memory_extraction_prompt"] == "只记住用户明确说过的偏好。"
+
+            status, payload = await client.patch("/api/v1/prompts", body={})
+            assert status == 400
+            assert error_code(payload) == "prompts.empty"
+
+    async def test_character_export_and_import_two_step(self, tmp_path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+        from pathlib import Path
+
+        from app.web.services.admin import AdminService
+
+        apply_calls: list[tuple[bool, bool]] = []
+
+        async def fake_confirm(_self: AdminService, path: str) -> dict:
+            # 记录调用时临时文件是否存在（类方法签名带 self，因此这里多一个参数）
+            apply_calls.append((True, Path(path).exists()))
+            return {"ok": True, "rows": 1}
+
+        monkeypatch.setattr(AdminService, "import_character_confirm", fake_confirm)
+
+        async with v1_server(tmp_path) as (client, _bot, _server):
+            await client.login()
+            status, payload = await client.get("/api/v1/character/export")
+            assert status == 200
+            document = payload["data"]
+            assert {"tables", "counts", "format"} <= set(document)
+
+            # 第一步：只预览，不写入
+            status, payload = await client.post(
+                "/api/v1/character/import", body={"document": document}
+            )
+            assert status == 200
+            assert payload["data"]["applied"] is False
+            assert "preview" in payload["data"]
+            assert apply_calls == []
+
+            # 第二步：确认导入
+            status, payload = await client.post(
+                "/api/v1/character/import", body={"document": document, "confirm": "import"}
+            )
+            assert status == 200
+            assert payload["data"]["applied"] is True
+            assert apply_calls == [(True, True)]
+
+            status, payload = await client.post("/api/v1/character/import", body={})
+            assert status == 400
+            assert error_code(payload) == "character.document_required"

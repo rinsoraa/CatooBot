@@ -7,8 +7,12 @@
  * initiative_enabled），保存只提交改动字段；其余全部只读。
  */
 import { computed, reactive, ref, watch } from 'vue'
+import { NInput } from 'naive-ui'
 import { RouterLink, useRoute } from 'vue-router'
 
+import { errorMessage } from '@/api/client'
+import { socialApi } from '@/api/social'
+import ConfirmDialog from '@/components/ConfirmDialog.vue'
 import EmptyState from '@/components/EmptyState.vue'
 import ErrorState from '@/components/ErrorState.vue'
 import LoadingState from '@/components/LoadingState.vue'
@@ -17,7 +21,7 @@ import CommitmentCard from '@/components/domain/CommitmentCard.vue'
 import RelationshipCard from '@/components/domain/RelationshipCard.vue'
 import { toast } from '@/composables/toast'
 import { useSocialStore } from '@/stores/social'
-import type { SocialUserDetail } from '@/types/social'
+import type { SocialSessionRow, SocialUserDetail } from '@/types/social'
 
 const route = useRoute()
 const store = useSocialStore()
@@ -49,6 +53,101 @@ watch(
 
 // 空间名只是展示辅助：加载失败也不阻塞详情页。
 void store.loadSpaces()
+
+// ------------------------------------------------------------ 会话上下文
+/**
+ * 本页没有会话列表，因此按任务允许的降级路径提供 session_id 输入：
+ * 有活动会话时优先推导 `group:<群号>`（经空间映射）或 `private:<QQ>`。
+ * 读取/清空都走 socialApi，错误只落在本区块，不污染详情页的 store.error。
+ */
+const sessionRows = ref<SocialSessionRow[]>([])
+const sessionLoading = ref(false)
+const sessionLoadError = ref('')
+const sessionId = ref('')
+const sessionTouched = ref(false)
+
+const personSession = computed(
+  () => sessionRows.value.find((row) => row.person_id === person.value?.person_id) ?? null,
+)
+
+function deriveSessionId(): string {
+  const active = personSession.value
+  if (active) {
+    const group = Object.entries(store.spaceMap).find(([, spaceId]) => spaceId === active.social_space_id)
+    if (group) return `group:${group[0]}`
+  }
+  const qq = person.value?.qq
+  return qq ? `private:${qq}` : ''
+}
+
+function syncSessionId(): void {
+  if (!sessionTouched.value) sessionId.value = deriveSessionId()
+}
+
+async function loadSessions(): Promise<void> {
+  sessionLoading.value = true
+  sessionLoadError.value = ''
+  try {
+    const data = await socialApi.sessions()
+    sessionRows.value = data.items
+    syncSessionId()
+  } catch (caught) {
+    sessionRows.value = []
+    sessionLoadError.value = errorMessage(caught)
+  } finally {
+    sessionLoading.value = false
+  }
+}
+
+void loadSessions()
+
+watch(person, () => syncSessionId())
+
+function onSessionIdInput(): void {
+  sessionTouched.value = true
+}
+
+const pendingClear = ref(false)
+const clearing = ref(false)
+const clearError = ref('')
+
+function askClear(): void {
+  clearError.value = ''
+  if (!sessionId.value.trim()) {
+    toast.warning('请先填写要清空的 session_id')
+    return
+  }
+  pendingClear.value = true
+}
+
+async function confirmClear(): Promise<void> {
+  const id = sessionId.value.trim()
+  pendingClear.value = false
+  if (!id || clearing.value) return
+  clearing.value = true
+  clearError.value = ''
+  try {
+    const result = await socialApi.clearSession(id)
+    toast.success('已清空会话上下文', result.session_id)
+    await loadSessions()
+  } catch (caught) {
+    // 409 session.confirm_required / 后端 message 原样展示，不改写。
+    clearError.value = errorMessage(caught)
+    toast.error('清空失败', clearError.value)
+  } finally {
+    clearing.value = false
+  }
+}
+
+const sessionStatusText = computed(() => {
+  if (sessionLoading.value) return '正在读取会话状态…'
+  if (sessionLoadError.value) return `会话状态读取失败：${sessionLoadError.value}`
+  if (personSession.value) {
+    const space = personSession.value.social_space_id || '未知空间'
+    return `当前有活动会话（${space} · ${personSession.value.turns} 回合）`
+  }
+  return '当前没有活动会话；可手动填写要清空的 session_id。'
+})
 
 // ------------------------------------------------------------------ 可编辑区
 interface UserPayload {
@@ -272,6 +371,56 @@ function spaceName(spaceId: string): string {
         </p>
       </form>
 
+      <section class="cb-social-detail__block" data-test="block-session">
+        <SectionHeader
+          title="会话上下文"
+          description="清空后她会忘掉这段对话的短期上下文；记忆与关系不受影响。"
+        />
+        <div class="cb-social-detail__session">
+          <label class="cb-social-detail__field cb-social-detail__field--wide">
+            <span class="cb-caption">session_id（私聊为 private:QQ，群聊为 group:群号）</span>
+            <NInput
+              v-model:value="sessionId"
+              data-test="session-id"
+              placeholder="private:10001"
+              @update:value="onSessionIdInput"
+            />
+          </label>
+          <p class="cb-caption" data-test="session-status">{{ sessionStatusText }}</p>
+          <div class="cb-social-detail__edit-actions">
+            <button
+              type="button"
+              class="cb-social-detail__danger"
+              data-test="session-clear"
+              :disabled="clearing || !sessionId.trim()"
+              @click="askClear"
+            >
+              {{ clearing ? '清空中…' : '清空会话上下文' }}
+            </button>
+            <span class="cb-caption">清空前会再次确认。</span>
+          </div>
+          <p
+            v-if="clearError"
+            class="cb-social-detail__error"
+            role="alert"
+            data-test="session-clear-error"
+          >
+            {{ clearError }}
+          </p>
+        </div>
+      </section>
+
+      <ConfirmDialog
+        :show="pendingClear"
+        title="清空会话上下文"
+        :message="`确定清空会话「${sessionId.trim()}」的上下文吗？`"
+        detail="清空不可撤销：她会忘掉这段对话的短期上下文（记忆与关系不受影响）。"
+        confirm-text="清空"
+        danger
+        @confirm="confirmClear"
+        @cancel="pendingClear = false"
+      />
+
       <section class="cb-social-detail__block" data-test="block-relationship">
         <SectionHeader
           title="关系"
@@ -485,6 +634,41 @@ function spaceName(spaceId: string): string {
 .cb-social-detail__error {
   color: var(--cb-danger);
   font-size: var(--cb-text-sm);
+}
+
+.cb-social-detail__session {
+  display: flex;
+  flex-direction: column;
+  gap: var(--cb-space-3);
+  padding: var(--cb-space-4);
+  border: 1px solid var(--cb-border);
+  border-radius: var(--cb-radius-md);
+  background: var(--cb-surface);
+}
+
+.cb-social-detail__session :deep(.n-input) {
+  width: 100%;
+}
+
+.cb-social-detail__danger {
+  padding: var(--cb-space-2) var(--cb-space-4);
+  border: 1px solid var(--cb-danger);
+  border-radius: var(--cb-radius-sm);
+  background: var(--cb-danger-soft);
+  color: var(--cb-danger);
+  font-family: inherit;
+  font-size: var(--cb-text-sm);
+  cursor: pointer;
+}
+
+.cb-social-detail__danger:hover:not(:disabled) {
+  border-color: var(--cb-danger);
+  color: var(--cb-danger);
+}
+
+.cb-social-detail__danger:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
 }
 
 .cb-social-detail__block {

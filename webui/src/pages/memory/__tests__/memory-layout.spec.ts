@@ -1,4 +1,4 @@
-/** 记忆外壳（W5 §26）：唯一 h1 + 三个 tab + RouterView。 */
+/** 记忆外壳（W5 §26）：唯一 h1 + 四个 tab + RouterView。 */
 import { defineComponent } from 'vue'
 import { mount } from '@vue/test-utils'
 import { createMemoryHistory, createRouter, RouterView } from 'vue-router'
@@ -14,7 +14,7 @@ const Host = defineComponent({
 })
 
 describe('MemoryLayout', () => {
-  it('renders a single h1 记忆, the three tabs and the child route', async () => {
+  it('renders a single h1 记忆, the four tabs and the child route', async () => {
     const router = createRouter({
       history: createMemoryHistory(),
       routes: [
@@ -25,6 +25,7 @@ describe('MemoryLayout', () => {
             { path: '', name: 'memory', component: Child },
             { path: 'timeline', name: 'memory-timeline', component: Child },
             { path: 'health', name: 'memory-health', component: Child },
+            { path: 'ops', name: 'memory-ops', component: Child },
           ],
         },
       ],
@@ -44,6 +45,7 @@ describe('MemoryLayout', () => {
       '/memory/timeline',
     )
     expect(wrapper.get('[data-test="memory-tab-health"]').attributes('href')).toBe('/memory/health')
+    expect(wrapper.get('[data-test="memory-tab-ops"]').attributes('href')).toBe('/memory/ops')
     expect(wrapper.get('[data-test="memory-child"]').text()).toBe('浏览子页面')
   })
 })

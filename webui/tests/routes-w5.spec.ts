@@ -36,6 +36,7 @@ const W5_ROUTES: { path: string; name: string; title: string }[] = [
   { path: '/system/logs', name: 'system-logs', title: '系统 · 日志' },
   { path: '/system/runtime', name: 'system-runtime', title: '系统 · Runtime' },
   { path: '/ai', name: 'ai-overview', title: 'AI 与模型' },
+  { path: '/ai/prompts', name: 'ai-prompts', title: 'AI · 提示词' },
 ]
 
 function sessionEnvelope() {

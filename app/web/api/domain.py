@@ -16,6 +16,10 @@ W5 起 ``DomainApiRoutes`` 同时承载 ``SocialApiRoutes``（``app/web/api/soci
 
 from __future__ import annotations
 
+import contextlib
+import json
+import tempfile
+from pathlib import Path
 from typing import Any
 
 from aiohttp import web
@@ -45,6 +49,13 @@ WORLD_CONFIRM = {"reset": "reset", "reinitialize": "reinitialize"}
 
 #: 记忆动作（MemoryAdminService.action；W5 增加 edit，delete 需 confirm）
 MEMORY_ACTIONS = frozenset({"activate", "archive", "reembed", "delete", "edit"})
+
+#: 向量运维（沿用旧版 /memory/embeddings/{action} 语义；清缓存需 confirm=clear-cache）
+EMBEDDING_ACTIONS = frozenset({"rebuild", "retry", "clear-cache"})
+EMBEDDING_CONFIRM = {"clear-cache": "clear-cache"}
+
+#: 行为调试动作（沿用旧版 /behavior/trigger/{action}）
+BEHAVIOR_TRIGGERS = frozenset({"mood_up", "mood_down", "reset_state", "test_initiative"})
 
 #: 未闭环话题动作（BehaviorService.topic_action）
 TOPIC_ACTIONS = frozenset({"resolve", "forget", "delete"})
@@ -330,6 +341,147 @@ class DomainApiRoutes(SocialApiRoutes, WebContext):
         except (KeyError, ValueError) as exc:
             raise bad_request("记忆 ID 必须是整数", field="memory_id") from exc
 
+    # ------------------------------------------------- 记忆运维（v0.8 迁移）
+
+    async def _v1_memories_embeddings(self, request: web.Request) -> web.Response:
+        """向量状态（旧版 /memory/embeddings 的只读部分）。"""
+        return ok(await self._memory_admin.embedding_status(), request=request)
+
+    async def _v1_memories_embedding_action(self, request: web.Request) -> web.Response:
+        action = str(request.match_info["action"])
+        if action not in EMBEDDING_ACTIONS:
+            raise bad_request(f"未知的向量动作：{action}", code="memory.embedding_action_unknown")
+        confirm = EMBEDDING_CONFIRM.get(action)
+        if confirm:
+            body = await read_json(request, required=False)
+            if body.get("confirm") != confirm:
+                raise conflict(
+                    f"该动作需要 confirm={confirm}：{action}",
+                    code="memory.confirm_required",
+                )
+        if action == "rebuild":
+            result = await self._memory_admin.rebuild_embeddings(limit=500)
+        elif action == "retry":
+            result = await self._memory_admin.retry_failed()
+        else:
+            result = await self._memory_admin.clear_embedding_cache()
+        return ok({"action": action, "result": result}, request=request)
+
+    async def _v1_memories_consolidation(self, request: web.Request) -> web.Response:
+        """整理状态（旧版 /memory/consolidation 的只读部分）。"""
+        return ok(await self._memory_admin.consolidation_status(), request=request)
+
+    async def _v1_memories_consolidation_run(self, request: web.Request) -> web.Response:
+        """手动跑一次记忆整理（旧版 /memory/consolidation/run 的等价物）。"""
+        body = await read_json(request, required=False)
+        scope_key = str(body.get("scope", "") or "").strip()
+        result = await self._memory_admin.run_consolidation(scope_key)
+        return ok({"scope": scope_key, "result": result}, request=request)
+
+    async def _v1_memories_retrieval_debug(self, request: web.Request) -> web.Response:
+        """检索打分链路（旧版 /memory/retrieval-debug 的等价物，只读）。"""
+        query = str(request.query.get("q", "") or "").strip()
+        if not query:
+            raise bad_request("检索调试需要 q=查询词", field="q", code="memory.query_required")
+        scope_key = str(request.query.get("scope", "") or "").strip()
+        return ok(await self._memory_admin.retrieval_debug(query, scope_key), request=request)
+
+    async def _v1_session_clear(self, request: web.Request) -> web.Response:
+        """清空某个会话的上下文（旧版 /api/sessions/clear 的等价物）。"""
+        session_id = str(request.match_info["session_id"])
+        body = await read_json(request, required=False)
+        if body.get("confirm") != "clear":
+            raise conflict(
+                "清空会话上下文会让她忘掉这段对话，请带 confirm=clear 再试",
+                code="session.confirm_required",
+            )
+        await self._admin.clear_session(session_id)
+        return ok({"cleared": True, "session_id": session_id}, request=request)
+
+    # ------------------------------------------------- 行为调试（v0.8 迁移）
+
+    async def _v1_behavior_test_response(self, request: web.Request) -> web.Response:
+        """试跑一次回复链路：生成但不发送（旧版 /behavior/test-response）。"""
+        body = await read_json(request, required=False)
+        text = str(body.get("text", "") or "").strip()
+        if not text:
+            raise bad_request("测试回复需要 text", field="text", code="behavior.text_required")
+        return ok(await self._behavior.test_response(text), request=request)
+
+    async def _v1_behavior_preview(self, request: web.Request) -> web.Response:
+        """行为模拟器：延迟/分条/主动判定，永不发送（旧版 /behavior/preview）。"""
+        body = await read_json(request, required=False)
+        allowed = {"sim_time", "mood", "activity", "relationship", "topic", "sample_reply"}
+        return ok(
+            await self._behavior.preview({k: v for k, v in body.items() if k in allowed}),
+            request=request,
+        )
+
+    async def _v1_behavior_trigger(self, request: web.Request) -> web.Response:
+        """手动触发状态变化（旧版 /behavior/trigger/{action}）。"""
+        action = str(request.match_info["action"])
+        if action not in BEHAVIOR_TRIGGERS:
+            raise bad_request(f"未知的行为动作：{action}", code="behavior.trigger_unknown")
+        if action == "mood_up":
+            result = await self._behavior.test_state_transition(+1)
+        elif action == "mood_down":
+            result = await self._behavior.test_state_transition(-1)
+        elif action == "reset_state":
+            result = await self._behavior.reset_state()
+        else:
+            preview = await self._behavior.preview(
+                {"topic": "未完成的项目", "relationship": "familiar"}
+            )
+            result = preview.get("initiative", preview)
+        return ok({"action": action, "result": result}, request=request)
+
+    # ------------------------------------------------- 提示词（v0.8 迁移）
+
+    async def _v1_prompts(self, request: web.Request) -> web.Response:
+        """当前提示词：人设系统提示 + 记忆提取提示（旧版 /prompts）。"""
+        return ok(await self._admin.get_prompts(), request=request)
+
+    async def _v1_prompts_patch(self, request: web.Request) -> web.Response:
+        body = await read_json(request)
+        data = {
+            key: str(value)
+            for key, value in body.items()
+            if key in ("persona_system_prompt", "memory_extraction_prompt")
+        }
+        if not data:
+            raise bad_request("没有可写的提示词字段", code="prompts.empty")
+        await self._admin.save_prompts(data)
+        return ok(await self._admin.get_prompts(), request=request)
+
+    # ------------------------------------------------- 角色导入导出（v0.8 迁移）
+
+    async def _v1_character_export(self, request: web.Request) -> web.Response:
+        """导出角色域（人设/记忆/关系…）为一份 JSON 文档。"""
+        return ok(await self._admin.export_character(), request=request)
+
+    async def _v1_character_import(self, request: web.Request) -> web.Response:
+        """导入角色文档：默认只预览，带 confirm=import 才真正写入（旧版两步式）。"""
+        body = await read_json(request)
+        document = body.get("document")
+        if not isinstance(document, dict):
+            raise bad_request(
+                "导入需要 document 对象", field="document", code="character.document_required"
+            )
+        with tempfile.NamedTemporaryFile(
+            "w", suffix=".json", delete=False, encoding="utf-8"
+        ) as handle:
+            json.dump(document, handle, ensure_ascii=False)
+            path = handle.name
+        try:
+            preview = await self._admin.import_character_preview(path)
+            if body.get("confirm") != "import":
+                return ok({"preview": preview, "applied": False}, request=request)
+            applied = await self._admin.import_character_confirm(path)
+            return ok({"preview": preview, "applied": True, "result": applied}, request=request)
+        finally:
+            with contextlib.suppress(OSError):
+                Path(path).unlink()
+
     # ----------------------------------------------------------- registration
 
     def _register_v1_domain(self, app: web.Application) -> None:
@@ -350,6 +502,37 @@ class DomainApiRoutes(SocialApiRoutes, WebContext):
         app.router.add_get(f"{API_PREFIX}/memories", wrap(self._v1_memories))
         app.router.add_get(f"{API_PREFIX}/memories/timeline", wrap(self._v1_memories_timeline))
         app.router.add_get(f"{API_PREFIX}/memories/health", wrap(self._v1_memories_health))
+        # 静态路径必须先于 /memories/{memory_id} 注册（否则会被当成 ID）
+        app.router.add_get(f"{API_PREFIX}/memories/embeddings", wrap(self._v1_memories_embeddings))
+        app.router.add_post(
+            f"{API_PREFIX}/memories/embeddings/{{action}}",
+            wrap(self._v1_memories_embedding_action),
+        )
+        app.router.add_get(
+            f"{API_PREFIX}/memories/consolidation", wrap(self._v1_memories_consolidation)
+        )
+        app.router.add_post(
+            f"{API_PREFIX}/memories/consolidation/run",
+            wrap(self._v1_memories_consolidation_run),
+        )
+        app.router.add_get(
+            f"{API_PREFIX}/memories/retrieval-debug", wrap(self._v1_memories_retrieval_debug)
+        )
+        app.router.add_post(
+            f"{API_PREFIX}/sessions/{{session_id}}/clear", wrap(self._v1_session_clear)
+        )
+        # 行为调试 / 提示词 / 角色导入导出（v0.8 能力迁移）
+        app.router.add_post(
+            f"{API_PREFIX}/behavior/test-response", wrap(self._v1_behavior_test_response)
+        )
+        app.router.add_post(f"{API_PREFIX}/behavior/preview", wrap(self._v1_behavior_preview))
+        app.router.add_post(
+            f"{API_PREFIX}/behavior/triggers/{{action}}", wrap(self._v1_behavior_trigger)
+        )
+        app.router.add_get(f"{API_PREFIX}/prompts", wrap(self._v1_prompts))
+        app.router.add_patch(f"{API_PREFIX}/prompts", wrap(self._v1_prompts_patch))
+        app.router.add_get(f"{API_PREFIX}/character/export", wrap(self._v1_character_export))
+        app.router.add_post(f"{API_PREFIX}/character/import", wrap(self._v1_character_import))
         app.router.add_get(f"{API_PREFIX}/memories/{{memory_id}}", wrap(self._v1_memory_detail))
         app.router.add_post(
             f"{API_PREFIX}/memories/{{memory_id}}/{{action}}", wrap(self._v1_memory_action)

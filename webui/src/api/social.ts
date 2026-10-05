@@ -7,6 +7,7 @@ import type {
   GroupRow,
   Paged,
   RelationshipRow,
+  SessionClearResult,
   SocialSessionRow,
   SocialSpaceRow,
   SocialUser,
@@ -43,6 +44,16 @@ export const socialApi = {
 
   sessions() {
     return api.get<{ active: boolean; items: SocialSessionRow[] }>('/social/sessions')
+  },
+
+  /**
+   * 清空某个会话的短期上下文（不在 `/social` 前缀下，但属于社交页的会话操作）。
+   * 后端必须收到 `{"confirm": "clear"}`，否则 409 `session.confirm_required`。
+   */
+  clearSession(sessionId: string) {
+    return api.post<SessionClearResult>(`/sessions/${encodeURIComponent(sessionId)}/clear`, {
+      confirm: 'clear',
+    })
   },
 
   relationships(limit = 50) {

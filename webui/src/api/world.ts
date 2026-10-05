@@ -1,26 +1,27 @@
 /** `/api/v1/world`、`/api/v1/character` 的薄封装（含 W5 追加块）。 */
 
 import { api } from '@/api/client'
-import type { InterruptedInfo, TopicRow, WorldData, WorldTimelineRow } from '@/types/domain'
+import type {
+  CharacterExportDocument,
+  CharacterImportResult,
+  CharacterPayload,
+  CharacterPersonaPatch,
+  CharacterState,
+  InterruptedInfo,
+  TopicRow,
+  WorldData,
+  WorldTimelineRow,
+} from '@/types/domain'
 
-export interface CharacterState {
-  mood?: string
-  energy?: number
-  [key: string]: unknown
-}
-
-export interface CharacterPayload {
-  persona: Record<string, unknown>
-  state: CharacterState
-  source: 'config' | 'database' | string
-}
+export type { CharacterPayload, CharacterState } from '@/types/domain'
 
 export const worldApi = {
   character() {
     return api.get<CharacterPayload>('/character')
   },
 
-  saveCharacter(payload: Record<string, unknown>) {
+  /** 只传改动字段；嵌套组（identity 等）需整组提交（后端顶层浅合并）。 */
+  saveCharacter(payload: CharacterPersonaPatch) {
     return api.patch<CharacterPayload>('/character', payload)
   },
 
@@ -28,8 +29,21 @@ export const worldApi = {
     return api.get<CharacterState>('/character/state')
   },
 
-  setState(changes: CharacterState) {
+  setState(changes: Partial<CharacterState>) {
     return api.patch<CharacterState>('/character/state', changes)
+  },
+
+  /** 导出完整角色文档（下载 JSON 用）。 */
+  exportCharacter() {
+    return api.get<CharacterExportDocument>('/character/export')
+  },
+
+  /** 导入角色文档：不带 confirm 只预览（`data.applied === false`）。 */
+  importCharacter(document: CharacterExportDocument, confirm?: 'import') {
+    return api.post<CharacterImportResult>(
+      '/character/import',
+      confirm ? { document, confirm } : { document },
+    )
   },
 
   world() {

@@ -27,6 +27,7 @@ const TABS: TabItem[] = [
   { to: '/ai/failover', label: '故障转移' },
   { to: '/ai/usage', label: '用量' },
   { to: '/ai/test', label: '测试台' },
+  { to: '/ai/prompts', label: '提示词' },
   { to: '/ai/setup', label: '向导' },
 ]
 

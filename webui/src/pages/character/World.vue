@@ -7,8 +7,11 @@
  * 管理员操作会影响运行中的世界：每个动作都先 ConfirmDialog 二次确认，
  * reset / reinitialize 明确标注不可撤销；失败时展示后端 message。
  */
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, reactive, ref } from 'vue'
+import { NInput, NSelect } from 'naive-ui'
 
+import { behaviorApi } from '@/api/behavior'
+import { errorMessage } from '@/api/client'
 import ConfirmDialog from '@/components/ConfirmDialog.vue'
 import EmptyState from '@/components/EmptyState.vue'
 import ErrorState from '@/components/ErrorState.vue'
@@ -20,6 +23,12 @@ import NeedList from '@/components/domain/NeedList.vue'
 import WorldStateCard from '@/components/domain/WorldStateCard.vue'
 import { toast } from '@/composables/toast'
 import { useWorldStore } from '@/stores/world'
+import type {
+  BehaviorPreviewInput,
+  BehaviorPreviewResult,
+  BehaviorTestResponseResult,
+  BehaviorTriggerAction,
+} from '@/types/behavior'
 
 const store = useWorldStore()
 
@@ -253,6 +262,222 @@ async function confirmControl(): Promise<void> {
     toast.error(store.error || '操作失败')
   }
 }
+
+// ------------------------------------------------------------ 行为调试
+/**
+ * v0.8「沙盒 · 对话行为」迁移：试跑回复 / 手动触发 / 行为模拟器。
+ * 三个接口都是 dry-run（永不发送 QQ 消息）；reset_state 会重置叙事状态，
+ * 因此单独走 ConfirmDialog。
+ */
+
+const behaviorText = ref('')
+const behaviorRunning = ref(false)
+const behaviorResult = ref<BehaviorTestResponseResult | null>(null)
+const behaviorError = ref('')
+
+async function runTestResponse(): Promise<void> {
+  const text = behaviorText.value.trim()
+  behaviorError.value = ''
+  if (!text) {
+    toast.warning('请先输入要测试的内容')
+    return
+  }
+  if (behaviorRunning.value) return
+  behaviorRunning.value = true
+  behaviorResult.value = null
+  try {
+    behaviorResult.value = await behaviorApi.testResponse(text)
+  } catch (caught) {
+    // 后端 message 原样展示（如 behavior.text_required）。
+    behaviorError.value = errorMessage(caught)
+    toast.error('试跑失败', behaviorError.value)
+  } finally {
+    behaviorRunning.value = false
+  }
+}
+
+function behaviorStateText(state: Record<string, unknown> | undefined): string {
+  if (!state) return '—'
+  const parts: string[] = []
+  if (state.mood !== undefined && state.mood !== null && state.mood !== '') {
+    parts.push(`mood=${String(state.mood)}`)
+  }
+  if (state.activity !== undefined && state.activity !== null && state.activity !== '') {
+    parts.push(`activity=${String(state.activity)}`)
+  }
+  if (typeof state.energy === 'number') {
+    parts.push(`energy=${Math.round(Math.min(1, Math.max(0, state.energy)) * 100)}%`)
+  }
+  return parts.length > 0 ? parts.join(' · ') : '—'
+}
+
+// ---- 手动触发
+
+interface TriggerMeta {
+  label: string
+  title: string
+  message: string
+  detail: string
+  confirmText: string
+  danger: boolean
+}
+
+const TRIGGER_META: Record<BehaviorTriggerAction, TriggerMeta> = {
+  mood_up: {
+    label: '心情 +1',
+    title: '上调心情',
+    message: '确定手动上调一次心情吗？',
+    detail: '会立刻写回运行中的叙事状态（mood）。',
+    confirmText: '上调',
+    danger: false,
+  },
+  mood_down: {
+    label: '心情 -1',
+    title: '下调心情',
+    message: '确定手动下调一次心情吗？',
+    detail: '会立刻写回运行中的叙事状态（mood）。',
+    confirmText: '下调',
+    danger: false,
+  },
+  reset_state: {
+    label: '重置状态',
+    title: '重置角色状态',
+    message: '确定重置角色的叙事状态吗？',
+    detail: '重置不可撤销：mood / energy / activity 等会回到初始值。',
+    confirmText: '重置',
+    danger: true,
+  },
+  test_initiative: {
+    label: '测试主动搭话',
+    title: '测试主动搭话',
+    message: '确定运行一次主动搭话判定吗？',
+    detail: '只做 dry-run 判定，不会真的发送 QQ 消息。',
+    confirmText: '运行',
+    danger: false,
+  },
+}
+
+const TRIGGER_ACTIONS = Object.keys(TRIGGER_META) as BehaviorTriggerAction[]
+
+const triggerBusy = ref<BehaviorTriggerAction | ''>('')
+const triggerResult = ref('')
+const triggerError = ref('')
+const pendingTrigger = ref<BehaviorTriggerAction | null>(null)
+
+function describeTriggerResult(value: unknown): string {
+  if (value === null || value === undefined) return '（无返回）'
+  if (typeof value === 'string') return value
+  if (typeof value === 'number' || typeof value === 'boolean') return String(value)
+  if (typeof value === 'object') {
+    const record = value as Record<string, unknown>
+    if ('would_consider' in record) {
+      return [
+        `会考虑主动搭话：${record.would_consider ? '是' : '否'}`,
+        `概率：${String(record.probability ?? '—')}`,
+        record.blocked_by ? `受阻：${String(record.blocked_by)}` : '',
+      ]
+        .filter((part) => part !== '')
+        .join(' · ')
+    }
+    if (record.state && typeof record.state === 'object') {
+      return behaviorStateText(record.state as Record<string, unknown>)
+    }
+    return JSON.stringify(value)
+  }
+  return String(value)
+}
+
+function askTrigger(action: BehaviorTriggerAction): void {
+  triggerError.value = ''
+  if (action === 'reset_state') {
+    pendingTrigger.value = action
+    return
+  }
+  void runTrigger(action)
+}
+
+async function runTrigger(action: BehaviorTriggerAction): Promise<void> {
+  if (triggerBusy.value !== '') return
+  triggerBusy.value = action
+  triggerError.value = ''
+  try {
+    const data = await behaviorApi.trigger(action)
+    triggerResult.value = describeTriggerResult(data.result)
+    toast.success(`已执行「${TRIGGER_META[action].label}」`)
+  } catch (caught) {
+    triggerError.value = errorMessage(caught)
+    toast.error('触发失败', triggerError.value)
+  } finally {
+    triggerBusy.value = ''
+  }
+}
+
+async function confirmTrigger(): Promise<void> {
+  const action = pendingTrigger.value
+  pendingTrigger.value = null
+  if (action === null) return
+  await runTrigger(action)
+}
+
+// ---- 行为模拟器
+
+const RELATIONSHIP_OPTIONS = [
+  { label: '陌生 stranger', value: 'stranger' },
+  { label: '认识 acquaintance', value: 'acquaintance' },
+  { label: '熟悉 familiar', value: 'familiar' },
+  { label: '朋友 friend', value: 'friend' },
+  { label: '亲密 close_friend', value: 'close_friend' },
+]
+
+const previewDraft = reactive({
+  simTime: '',
+  mood: '',
+  activity: '',
+  relationship: 'familiar',
+  topic: '',
+  sampleReply: '',
+})
+
+const previewRunning = ref(false)
+const previewResult = ref<BehaviorPreviewResult | null>(null)
+const previewError = ref('')
+
+function buildPreviewInput(): BehaviorPreviewInput {
+  const input: BehaviorPreviewInput = {}
+  const simTime = previewDraft.simTime.trim()
+  if (simTime) input.sim_time = simTime
+  const mood = previewDraft.mood.trim()
+  if (mood) input.mood = mood
+  const activity = previewDraft.activity.trim()
+  if (activity) input.activity = activity
+  if (previewDraft.relationship) input.relationship = previewDraft.relationship
+  const topic = previewDraft.topic.trim()
+  if (topic) input.topic = topic
+  const sampleReply = previewDraft.sampleReply.trim()
+  if (sampleReply) input.sample_reply = sampleReply
+  return input
+}
+
+async function runPreview(): Promise<void> {
+  if (previewRunning.value) return
+  previewRunning.value = true
+  previewError.value = ''
+  previewResult.value = null
+  try {
+    previewResult.value = await behaviorApi.preview(buildPreviewInput())
+  } catch (caught) {
+    previewError.value = errorMessage(caught)
+    toast.error('模拟失败', previewError.value)
+  } finally {
+    previewRunning.value = false
+  }
+}
+
+function previewMoodText(): string {
+  const state = previewResult.value?.state
+  if (!state) return '—'
+  return behaviorStateText(state)
+}
 </script>
 
 <template>
@@ -448,6 +673,234 @@ async function confirmControl(): Promise<void> {
       @confirm="confirmControl"
       @cancel="pending = null"
     />
+
+    <!-- 行为调试（v0.8「沙盒 · 对话行为」迁移；全部 dry-run，永不发送） -->
+    <section class="cb-card cb-world__section cb-world__behavior" data-test="world-behavior">
+      <SectionHeader
+        title="行为调试"
+        description="试跑回复链路与行为模拟器；所有结果只在这里展示，永远不会发送 QQ 消息。"
+      />
+
+      <div class="cb-world__behavior-grid">
+        <div class="cb-world__behavior-block" data-test="behavior-test-response">
+          <p class="cb-world__behavior-title">试跑回复</p>
+          <label class="cb-world__behavior-field">
+            <span class="cb-caption">对方说的话</span>
+            <NInput
+              v-model:value="behaviorText"
+              type="textarea"
+              :rows="2"
+              placeholder="例如：今天过得怎么样？"
+              data-test="behavior-test-input"
+              @keydown.enter.exact.prevent="runTestResponse"
+            />
+          </label>
+          <div class="cb-world__behavior-actions">
+            <button
+              type="button"
+              class="cb-world__behavior-button"
+              data-test="behavior-test-run"
+              :disabled="behaviorRunning"
+              @click="runTestResponse"
+            >
+              {{ behaviorRunning ? '生成中…' : '试跑一次' }}
+            </button>
+            <span class="cb-caption">只生成，不发送。</span>
+          </div>
+          <p
+            v-if="behaviorError"
+            class="cb-world__behavior-error"
+            role="alert"
+            data-test="behavior-test-error"
+          >
+            {{ behaviorError }}
+          </p>
+          <div v-else-if="behaviorResult" class="cb-world__behavior-result" data-test="behavior-test-result">
+            <p v-if="!behaviorResult.ok" class="cb-world__behavior-error" data-test="behavior-test-failure">
+              {{ behaviorResult.error || '生成失败' }}
+            </p>
+            <template v-else>
+              <p class="cb-world__behavior-reply" data-test="behavior-test-reply">
+                {{ behaviorResult.reply || '（空回复）' }}
+              </p>
+              <dl class="cb-world__behavior-facts">
+                <div>
+                  <dt class="cb-caption">延迟</dt>
+                  <dd data-test="behavior-test-delay">
+                    {{ behaviorResult.delay === undefined ? '—' : `${behaviorResult.delay} 秒` }}
+                  </dd>
+                </div>
+                <div>
+                  <dt class="cb-caption">分条</dt>
+                  <dd data-test="behavior-test-chunks">
+                    {{ behaviorResult.chunks && behaviorResult.chunks.length > 0 ? behaviorResult.chunks.join(' / ') : '不分条' }}
+                  </dd>
+                </div>
+                <div>
+                  <dt class="cb-caption">状态</dt>
+                  <dd data-test="behavior-test-state">{{ behaviorStateText(behaviorResult.state) }}</dd>
+                </div>
+                <div>
+                  <dt class="cb-caption">时间</dt>
+                  <dd data-test="behavior-test-time">{{ behaviorResult.time || '—' }}</dd>
+                </div>
+              </dl>
+            </template>
+          </div>
+        </div>
+
+        <div class="cb-world__behavior-block" data-test="behavior-triggers">
+          <p class="cb-world__behavior-title">手动触发</p>
+          <div class="cb-world__behavior-actions">
+            <button
+              v-for="action in TRIGGER_ACTIONS"
+              :key="action"
+              type="button"
+              class="cb-world__behavior-button"
+              :class="{ 'cb-world__behavior-button--danger': TRIGGER_META[action].danger }"
+              :data-test="`behavior-trigger-${action}`"
+              :disabled="triggerBusy !== ''"
+              @click="askTrigger(action)"
+            >
+              {{ triggerBusy === action ? '执行中…' : TRIGGER_META[action].label }}
+            </button>
+          </div>
+          <p
+            v-if="triggerError"
+            class="cb-world__behavior-error"
+            role="alert"
+            data-test="behavior-trigger-error"
+          >
+            {{ triggerError }}
+          </p>
+          <p v-else-if="triggerResult" class="cb-world__behavior-result" data-test="behavior-trigger-result">
+            {{ triggerResult }}
+          </p>
+          <p v-else class="cb-caption" data-test="behavior-trigger-empty">
+            尚未触发过状态变化。
+          </p>
+        </div>
+
+        <div class="cb-world__behavior-block cb-world__behavior-block--wide" data-test="behavior-preview">
+          <p class="cb-world__behavior-title">行为模拟器</p>
+          <p class="cb-caption">临时覆盖时间 / 心情 / 关系等条件，看延迟、分条与主动搭话判定；不会发送。</p>
+          <div class="cb-world__behavior-form">
+            <label class="cb-world__behavior-field">
+              <span class="cb-caption">模拟时间 sim_time（HH:MM）</span>
+              <NInput v-model:value="previewDraft.simTime" placeholder="23:30" data-test="behavior-preview-sim-time" />
+            </label>
+            <label class="cb-world__behavior-field">
+              <span class="cb-caption">心情 mood</span>
+              <NInput v-model:value="previewDraft.mood" placeholder="happy" data-test="behavior-preview-mood" />
+            </label>
+            <label class="cb-world__behavior-field">
+              <span class="cb-caption">正在做 activity</span>
+              <NInput v-model:value="previewDraft.activity" placeholder="看书" data-test="behavior-preview-activity" />
+            </label>
+            <label class="cb-world__behavior-field">
+              <span class="cb-caption">关系 relationship</span>
+              <NSelect
+                v-model:value="previewDraft.relationship"
+                :options="RELATIONSHIP_OPTIONS"
+                data-test="behavior-preview-relationship"
+              />
+            </label>
+            <label class="cb-world__behavior-field">
+              <span class="cb-caption">话题 topic（可选）</span>
+              <NInput v-model:value="previewDraft.topic" placeholder="未完成的项目" data-test="behavior-preview-topic" />
+            </label>
+            <label class="cb-world__behavior-field">
+              <span class="cb-caption">示例回复 sample_reply（可选）</span>
+              <NInput
+                v-model:value="previewDraft.sampleReply"
+                type="textarea"
+                :rows="2"
+                placeholder="好呀。\n\n等我看一下。"
+                data-test="behavior-preview-sample"
+              />
+            </label>
+          </div>
+          <div class="cb-world__behavior-actions">
+            <button
+              type="button"
+              class="cb-world__behavior-button"
+              data-test="behavior-preview-run"
+              :disabled="previewRunning"
+              @click="runPreview"
+            >
+              {{ previewRunning ? '模拟中…' : '运行模拟' }}
+            </button>
+          </div>
+          <p
+            v-if="previewError"
+            class="cb-world__behavior-error"
+            role="alert"
+            data-test="behavior-preview-error"
+          >
+            {{ previewError }}
+          </p>
+          <dl
+            v-else-if="previewResult"
+            class="cb-world__behavior-facts"
+            data-test="behavior-preview-result"
+          >
+            <div>
+              <dt class="cb-caption">时间</dt>
+              <dd data-test="behavior-preview-time">
+                {{ previewResult.time || '—' }}{{ previewResult.period ? `（${previewResult.period}）` : '' }}
+              </dd>
+            </div>
+            <div>
+              <dt class="cb-caption">睡眠 / 免打扰</dt>
+              <dd data-test="behavior-preview-presence">
+                {{ previewResult.sleeping ? '睡眠中' : '清醒' }} · {{ previewResult.dnd ? '免打扰' : '可打扰' }}
+              </dd>
+            </div>
+            <div>
+              <dt class="cb-caption">延迟</dt>
+              <dd data-test="behavior-preview-delay">
+                {{ previewResult.delay === undefined ? '—' : `${previewResult.delay} 秒` }}
+              </dd>
+            </div>
+            <div>
+              <dt class="cb-caption">分条</dt>
+              <dd data-test="behavior-preview-chunks">
+                {{ previewResult.chunks && previewResult.chunks.length > 0 ? previewResult.chunks.join(' / ') : '不分条' }}
+              </dd>
+            </div>
+            <div>
+              <dt class="cb-caption">状态</dt>
+              <dd data-test="behavior-preview-state">{{ previewMoodText() }}</dd>
+            </div>
+            <div v-if="previewResult.initiative">
+              <dt class="cb-caption">主动搭话</dt>
+              <dd data-test="behavior-preview-initiative">
+                {{ previewResult.initiative.would_consider ? '会考虑' : '不会' }}
+                · 概率 {{ previewResult.initiative.probability }}
+                · 掷点 {{ previewResult.initiative.simulated_roll }}
+                <template v-if="previewResult.initiative.blocked_by">
+                  · 受阻：{{ previewResult.initiative.blocked_by }}
+                </template>
+                <template v-else-if="previewResult.initiative.reason">
+                  · 理由：{{ previewResult.initiative.reason }}
+                </template>
+              </dd>
+            </div>
+          </dl>
+        </div>
+      </div>
+    </section>
+
+    <ConfirmDialog
+      :show="pendingTrigger !== null"
+      :title="pendingTrigger ? TRIGGER_META[pendingTrigger].title : ''"
+      :message="pendingTrigger ? TRIGGER_META[pendingTrigger].message : ''"
+      :detail="pendingTrigger ? TRIGGER_META[pendingTrigger].detail : ''"
+      :confirm-text="pendingTrigger ? TRIGGER_META[pendingTrigger].confirmText : '确认'"
+      :danger="pendingTrigger ? TRIGGER_META[pendingTrigger].danger : false"
+      @confirm="confirmTrigger"
+      @cancel="pendingTrigger = null"
+    />
   </div>
 </template>
 
@@ -617,6 +1070,126 @@ async function confirmControl(): Promise<void> {
 .cb-world__control-error {
   margin-top: var(--cb-space-3);
   color: var(--cb-danger);
+  font-size: var(--cb-text-sm);
+  overflow-wrap: anywhere;
+}
+
+/* ------------------------------------------------------------ 行为调试 */
+
+.cb-world__behavior-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+  gap: var(--cb-space-4);
+  align-items: start;
+}
+
+.cb-world__behavior-block {
+  display: flex;
+  flex-direction: column;
+  gap: var(--cb-space-2);
+  min-width: 0;
+  padding: var(--cb-space-3);
+  border: 1px solid var(--cb-border);
+  border-radius: var(--cb-radius-md);
+  background: var(--cb-surface-raised);
+}
+
+.cb-world__behavior-block--wide {
+  grid-column: 1 / -1;
+}
+
+.cb-world__behavior-title {
+  color: var(--cb-text);
+  font-size: var(--cb-text-md);
+}
+
+.cb-world__behavior-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--cb-space-2);
+}
+
+.cb-world__behavior-button {
+  padding: var(--cb-space-1) var(--cb-space-3);
+  border: 1px solid var(--cb-border-strong);
+  border-radius: var(--cb-radius-sm);
+  background: var(--cb-surface);
+  color: var(--cb-text);
+  font-family: inherit;
+  font-size: var(--cb-text-sm);
+  cursor: pointer;
+}
+
+.cb-world__behavior-button:hover:not(:disabled) {
+  border-color: var(--cb-primary);
+  color: var(--cb-primary-strong);
+}
+
+.cb-world__behavior-button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.cb-world__behavior-button--danger {
+  border-color: var(--cb-danger);
+  background: var(--cb-danger-soft);
+  color: var(--cb-danger);
+}
+
+.cb-world__behavior-form {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: var(--cb-space-3);
+}
+
+.cb-world__behavior-field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--cb-space-1);
+  min-width: 0;
+}
+
+.cb-world__behavior-field :deep(.n-input),
+.cb-world__behavior-field :deep(.n-select) {
+  width: 100%;
+}
+
+.cb-world__behavior-result {
+  padding: var(--cb-space-2) var(--cb-space-3);
+  border: 1px solid var(--cb-border);
+  border-radius: var(--cb-radius-sm);
+  background: var(--cb-bg-soft);
+  color: var(--cb-text);
+  font-size: var(--cb-text-sm);
+  overflow-wrap: anywhere;
+}
+
+.cb-world__behavior-reply {
+  margin-bottom: var(--cb-space-2);
+  white-space: pre-wrap;
+}
+
+.cb-world__behavior-error {
+  padding: var(--cb-space-2) var(--cb-space-3);
+  border: 1px solid var(--cb-danger);
+  border-radius: var(--cb-radius-sm);
+  background: var(--cb-danger-soft);
+  color: var(--cb-danger);
+  font-size: var(--cb-text-sm);
+  overflow-wrap: anywhere;
+}
+
+.cb-world__behavior-facts {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: var(--cb-space-2) var(--cb-space-3);
+  margin: 0;
+}
+
+.cb-world__behavior-facts dd {
+  margin: var(--cb-space-1) 0 0;
+  color: var(--cb-text);
   font-size: var(--cb-text-sm);
   overflow-wrap: anywhere;
 }

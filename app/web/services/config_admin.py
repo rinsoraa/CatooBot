@@ -215,10 +215,31 @@ class ConfigAdminService:
         self._apply_memory(before, config)
         self._apply_behavior_settings(before, config)
         self._apply_character(before, config)
+        await self._apply_web_identity(before, config)
         for path, label in RESTART_FIELDS.items():
             if self._changed(before, config, path):
                 notes.append(label)
         return notes
+
+    async def _apply_web_identity(self, before: AppConfig, config: AppConfig) -> None:
+        """Renaming the WebUI account must rename the *database* user too.
+
+        The legacy settings form did this (`web_form` → `web_auth.rename_user`);
+        the new settings page writes `web.username` through the same override
+        path, so without this the login account and the config would disagree
+        after a rename (the YAML said the new name, the DB still had the old).
+        """
+        old = str(before.web.username or "").strip()
+        new = str(config.web.username or "").strip()
+        if not old or not new or old == new:
+            return
+        auth = getattr(self.bot, "web_auth", None)
+        if auth is None:
+            return
+        try:
+            await auth.rename_user(old, new)
+        except Exception:  # noqa: BLE001 - a failed rename must not break the save
+            self._log.exception("[Config] WebUI 账号改名失败：%s → %s", old, new)
 
     @staticmethod
     def _changed(before: AppConfig, after: AppConfig, dotted: str) -> bool:

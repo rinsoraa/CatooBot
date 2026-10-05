@@ -397,3 +397,97 @@ class TestMemoriesV5:
             status, payload = await client.get("/api/v1/memories")
             assert status == 401
             assert error_code(payload) == "auth.unauthorized"
+
+
+class TestMemoryOpsMigratedFromV08:
+    """旧版「记忆运维」在新版的可达性：向量、整理、检索调试、会话清空。
+
+    这些能力在 v0.8 的 /memory/embeddings、/memory/consolidation、
+    /memory/retrieval-debug、/api/sessions/clear 里；v1 必须同样可达，
+    并且沿用 v1 的危险动作确认约定。
+    """
+
+    async def test_embedding_status_is_readable(self, tmp_path) -> None:  # type: ignore[no-untyped-def]
+        async with api_server(tmp_path) as (client, _bot, _server):
+            await client.login()
+            status, payload = await client.get("/api/v1/memories/embeddings")
+            assert status == 200
+            assert "available" in payload["data"]
+
+    async def test_embedding_actions_run_and_echo(self, tmp_path) -> None:  # type: ignore[no-untyped-def]
+        async with api_server(tmp_path) as (client, _bot, _server):
+            await client.login()
+            for action in ("rebuild", "retry"):
+                status, payload = await client.post(f"/api/v1/memories/embeddings/{action}")
+                assert status == 200, payload
+                assert payload["data"]["action"] == action
+                assert "result" in payload["data"]
+
+    async def test_clear_cache_needs_confirm(self, tmp_path) -> None:  # type: ignore[no-untyped-def]
+        async with api_server(tmp_path) as (client, _bot, _server):
+            await client.login()
+            status, payload = await client.post("/api/v1/memories/embeddings/clear-cache")
+            assert status == 409
+            assert error_code(payload) == "memory.confirm_required"
+            status, payload = await client.post(
+                "/api/v1/memories/embeddings/clear-cache", body={"confirm": "clear-cache"}
+            )
+            assert status == 200 and payload["data"]["action"] == "clear-cache"
+
+    async def test_unknown_embedding_action_is_400(self, tmp_path) -> None:  # type: ignore[no-untyped-def]
+        async with api_server(tmp_path) as (client, _bot, _server):
+            await client.login()
+            status, payload = await client.post("/api/v1/memories/embeddings/nope")
+            assert status == 400
+            assert error_code(payload) == "memory.embedding_action_unknown"
+
+    async def test_static_paths_do_not_shadow_the_memory_id_route(self, tmp_path) -> None:  # type: ignore[no-untyped-def]
+        async with api_server(tmp_path) as (client, bot, _server):
+            memory = await _remember(bot, "路由顺序回归：按 ID 取详情仍然可用。")
+            assert memory is not None
+            await client.login()
+            status, payload = await client.get(f"/api/v1/memories/{memory.id}")
+            assert status == 200
+            assert payload["data"]["memory"]["content"].startswith("路由顺序回归")
+
+    async def test_consolidation_status_and_run(self, tmp_path) -> None:  # type: ignore[no-untyped-def]
+        async with api_server(tmp_path) as (client, _bot, _server):
+            await client.login()
+            status, payload = await client.get("/api/v1/memories/consolidation")
+            assert status == 200
+            assert "enabled" in payload["data"]
+            status, payload = await client.post(
+                "/api/v1/memories/consolidation/run", body={"scope": ""}
+            )
+            assert status == 200
+            assert payload["data"]["scope"] == ""
+            assert "result" in payload["data"]
+
+    async def test_retrieval_debug_needs_a_query(self, tmp_path) -> None:  # type: ignore[no-untyped-def]
+        async with api_server(tmp_path) as (client, bot, _server):
+            memory = await _remember(bot, "检索调试：她记得用户喜欢在雨天听歌。")
+            assert memory is not None
+            await client.login()
+            status, payload = await client.get("/api/v1/memories/retrieval-debug?q=雨天")
+            assert status == 200
+            assert payload["data"]["query"] == "雨天"
+            status, payload = await client.get("/api/v1/memories/retrieval-debug")
+            assert status == 400
+            assert error_code(payload) == "memory.query_required"
+
+    async def test_session_clear_needs_confirm_and_clears(self, tmp_path) -> None:  # type: ignore[no-untyped-def]
+        async with api_server(tmp_path) as (client, bot, _server):
+            await bot.ai.conversations.append_user_message("private:10001", "以前聊过的话")
+            await client.login()
+            status, payload = await client.post("/api/v1/sessions/private:10001/clear")
+            assert status == 409
+            assert error_code(payload) == "session.confirm_required"
+
+            status, payload = await client.post(
+                "/api/v1/sessions/private:10001/clear", body={"confirm": "clear"}
+            )
+            assert status == 200 and payload["data"]["cleared"] is True
+            rows = await bot.database.fetchall(
+                "SELECT id FROM conversations WHERE session_id = ?", ("private:10001",)
+            )
+            assert rows == []

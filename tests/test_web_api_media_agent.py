@@ -429,3 +429,15 @@ class TestAgent:
             status, payload = await client.post("/api/v1/agent/simulate", body={})
             assert status == 400
             assert payload["error"]["field"] == "text"
+
+    async def test_agent_simulate_execute_flag_round_trips(self, tmp_path) -> None:  # type: ignore[no-untyped-def]
+        """旧版复选框语义：execute=true 时再跑一遍打桩执行的干跑（仍然不发任何消息）。"""
+        async with v1_server(tmp_path) as (client, _bot, _server):
+            await _login(client)
+            status, payload = await client.post(
+                "/api/v1/agent/simulate",
+                body={"text": "帮我查一下明天北京的天气", "execute": True},
+            )
+            assert status == 200
+            assert payload["data"]["execute"] is True
+            assert payload["data"]["dry_run"] is True

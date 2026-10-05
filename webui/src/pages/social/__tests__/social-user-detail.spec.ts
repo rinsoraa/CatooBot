@@ -11,7 +11,9 @@ import {
   flushAll,
   installFetch,
   makeRouter,
+  makeSession,
   makeSpace,
+  makeUser,
   makeUserDetail,
   ok,
   restoreFetch,
@@ -35,6 +37,9 @@ function detailHandler(patchReply?: (request: MockRequest) => MockReply) {
   return (request: MockRequest): MockReply => {
     if (request.path === '/api/v1/social/spaces') {
       return ok({ items: [makeSpace()], map: {} })
+    }
+    if (request.path === '/api/v1/social/sessions' && request.method === 'GET') {
+      return ok({ active: false, items: [] })
     }
     if (request.path === '/api/v1/social/users' && request.method === 'GET') {
       return ok({ items: [], total: 0, limit: 20, offset: 0 })
@@ -145,5 +150,96 @@ describe('SocialUserDetail 页', () => {
     expect(wrapper.get('[data-test="user-save-error"]').text()).toBe('备注不能超过 200 字')
     const { items } = useToast()
     expect(items.value.some((item) => item.message.includes('已保存'))).toBe(false)
+  })
+})
+
+describe('SocialUserDetail 页 · 清空会话上下文', () => {
+  function sessionHandler(
+    options: { active?: boolean; qq?: string; clearReply?: (request: MockRequest) => MockReply } = {},
+  ) {
+    return (request: MockRequest): MockReply => {
+      if (request.path === '/api/v1/social/spaces') return ok({ items: [makeSpace()], map: {} })
+      if (request.path === '/api/v1/social/sessions' && request.method === 'GET') {
+        return ok({ active: options.active ?? false, items: options.active ? [makeSession()] : [] })
+      }
+      if (request.path === '/api/v1/social/users/p-1' && request.method === 'GET') {
+        return ok(makeUserDetail({ person: makeUser({ qq: options.qq ?? '10001' }) }))
+      }
+      if (request.path.startsWith('/api/v1/sessions/') && request.method === 'POST') {
+        return (
+          options.clearReply?.(request) ?? ok({ cleared: true, session_id: 'private:10001' })
+        )
+      }
+      return fail(404, 'not_found', `未模拟 ${request.method} ${request.path}`)
+    }
+  }
+
+  function sessionInput(wrapper: VueWrapper): string {
+    return (wrapper.get('[data-test="session-id"] input').element as HTMLInputElement).value
+  }
+
+  it('有活动会话时预填 private:QQ 并显示会话状态', async () => {
+    const { wrapper } = await mountDetail('/social/users/p-1', sessionHandler({ active: true }))
+
+    expect(sessionInput(wrapper)).toBe('private:10001')
+    expect(wrapper.get('[data-test="session-status"]').text()).toContain('当前有活动会话')
+  })
+
+  it('清空必须先确认：取消不发请求，确认后 POST 带 confirm=clear', async () => {
+    const { wrapper, calls } = await mountDetail('/social/users/p-1', sessionHandler({ active: true }))
+
+    await wrapper.get('[data-test="session-clear"]').trigger('click')
+    expect(wrapper.find('[data-test="confirm"]').exists()).toBe(true)
+    expect(wrapper.get('[role="dialog"]').text()).toContain('不可撤销')
+    expect(calls.filter((call) => call.method === 'POST')).toHaveLength(0)
+
+    await wrapper.get('[data-test="cancel"]').trigger('click')
+    await flushAll()
+    expect(calls.filter((call) => call.method === 'POST')).toHaveLength(0)
+
+    await wrapper.get('[data-test="session-clear"]').trigger('click')
+    await wrapper.get('[data-test="confirm"]').trigger('click')
+    await flushAll()
+
+    const posts = calls.filter((call) => call.method === 'POST')
+    expect(posts).toHaveLength(1)
+    expect(posts[0]?.path).toBe('/api/v1/sessions/private%3A10001/clear')
+    expect(posts[0]?.body).toEqual({ confirm: 'clear' })
+
+    const { items } = useToast()
+    expect(items.value.some((item) => item.message.includes('已清空'))).toBe(true)
+    // 清空后重新读取会话状态。
+    expect(calls.filter((call) => call.path === '/api/v1/social/sessions').length).toBe(2)
+  })
+
+  it('清空失败时展示后端 message', async () => {
+    const { wrapper } = await mountDetail(
+      '/social/users/p-1',
+      sessionHandler({
+        clearReply: () =>
+          fail(
+            409,
+            'session.confirm_required',
+            '清空会话上下文会让她忘掉这段对话，请带 confirm=clear 再试',
+          ),
+      }),
+    )
+
+    await wrapper.get('[data-test="session-clear"]').trigger('click')
+    await wrapper.get('[data-test="confirm"]').trigger('click')
+    await flushAll()
+
+    expect(wrapper.get('[data-test="session-clear-error"]').text()).toContain('confirm=clear')
+  })
+
+  it('没有 QQ 也没有输入时按钮禁用且不发请求', async () => {
+    const { wrapper, calls } = await mountDetail('/social/users/p-1', sessionHandler({ qq: '', active: false }))
+
+    expect(sessionInput(wrapper)).toBe('')
+    expect(wrapper.get('[data-test="session-clear"]').attributes('disabled')).toBeDefined()
+
+    await wrapper.get('[data-test="session-clear"]').trigger('click')
+    await flushAll()
+    expect(calls.filter((call) => call.method === 'POST')).toHaveLength(0)
   })
 })

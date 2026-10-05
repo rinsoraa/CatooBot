@@ -37,7 +37,7 @@ const activeTab = computed(() => TABS.find((tab) => isActive(tab.to))?.key ?? ''
   <div class="cb-character-layout" data-testid="character-layout">
     <PageHeader
       title="角色"
-      subtitle="运行状态与当前世界：这里是只读观察面，不是设置页"
+      subtitle="运行状态、当前世界与人设：人设与叙事状态可编辑并热加载"
     />
 
     <nav class="cb-character-layout__tabs" aria-label="角色子页面">

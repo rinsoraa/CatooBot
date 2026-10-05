@@ -410,6 +410,25 @@ class Bot:
         """
         return str(user_id) in getattr(self, "core_friend_ids", set())
 
+    async def _apply_prompt_overrides(self) -> None:
+        """Push the stored WebUI prompt overrides into the memory extractor.
+
+        The 提示词 page (v0.8 的 /prompts，v1 在 AI · 提示词) persists
+        ``prompt_overrides.memory_extraction_prompt``; without this the setting
+        would be stored but never used — the extractor keeps the built-in text.
+        """
+        extractor = getattr(self, "extractor", None)
+        if extractor is None:
+            return
+        try:
+            overrides = await self.database.get_setting_json("prompt_overrides")
+            prompt = str((overrides or {}).get("memory_extraction_prompt", "") or "")
+            extractor.set_system_prompt(prompt)
+            if prompt:
+                self.log.info("[Memory] custom extraction prompt applied (%d chars)", len(prompt))
+        except Exception:  # noqa: BLE001 - an optional prompt must not stop startup
+            self.log.exception("Failed to apply the extraction prompt override")
+
     async def _reload_config_from_disk(self) -> None:
         """Hot-reload a hand-edited config.yaml (Task 23 config watching).
 
@@ -517,6 +536,7 @@ class Bot:
             changed = await self.character.relationships.sync_core_stages()
             if changed:
                 self.log.info("[Relationship] core friend stages synced: %d row(s)", changed)
+            await self._apply_prompt_overrides()
             persona = self.character.personas.persona
             story.boot_step(
                 "角色已就绪",

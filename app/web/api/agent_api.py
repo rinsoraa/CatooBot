@@ -144,9 +144,11 @@ class AgentApiRoutes(WebContext):
         text = str(body.get("text", "")).strip()
         if not text:
             raise bad_request("缺少 text：需要一段文本才能模拟", field="text")
-        # dry run only：只规划，不执行工具、不发消息
-        data = await self._service().simulate(text, execute=False)
-        return ok(data, request=request)
+        # 默认只规划；execute=true 时再加跑一遍「工具执行器 = 打桩」的干跑
+        # （旧版复选框的语义）。两种情况都不会真的调用外部工具、也不发消息。
+        execute = bool(body.get("execute"))
+        data = await self._service().simulate(text, execute=execute)
+        return ok({**data, "execute": execute}, request=request)
 
     # ----------------------------------------------------------- registration
 

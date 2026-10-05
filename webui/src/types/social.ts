@@ -70,6 +70,12 @@ export interface SocialSessionRow {
   interrupted: boolean
 }
 
+/** `POST /api/v1/sessions/{session_id}/clear` 的 data（清空会话上下文）。 */
+export interface SessionClearResult {
+  cleared: boolean
+  session_id: string
+}
+
 export interface SocialSpaceRow {
   space_id: string
   kind: string

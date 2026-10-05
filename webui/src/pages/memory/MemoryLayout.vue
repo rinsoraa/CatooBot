@@ -1,8 +1,8 @@
 <script setup lang="ts">
 /**
- * 记忆区块外壳（W5 §26）：唯一 h1 + 三个视图 tab + RouterView。
+ * 记忆区块外壳（W5 §26）：唯一 h1 + 四个视图 tab + RouterView。
  *
- * 这里不预加载数据：浏览/时间线/健康度各自按需拉取（§82/§85 首屏 + 按需详情）。
+ * 这里不预加载数据：浏览/时间线/健康度/运维各自按需拉取（§82/§85 首屏 + 按需详情）。
  */
 import { RouterLink, RouterView } from 'vue-router'
 
@@ -18,6 +18,7 @@ const TABS: TabItem[] = [
   { to: '/memory', label: '浏览', testKey: 'memory-tab-browse' },
   { to: '/memory/timeline', label: '时间线', testKey: 'memory-tab-timeline' },
   { to: '/memory/health', label: '健康度', testKey: 'memory-tab-health' },
+  { to: '/memory/ops', label: '运维', testKey: 'memory-tab-ops' },
 ]
 </script>
 

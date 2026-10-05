@@ -152,6 +152,231 @@ export interface MemoryHealth {
   [key: string]: unknown
 }
 
+/** `GET /api/v1/memories/embeddings` 的 data：向量库 + embedding 服务快照。 */
+export interface MemoryEmbeddingStatus {
+  available?: boolean
+  embedded?: number | null
+  memories?: number | null
+  coverage?: number | null
+  models?: number | null
+  pending?: number | null
+  provider?: string
+  model?: string
+  dimensions?: number | null
+  hits?: number | null
+  misses?: number | null
+  failures?: number | null
+  last_error?: string | null
+  timeout?: number | null
+  [key: string]: unknown
+}
+
+/** `POST /api/v1/memories/embeddings/{action}` 的 data；result 里可能是 `{error}`。 */
+export interface MemoryEmbeddingActionResult {
+  action: string
+  result: Record<string, unknown>
+}
+
+/** 整理报告（后端 `ConsolidationReport.to_dict()`，运行返回里带 `summary`）。 */
+export interface MemoryConsolidationReport {
+  scanned?: number
+  duplicates_merged?: number
+  archived?: number
+  compressed_clusters?: number
+  compressed_sources?: number
+  llm_compressions?: number
+  conflicts?: number
+  quota_archived?: number
+  errors?: number
+  duration_ms?: number
+  scopes?: string[]
+  summary?: string
+  error?: string
+  [key: string]: unknown
+}
+
+/** `GET /api/v1/memories/consolidation` 的 data（memory 关闭时只有 enabled: false）。 */
+export interface MemoryConsolidationStatus {
+  enabled?: boolean
+  schedule?: string
+  duplicate_threshold?: number
+  compression_min_cluster?: number
+  last_report?: MemoryConsolidationReport | null
+  runs?: number
+  [key: string]: unknown
+}
+
+/** `POST /api/v1/memories/consolidation/run` 的 data。 */
+export interface MemoryConsolidationRunResult {
+  scope: string
+  result: MemoryConsolidationReport
+}
+
+/** 检索调试的一条命中：final 是混合总分，其余是各打分分量。 */
+export interface MemoryRetrievalScoredRow {
+  id: number
+  content: string
+  layer?: string
+  category?: string
+  scope_key?: string
+  status?: string
+  final: number
+  semantic: number
+  keyword: number
+  importance: number
+  confidence: number
+  recency: number
+  relationship: number
+  topic_bonus: number
+  temporal: number
+  origin?: string
+  [key: string]: unknown
+}
+
+/** `GET /api/v1/memories/retrieval-debug` 的 data：候选统计 + trace + 命中列表。 */
+export interface MemoryRetrievalDebug {
+  query?: string
+  scopes?: string[]
+  topics?: string[]
+  candidates?: number
+  keyword_candidates?: number
+  semantic_candidates?: number
+  merged_candidates?: number
+  injected?: number
+  dropped_by_guard?: number
+  top_score?: number
+  duration_ms?: number
+  semantic_available?: boolean
+  weights?: Record<string, unknown>
+  min_final_score?: number
+  results?: MemoryRetrievalScoredRow[]
+  error?: string
+  [key: string]: unknown
+}
+
+// ------------------------------------------------------------ Character
+
+/** 后端 `Persona.identity`（GET/PATCH `/api/v1/character`）。 */
+export interface CharacterIdentity {
+  name: string
+  nickname: string
+  age: string
+  birthday: string
+  gender: string
+  occupation: string
+  location: string
+  background: string
+}
+
+export interface CharacterPersonality {
+  traits: string[]
+  likes: string[]
+  dislikes: string[]
+  habits: string[]
+  interests: string[]
+}
+
+export interface CharacterSpeakingStyle {
+  language: string
+  tone: string
+  emoji: boolean
+  kaomoji: boolean
+  length_preference: string
+  notes: string
+}
+
+export interface CharacterBehaviorRules {
+  rules: string[]
+}
+
+/** 后端 `Persona.model_dump()` 的真实形状。 */
+export interface CharacterPersona {
+  name: string
+  identity: CharacterIdentity
+  personality: CharacterPersonality
+  speaking_style: CharacterSpeakingStyle
+  behavior_rules: CharacterBehaviorRules
+  system_prompt: string
+}
+
+/**
+ * `PATCH /api/v1/character` 的顶层键。
+ *
+ * 后端是顶层浅合并（`Persona.model_validate({**current, **data})`）：
+ * 改动某个嵌套组时必须整组提交，否则未提交的兄弟字段会被默认值覆盖。
+ */
+export interface CharacterPersonaPatch {
+  identity?: CharacterIdentity
+  personality?: CharacterPersonality
+  speaking_style?: CharacterSpeakingStyle
+  behavior_rules?: CharacterBehaviorRules
+  system_prompt?: string
+}
+
+/** 后端 `CharacterState.model_dump()`（PATCH 只提交改动字段）。 */
+export interface CharacterState {
+  mood?: string
+  energy?: number
+  activity?: string
+  current_focus?: string
+  location?: string
+  social_state?: string
+  schedule_state?: string
+  current_goal?: string
+  current_project?: string
+  reason?: string
+  mood_updated_at?: number
+  updated_at?: number
+  [key: string]: unknown
+}
+
+/** `GET /api/v1/character` 的 data。 */
+export interface CharacterPayload {
+  persona: CharacterPersona | null
+  state: CharacterState | null
+  source: 'config' | 'database' | string | null
+}
+
+// ------------------------------------------------- Character 导入导出
+
+/** `GET /api/v1/character/export` 的 data：完整角色文档（可直接存盘 / 再导入）。 */
+export interface CharacterExportDocument {
+  settings: Record<string, unknown>
+  tables: Record<string, Record<string, unknown>[]>
+  counts: Record<string, number>
+  format: string
+  format_version: number
+  exported_at: number
+  schema_version?: number
+  bible_hash?: string
+  missing_tables?: string[]
+  content_sha256?: string
+  [key: string]: unknown
+}
+
+/** `POST /api/v1/character/import` 的 data.preview（dry-run 报告，不写库）。 */
+export interface CharacterImportPreview {
+  ok: boolean
+  dry_run?: boolean
+  will_reset?: boolean
+  /** 各表将写入的行数。 */
+  counts?: Record<string, number>
+  /** 将覆盖的设置键列表。 */
+  settings?: string[]
+  rows?: number
+  /** `ok === false` 时的原因（invalid_package / schema_too_new）。 */
+  reason?: string
+  inspect?: Record<string, unknown>
+}
+
+/** `POST /api/v1/character/import` 的 data。 */
+export interface CharacterImportResult {
+  preview: CharacterImportPreview
+  applied: boolean
+  /** 应用后的写入报告（backup / written / verified 等）。 */
+  result?: Record<string, unknown>
+}
+
 // ---------------------------------------------------------------- Tools
 
 export interface ToolRow {
