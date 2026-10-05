@@ -1,4 +1,5 @@
-"""World Perception 单元测试（Phase 2）：语义映射、缓存失效、差异事件去抖。"""
+"""World Perception 单元测试（Phase 2 + 2.1）：语义映射、分层缓存 merge、
+环境签名差异、方块增删检测、缓存失效、事件去抖。"""
 
 from __future__ import annotations
 
@@ -8,7 +9,9 @@ from app.config.settings import MinecraftConfig
 from app.integrations.minecraft.service import MinecraftService
 from app.integrations.minecraft.world import (
     WorldPerception,
+    WorldStateCache,
     build_semantic_model,
+    environment_signature,
     parse_raw_snapshot,
     terrain_category,
 )
@@ -92,7 +95,21 @@ def raw_payload(**overrides) -> dict:
                     }
                 ],
             },
-            "extended": {"radius": 96, "points": []},
+            "extended": {
+                "radius": 96,
+                "points": [
+                    {
+                        "name": "sand",
+                        "rel": {"dx": 48, "dy": 0, "dz": 0},
+                        "pos": {"x": 58, "y": 64, "z": -5},
+                        "distance": 48.0,
+                        "bearing": 90.0,
+                        "relative_direction": "right",
+                        "compass": "east",
+                        "biome": "desert",
+                    }
+                ],
+            },
             "interesting": [
                 {
                     "name": "crafting_table",
@@ -175,14 +192,14 @@ def test_semantic_model_groups_entities_by_type():
 
 
 def test_cache_invalidate_on_disconnect():
-    from app.integrations.minecraft.world import WorldStateCache
-
     clock, _ = make_clock()
     cache_raw = parse_raw_snapshot(raw_payload())
     state_cache = WorldStateCache(clock)
     state_cache.update(cache_raw, {"near", "local"})
     assert state_cache.online is True
-    assert state_cache.raw is cache_raw
+    merged = state_cache.raw
+    assert merged is not None and merged.online is True
+    assert merged.blocks.near is not None and merged.blocks.local is not None
 
     # bot 断开：整体作废，不留假在线状态（Test 10）
     state_cache.invalidate()
@@ -332,3 +349,278 @@ async def test_offline_snapshot_invalidates_cache():
     await perception.poll({"near"})
     assert perception.cache.online is False
     assert perception.view()["available"] is False
+
+
+# =========================================== Phase 2.1：partial layer merge（修复 1）
+
+
+def _payload_with_layers(*layers: str) -> dict:
+    """runtime 的 partial 载荷形状：只带请求的层（其余 blocks 键缺失）。"""
+    payload = raw_payload()
+    blocks = payload["blocks"]
+    kept: dict = {}
+    if "near" in layers:
+        kept["near"] = blocks["near"]
+    if "local" in layers:
+        kept["local"] = blocks["local"]
+        kept["interesting"] = blocks["interesting"]
+    if "extended" in layers:
+        kept["extended"] = blocks["extended"]
+    payload["blocks"] = kept
+    return payload
+
+
+def test_partial_near_update_preserves_local_and_extended():
+    """near 更新只能覆盖 near：local/interesting/extended 必须原样保留。"""
+    clock, advance = make_clock()
+    cache = WorldStateCache(clock)
+    cache.update(parse_raw_snapshot(raw_payload()), {"near", "local", "extended"})
+    advance(1.0)
+
+    cache.update(parse_raw_snapshot(_payload_with_layers("near")), {"near"})
+
+    merged = cache.raw
+    assert merged is not None
+    assert merged.blocks.near is not None
+    assert merged.blocks.local is not None, "near 更新不得清空 local"
+    assert merged.blocks.extended is not None, "near 更新不得清空 extended"
+    assert merged.blocks.interesting, "interesting 属于 local 层，near 更新不得清空"
+
+    # 语义模型 / raw view 里其它层的内容仍然存在（不是只看对象存在）
+    semantic = build_semantic_model(merged)
+    terrain_types = {item["type"] for item in semantic["terrain"]}
+    assert "water" in terrain_types, "water 只在 local 层，必须保留"
+    assert "sand" in terrain_types, "sand 只在 extended 层，必须保留"
+    raw_view = merged.model_dump(by_alias=True)
+    assert raw_view["blocks"]["local"]["columns"], "raw view 必须保留 local 层数据"
+    assert raw_view["blocks"]["extended"]["points"], "raw view 必须保留 extended 层数据"
+
+
+def test_partial_local_update_preserves_near_and_extended():
+    """local 更新覆盖 local + interesting；near/extended 必须保留。"""
+    furnace = {
+        "name": "furnace",
+        "rel": {"dx": 1, "dy": 0, "dz": 1},
+        "pos": {"x": 11, "y": 64, "z": -4},
+        "distance": 1.4,
+        "bearing": 45.0,
+        "relative_direction": "front",
+        "compass": "north",
+    }
+    clock, advance = make_clock()
+    cache = WorldStateCache(clock)
+    cache.update(parse_raw_snapshot(raw_payload()), {"near", "local", "extended"})
+    advance(2.0)
+
+    local_payload = _payload_with_layers("local")
+    local_payload["blocks"]["interesting"] = [furnace]  # 证明 local 层确实被本次更新替换
+    cache.update(parse_raw_snapshot(local_payload), {"local"})
+
+    merged = cache.raw
+    assert merged is not None
+    assert merged.blocks.local is not None
+    assert merged.blocks.near is not None, "local 更新不得清空 near"
+    assert merged.blocks.extended is not None, "local 更新不得清空 extended"
+    assert merged.blocks.near.columns, "near 层数据必须仍在"
+    assert merged.blocks.extended.points, "extended 层数据必须仍在"
+    assert [entry.name for entry in merged.blocks.interesting] == ["furnace"]
+
+    semantic = build_semantic_model(merged)
+    terrain_types = {item["type"] for item in semantic["terrain"]}
+    assert "forest" in terrain_types, "forest（oak_log）只在 near 层，必须保留"
+    assert "sand" in terrain_types, "sand 只在 extended 层，必须保留"
+
+
+def test_partial_extended_update_preserves_near_and_local():
+    """extended 更新只能覆盖 extended：near/local 必须保留。"""
+    snow_point = {
+        "name": "snow",
+        "rel": {"dx": -48, "dy": 0, "dz": 0},
+        "pos": {"x": -38, "y": 64, "z": -5},
+        "distance": 48.0,
+        "bearing": -90.0,
+        "relative_direction": "left",
+        "compass": "west",
+        "biome": "snowy_plains",
+    }
+    clock, advance = make_clock()
+    cache = WorldStateCache(clock)
+    cache.update(parse_raw_snapshot(raw_payload()), {"near", "local", "extended"})
+    advance(3.0)
+
+    extended_payload = _payload_with_layers("extended")
+    extended_payload["blocks"]["extended"] = {"radius": 96, "points": [snow_point]}
+    cache.update(parse_raw_snapshot(extended_payload), {"extended"})
+
+    merged = cache.raw
+    assert merged is not None
+    assert merged.blocks.extended is not None
+    assert [point.name for point in merged.blocks.extended.points] == ["snow"]
+    assert merged.blocks.near is not None and merged.blocks.near.columns, "near 必须保留"
+    assert merged.blocks.local is not None and merged.blocks.local.columns, "local 必须保留"
+
+    semantic = build_semantic_model(merged)
+    terrain_types = {item["type"] for item in semantic["terrain"]}
+    assert "grassland" in terrain_types, "grassland（grass_block）只在 near 层，必须保留"
+    assert "water" in terrain_types, "water 只在 local 层，必须保留"
+    assert "snow" in terrain_types, "snow 来自本次 extended 更新"
+
+
+def test_layer_age_advances_independently():
+    """更新 near 不得刷新 local/extended 的 age（任务书示例逐值断言）。"""
+    clock, advance = make_clock()
+    cache = WorldStateCache(clock)
+    cache.update(parse_raw_snapshot(raw_payload()), {"near", "local", "extended"})
+    assert cache.layer_age("near") == 0.0
+    assert cache.layer_age("local") == 0.0
+    assert cache.layer_age("extended") == 0.0
+
+    advance(1.0)
+    cache.update(parse_raw_snapshot(_payload_with_layers("near")), {"near"})
+    assert cache.layer_age("near") == 0.0
+    assert cache.layer_age("local") == 1.0
+    assert cache.layer_age("extended") == 1.0
+
+
+# =========================================== Phase 2.1：environment diff（修复 2）
+
+
+def test_environment_signature_ignores_ticks_and_light():
+    from app.integrations.minecraft.world import Environment
+
+    base = Environment(
+        biome="plains",
+        time_of_day_ticks=1000,
+        time_phase="day",
+        weather="clear",
+        light=15,
+        dimension="overworld",
+    )
+    moved = Environment(
+        biome="plains",
+        time_of_day_ticks=9999,
+        time_phase="day",
+        weather="clear",
+        light=3,
+        dimension="overworld",
+    )
+    assert environment_signature(base) == environment_signature(moved)
+
+
+async def test_environment_tick_change_alone_does_not_emit_world_changed():
+    """Test A：只改 time_of_day_ticks（和精确 light）不得产生 world.changed。"""
+    clock, advance = make_clock()
+    perception, client, events = make_perception(clock, advance)
+    await perception.poll({"near"})  # prime（含环境签名基线）
+
+    advance(2.0)
+    payload = raw_payload()
+    payload["environment"]["time_of_day_ticks"] = 1400  # 时间刻持续变化
+    payload["environment"]["light"] = 12  # 精确光照也不参与签名
+    client.payload = payload
+    events = await perception.poll({"near"})
+    assert all(name != "minecraft.world.changed" for name, _ in events)
+
+
+async def test_environment_time_phase_change_emits_world_changed():
+    """Test B：time_phase 变化必须产生事件。"""
+    clock, advance = make_clock()
+    perception, client, events = make_perception(clock, advance)
+    await perception.poll({"near"})
+
+    advance(2.0)
+    payload = raw_payload()
+    payload["environment"]["time_phase"] = "night"
+    client.payload = payload
+    events = await perception.poll({"near"})
+    changed = [data for name, data in events if name == "minecraft.world.changed"]
+    assert len(changed) == 1
+    assert changed[0]["environment_changed"] is True
+    assert changed[0]["environment"]["time_phase"] == "night"
+
+
+async def test_environment_weather_change_emits_world_changed():
+    """Test C：weather 变化必须产生事件。"""
+    clock, advance = make_clock()
+    perception, client, events = make_perception(clock, advance)
+    await perception.poll({"near"})
+
+    advance(2.0)
+    payload = raw_payload()
+    payload["environment"]["weather"] = "rain"
+    client.payload = payload
+    events = await perception.poll({"near"})
+    changed = [data for name, data in events if name == "minecraft.world.changed"]
+    assert len(changed) == 1
+    assert changed[0]["environment_changed"] is True
+    assert changed[0]["environment"]["weather"] == "rain"
+
+
+async def test_environment_biome_change_emits_world_changed():
+    """Test D：biome 变化必须产生事件。"""
+    clock, advance = make_clock()
+    perception, client, events = make_perception(clock, advance)
+    await perception.poll({"near"})
+
+    advance(2.0)
+    payload = raw_payload()
+    payload["environment"]["biome"] = "desert"
+    client.payload = payload
+    events = await perception.poll({"near"})
+    changed = [data for name, data in events if name == "minecraft.world.changed"]
+    assert len(changed) == 1
+    assert changed[0]["environment_changed"] is True
+    assert changed[0]["environment"]["biome"] == "desert"
+
+
+# =========================================== Phase 2.1：block removal diff（修复 3）
+
+
+def _stone_column(x: int, z: int) -> dict:
+    return {
+        "name": "stone",
+        "rel": {"dx": x - 10, "dy": -1, "dz": z + 5},
+        "pos": {"x": x, "y": 63, "z": z},
+        "distance": 1.0,
+        "bearing": 0.0,
+        "relative_direction": "front",
+        "compass": "north",
+    }
+
+
+def _near_payload_with(columns: list[dict]) -> dict:
+    payload = raw_payload()
+    payload["blocks"] = {"near": {"radius": 6, "step": 1, "columns": columns}}
+    return payload
+
+
+async def test_world_changed_detects_removed_block():
+    """previous A,B,C stone；current A,B → changed_blocks == 1（C 的移除必须被计到）。"""
+    clock, advance = make_clock()
+    perception, client, events = make_perception(clock, advance, change_block_threshold=1)
+    a, b, c = _stone_column(1, 1), _stone_column(2, 1), _stone_column(3, 1)
+    client.payload = _near_payload_with([a, b, c])
+    await perception.poll({"near"})  # prime：A/B/C 基线
+
+    advance(2.0)
+    client.payload = _near_payload_with([a, b])  # 只有 C 消失
+    events = await perception.poll({"near"})
+    changed = [data for name, data in events if name == "minecraft.world.changed"]
+    assert len(changed) == 1
+    assert changed[0]["changed_blocks"] == 1
+
+
+async def test_world_changed_counts_multiple_removed_blocks():
+    """移除数量 ≥ 阈值必须产生事件，计数只算真实移除。"""
+    clock, advance = make_clock()
+    perception, client, events = make_perception(clock, advance, change_block_threshold=3)
+    client.payload = _near_payload_with([_stone_column(i, 1) for i in (1, 2, 3)])
+    await perception.poll({"near"})
+
+    advance(2.0)
+    client.payload = _near_payload_with([])  # 三块全部移除
+    events = await perception.poll({"near"})
+    changed = [data for name, data in events if name == "minecraft.world.changed"]
+    assert len(changed) == 1
+    assert changed[0]["changed_blocks"] == 3
+    assert changed[0]["changed_blocks"] >= 3

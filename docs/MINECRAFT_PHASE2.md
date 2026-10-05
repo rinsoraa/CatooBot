@@ -122,7 +122,7 @@ E2E 用「从 rel+yaw 重算」做数学一致性断言（Test 6 的机器执行
 
 | 事件 | 触发 | data |
 |---|---|---|
-| `minecraft.world.changed` | 近层签名变化 ≥ `world_change_block_threshold`（默认 10）个方块，或环境相位/天气/群系变化；**聚合为一条** | `{changed_blocks, environment_changed, environment}` |
+| `minecraft.world.changed` | 近层签名**增/改/删**（并集比较）≥ `world_change_block_threshold`（默认 10）个方块，或环境**语义签名**（biome/time_phase/weather/dimension；刻意不含 `time_of_day_ticks`/`light`）变化；**聚合为一条** | `{changed_blocks, environment_changed, environment(签名)}` |
 | `minecraft.player.nearby` | 新玩家进入感知范围 | `{usernames, players:[{name,direction,distance}]}` |
 | `minecraft.player.left_area` | 玩家离开 | `{usernames}` |
 | `minecraft.entity.discovered` | 新实体类型出现 | `{types: {type: count}}` |
@@ -211,6 +211,8 @@ E2E 用「从 rel+yaw 重算」做数学一致性断言（Test 6 的机器执行
 
 ## 10. Phase 3 建议
 
+0. **（前置）重新设计 movement-aware world diff**——见 §11.3：当前 near signature 以世界坐标为键，
+   移动能力引入后「窗口位移」会被误报为世界变化，必须先设计对齐/分类方案，再实现移动。
 1. **动作层**：runtime 增加 `move_to / dig / place / look / follow` 端点 + CatooBot
    侧确认门与额度控制（「手」）；工具从只读扩展为带风险分级的动作工具。
 2. **导航**：mineflayer-pathfinder 进 runtime，暴露 `goto(x,y,z)` 与寻路可行性查询。
@@ -218,3 +220,61 @@ E2E 用「从 rel+yaw 重算」做数学一致性断言（Test 6 的机器执行
    计划-确认-执行的小闭环完成「跟我来/帮我放个火把」类请求。
 4. **洞穴/地下感知**、实体意图（entity metadata：村民职业、苦力怕引信状态）。
 5. **记忆接入**：把 POI 发现写进长期记忆（「空凛家在工作台西边 20 格」）。
+
+## 11. Phase 2.1 审计修复（World Perception Integrity Audit & Fix）
+
+只修改 WorldStateCache / WorldPerception diff / 对应测试 / 本文档；**未新增任何 Minecraft 行动能力**。
+
+### 11.1 三个问题的根因与修改前后行为
+
+| # | 问题 | 根因 | 修改前 | 修改后 |
+|---|---|---|---|---|
+| 1 | 分层缓存互相覆盖 | `WorldStateCache.update()` 直接 `self._raw = raw` | 只拉一层的一帧会把其它层数据整体丢弃（语义模型随层龄抖动缺层） | near / local(+interesting) / extended **各自独立存储**：更新某层只替换该层；动态状态（self/players/entities/environment）取最新成功帧；`raw` 改为各层拼回的合并投影（只读） |
+| 2 | 环境 diff 常驻噪声 | `env != prev_env` 比较整段 dump | `time_of_day_ticks` 每 tick 在变、`light` 会闪烁 → `minecraft.world.changed` 每个冷却周期都误报 | 新增 `environment_signature()`：只比较 **biome / time_phase / weather / dimension**；事件载荷的 `environment` 也改为该签名 |
+| 3 | 方块「移除」漏检 | `changed` 只遍历当前签名 `signature.items()` | 方块被挖掉/消失（旧坐标已不在当前柱面）不计入变化，挖矿/建造场景几乎不触发 world.changed | 并集比较 `previous.keys() \| current.keys()` 且 `previous.get(key) != current.get(key)`：**增/改/删都计数** |
+
+**附带修复（同根因域）**：`_diff` 原先对「本次请求的 raw」做差异——partial poll 会看到空层产生幽灵变化；
+现在一律基于缓存**合并视图**做差异，且在没有 near 数据的帧上不建立/不更新方块基线（首帧不误报）。
+
+### 11.2 新增测试（`tests/test_minecraft_world.py`，+11）
+
+| 测试 | 覆盖 |
+|---|---|
+| `test_partial_near_update_preserves_local_and_extended` | 修复 1：near 更新后 local/interesting/extended 仍在（**语义模型与 raw view 双断言**：water 只来自 local、sand 只来自 extended） |
+| `test_partial_local_update_preserves_near_and_extended` | 修复 1：local 更新替换 local+interesting，near/extended 保留 |
+| `test_partial_extended_update_preserves_near_and_local` | 修复 1：extended 更新只覆盖 extended |
+| `test_layer_age_advances_independently` | 层龄独立（任务书逐值示例：t=1 更新 near → near=0 / local=1 / extended=1） |
+| `test_environment_signature_ignores_ticks_and_light` | 签名只含 4 字段 |
+| `test_environment_tick_change_alone_does_not_emit_world_changed` | Test A |
+| `test_environment_time_phase_change_emits_world_changed` | Test B |
+| `test_environment_weather_change_emits_world_changed` | Test C |
+| `test_environment_biome_change_emits_world_changed` | Test D |
+| `test_world_changed_detects_removed_block` | 修复 3：A,B,C→A,B ⇒ `changed_blocks == 1` |
+| `test_world_changed_counts_multiple_removed_blocks` | 修复 3：移除 3 块 ≥ 阈值 3 ⇒ 事件，计数 3 |
+
+### 11.3 Phase 3 前置边界：movement-aware world diff（**当前未实现**）
+
+**当前 near signature 以世界坐标 `(x,y,z)` 为键；Phase 2 罐头不移动，「签名差异＝世界变化」成立。**
+
+Phase 3 一旦加入移动/跟随：观察窗口本身在平移，同一批方块在窗口内换坐标 →
+当前实现会把**位移**误报为 `minecraft.world.changed`。
+
+**Phase 3 开始前必须先重新设计 movement-aware world diff**，例如：
+
+- 以罐头所在区块为基准做窗口对齐（比较「本区块内的相对坐标」）；
+- 或把差异显式分成「世界变化」与「窗口位移」两类，并在事件里分别标注；
+- 并对阈值/冷却做移动场景的重新标定。
+
+在此之前，任何移动能力**不得复用**本差异逻辑（任务书 §九 的硬边界）。
+
+### 11.4 当前剩余风险
+
+1. near 签名是「柱面表层」快照：树冠遮挡处、地下的变化不反映（Phase 2 既定取舍，§9 已记）。
+2. 环境签名刻意不含 `light`：光照剧变（火把被挖、连续光照过渡）不产生事件；如需 light 事件须单独设计阈值。
+3. 合并视图的 `fetched_at` 是「最新成功帧」时间；各层真实龄期看 `layers.*.age_seconds`（两者勿混用）。
+4. 若首轮只拉到 local/extended，方块基线推迟到首个 near 帧才建立：此前（≤1s）的方块变化不触发事件（可接受）。
+
+### 11.5 Phase 3 readiness
+
+Phase 2.1 完成后，感知层数据一致性通过（partial merge / layer age / 环境签名 / 增删改检测全覆盖），
+**可以进入 Phase 3**；但 Phase 3 的第一个工作项必须是 §11.3 的 movement-aware world diff 重设计。

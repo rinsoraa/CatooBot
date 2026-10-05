@@ -261,33 +261,76 @@ def build_semantic_model(raw: RawSnapshot) -> dict[str, Any]:
 
 
 class WorldStateCache:
-    """分层世界状态缓存。不同层允许不同刷新周期；断开整体作废。"""
+    """分层世界状态缓存：每一层独立维护，partial snapshot 绝不覆盖其它层。
+
+    关键不变量（Phase 2.1 审计修复）：
+
+    * ``near`` 更新只替换 near；``local`` 更新替换 local + interesting；
+      ``extended`` 更新只替换 extended；
+    * 动态状态（self / players / entities / environment）取最新成功 snapshot；
+    * 每层有独立的 fetched_at：拉 near 不刷新 local / extended 的 age；
+    * 断开整体作废，不留假在线状态。
+    """
 
     def __init__(self, clock: Callable[[], float]) -> None:
         self._clock = clock
         self._online = False
-        self._raw: RawSnapshot | None = None
+        self._self_state: SelfState | None = None
+        self._players: list[RelativePlayer] = []
+        self._entities: list[RelativeEntity] = []
+        self._environment: Environment | None = None
+        self._near: BlockLayer | None = None
+        self._local: BlockLayer | None = None
+        self._extended: ExtendedLayer | None = None
+        self._interesting: list[BlockEntry] = []
         self._layer_at: dict[str, float] = {}
+        self._fetched_at: float = 0.0
 
     @property
     def online(self) -> bool:
         return self._online
 
     def update(self, raw: RawSnapshot, layers: set[str]) -> None:
+        """合并一次 snapshot：只覆盖本次请求的层，其余层原样保留。"""
         self._online = bool(raw.online)
         if not raw.online:
             self.invalidate()
             return
-        self._raw = raw
+        self._fetched_at = raw.fetched_at or self._clock()
+        # 动态状态：最新成功 snapshot 覆盖（runtime 每帧都带这些段）
+        if raw.self_state is not None:
+            self._self_state = raw.self_state
+        self._players = list(raw.players)
+        self._entities = list(raw.entities)
+        if raw.environment is not None:
+            self._environment = raw.environment
         now = self._clock()
-        for layer in layers:
-            self._layer_at[layer] = now
+        blocks = raw.blocks
+        if "near" in layers and blocks.near is not None:
+            self._near = blocks.near
+            self._layer_at["near"] = now
+        if "local" in layers:
+            if blocks.local is not None:
+                self._local = blocks.local
+            self._interesting = list(blocks.interesting)
+            self._layer_at["local"] = now
+        if "extended" in layers and blocks.extended is not None:
+            self._extended = blocks.extended
+            self._layer_at["extended"] = now
 
     def invalidate(self) -> None:
         """bot 离开世界：缓存整体作废，绝不保留假在线状态。"""
         self._online = False
-        self._raw = None
+        self._self_state = None
+        self._players = []
+        self._entities = []
+        self._environment = None
+        self._near = None
+        self._local = None
+        self._extended = None
+        self._interesting = []
         self._layer_at.clear()
+        self._fetched_at = 0.0
 
     def layer_age(self, layer: str) -> float | None:
         fetched = self._layer_at.get(layer)
@@ -295,20 +338,51 @@ class WorldStateCache:
 
     @property
     def raw(self) -> RawSnapshot | None:
-        return self._raw
+        """合并视图：各层 + 最新动态状态拼回一份 RawSnapshot（语义模型/调试用）。
+
+        分层事实仍保存在各自字段里；这里只是只读投影，不负责任何写入。
+        """
+        if not self._online:
+            return None
+        return RawSnapshot(
+            online=True,
+            fetched_at=self._fetched_at,
+            self=self._self_state,  # 字段名 self_state，alias 是 self（mypy 按 alias 校验）
+            players=list(self._players),
+            entities=list(self._entities),
+            environment=self._environment,
+            blocks=BlocksSection(
+                near=self._near,
+                local=self._local,
+                extended=self._extended,
+                interesting=list(self._interesting),
+            ),
+        )
 
     def view(self) -> dict[str, Any]:
         """API/工具用的缓存元信息。"""
-        raw = self._raw
         return {
             "online": self._online,
-            "captured_at": raw.fetched_at if raw else None,
+            "captured_at": self._fetched_at if self._online else None,
             "age_seconds": self.layer_age("near"),
             "layers": {
                 layer: {"age_seconds": self.layer_age(layer)}
                 for layer in ("near", "local", "extended")
             },
         }
+
+
+#: 环境语义签名的字段：只包含真正的环境变化。
+#: 刻意排除 time_of_day_ticks（每 tick 都在变）与精确 light（会闪烁）——
+#: 拿它们做比较会让 world.changed 变成常驻噪声（Phase 2.1 修复 2）。
+ENVIRONMENT_SIGNATURE_FIELDS = ("biome", "time_phase", "weather", "dimension")
+
+
+def environment_signature(environment: Environment | None) -> dict[str, Any] | None:
+    """环境签名：biome / time_phase / weather / dimension（不含 ticks / light）。"""
+    if environment is None:
+        return None
+    return {field: getattr(environment, field) for field in ENVIRONMENT_SIGNATURE_FIELDS}
 
 
 # --------------------------------------------------------------- perception diff
@@ -384,8 +458,12 @@ class WorldPerception:
         self.cache.update(raw, layers)
         for layer in layers:
             self._due[layer] = self._clock() + self._intervals[layer]
-        events = self._diff(raw)
-        return events
+        # 差异必须基于合并视图：本次只拉了一层时，其它层仍以缓存里的旧值为准，
+        # 否则 partial poll 会看到空的 blocks.near → 幽灵变化（Phase 2.1）
+        merged = self.cache.raw
+        if merged is None:  # 理论上到不了这里（update 已置 online）
+            return []
+        return self._diff(merged)
 
     def invalidate(self) -> None:
         self.cache.invalidate()
@@ -409,11 +487,15 @@ class WorldPerception:
         self._last_event_at[event_type] = now
         return True
 
-    def _diff(self, raw: RawSnapshot) -> list[tuple[str, dict[str, Any]]]:
+    def _diff(self, merged: RawSnapshot) -> list[tuple[str, dict[str, Any]]]:
+        """对合并视图做差异（不是对本次请求的 raw）：partial poll 不产生幽灵变化。"""
         events: list[tuple[str, dict[str, Any]]] = []
-        usernames = {player.username for player in raw.players}
-        entity_types = {entity.type for entity in raw.entities}
-        poi_names = {entry.name for entry in raw.blocks.interesting}
+        usernames = {player.username for player in merged.players}
+        entity_types = {entity.type for entity in merged.entities}
+        poi_names = {entry.name for entry in merged.blocks.interesting}
+        # 有 near 层数据才谈方块签名；没有就保持 None（不做比较、不更新基线）
+        signature = self._near_signature(merged) if merged.blocks.near is not None else None
+        environment = environment_signature(merged.environment)
 
         if not self._primed:
             # 首帧只建立基线，避免上线瞬间的感知风暴。
@@ -421,8 +503,8 @@ class WorldPerception:
             self._prev_players = usernames
             self._prev_entity_types = entity_types
             self._prev_poi_names = poi_names
-            self._prev_near_signature = self._near_signature(raw)
-            self._prev_environment = raw.environment.model_dump() if raw.environment else None
+            self._prev_near_signature = signature
+            self._prev_environment = environment
             return events
 
         new_players = usernames - self._prev_players
@@ -433,16 +515,15 @@ class WorldPerception:
                     "minecraft.player.nearby",
                     {
                         "usernames": sorted(new_players),
-                        "players": raw.players[:5]
-                        and [
+                        "players": [
                             {
                                 "name": p.username,
                                 "direction": p.relative_direction,
                                 "distance": round(p.distance, 1),
                             }
-                            for p in raw.players
+                            for p in merged.players
                             if p.username in new_players
-                        ],
+                        ][:5],
                     },
                 )
             )
@@ -451,7 +532,7 @@ class WorldPerception:
 
         new_entities = entity_types - self._prev_entity_types
         if new_entities and self._allow("minecraft.entity.discovered"):
-            counts = {t: sum(1 for e in raw.entities if e.type == t) for t in new_entities}
+            counts = {t: sum(1 for e in merged.entities if e.type == t) for t in new_entities}
             events.append(("minecraft.entity.discovered", {"types": counts}))
         gone_entities = self._prev_entity_types - entity_types
         if gone_entities and self._allow("minecraft.entity.left_area"):
@@ -461,15 +542,21 @@ class WorldPerception:
         if new_pois and self._allow("minecraft.poi.discovered"):
             events.append(("minecraft.poi.discovered", {"types": sorted(new_pois)[:10]}))
 
-        # world.changed：方块变化数量达标 或 环境相位变化，聚合成一条带摘要的事件
-        signature = self._near_signature(raw)
+        # world.changed：方块变化数量达标 或 环境语义签名变化，聚合成一条带摘要的事件。
+        # 方块比较必须走 keys 并集：增/改/删都算变化（只看当前签名会漏掉「移除」）。
         changed = 0
-        if self._prev_near_signature is not None:
+        if signature is not None and self._prev_near_signature is not None:
+            previous = self._prev_near_signature
             changed = sum(
-                1 for key, name in signature.items() if self._prev_near_signature.get(key) != name
+                1
+                for key in previous.keys() | signature.keys()
+                if previous.get(key) != signature.get(key)
             )
-        environment = raw.environment.model_dump() if raw.environment else None
-        env_changed = self._prev_environment is not None and environment != self._prev_environment
+        env_changed = (
+            environment is not None
+            and self._prev_environment is not None
+            and environment != self._prev_environment
+        )
         if (changed >= self._change_threshold or env_changed) and self._allow(
             "minecraft.world.changed"
         ):
@@ -487,8 +574,10 @@ class WorldPerception:
         self._prev_players = usernames
         self._prev_entity_types = entity_types
         self._prev_poi_names = poi_names
-        self._prev_near_signature = signature
-        self._prev_environment = environment
+        if signature is not None:
+            self._prev_near_signature = signature
+        if environment is not None:
+            self._prev_environment = environment
         return events
 
     def _near_signature(self, raw: RawSnapshot) -> dict[str, str]:
