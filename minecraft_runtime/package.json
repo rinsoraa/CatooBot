@@ -6,10 +6,11 @@
   "main": "runtime.js",
   "scripts": {
     "start": "node runtime.js",
-    "test": "node test/action_runtime.test.js && node test/e2e.js"
+    "test": "node test/action_runtime.test.js && node test/move_to.test.js && node test/e2e.js"
   },
   "dependencies": {
-    "mineflayer": "^4.20.1"
+    "mineflayer": "^4.20.1",
+    "mineflayer-pathfinder": "^2.4.5"
   },
   "devDependencies": {
     "flying-squid": "^1.12.0"

@@ -47,6 +47,10 @@ class FakeRuntime:
         self.stop_calls = 0
         self.look_at_plan: list[dict[str, Any]] = []  # 依次消费；空 = 默认 SUCCEEDED
         self.stop_cancelled: list[str] = []
+        # Phase 3C：move_to + Pathfinder 诊断
+        self.move_to_calls: list[dict[str, Any]] = []
+        self.move_to_plan: list[dict[str, Any]] = []  # 依次消费；空 = 默认 SUCCEEDED
+        self.pathfinder_state: dict[str, Any] = {"goal": None, "target": None, "moving": False}
         self._runner: web.AppRunner | None = None
 
     async def start(self) -> None:
@@ -58,6 +62,7 @@ class FakeRuntime:
         app.router.add_post("/minecraft/disconnect", self._disconnect)
         app.router.add_get("/minecraft/world/snapshot", self._world_snapshot)
         app.router.add_post("/minecraft/look_at", self._look_at)
+        app.router.add_post("/minecraft/move_to", self._move_to)
         app.router.add_post("/minecraft/stop", self._stop)
         self._runner = web.AppRunner(app, access_log=None)
         await self._runner.setup()
@@ -103,6 +108,15 @@ class FakeRuntime:
                 "dimension": "overworld" if self.online else None,
                 "position": {"x": 1.0, "y": 2.0, "z": 3.0} if self.online else None,
                 "health": 20 if self.online else None,
+                "action": {
+                    "action": None,
+                    "action_id": None,
+                    "status": "IDLE",
+                    "started_at": None,
+                    "finished_at": None,
+                    "elapsed_ms": None,
+                },
+                "pathfinder": dict(self.pathfinder_state),
             }
         )
 
@@ -139,6 +153,33 @@ class FakeRuntime:
                 "status": plan["status"],
             }
         )
+
+    async def _move_to(self, request: web.Request) -> web.Response:
+        body = await request.json()
+        self.move_to_calls.append(body)
+        plan = self.move_to_plan.pop(0) if self.move_to_plan else {"status": "SUCCEEDED"}
+        if "error" in plan:
+            code, status = plan["error"]
+            return web.json_response(
+                {"ok": False, "error": {"code": code, "message": f"{code}（fake runtime）"}},
+                status=status,
+            )
+        response: dict[str, Any] = {
+            "ok": True,
+            "action_id": plan.get("action_id", "act_move_1"),
+            "action": "move_to",
+            "status": plan["status"],
+        }
+        if plan["status"] == "SUCCEEDED":
+            response["result"] = plan.get(
+                "result",
+                {
+                    "target": body,
+                    "final_position": {"x": body["x"], "y": body["y"], "z": body["z"]},
+                    "distance_to_target": 0.42,
+                },
+            )
+        return web.json_response(response)
 
     async def _stop(self, request: web.Request) -> web.Response:
         self.stop_calls += 1

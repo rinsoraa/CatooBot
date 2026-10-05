@@ -28,6 +28,8 @@ const path = require('path')
 const fs = require('fs')
 const mineflayer = require('mineflayer')
 const Vec3 = require('vec3').Vec3 ?? require('vec3')
+const pathfinder = require('mineflayer-pathfinder')
+const { Movements, goals } = pathfinder
 const { createActionRuntime, ActionError } = require('./action_runtime')
 
 // --------------------------------------------------------------- configuration
@@ -41,6 +43,11 @@ const CONNECT_TIMEOUT_S = Number.parseFloat(process.env.MC_CONNECT_TIMEOUT || '7
 const BRIDGE_TOKEN = process.env.MC_BRIDGE_TOKEN || ''
 
 const CHAT_MAX_CHARS = 256
+
+// Phase 3C：move_to（非破坏性导航）
+const MOVE_TO_RADIUS = 1.5 // GoalNear 半径：进入约 1.5 格即视为到达
+const MOVE_MAX_DISTANCE = Number.parseFloat(process.env.MC_MOVE_MAX_DISTANCE || '64')
+const MOVE_TIMEOUT_MS = Number.parseInt(process.env.MC_MOVE_TIMEOUT_MS || '30000', 10)
 const CONNECT_TIMEOUT_MS = Math.max(5, CONNECT_TIMEOUT_S) * 1000
 const EVENT_RETRY_DELAYS_MS = [0, 1000, 2000, 4000, 8000, 16000]
 const EVENT_QUEUE_MAX = 200
@@ -513,31 +520,60 @@ function parseLayers(query) {
   return new Set(raw.split(',').map((part) => part.trim()).filter((part) => allowed.has(part)))
 }
 
-// ------------------------------------------------------------------ action runtime（Phase 3B）
+// ------------------------------------------------------------------ action runtime（Phase 3B/3C）
 
-// 本阶段只注册三个动作（任务书 §四）：look_at（SAFE，改朝向不改世界/位置）、
-// chat（SAFE，唯一非互斥通信动作）、stop（控制面，随时可执行）。
-// 未来 move_to / follow / dig / place / craft 必须复用本 runtime —— 本阶段一律不实现。
+function round2(value) {
+  return Math.round(value * 100) / 100
+}
 
-const actionRuntime = createActionRuntime({
-  registry: {
+/** Phase 3B §六 / Phase 3C §六：共享的世界坐标校验（有限数字 + 世界边界）。 */
+function validateWorldCoords(params) {
+  const coords = {}
+  for (const name of ['x', 'y', 'z']) {
+    const value = params[name]
+    if (typeof value !== 'number' || !Number.isFinite(value)) {
+      throw new ActionError(`坐标 ${name} 必须是有限数字`, 'action.invalid', 400)
+    }
+    coords[name] = value
+  }
+  if (Math.abs(coords.x) > 3.0e7 || Math.abs(coords.z) > 3.0e7 || coords.y < -512 || coords.y > 2048) {
+    throw new ActionError('坐标超出 Minecraft 世界边界', 'action.invalid', 400)
+  }
+  return coords
+}
+
+/** Phase 3C §三：非破坏性 Movement 配置（禁止挖/放，目标不可达 → NO_PATH）。 */
+function configureMovements(movements) {
+  movements.canDig = false // 绝不为了到达目标挖方块
+  movements.scafoldingBlocks = [] // 绝不搭桥/搭塔（默认值含泥土/圆石，会主动放方块）
+  movements.canOpenDoors = false // 保守默认：不开门
+  return movements
+}
+
+/** 当前 Pathfinder 诊断（goal 类型/目标坐标/是否在移动）——只读，供 status 与 WebUI。 */
+function pathfinderStatus() {
+  const bot = state.bot
+  const pf = bot && bot.pathfinder
+  if (!pf) return { goal: null, target: null, moving: false }
+  const goal = pf.goal || null
+  const target =
+    goal && Number.isFinite(goal.x) && Number.isFinite(goal.y) && Number.isFinite(goal.z)
+      ? { x: round2(goal.x), y: round2(goal.y), z: round2(goal.z) }
+      : null
+  return {
+    goal: goal ? goal.constructor.name : null,
+    target,
+    moving: Boolean(typeof pf.isMoving === 'function' && pf.isMoving()),
+  }
+}
+
+const ACTION_REGISTRY = {
     look_at: {
       exclusive: true,
       timeout_ms: 5000,
       risk: 'SAFE',
       validate(params) {
-        const coords = {}
-        for (const name of ['x', 'y', 'z']) {
-          const value = params[name]
-          if (typeof value !== 'number' || !Number.isFinite(value)) {
-            throw new ActionError(`坐标 ${name} 必须是有限数字`, 'action.invalid', 400)
-          }
-          coords[name] = value
-        }
-        if (Math.abs(coords.x) > 3.0e7 || Math.abs(coords.z) > 3.0e7 || coords.y < -512 || coords.y > 2048) {
-          throw new ActionError('坐标超出 Minecraft 世界边界', 'action.invalid', 400)
-        }
-        return coords
+        return validateWorldCoords(params)
       },
       async run(bot, params) {
         // 上层永远不处理 yaw/pitch 数学：直接交给 mineflayer 的 lookAt。
@@ -570,13 +606,87 @@ const actionRuntime = createActionRuntime({
         bot.chat(params.message)
       },
     },
+    move_to: {
+      // Phase 3C：非破坏性导航（LOW；不挖不放，目标不可达 → NO_PATH）
+      exclusive: true,
+      timeout_ms: MOVE_TIMEOUT_MS,
+      risk: 'LOW',
+      validate(params) {
+        const coords = validateWorldCoords(params)
+        // 最大移动距离（相对当前玩家位置；第一版 64 格，可配置）——不允许多千格长距离
+        const bot = state.bot
+        const position = bot && bot.entity ? bot.entity.position : null
+        if (position) {
+          const dx = coords.x - position.x
+          const dy = coords.y - position.y
+          const dz = coords.z - position.z
+          const distance = Math.sqrt(dx * dx + dy * dy + dz * dz)
+          if (distance > MOVE_MAX_DISTANCE) {
+            throw new ActionError(
+              `目标距当前位置 ${distance.toFixed(1)} 格，超过 move_to 上限 ${MOVE_MAX_DISTANCE} 格`,
+              'action.invalid',
+              400,
+            )
+          }
+        }
+        return coords
+      },
+      async run(bot, params) {
+        const goal = new goals.GoalNear(params.x, params.y, params.z, MOVE_TO_RADIUS)
+        try {
+          // goto 在 goal_reached 时 resolve；noPath/内部超时/被改目标都以具名错误 reject
+          await bot.pathfinder.goto(goal)
+        } catch (error) {
+          // 失败也清 Goal：绝不留残余的导航意图（任务书 §十：不自动绕圈/换目标）
+          try {
+            bot.pathfinder.setGoal(null)
+          } catch (cleanupError) {
+            log('warn', 'move_to failure cleanup failed', { error: cleanupError.message })
+          }
+          const name = error && error.name
+          if (name === 'NoPath') {
+            throw new ActionError('无法找到到达目标的非破坏性路径', 'path.not_found', 500)
+          }
+          if (name === 'Timeout') {
+            throw new ActionError('路径计算超时（非破坏性）', 'path.not_found', 500)
+          }
+          throw new ActionError(
+            `移动失败：${String(error && error.message ? error.message : error)}`,
+            'action.failed',
+            500,
+          )
+        }
+        const position = bot.entity.position
+        const target = new Vec3(params.x, params.y, params.z)
+        return {
+          target: { x: params.x, y: params.y, z: params.z },
+          final_position: { x: round2(position.x), y: round2(position.y), z: round2(position.z) },
+          distance_to_target: round2(position.distanceTo(target)),
+        }
+      },
+      cleanup(bot) {
+        // Phase 3C §十一/§十二：先硬清 Goal（真正停止导航），再清控制位；
+        // 顺序保证「Minecraft 已停止执行导航后才对外报 CANCELLED」。
+        if (bot && bot.pathfinder) {
+          try {
+            bot.pathfinder.setGoal(null)
+          } catch (error) {
+            log('warn', 'move_to cleanup setGoal(null) failed', { error: error.message })
+          }
+        }
+        if (bot && typeof bot.clearControlStates === 'function') bot.clearControlStates()
+      },
+    },
     stop: {
       // 控制面动作：不占前台、不产生自己的动作记录；幂等、无 bot 也安全（§六）
       control: true,
       timeout_ms: 3000,
       risk: 'SAFE',
     },
-  },
+}
+
+const actionRuntime = createActionRuntime({
+  registry: ACTION_REGISTRY,
   getBot: () => state.bot,
   isOnline: () => state.phase === 'ONLINE' && state.bot !== null,
   emit: (event, data) => pushEvent(event, data),
@@ -624,6 +734,12 @@ function wireBot(bot) {
     state.lastError = null
     state.kickedReason = null
     state.connectedAt = Date.now() / 1000
+    // Phase 3C：进入世界后初始化 Pathfinder Movements（最保守：不挖不放）
+    try {
+      bot.pathfinder.setMovements(configureMovements(new Movements(bot)))
+    } catch (error) {
+      log('warn', 'pathfinder movements init failed', { error: error.message })
+    }
     captureWorldState(bot)
     log('info', 'spawned', { dimension: state.dimension, position: state.position })
     if (firstSpawn) pushEvent('minecraft.spawned', { username: state.username })
@@ -769,6 +885,7 @@ function startConnect(host, port) {
 
   try {
     state.bot = mineflayer.createBot(options)
+    state.bot.loadPlugin(pathfinder.pathfinder) // Phase 3C：导航能力（move_to 用；注入函数在 .pathfinder）
   } catch (error) {
     state.phase = 'ERROR'
     state.lastError = String(error && error.message ? error.message : error)
@@ -842,6 +959,8 @@ function statusPayload() {
     uptime_seconds: Math.round((Date.now() - state.startedAt) / 1000),
     // Phase 3B：当前动作（前台优先，否则最近一次终态；从未有过 → IDLE）
     action: { ...action.current, active_count: action.active_count },
+    // Phase 3C：Pathfinder 诊断（goal 类型 / 目标坐标 / 是否在移动）——只读
+    pathfinder: pathfinderStatus(),
   }
 }
 
@@ -985,6 +1104,13 @@ async function handleRequest(request, response) {
       jsonResponse(response, 200, { ok: true, ...result })
       return
     }
+    if (request.method === 'POST' && path === '/minecraft/move_to') {
+      // Phase 3C：非破坏性导航（禁 dig/place；不可达 → 500 path.not_found）
+      const body = await readBody(request)
+      const result = await actionRuntime.execute('move_to', { x: body.x, y: body.y, z: body.z })
+      jsonResponse(response, 200, { ok: true, ...result })
+      return
+    }
     if (request.method === 'POST' && path === '/minecraft/stop') {
       // 最高优先级安全停止：幂等、无 bot 也安全，返回被取消的 action_id 列表
       await readBody(request).catch(() => ({}))
@@ -1055,16 +1181,33 @@ function shutdown(signal) {
   setTimeout(() => process.exit(0), 1500)
 }
 
-process.on('SIGINT', () => shutdown('SIGINT'))
-process.on('SIGTERM', () => shutdown('SIGTERM'))
+if (require.main === module) {
+  process.on('SIGINT', () => shutdown('SIGINT'))
+  process.on('SIGTERM', () => shutdown('SIGTERM'))
+}
 
-server.listen(PORT, '127.0.0.1', () => {
-  log('info', 'minecraft runtime listening', {
-    port: PORT,
-    callback: CALLBACK_URL ? 'configured' : 'none (events poll-only)',
-    auth_file: AUTH_FILE,
+// 供测试 require（不监听端口、不注册信号处理）：注册表 / Movements 配置 / 诊断
+module.exports = {
+  ACTION_REGISTRY,
+  actionRuntime,
+  configureMovements,
+  pathfinderStatus,
+  MOVE_DEFAULTS: {
+    radius: MOVE_TO_RADIUS,
+    maxDistance: MOVE_MAX_DISTANCE,
+    timeoutMs: MOVE_TIMEOUT_MS,
+  },
+}
+
+if (require.main === module) {
+  server.listen(PORT, '127.0.0.1', () => {
+    log('info', 'minecraft runtime listening', {
+      port: PORT,
+      callback: CALLBACK_URL ? 'configured' : 'none (events poll-only)',
+      auth_file: AUTH_FILE,
+    })
   })
-})
+}
 
 server.on('error', (error) => {
   // 端口被占/权限问题：HTTP 起不来进程就没有存在意义，如实退出让上层重启。

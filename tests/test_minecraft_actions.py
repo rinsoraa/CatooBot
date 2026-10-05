@@ -15,6 +15,8 @@ from app.integrations.minecraft.service import (
     MinecraftActionFailed,
     MinecraftActionInvalid,
     MinecraftNotConnected,
+    MinecraftPathNotFound,
+    MinecraftRuntimeDown,
     MinecraftService,
 )
 from tests.test_minecraft_service import FakeRuntime, make_config
@@ -277,3 +279,106 @@ async def test_chat_still_works_and_is_an_action(fake_runtime: FakeRuntime, make
     result = await service.send_chat("我在这里！")
     assert result["sent"] is True
     assert fake_runtime.chats == ["我在这里！"]
+
+
+# --------------------------------------------------------------- Phase 3C：move_to
+# 说明：§十九 里的 test_move_to_registers_as_exclusive / test_move_to_validates_coordinates
+# 在 Node 侧实现（minecraft_runtime/test/move_to.test.js：注册表属性与校验器直测）；
+# 这里覆盖服务层语义与错误翻译。
+
+
+async def test_move_to_success(fake_runtime: FakeRuntime, make_service) -> None:
+    service = make_service(make_config(fake_runtime))
+    result = await service.move_to(120, 64, -230)
+    assert result["status"] == "SUCCEEDED"
+    assert result["action"] == "move_to"
+    assert str(result["action_id"]).startswith("act_")
+    # §八：result 带 target / final_position / distance_to_target
+    payload = result["result"]
+    assert payload["target"] == {"x": 120.0, "y": 64.0, "z": -230.0}
+    assert "final_position" in payload and "distance_to_target" in payload
+    assert fake_runtime.move_to_calls == [{"x": 120.0, "y": 64.0, "z": -230.0}]
+
+
+async def test_move_to_rejects_too_far(fake_runtime: FakeRuntime, make_service) -> None:
+    """§六：max_distance=64（相对当前位置）；超限在 Service 层就被拒（不发 HTTP）。"""
+    fake_runtime.online = True
+    service = make_service(make_config(fake_runtime))
+    await service.status()  # 让镜像拿到位置 (1, 2, 3)
+    with pytest.raises(MinecraftActionInvalid, match="超过 move_to 上限"):
+        await service.move_to(100, 2, 3)  # 距 (1,2,3) 99 格
+    assert fake_runtime.move_to_calls == []
+
+    # 边界内正常通过（64 格以内）
+    result = await service.move_to(60, 2, 3)  # 59 格
+    assert result["status"] == "SUCCEEDED"
+
+
+async def test_move_to_rejects_offline(fake_runtime: FakeRuntime, make_service) -> None:
+    fake_runtime.move_to_plan.append({"error": ("action.not_online", 400)})
+    service = make_service(make_config(fake_runtime))
+    with pytest.raises(MinecraftNotConnected):
+        await service.move_to(1, 2, 3)
+
+
+async def test_move_to_busy(fake_runtime: FakeRuntime, make_service) -> None:
+    """§八：同一时间只允许一个前台动作；移动中再来 → action.busy。"""
+    fake_runtime.move_to_plan.append({"error": ("action.busy", 409)})
+    service = make_service(make_config(fake_runtime))
+    with pytest.raises(MinecraftActionBusy) as excinfo:
+        await service.move_to(1, 2, 3)
+    assert excinfo.value.code == "minecraft.action_busy"
+    assert excinfo.value.status == 409
+
+
+async def test_move_to_timeout(fake_runtime: FakeRuntime, make_service) -> None:
+    fake_runtime.move_to_plan.append({"status": "TIMEOUT", "action_id": "act_move_timeout"})
+    service = make_service(make_config(fake_runtime))
+    result = await service.move_to(1, 2, 3)
+    assert result["status"] == "TIMEOUT"
+    assert result["action_id"] == "act_move_timeout"
+
+
+async def test_move_to_no_path(fake_runtime: FakeRuntime, make_service) -> None:
+    """§十：目标不可达 → 500 minecraft.path_not_found（绝不自动挖/搭/绕圈）。"""
+    fake_runtime.move_to_plan.append({"error": ("path.not_found", 500)})
+    service = make_service(make_config(fake_runtime))
+    with pytest.raises(MinecraftPathNotFound) as excinfo:
+        await service.move_to(1, 2, 3)
+    assert excinfo.value.code == "minecraft.path_not_found"
+    assert excinfo.value.status == 500
+
+
+async def test_move_to_cleanup_clears_goal(fake_runtime: FakeRuntime, make_service) -> None:
+    """§十一/§十二：取消后 Pathfinder Goal 必须清空、不再移动。
+
+    真正的 in-process 断言（goal == null、isMoving() == false、位置冻结）在
+    Node E2E Test B 里对真实 pathfinder 执行；这里是服务层镜像的对应验证。
+    """
+    fake_runtime.online = True
+    fake_runtime.pathfinder_state = {
+        "goal": "GoalNear",
+        "target": {"x": 10.0, "y": 64.0, "z": 10.0},
+        "moving": True,
+    }
+    service = make_service(make_config(fake_runtime))
+    running = await service.status()
+    assert running["pathfinder"]["goal"] == "GoalNear"
+    assert running["pathfinder"]["moving"] is True
+
+    # stop 之后：runtime 已清 Goal（E2E 已证），镜像随之回落
+    fake_runtime.pathfinder_state = {"goal": None, "target": None, "moving": False}
+    fake_runtime.stop_cancelled = ["act_moving"]
+    result = await service.stop_action()
+    assert result["cancelled"] == ["act_moving"]
+    stopped = await service.status()
+    assert stopped["pathfinder"]["goal"] is None
+    assert stopped["pathfinder"]["moving"] is False
+
+
+async def test_move_to_mirror_survives_runtime_down(make_service) -> None:
+    """runtime 不可达 → 503 runtime_down；镜像 pathfinder 回落为空闲。"""
+    service = make_service(make_config(None))
+    with pytest.raises(MinecraftRuntimeDown):
+        await service.move_to(1, 2, 3)
+    assert service.snapshot()["pathfinder"] == {"goal": None, "target": None, "moving": False}

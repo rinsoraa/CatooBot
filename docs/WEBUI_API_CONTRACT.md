@@ -48,7 +48,7 @@
 | `ai.*` | Provider/模型（`ai.provider_unknown`、`ai.model_unknown`、`ai.test_failed`、`ai.no_key`） |
 | `world.*` | 沙盒/角色（`world.not_running`、`world.confirm_required`、`world.busy`） |
 | `memory.*` / `social.*` / `media.*` / `tools.*` / `agent.*` | 各领域动作冲突/不存在 |
-| `minecraft.*` | Minecraft 连接层（`minecraft.disabled`、`minecraft.runtime_down`、`minecraft.invalid_target`、`minecraft.session_active`、`minecraft.not_connected`、`minecraft.bad_event`、`minecraft.chat_empty`、`minecraft.action_busy`、`minecraft.action_invalid`、`minecraft.action_failed`） |
+| `minecraft.*` | Minecraft 连接层（`minecraft.disabled`、`minecraft.runtime_down`、`minecraft.invalid_target`、`minecraft.session_active`、`minecraft.not_connected`、`minecraft.bad_event`、`minecraft.chat_empty`、`minecraft.action_busy`、`minecraft.action_invalid`、`minecraft.action_failed`、`minecraft.path_not_found`） |
 | `internal.*` | 兜底 |
 
 ### 1.3 关键设计决策（与今日现状的差异，必须实现）
@@ -318,11 +318,12 @@ Minecraft 连接层（Bridge runtime 为独立 Node.js 进程，见 `docs/MINECR
 
 | 方法与路径 | 说明 | 请求 / 查询 | 响应 `data` |
 |---|---|---|---|
-| `GET /api/v1/minecraft` | 连接层一屏投影 | — | `{enabled, auth_configured, runtime: {running, pid, managed, restarts, down, log_tail: []}, connection: {status, session_id, host, port, username, auth_mode, dimension, position: {x,y,z}, health, last_error, kicked_reason, connected_at}, action: {action, action_id, status, started_at, finished_at, elapsed_ms}, last_event}`；runtime 不可达时以本地镜像降级呈现 |
+| `GET /api/v1/minecraft` | 连接层一屏投影 | — | `{enabled, auth_configured, runtime: {running, pid, managed, restarts, down, log_tail: []}, connection: {status, session_id, host, port, username, auth_mode, dimension, position: {x,y,z}, health, last_error, kicked_reason, connected_at}, action: {action, action_id, status, started_at, finished_at, elapsed_ms}, pathfinder: {goal, target:{x,y,z}|null, moving}, last_event}`；runtime 不可达时以本地镜像降级呈现 |
 | `POST /api/v1/minecraft/join` | 加入服务器（进世界由事件异步确认） | `{"host": "...", "port": 25565}`（port 省略=25565） | `{"session_id", "status"}`（`CONNECTING`/`AUTHENTICATING`）；校验失败 422 `minecraft.invalid_target`，已有会话 409 `minecraft.session_active`，runtime 不可用 503 `minecraft.runtime_down` |
 | `POST /api/v1/minecraft/leave` | 主动离开（幂等：不在任何服务器也成功） | — | `{"ok", "status"}`；状态最终由事件流确认 |
 | `POST /api/v1/minecraft/look_at` | **Phase 3B SAFE 动作**：让罐头看向世界坐标（不改世界、不移动；yaw/pitch 数学在 runtime） | `{"x": 120, "y": 65, "z": -230}` | `{action_id, action:"look_at", status}`；status ∈ `SUCCEEDED`/`TIMEOUT`/`CANCELLED`；非法坐标 422 `minecraft.action_invalid`，不在世界 409 `minecraft.not_connected`，前台忙 409 `minecraft.action_busy`，执行失败 500 `minecraft.action_failed` |
 | `POST /api/v1/minecraft/stop` | **Phase 3B 安全停止**（幂等、最高优先级）：取消进行中动作并清空移动控制位 | — | `{status:"IDLE", cancelled:[action_id…]}`；runtime 不可达也返回成功 |
+| `POST /api/v1/minecraft/move_to` | **Phase 3C 非破坏性导航**（LOW；禁止挖/放/搭桥；Stop 可取消） | `{"x": 120, "y": 64, "z": -230}` | `{action_id, action:"move_to", status, result:{target, final_position, distance_to_target}}`；status ∈ `SUCCEEDED`/`TIMEOUT`/`CANCELLED`；坐标/距离非法 422 `minecraft.action_invalid`（距当前位置 > `minecraft.action.move_to.max_distance`，默认 64），不可达 500 `minecraft.path_not_found`，前台忙 409 `minecraft.action_busy` |
 | `GET /api/v1/minecraft/world` | World Debug 只读视图（Phase 2）：Semantic World Model + raw snapshot + 分层缓存元信息 | — | `{available, online, captured_at, age_seconds, layers: {near/local/extended: {age_seconds}}, semantic, raw}`；未启用/未在线恒 200 且 `available:false`（读端点不做 503） |
 | `POST /api/v1/minecraft/events` | **Bridge runtime 事件回调**（服务间通道，不是给浏览器的） | 事件载荷（`minecraft.connecting|connected|spawned|chat|player_joined|player_left|kicked|disconnected|error` + `session_id` + `timestamp` + 上下文） | `{"accepted": true}` |
 

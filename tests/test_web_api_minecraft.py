@@ -317,3 +317,55 @@ async def test_minecraft_projection_includes_action_block(tmp_path):
             assert action["status"] == "RUNNING" and action["action_id"] == "act_mirror"
         finally:
             await service._cleanup()
+
+
+# ------------------------------------------------ Phase 3C：move_to 端点
+
+
+async def test_move_to_endpoint_disabled(tmp_path):
+    async with api_server(tmp_path) as (client, bot, server):
+        await client.login()
+        status, payload = await client.post(
+            "/api/v1/minecraft/move_to", body={"x": 1, "y": 2, "z": 3}
+        )
+        assert status == 503 and error_code(payload) == "minecraft.disabled"
+
+
+async def test_move_to_endpoint_validates_and_translates(tmp_path):
+    from tests.test_minecraft_service import FakeRuntime
+
+    fake = FakeRuntime()
+    await fake.start()
+    try:
+        async with api_server(tmp_path) as (client, bot, server):
+            await client.login()
+            service = MinecraftService(
+                bot,
+                MinecraftConfig(enabled=True, auto_start_runtime=False, runtime_port=fake.port),
+            )
+            bot.minecraft = service
+            try:
+                # 非法坐标 → 422（本地校验）
+                status, payload = await client.post(
+                    "/api/v1/minecraft/move_to", body={"x": "abc", "y": 1, "z": 2}
+                )
+                assert status == 422 and error_code(payload) == "minecraft.action_invalid"
+                # 正常移动 → 200 + result
+                status, payload = await client.post(
+                    "/api/v1/minecraft/move_to", body={"x": 10, "y": 64, "z": -5}
+                )
+                assert status == 200
+                data = payload["data"]
+                assert data["action"] == "move_to" and data["status"] == "SUCCEEDED"
+                assert "distance_to_target" in data["result"]
+                assert fake.move_to_calls == [{"x": 10.0, "y": 64.0, "z": -5.0}]
+                # 无路径 → 500 minecraft.path_not_found
+                fake.move_to_plan.append({"error": ("path.not_found", 500)})
+                status, payload = await client.post(
+                    "/api/v1/minecraft/move_to", body={"x": 12, "y": 64, "z": -5}
+                )
+                assert status == 500 and error_code(payload) == "minecraft.path_not_found"
+            finally:
+                await service._cleanup()
+    finally:
+        await fake.stop()

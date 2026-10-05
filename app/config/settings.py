@@ -838,6 +838,19 @@ class RuntimeConfig(BaseModel):
     shutdown_timeout_seconds: float = Field(default=5.0, gt=0)
 
 
+class MoveToConfig(BaseModel):
+    """Phase 3C：move_to（非破坏性导航）的安全门参数。"""
+
+    #: 单次移动的最大距离（格，相对当前位置）；第一版 64，不允许数千米长距离
+    max_distance: float = Field(default=64.0, gt=0, le=1024)
+
+
+class MinecraftActionConfig(BaseModel):
+    """Action Runtime 的动作级配置（Phase 3C 起）。"""
+
+    move_to: MoveToConfig = Field(default_factory=MoveToConfig)
+
+
 class MinecraftConfig(BaseModel):
     """Minecraft 连接层（Phase 1）：Bridge runtime（mineflayer 子进程）的托管参数。
 
@@ -877,6 +890,8 @@ class MinecraftConfig(BaseModel):
     world_event_cooldown_seconds: float = Field(default=5.0, ge=1.0, le=300)
     #: 触发 world.changed 的近层方块变化数量阈值
     world_change_block_threshold: int = Field(default=10, ge=1, le=1000)
+    #: Phase 3C：动作级配置（move_to 的安全门）
+    action: MinecraftActionConfig = Field(default_factory=MinecraftActionConfig)
 
 
 class AppConfig(BaseModel):

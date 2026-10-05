@@ -184,6 +184,7 @@ ROUTES = [
     "POST /api/v1/minecraft/join",
     "POST /api/v1/minecraft/leave",
     "POST /api/v1/minecraft/look_at",
+    "POST /api/v1/minecraft/move_to",
     "POST /api/v1/minecraft/stop",
     "POST /api/v1/runtime/actions/{name}",
     "POST /api/v1/runtime/tick",

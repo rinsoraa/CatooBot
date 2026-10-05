@@ -4,7 +4,7 @@
  * 服务器地址表单 + 加入/离开 + 状态事实。没有地图、背包、AI 控制台。
  * 数据全部来自 `GET /api/v1/minecraft`（3s 轮询对账），动作走 minecraftApi。
  */
-import { computed, onMounted, onUnmounted, ref } from 'vue'
+import { computed, onMounted, onUnmounted, reactive, ref } from 'vue'
 
 import { ApiError, errorMessage } from '@/api/client'
 import { minecraftApi } from '@/api/minecraft'
@@ -15,7 +15,12 @@ import PageHeader from '@/components/PageHeader.vue'
 import SectionHeader from '@/components/SectionHeader.vue'
 import StatusBadge, { type StatusState } from '@/components/StatusBadge.vue'
 import { toast } from '@/composables/toast'
-import type { MinecraftActionView, MinecraftOverview, MinecraftWorldView } from '@/types/minecraft'
+import type {
+  MinecraftActionView,
+  MinecraftOverview,
+  MinecraftPathfinderInfo,
+  MinecraftWorldView,
+} from '@/types/minecraft'
 
 const POLL_INTERVAL_MS = 3000
 
@@ -45,6 +50,9 @@ const canLeave = computed(() => isActive.value)
 
 // Phase 3B：Action Runtime 视图（IDLE = 从未有动作）
 const action = computed<MinecraftActionView | null>(() => overview.value?.action ?? null)
+// Phase 3C：Pathfinder 诊断 + move_to 目标输入
+const pathfinder = computed<MinecraftPathfinderInfo | null>(() => overview.value?.pathfinder ?? null)
+const moveTarget = reactive({ x: '', y: '', z: '' })
 
 function phaseState(): StatusState {
   if (phase.value === 'ONLINE') return 'ok'
@@ -128,6 +136,40 @@ async function lookAtTest(): Promise<void> {
   }
 }
 
+function prefillMoveTarget(): void {
+  // 首次拿到位置时给一个「附近测试坐标」默认值（当前 +4 x），开发调试用
+  const position = connection.value?.position
+  if (!position) return
+  if (moveTarget.x === '' && moveTarget.y === '' && moveTarget.z === '') {
+    moveTarget.x = String(Math.round(position.x) + 4)
+    moveTarget.y = String(Math.round(position.y))
+    moveTarget.z = String(Math.round(position.z))
+  }
+}
+
+async function moveTo(): Promise<void> {
+  const raw = [moveTarget.x, moveTarget.y, moveTarget.z]
+  if (raw.some((value) => String(value).trim() === '')) {
+    toast.error('目标坐标不合法', 'X / Y / Z 都要填写')
+    return
+  }
+  const [x, y, z] = raw.map(Number)
+  if (![x, y, z].every((value) => Number.isFinite(value))) {
+    toast.error('目标坐标不合法', 'X / Y / Z 都必须是数字')
+    return
+  }
+  working.value = true
+  try {
+    const result = await minecraftApi.moveTo(x, y, z)
+    toast.success('move_to 已执行', `${result.action} · ${result.status}`)
+    await load(true)
+  } catch (caught) {
+    toast.error('移动失败', errorMessage(caught))
+  } finally {
+    working.value = false
+  }
+}
+
 async function stopAction(): Promise<void> {
   working.value = true
   try {
@@ -169,6 +211,7 @@ async function load(silent = false): Promise<void> {
     overview.value = await minecraftApi.overview()
     disabled.value = overview.value !== null && !overview.value.enabled
     error.value = ''
+    prefillMoveTarget()
   } catch (caught) {
     // 连接层未启用是「功能状态」而不是故障：渲染引导卡，轮询也不必继续。
     if (caught instanceof ApiError && caught.code === 'minecraft.disabled') {
@@ -377,6 +420,35 @@ onUnmounted(stopPolling)
             <div><dt>Started</dt><dd>{{ formatTime(action?.started_at) }}</dd></div>
             <div><dt>Elapsed</dt><dd data-test="mc-action-elapsed">{{ formatElapsed(action?.elapsed_ms) }}</dd></div>
           </dl>
+          <p v-if="pathfinder?.target" class="cb-caption" data-test="mc-moving-to">
+            Moving to: {{ Math.round(pathfinder.target.x) }}
+            {{ Math.round(pathfinder.target.y) }}
+            {{ Math.round(pathfinder.target.z) }}
+            <template v-if="pathfinder.moving">（正在移动）</template>
+          </p>
+          <div class="minecraft__form" data-test="mc-move-form">
+            <label class="minecraft__field minecraft__field--coord">
+              <span>Target X</span>
+              <input v-model="moveTarget.x" type="number" :disabled="working || !isOnline" data-test="mc-move-x" />
+            </label>
+            <label class="minecraft__field minecraft__field--coord">
+              <span>Target Y</span>
+              <input v-model="moveTarget.y" type="number" :disabled="working || !isOnline" data-test="mc-move-y" />
+            </label>
+            <label class="minecraft__field minecraft__field--coord">
+              <span>Target Z</span>
+              <input v-model="moveTarget.z" type="number" :disabled="working || !isOnline" data-test="mc-move-z" />
+            </label>
+            <button
+              type="button"
+              class="minecraft__button minecraft__button--primary"
+              :disabled="working || !isOnline"
+              data-test="mc-move-to"
+              @click="moveTo"
+            >
+              MOVE TO
+            </button>
+          </div>
           <div class="minecraft__form">
             <button
               type="button"
@@ -532,6 +604,10 @@ onUnmounted(stopPolling)
 
 .minecraft__field--port {
   min-width: 110px;
+}
+
+.minecraft__field--coord {
+  min-width: 96px;
 }
 
 .minecraft__field span {

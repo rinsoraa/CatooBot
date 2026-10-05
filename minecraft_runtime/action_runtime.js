@@ -274,11 +274,17 @@ function createActionRuntime({ registry, getBot, isOnline, emit, log, now = () =
       }
       const extra = {}
       if (validated.message !== undefined) extra.message = validated.message
-      // 状态回报：动作完成瞬间的读数（如 look_at 的实际朝向）。服务器可能在稍后
-      // 回写状态（flying-squid 会发 forcedMove），事件里的 result 才是动作的真实结果。
+      // 状态回报：动作完成瞬间的读数（如 look_at 的实际朝向、move_to 的到达坐标）。
+      // 服务器可能在稍后回写状态（flying-squid 会发 forcedMove），事件/响应里的
+      // result 才是动作的真实结果。
       if (value && typeof value === 'object') extra.result = value
       finish(controller, STATES.SUCCEEDED, extra)
-      return { action_id: record.action_id, action: name, status: STATES.SUCCEEDED }
+      return {
+        action_id: record.action_id,
+        action: name,
+        status: STATES.SUCCEEDED,
+        ...(extra.result !== undefined ? { result: extra.result } : {}),
+      }
     } catch (error) {
       if (error instanceof ActionCancelled) {
         const status = cancellationStatus(error.reason)
@@ -289,7 +295,13 @@ function createActionRuntime({ registry, getBot, isOnline, emit, log, now = () =
         return { action_id: record.action_id, action: name, status }
       }
       const message = String(error && error.message ? error.message : error)
-      finish(controller, STATES.FAILED, { error: message })
+      finish(controller, STATES.FAILED, {
+        error: message,
+        ...(error instanceof ActionError ? { code: error.code } : {}),
+      })
+      // 动作自带稳定错误码（如 move_to 的 path.not_found）：记录 FAILED 后原样抛出，
+      // 交给 HTTP 层映射（绝不把 Pathfinder 内部错误对象原样透传）
+      if (error instanceof ActionError) throw error
       throw new ActionError(`动作执行失败：${message}`, 'action.failed', 500, {
         action_id: record.action_id,
         action: name,

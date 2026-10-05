@@ -114,6 +114,15 @@ class MinecraftActionFailed(MinecraftBridgeError):
         super().__init__(message, code="minecraft.action_failed")
 
 
+class MinecraftPathNotFound(MinecraftBridgeError):
+    """Phase 3C：非破坏性导航找不到路径（绝不自动挖/搭/绕圈）。"""
+
+    status = 500
+
+    def __init__(self, message: str = "无法找到到达目标的非破坏性路径") -> None:
+        super().__init__(message, code="minecraft.path_not_found")
+
+
 #: runtime 业务错误码 → 稳定错误（action.* 必须先于通用 409 判断）
 def _translate(exc: MinecraftRuntimeError) -> MinecraftBridgeError:
     if exc.unreachable:
@@ -126,6 +135,8 @@ def _translate(exc: MinecraftRuntimeError) -> MinecraftBridgeError:
         return MinecraftNotConnected(str(exc))
     if exc.code == "action.failed":
         return MinecraftActionFailed(str(exc))
+    if exc.code == "path.not_found":
+        return MinecraftPathNotFound(str(exc))
     if exc.status == 409:
         return MinecraftBusy(str(exc))
     if exc.code in {"target.invalid", "chat.empty", "chat.too_long"}:
@@ -153,6 +164,9 @@ ACTION_IDLE: dict[str, Any] = {
     "finished_at": None,
     "elapsed_ms": None,
 }
+
+#: 空闲 Pathfinder 诊断（Phase 3C；未启用/无 bot 时）
+PATHFINDER_IDLE: dict[str, Any] = {"goal": None, "target": None, "moving": False}
 
 
 class _RuntimeProcess:
@@ -394,6 +408,8 @@ class MinecraftService:
         env["MC_RUNTIME_PORT"] = str(self.config.runtime_port)
         env["MC_CONNECT_TIMEOUT"] = str(self.config.connect_timeout_seconds)
         env["MC_AUTH_FILE"] = str(self._runtime_dir() / "auth.json")
+        # Phase 3C：move_to 的最大距离（runtime 侧与 Service 侧同规则）
+        env["MC_MOVE_MAX_DISTANCE"] = str(self.config.action.move_to.max_distance)
         if self.callback_url:
             env["MC_CALLBACK_URL"] = self.callback_url
             env["MC_CALLBACK_TOKEN"] = self.callback_token or ""
@@ -540,6 +556,42 @@ class MinecraftService:
                 self._mark_runtime_down(str(exc))
             raise _translate(exc) from exc
 
+    async def move_to(self, x: Any, y: Any, z: Any) -> dict[str, Any]:
+        """非破坏性导航到世界坐标（Phase 3C · LOW）。
+
+        校验（与 runtime 同规则）：坐标有限且在世界边界内 + 距当前位置不超过
+        ``minecraft.action.move_to.max_distance``（镜像位置；运行时还会用实时位置复检）。
+        不可达 → :class:`MinecraftPathNotFound`（绝不自动挖/搭/绕圈）。
+        """
+        self._require_enabled()
+        coords: dict[str, float] = {}
+        for name, value in (("x", x), ("y", y), ("z", z)):
+            if isinstance(value, bool) or not isinstance(value, (int, float)):
+                raise MinecraftActionInvalid(f"坐标 {name} 必须是数字")
+            if not math.isfinite(float(value)):
+                raise MinecraftActionInvalid(f"坐标 {name} 必须是有限数字")
+            coords[name] = float(value)
+        if abs(coords["x"]) > 3.0e7 or abs(coords["z"]) > 3.0e7 or not -512 <= coords["y"] <= 2048:
+            raise MinecraftActionInvalid("坐标超出 Minecraft 世界边界")
+        position = self._mirror.get("position")
+        max_distance = float(self.config.action.move_to.max_distance)
+        if isinstance(position, dict) and {"x", "y", "z"} <= set(position):
+            distance = math.dist(
+                (coords["x"], coords["y"], coords["z"]),
+                (float(position["x"]), float(position["y"]), float(position["z"])),
+            )
+            if distance > max_distance:
+                raise MinecraftActionInvalid(
+                    f"目标距当前位置 {distance:.1f} 格，超过 move_to 上限 {max_distance:g} 格"
+                )
+        try:
+            await self._ensure_runtime()
+            return await self._client.move_to(coords["x"], coords["y"], coords["z"])
+        except MinecraftRuntimeError as exc:
+            if exc.unreachable:
+                self._mark_runtime_down(str(exc))
+            raise _translate(exc) from exc
+
     async def stop_action(self) -> dict[str, Any]:
         """最高优先级安全停止（幂等）：取消进行中动作，返回被取消的 action_id 列表。
 
@@ -610,6 +662,8 @@ class MinecraftService:
             },
             # Phase 3B：当前/最近一次动作（IDLE 表示从未有动作或 runtime 未上报）
             "action": dict(mirror.get("action") or ACTION_IDLE),
+            # Phase 3C：Pathfinder 诊断（goal 类型 / 目标坐标 / 是否在移动）
+            "pathfinder": dict(mirror.get("pathfinder") or PATHFINDER_IDLE),
             "last_event": self._last_event,
         }
 

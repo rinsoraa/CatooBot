@@ -506,6 +506,7 @@ _LABELS = {
     "external_callback_url": "回调地址",
     "external_callback_token": "回调令牌",
     "world_change_block_threshold": "世界变化阻塞阈值",
+    "max_distance": "最大距离（格）",
     "world_event_cooldown_seconds": "世界事件冷却（秒）",
     # ---------------------------------------------------------------- 连续性 / 会话
     "current_interest_ttl_hours": "当前兴趣有效期（小时）",
@@ -828,6 +829,7 @@ _NOTES: dict[str, str] = {
     "minecraft.external_callback_token": "桥接回调令牌（敏感）",
     "minecraft.world_event_cooldown_seconds": "同类世界事件的冷却",
     "minecraft.world_change_block_threshold": "世界变化多大算「被打断」",
+    "minecraft.action.move_to.max_distance": "单次移动最远走多少格；超过它会被拒绝（防长距离请求）",
     # ------------------------------------------------------------ 连续性 / 会话
     "continuity.enabled": "连续性层：记住未说完的话、兴趣与共同经历",
     "continuity.current_interest_ttl_hours": "「当前兴趣」多久后过期",
@@ -915,6 +917,7 @@ _SECTION_LABELS: dict[str, str] = {
     "continuity": "连续性",
     "conversation.debounce": "消息合并",
     "minecraft": "Minecraft 集成",
+    "minecraft.action.move_to": "Minecraft 导航（move_to）",
 }
 
 

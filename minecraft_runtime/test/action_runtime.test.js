@@ -88,6 +88,14 @@ function makeHarness() {
         throw new Error('kaboom')
       },
     },
+    coded_fail: {
+      exclusive: true,
+      timeout_ms: 1000,
+      async run() {
+        // Phase 3C：动作自带稳定错误码（如 move_to 的 path.not_found）
+        throw new ActionError('无法找到到达目标的非破坏性路径', 'path.not_found', 500)
+      },
+    },
     slow_cleanup: {
       exclusive: true,
       timeout_ms: 1000,
@@ -422,6 +430,27 @@ async function main() {
     assert(actions.race_cleanup.cleanedCount === 1, 'race 下 cleanup 恰好一次')
     assert(eventsOf(events, 'minecraft.action.cancelled').length === 1, '只有取消事件')
     assert(eventsOf(events, 'minecraft.action.completed').length === 0, '没有完成事件（无双终态）')
+  }
+
+  console.log('[action-test] 动作自带错误码保留（3C：path.not_found）')
+  {
+    const { runtime, events } = makeHarness()
+    let failure = null
+    try {
+      await runtime.execute('coded_fail', {})
+    } catch (error) {
+      failure = error
+    }
+    assert(
+      failure instanceof ActionError && failure.code === 'path.not_found' && failure.status === 500,
+      `自带错误码原样抛出（得到 ${failure && failure.code}/${failure && failure.status}）`,
+    )
+    const failed = eventsOf(events, 'minecraft.action.failed')
+    assert(failed.length === 1, 'failed 事件恰好一次')
+    assert(failed[0].data.error === '无法找到到达目标的非破坏性路径', 'failed 事件带干净的中文 message')
+    assert(failed[0].data.code === 'path.not_found', 'failed 事件带 code（不透明内部错误对象不外泄）')
+    assert(/\(RuntimeError/.test(JSON.stringify(failed[0].data)) === false, '不带 Pathfinder 内部错误名/堆栈')
+    assert(runtime.snapshot().active_count === 0, '失败后无僵尸动作')
   }
 
   clearInterval(keepAlive)

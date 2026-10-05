@@ -6,6 +6,7 @@ import type {
   MinecraftJoinResult,
   MinecraftLeaveResult,
   MinecraftLookAtResult,
+  MinecraftMoveToResult,
   MinecraftOverview,
   MinecraftStopResult,
   MinecraftWorldView,
@@ -31,6 +32,10 @@ export const minecraftApi = {
   /** 让罐头看向世界坐标（Phase 3B SAFE 动作：不改世界、不移动）。 */
   lookAt(x: number, y: number, z: number) {
     return api.post<MinecraftLookAtResult>('/minecraft/look_at', { x, y, z })
+  },
+  /** Phase 3C：非破坏性导航到世界坐标（禁挖/禁放；不可达 → path_not_found）。 */
+  moveTo(x: number, y: number, z: number) {
+    return api.post<MinecraftMoveToResult>('/minecraft/move_to', { x, y, z })
   },
   /** 最高优先级安全停止（幂等）：取消进行中动作，返回被取消的 action_id 列表。 */
   stop() {

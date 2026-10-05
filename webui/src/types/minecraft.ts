@@ -48,6 +48,8 @@ export interface MinecraftOverview {
   connection: MinecraftConnection
   /** Phase 3B：当前/最近一次动作（IDLE = 从未有动作）。 */
   action?: MinecraftActionView
+  /** Phase 3C：Pathfinder 诊断（goal 类型 / 目标坐标 / 是否在移动）。 */
+  pathfinder?: MinecraftPathfinderInfo
   last_event: Record<string, unknown> | null
 }
 
@@ -82,6 +84,25 @@ export interface MinecraftLookAtResult {
 export interface MinecraftStopResult {
   status: string
   cancelled: string[]
+}
+
+// ---------------- Phase 3C · Navigation (move_to) ----------------
+
+export interface MinecraftPathfinderInfo {
+  goal: string | null
+  target: { x: number; y: number; z: number } | null
+  moving: boolean
+}
+
+export interface MinecraftMoveToResult {
+  action_id: string
+  action: string
+  status: MinecraftActionStatus
+  result?: {
+    target: { x: number; y: number; z: number }
+    final_position: { x: number; y: number; z: number }
+    distance_to_target: number
+  }
 }
 
 export interface MinecraftJoinResult {

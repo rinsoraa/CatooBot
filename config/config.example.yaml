@@ -569,3 +569,7 @@ minecraft:
   extended_interval_seconds: 20.0  # Extended（~96 格摘要）刷新周期
   world_event_cooldown_seconds: 5.0  # 感知事件去抖间隔
   world_change_block_threshold: 10   # 触发 world.changed 的方块变化数
+  # ---- 动作安全门（Phase 3C）
+  action:
+    move_to:
+      max_distance: 64           # 单次 move_to 的最大距离（格）；不允许数千米长距离

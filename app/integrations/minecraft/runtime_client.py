@@ -65,6 +65,10 @@ class MinecraftRuntimeClient:
         """让 bot 看向世界坐标（Phase 3B：SAFE 动作，yaw/pitch 数学在 runtime 里）。"""
         return await self._request("POST", "/minecraft/look_at", body={"x": x, "y": y, "z": z})
 
+    async def move_to(self, x: float, y: float, z: float) -> dict[str, Any]:
+        """非破坏性导航到世界坐标（Phase 3C：LOW；GoalNear 半径/禁挖禁放在 runtime 侧）。"""
+        return await self._request("POST", "/minecraft/move_to", body={"x": x, "y": y, "z": z})
+
     async def stop(self) -> dict[str, Any]:
         """最高优先级安全停止（Phase 3B）：取消进行中动作，幂等。"""
         return await self._request("POST", "/minecraft/stop", body={})

@@ -834,3 +834,36 @@ async def test_vertical_movement_does_not_count_as_world_change():
     assert diff is not None
     assert diff.kind == NO_MOVEMENT
     assert diff.changed_blocks == 0
+
+
+# =========================================== Phase 3C：move_to 期间的感知（§二十三）
+
+
+async def test_movement_during_move_to_keeps_perception_quiet():
+    """move_to 期间罐头持续移动（窗口平移）不得产生虚假 world.changed；
+    重叠区真实变化仍按 Phase 2.1/3A 规则触发。"""
+    clock, advance = make_clock()
+    perception, client, events = make_perception(clock, advance, change_block_threshold=1)
+    client.payload = _grid_payload((100, 200))
+    await perception.poll({"near"})  # prime
+
+    # 连续三帧锚点东移 2 格（模拟移动中的观察窗口平移）：只能 WINDOW_SHIFT，不报世界变化
+    for step, anchor in enumerate(((102, 200), (104, 200), (106, 200))):
+        advance(2.0)
+        client.payload = _grid_payload(anchor)
+        events = await perception.poll({"near"})
+        assert all(name != "minecraft.world.changed" for name, _ in events), (
+            f"第 {step + 1} 帧不得有世界事件"
+        )
+        assert perception.last_diff is not None
+        assert perception.last_diff.kind == WINDOW_SHIFT, f"第 {step + 1} 帧应为 WINDOW_SHIFT"
+        assert perception.last_diff.changed_blocks == 0
+
+    # 移动中重叠区发生 1 处真实变化（世界方块 (108,200) 变成 stone）：照常触发
+    advance(2.0)
+    client.payload = _grid_payload((108, 200), overrides={(108, 200): "stone"})
+    events = await perception.poll({"near"})
+    changed = [data for name, data in events if name == "minecraft.world.changed"]
+    assert len(changed) == 1
+    assert changed[0]["changed_blocks"] == 1
+    assert changed[0]["near_diff"]["kind"] == WORLD_CHANGE

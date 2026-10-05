@@ -41,6 +41,7 @@ const ONLINE_OVERVIEW = {
     finished_at: null,
     elapsed_ms: null,
   },
+  pathfinder: { goal: null, target: null, moving: false },
   last_event: null,
 }
 
@@ -100,6 +101,18 @@ function makeHandler(overrides: { join?: MockReply; leave?: MockReply } = {}) {
     }
     if (url.pathname === '/api/v1/minecraft/look_at' && request.method === 'POST') {
       return ok({ action_id: 'act_ui_1', action: 'look_at', status: 'SUCCEEDED' })
+    }
+    if (url.pathname === '/api/v1/minecraft/move_to' && request.method === 'POST') {
+      return ok({
+        action_id: 'act_move_ui',
+        action: 'move_to',
+        status: 'SUCCEEDED',
+        result: {
+          target: { x: 10, y: 21, z: 30 },
+          final_position: { x: 10, y: 21, z: 30 },
+          distance_to_target: 0.4,
+        },
+      })
     }
     if (url.pathname === '/api/v1/minecraft/stop' && request.method === 'POST') {
       return ok({ status: 'IDLE', cancelled: [] })
@@ -312,5 +325,76 @@ describe('Minecraft 页 · Current Action（Phase 3B）', () => {
     expect(wrapper.get('[data-test="mc-action-status"]').text()).toContain('RUNNING')
     expect(wrapper.get('[data-test="mc-action-id"]').text()).toContain('act_running')
     expect(wrapper.get('[data-test="mc-action-elapsed"]').text()).toContain('1.2 s')
+  })
+})
+
+describe('Minecraft 页 · move_to（Phase 3C）', () => {
+  it('在线时预填附近测试坐标并提交到 /minecraft/move_to', async () => {
+    const { wrapper, calls } = await mountPage(makeHandler())
+    await flushAll()
+    // position (4.5, 21.0, 25.3) → 预填 (+4, 0, 0) = (9, 21, 25)
+    expect((wrapper.get('[data-test="mc-move-x"]').element as HTMLInputElement).value).toBe('9')
+    expect((wrapper.get('[data-test="mc-move-y"]').element as HTMLInputElement).value).toBe('21')
+    expect((wrapper.get('[data-test="mc-move-z"]').element as HTMLInputElement).value).toBe('25')
+
+    await wrapper.get('[data-test="mc-move-x"]').setValue('12')
+    await wrapper.get('[data-test="mc-move-z"]').setValue('-7')
+    await wrapper.get('[data-test="mc-move-to"]').trigger('click')
+    await flushAll()
+    const call = calls.find((c) => c.url.endsWith('/minecraft/move_to'))
+    expect(call).toBeTruthy()
+    expect(call?.body).toEqual({ x: 12, y: 21, z: -7 })
+  })
+
+  it('移动中显示 Moving to 与目标坐标', async () => {
+    const overview = {
+      ...ONLINE_OVERVIEW,
+      action: {
+        action: 'move_to',
+        action_id: 'act_moving',
+        status: 'RUNNING',
+        started_at: 1700000000,
+        finished_at: null,
+        elapsed_ms: 900,
+      },
+      pathfinder: { goal: 'GoalNear', target: { x: 10.4, y: 64.0, z: -5.6 }, moving: true },
+    }
+    const { wrapper } = await mountPage((request) => {
+      const url = new URL(request.url, 'http://localhost')
+      if (url.pathname === '/api/v1/minecraft') return ok(overview)
+      return fail(404, 'resource.not_found', 'no')
+    })
+    await flushAll()
+    const moving = wrapper.get('[data-test="mc-moving-to"]').text()
+    expect(moving).toContain('Moving to:')
+    expect(moving).toContain('10')
+    expect(moving).toContain('-6')
+    expect(moving).toContain('正在移动')
+    expect(wrapper.get('[data-test="mc-action-name"]').text()).toContain('move_to')
+    expect(wrapper.get('[data-test="mc-action-status"]').text()).toContain('RUNNING')
+  })
+
+  it('离线时 MOVE TO 与坐标输入禁用', async () => {
+    const overview = {
+      ...ONLINE_OVERVIEW,
+      connection: { ...ONLINE_OVERVIEW.connection, status: 'DISCONNECTED' },
+    }
+    const { wrapper } = await mountPage((request) => {
+      const url = new URL(request.url, 'http://localhost')
+      if (url.pathname === '/api/v1/minecraft') return ok(overview)
+      return fail(404, 'resource.not_found', 'no')
+    })
+    await flushAll()
+    expect((wrapper.get('[data-test="mc-move-to"]').element as HTMLButtonElement).disabled).toBe(true)
+    expect((wrapper.get('[data-test="mc-move-x"]').element as HTMLInputElement).disabled).toBe(true)
+  })
+
+  it('坐标非法时本地拦截（不发请求）', async () => {
+    const { wrapper, calls } = await mountPage(makeHandler())
+    await flushAll()
+    await wrapper.get('[data-test="mc-move-x"]').setValue('')
+    await wrapper.get('[data-test="mc-move-to"]').trigger('click')
+    await flushAll()
+    expect(calls.some((c) => c.url.endsWith('/minecraft/move_to'))).toBe(false)
   })
 })

@@ -155,6 +155,7 @@ async function main() {
       MC_CALLBACK_TOKEN: 'e2e-token',
       MC_AUTH_FILE: authFile,
       MC_CONNECT_TIMEOUT: '30',
+      MC_MOVE_TIMEOUT_MS: '2500', // Test C 依赖：可达的 12–16 格约需 3s+ → 确定性超时
     },
     stdio: ['ignore', 'pipe', 'pipe'],
   })
@@ -370,6 +371,147 @@ async function main() {
           console.log(`[e2e] snapshot dumped to ${process.env.MC_E2E_SNAPSHOT_OUT}`)
         }
         console.log(`[e2e] snapshot ✓ self=(${s.self.position.x}, ${s.self.position.y}, ${s.self.position.z}) biome=${s.environment.biome} near=${s.blocks.near.columns.length} cols, player=${OBSERVER_NAME} ${tester.relative_direction} @${tester.distance}`)
+      }
+
+      // ---------------- Phase 3C：move_to（Test A 成功 / Test B STOP 真停 / Test C 超时） ----------------
+      if (cycle === 1) {
+        const moveOrigin = (await request(runtimePort, 'GET', '/minecraft/status')).body.position
+        const dirs = [
+          [5, 0],
+          [-5, 0],
+          [0, 5],
+          [0, -5],
+          [5, 5],
+        ]
+        let moveOk = null
+        let moveDir = [5, 0]
+        let moveFail = null
+        for (const [dx, dz] of dirs) {
+          const resp = await request(runtimePort, 'POST', '/minecraft/move_to', {
+            x: moveOrigin.x + dx,
+            y: moveOrigin.y,
+            z: moveOrigin.z + dz,
+          })
+          if (resp.status === 200 && resp.body.status === 'SUCCEEDED') {
+            moveOk = resp.body
+            moveDir = [dx, dz]
+            break
+          }
+          moveFail = resp
+        }
+        assert(moveOk, `Test A：至少一个方向的 move_to 成功（最后失败：${JSON.stringify(moveFail && moveFail.body)}）`)
+        assert(moveOk.result && typeof moveOk.result.distance_to_target === 'number', 'Test A：result 带 distance_to_target')
+        assert(moveOk.result.distance_to_target <= 2.2, `Test A：到达目标附近（${moveOk.result.distance_to_target} 格）`)
+        await waitFor(
+          () =>
+            events.some(
+              (e) =>
+                e.event === 'minecraft.action.completed' &&
+                e.action === 'move_to' &&
+                e.action_id === moveOk.action_id,
+            ),
+          'move_to completed 事件',
+        )
+        const movedStatus = (await request(runtimePort, 'GET', '/minecraft/status')).body
+        const movedDistance = Math.hypot(
+          movedStatus.position.x - moveOrigin.x,
+          movedStatus.position.z - moveOrigin.z,
+        )
+        assert(movedDistance >= 1, `Test A：位置确实变了（水平位移 ${movedDistance.toFixed(1)} 格）`)
+        assert(
+          movedStatus.pathfinder && movedStatus.pathfinder.goal === null,
+          'Test A：成功后 goal 已清空',
+        )
+        console.log(
+          `[e2e] move_to ✓ 方向 ${moveDir} 位移 ${movedDistance.toFixed(1)} 格 距目标 ${moveOk.result.distance_to_target}`,
+        )
+
+        // ---- Test B：移动中 STOP 必须真正停住（本阶段最重要的验收，§十一） ----
+        // moveDir 是方向向量（可能含 5），归一化后再乘距离
+        const [rawDx, rawDz] = moveDir
+        const dirLength = Math.hypot(rawDx, rawDz) || 1
+        const ux = rawDx / dirLength
+        const uz = rawDz / dirLength
+        let stopVerified = false
+        for (const distance of [20, 15, 25, 12]) {
+          const farOrigin = (await request(runtimePort, 'GET', '/minecraft/status')).body.position
+          const target = { x: farOrigin.x + ux * distance, y: farOrigin.y, z: farOrigin.z + uz * distance }
+          const movePromise = request(runtimePort, 'POST', '/minecraft/move_to', target)
+          let started = false
+          try {
+            await waitFor(async () => {
+              const snap = await request(runtimePort, 'GET', '/minecraft/status')
+              return Boolean(snap.body.pathfinder && snap.body.pathfinder.moving)
+            }, '导航开始', 4000)
+            started = true
+          } catch {
+            await movePromise.catch(() => {}) // 该方向没能开始移动（no-path 等）：换个比例重试
+          }
+          if (!started) continue
+
+          const stopResult = await request(runtimePort, 'POST', '/minecraft/stop', {})
+          assert(
+            stopResult.body.cancelled.length === 1,
+            `Test B：stop 取消 move_to（得到 ${JSON.stringify(stopResult.body)}）`,
+          )
+          const moveResp = await movePromise
+          assert(moveResp.body.status === 'CANCELLED', `Test B：move_to → CANCELLED（得到 ${moveResp.body.status}）`)
+          await waitFor(
+            () => events.some((e) => e.event === 'minecraft.action.cancelled' && e.action === 'move_to'),
+            'move_to cancelled 事件',
+          )
+          // §十一：不能只验证 Action 状态——还要验证 goal 清空、isMoving=false、位置停住
+          const stopped = (await request(runtimePort, 'GET', '/minecraft/status')).body
+          assert(stopped.pathfinder.goal === null, 'Test B：goal == null')
+          assert(stopped.pathfinder.moving === false, 'Test B：isMoving == false')
+          await sleep(400)
+          const later = (await request(runtimePort, 'GET', '/minecraft/status')).body
+          const drift = Math.hypot(
+            later.position.x - stopped.position.x,
+            later.position.z - stopped.position.z,
+          )
+          assert(drift <= 0.3, `Test B：停止后位置不再漂移（${drift.toFixed(2)} 格）`)
+          stopVerified = true
+          break
+        }
+        assert(stopVerified, 'Test B：移动中 STOP 验证完成（goal 清空 + isMoving=false + 位置停住）')
+        console.log('[e2e] move_to STOP ✓ goal=null moving=false 位置已停')
+
+        // ---- Test C：move_to 超时 → TIMEOUT + goal 清空（§十三） ----
+        let timeoutVerified = false
+        let timeoutFail = null
+        for (const distance of [16, 12, 20, 10, 14, 24]) {
+          const timeoutOrigin = (await request(runtimePort, 'GET', '/minecraft/status')).body.position
+          const target = {
+            x: timeoutOrigin.x + ux * distance,
+            y: timeoutOrigin.y,
+            z: timeoutOrigin.z + uz * distance,
+          }
+          const resp = await request(runtimePort, 'POST', '/minecraft/move_to', target)
+          timeoutFail = resp
+          if (resp.status === 200 && resp.body.status === 'TIMEOUT') {
+            await waitFor(
+              () => events.some((e) => e.event === 'minecraft.action.timeout' && e.action === 'move_to'),
+              'move_to timeout 事件',
+            )
+            const after = (await request(runtimePort, 'GET', '/minecraft/status')).body
+            assert(after.pathfinder.goal === null, 'Test C：超时后 goal == null')
+            assert(after.pathfinder.moving === false, 'Test C：超时后 isMoving == false')
+            timeoutVerified = true
+            break
+          }
+          // no-path 等非 TIMEOUT 结果：换个更远的比例重试
+        }
+        assert(
+          timeoutVerified,
+          `Test C：move_to 超时 → TIMEOUT 且 goal 清空（最后一次响应：${JSON.stringify(timeoutFail && timeoutFail.body)}）`,
+        )
+        console.log('[e2e] move_to TIMEOUT ✓ goal=null moving=false')
+
+        // 移动测试收尾：无僵尸动作、连接仍 ONLINE
+        const moveSettled = (await request(runtimePort, 'GET', '/minecraft/status')).body
+        assert(moveSettled.status === 'ONLINE', 'Test A/B/C 后连接仍 ONLINE')
+        assert(moveSettled.action.active_count === 0, 'Test A/B/C 后无僵尸动作')
       }
 
       // 重复 connect 必须被拒绝（不产生第二个 session）
