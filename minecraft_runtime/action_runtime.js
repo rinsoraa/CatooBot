@@ -15,6 +15,15 @@
  *     绝不作为 API 暴露给 CatooBot）；
  *   - 所有动作带超时；超时 → TIMEOUT + 动作自身 cleanup（不得让 runtime 坏掉）。
  *
+ * Action Cleanup 语义（Phase 3B.1 · Cancellation Cleanup Integrity）：
+ *   - cleanup() = 动作被**强制终止**后，清理它已经施加到 runtime/bot 的底层状态；
+ *   - TIMEOUT / CANCELLED(stop) / CANCELLED(disconnect) / CANCELLED(shutdown)
+ *     一律执行 cleanup；SUCCEEDED / FAILED 不强制执行（除非动作自己定义特殊需求）；
+ *   - cleanup 至多执行一次；异常被吞掉并记日志——不改终态、不崩 runtime；
+ *   - **runCancellable 只是让 runtime 不再等待该 promise，它不会取消底层操作**：
+ *     未来 move_to/follow（Pathfinder Goal）、dig/place 等有副作用的动作，
+ *     真正的终止必须由自己的 cleanup() 实现（stop() 会先 cleanup 再报 CANCELLED）。
+ *
  * 本模块不依赖任何 Minecraft 对象：bot 通过 getBot() 注入，动作由调用方注册。
  */
 
@@ -86,7 +95,11 @@ function createActionRuntime({ registry, getBot, isOnline, emit, log, now = () =
     return token
   }
 
-  /** 把动作 promise 包成可取消：取消后立刻以 ActionCancelled 结束等待。 */
+  /** 把动作 promise 包成可取消：取消后立刻以 ActionCancelled 结束等待。
+   *
+   * 注意：它**只停止等待**，不会取消底层 promise（Phase 3B.1 §四）。
+   * 有副作用的动作必须自己实现 cleanup() 来真正终止底层状态。
+   */
   function runCancellable(promise, token) {
     if (token.cancelled) return Promise.reject(new ActionCancelled(token.reason))
     return new Promise((resolve, reject) => {
@@ -112,6 +125,29 @@ function createActionRuntime({ registry, getBot, isOnline, emit, log, now = () =
         },
       )
     })
+  }
+
+  /** 取消原因 → 终态：timeout → TIMEOUT，其余（stop/disconnect/shutdown）→ CANCELLED。 */
+  function cancellationStatus(reason) {
+    return reason === 'timeout' ? STATES.TIMEOUT : STATES.CANCELLED
+  }
+
+  /** 强制终止后的底层状态清理：至多一次、异常吞掉并记日志（Phase 3B.1 §二/§三）。
+   *
+   * cleanup 失败**不得**改变终态、不得崩 runtime——终态只由 finish() 负责落定。
+   */
+  function runCleanup(controller) {
+    const def = controller.def
+    if (typeof def.cleanup !== 'function') return
+    if (controller.cleaned) return
+    controller.cleaned = true
+    try {
+      def.cleanup(getBot())
+    } catch (cleanupError) {
+      log(
+        `[Minecraft Action] cleanup failed action=${controller.record.action} id=${controller.record.action_id} error=${cleanupError.message}`,
+      )
+    }
   }
 
   function view(controller) {
@@ -203,7 +239,7 @@ function createActionRuntime({ registry, getBot, isOnline, emit, log, now = () =
       _startedMs: null,
       _elapsedMs: null,
     }
-    const controller = { record, token: makeToken(), def }
+    const controller = { record, token: makeToken(), def, cleaned: false }
     active.set(record.action_id, controller)
     if (def.exclusive) foregroundId = record.action_id
 
@@ -227,6 +263,15 @@ function createActionRuntime({ registry, getBot, isOnline, emit, log, now = () =
 
     try {
       const value = await runCancellable(def.run(getBot(), validated, controller.token), controller.token)
+      // race 防线（Phase 3B.1 §六）：stop/cancelAll/timeout 与底层完成同时到达时，
+      // 终态只能是 CANCELLED/TIMEOUT —— 绝不出现「记录 CANCELLED、响应 SUCCEEDED」双终态。
+      // （正常微任务顺序下由 token.onCancel 先手 reject；这里是任何交错下的兜底。）
+      if (controller.token.cancelled || record.status !== STATES.RUNNING) {
+        const status = cancellationStatus(controller.token.reason)
+        runCleanup(controller)
+        finish(controller, status, { reason: controller.token.reason || 'cancelled' })
+        return { action_id: record.action_id, action: name, status }
+      }
       const extra = {}
       if (validated.message !== undefined) extra.message = validated.message
       // 状态回报：动作完成瞬间的读数（如 look_at 的实际朝向）。服务器可能在稍后
@@ -236,14 +281,10 @@ function createActionRuntime({ registry, getBot, isOnline, emit, log, now = () =
       return { action_id: record.action_id, action: name, status: STATES.SUCCEEDED }
     } catch (error) {
       if (error instanceof ActionCancelled) {
-        const status = error.reason === 'timeout' ? STATES.TIMEOUT : STATES.CANCELLED
-        if (status === STATES.TIMEOUT && typeof def.cleanup === 'function') {
-          try {
-            def.cleanup(getBot())
-          } catch (cleanupError) {
-            log(`[Minecraft Action] cleanup failed action=${name} id=${record.action_id} error=${cleanupError.message}`)
-          }
-        }
+        const status = cancellationStatus(error.reason)
+        // TIMEOUT 与 CANCELLED（stop / disconnect / shutdown）都必须清理底层状态：
+        // runCancellable 只是不再等待，真正的终止由动作自己的 cleanup() 负责（§四）
+        runCleanup(controller)
         finish(controller, status, { reason: error.reason })
         return { action_id: record.action_id, action: name, status }
       }
@@ -259,8 +300,12 @@ function createActionRuntime({ registry, getBot, isOnline, emit, log, now = () =
 
   /**
    * 安全停止（最高优先级，任务书 §六/§九）：
-   *   取消所有进行中动作 → 清空移动控制位 → 回到 IDLE。
+   *   逐个取消进行中动作 → 动作自己的 cleanup()（真正终止底层状态）→
+   *   清空移动控制位 → 回到 IDLE。
    * 幂等；没有动作/没有 bot 也返回成功，并给出被取消的 action_id 列表。
+   * cleanup 与 clearControlStates 是**两件事、都保留**（Phase 3B.1 §七）：
+   * cleanup 负责动作私有状态（未来的 Pathfinder Goal 等），clearControlStates
+   * 是 runtime 层的全局移动兜底。
    */
   function stop() {
     const cancelled = []
@@ -268,6 +313,9 @@ function createActionRuntime({ registry, getBot, isOnline, emit, log, now = () =
       const status = controller.record.status
       if (status !== STATES.RUNNING && status !== STATES.QUEUED) continue
       controller.token.cancel('stop')
+      // 先真终止（cleanup），再报 CANCELLED：绝不允许「ActionRuntime=CANCELLED 而
+      // Minecraft Bot 继续移动」的状态（Phase 3B.1 §一）
+      runCleanup(controller)
       if (finish(controller, STATES.CANCELLED, { reason: 'stop' })) {
         cancelled.push(controller.record.action_id)
       }
@@ -291,6 +339,7 @@ function createActionRuntime({ registry, getBot, isOnline, emit, log, now = () =
       const status = controller.record.status
       if (status !== STATES.RUNNING && status !== STATES.QUEUED) continue
       controller.token.cancel(reason)
+      runCleanup(controller) // 断开/收尾同样必须清理动作已经施加的底层状态
       if (finish(controller, STATES.CANCELLED, { reason })) {
         cancelled.push(controller.record.action_id)
       }

@@ -162,7 +162,7 @@ WorldPerception 全部用例不变；`look_at` 只改朝向 → 无位置变化 
 
 | 门禁 | 结果 |
 |---|---|
-| `npm test`（action_runtime 单测 + E2E） | 44/44 checks + ALL CHECKS PASSED（动作流 ×3 轮） |
+| `npm test`（action_runtime 单测 + E2E） | **70/70** checks + ALL CHECKS PASSED（动作流 ×3 轮） |
 | `pytest tests`（全量） | 见交付报告（含 18 个动作用例 + WebAPI 4 个 + 快照） |
 | ruff check / ruff format --check / mypy app | 全绿 |
 | vue-tsc / vitest / Playwright / vite build + dist 模块图 | 全绿（398 vitest） |
@@ -191,3 +191,47 @@ WorldPerception 全部用例不变；`look_at` 只改朝向 → 无位置变化 
   需要 Action Safety Gate 的风险分级生效）、`attack`（HIGH，需额外确认门）。
 - 感知侧已就绪：动作执行期间 WorldPerception 继续运行；移动引入窗口位移时由
   Phase 3A 的 movement-aware diff 吸收（rebase 阈值与日志已实测）。
+
+## 11. Phase 3B.1 · Cancellation Cleanup Integrity（已完成）
+
+**根因**：`cleanup()` 只在 TIMEOUT 分支执行；`CANCELLED`（stop / disconnect / shutdown）
+不执行——未来 `move_to / follow` 的 Pathfinder Goal 会出现「ActionRuntime = CANCELLED，
+而 Minecraft Bot 继续移动」。本节把 cleanup 语义修正为**所有强制终止一律清理**，
+并固定契约与测试。**未新增任何 Minecraft 动作**（只改 `action_runtime.js` + 单测 + 本文档）。
+
+### 11.1 修改前后行为
+
+| 情况 | 修改前 | 修改后 |
+|---|---|---|
+| TIMEOUT | cleanup ✓ | cleanup ✓ |
+| CANCELLED（stop） | **无 cleanup** | cleanup ✓ —— 且 `stop()` 里**同步**先 cleanup 再报 CANCELLED |
+| CANCELLED（disconnect） | **无 cleanup** | cleanup ✓ |
+| CANCELLED（shutdown） | **无 cleanup** | cleanup ✓ |
+| SUCCEEDED / FAILED | 不强制 | 不强制（同前，除非动作自己定义特殊需求） |
+
+### 11.2 实现要点
+
+1. **`runCleanup(controller)`**：至多执行一次（`controller.cleaned` 守卫）；异常被吞掉并记
+   `cleanup failed …` 日志——**不改终态、不崩 runtime**。终态只由幂等的 `finish()` 落定，
+   因此终态事件永远只发一次。
+2. **stop / cancelAll 顺序**：取消令牌 → **cleanup（真正终止底层状态）** →
+   `finish(CANCELLED)`。§七 的两件套都保留：`action.cleanup()` 负责动作私有状态，
+   `bot.clearControlStates()` 是 runtime 层全局移动兜底——cleanup 不是它的替代品。
+3. **race 防线（§六）**：成功路径在 `await` 返回后检查 `token.cancelled`（或终态已落定），
+   若成立则按取消处理（cleanup + CANCELLED/TIMEOUT）——任何交错下**绝不出现
+   「记录 CANCELLED、响应 SUCCEEDED」的双终态**；正常微任务顺序下由 `token.onCancel` 先手。
+4. **`runCancellable` 契约（§四，已写入模块头注释）**：它**只让 runtime 停止等待**该 promise，
+   **不会取消底层操作**。未来所有有副作用的动作（move_to / follow / dig / place）的
+   真实终止**必须由自己的 cleanup() 实现**——这是 Action Runtime 的固定契约。
+
+### 11.3 新增测试（`test/action_runtime.test.js`：44 → 70 checks）
+
+| 测试 | 覆盖 |
+|---|---|
+| stop 取消 → cleanup | 同步执行、终态 CANCELLED、cleanup 不重复 |
+| disconnect 取消 → cleanup | `cancelAll("disconnect")` |
+| shutdown 取消 → cleanup | `cancelAll("shutdown")` |
+| cleanup 抛错 | 不崩 runtime（后续动作可执行）、终态仍 CANCELLED、终态事件一次、有日志 |
+| cleanup 恰好一次 | stop → cancelAll×2 → 底层完成竞态：cleanup==1、终态事件==1、无双终态 |
+| race（§六） | 底层 promise 恰在 stop 时完成 → 只能 CANCELLED、cleanup==1、无完成事件 |
+| （强化）TIMEOUT | 断言 TIMEOUT 也执行动作 cleanup |

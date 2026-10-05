@@ -285,12 +285,16 @@ async def test_minecraft_projection_includes_action_block(tmp_path):
         assert status == 200
         assert payload["data"]["action"]["status"] == "IDLE"
 
-        # 启用后：动作事件驱动镜像（started → RUNNING）
+        # 启用后：动作事件驱动镜像（started → RUNNING）。
+        # 必须指向一个死端口：GET /minecraft 的 status() 会去问 runtime 并用实况
+        # 覆盖镜像——若撞上操作者机器上真在跑的 runtime（默认端口 25580），
+        # 事件镜像会被无关 session 的 IDLE 冲掉（测试隔离事故，实测踩过）。
         service = MinecraftService(
             bot,
             MinecraftConfig(
                 enabled=True,
                 auto_start_runtime=False,
+                runtime_port=65530,
                 external_callback_token="act-test-token",
             ),
         )
