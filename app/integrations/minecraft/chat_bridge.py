@@ -38,6 +38,8 @@ log = logging.getLogger("CatooBot.Minecraft.Chat")
 SESSION_PREFIX = "minecraft"
 #: 排队上限：短时间内大量聊天不会无限堆积（每条都在独立任务里跑）
 MAX_INFLIGHT = 4
+#: 一次回复最多发几行（任务确认摘要按行发，但不能无限刷屏）
+MAX_CHAT_LINES = 10
 
 
 def chat_session_id(host: str | None, port: int | None, username: str) -> str:
@@ -127,6 +129,15 @@ class MinecraftChatBridge:
                 session_id,
                 len(history),
             )
+            # Phase 5A：这句话是不是在指挥一个多步骤任务（确认/暂停/继续/取消，
+            # 或者"去砍棵树把木头带回来"这类需要编排的请求）。命中就由任务侧回答，
+            # 不再丢给模型自由发挥；没命中（绝大多数聊天）照常走角色回合。
+            handled = await self._task_reply(username, session_id, message)
+            if handled is not None:
+                await bot.ai.conversations.append_user_message(session_id, message)
+                await bot.ai.conversations.append_assistant_message(session_id, handled)
+                await self._say(handled)
+                return
             reply = await bot.character.respond(
                 session_id,
                 username,
@@ -156,6 +167,31 @@ class MinecraftChatBridge:
         connection = self.service.snapshot().get("connection") or {}
         return chat_session_id(connection.get("host"), connection.get("port"), username)
 
+    async def _task_reply(self, username: str, session_id: str, message: str) -> str | None:
+        """任务侧的回答（``None`` = 这句话不归任务管，走正常对话）。
+
+        任务运行时没装配、或者识别不出任务意图时一律返回 ``None`` —— 普通对话
+        仍然是普通对话（§九十九）。
+        """
+        handler = getattr(self.bot, "task_turns", None)
+        if handler is None:
+            return None
+        try:
+            outcome = await handler.handle(session_id=session_id, user_id=username, text=message)
+        except Exception:  # noqa: BLE001 - 任务入口坏了也不能让游戏内聊天没反应
+            log.exception("[MC Chat] 任务入口处理失败（%s）", username)
+            return None
+        if not outcome.handled or not outcome.reply:
+            return None
+        log.info(
+            "[MC Task] action=%s task=%s state=%s（%s）",
+            outcome.action,
+            outcome.task_id or "-",
+            outcome.state or "-",
+            username,
+        )
+        return outcome.reply
+
     def _time_context(self) -> Any:
         behavior = getattr(self.bot, "behavior", None)
         if behavior is None:
@@ -166,12 +202,19 @@ class MinecraftChatBridge:
             return None
 
     async def _say(self, reply: str) -> None:
-        """把回复发回游戏（走 Service → Action Runtime，绝不直接碰 runtime）。"""
+        """把回复发回游戏（走 Service → Action Runtime，绝不直接碰 runtime）。
+
+        多行回复**按行发**：Minecraft 的聊天一行就是一条消息，任务确认摘要这种
+        "每一步都要让用户看见"的内容不能被压成一行截断（§十一）。
+        """
         limit = self.service.config.agent.chat.max_reply_chars
-        text = reply.strip()
-        if len(text) > limit:
-            text = text[: limit - 1].rstrip() + "…"
-        try:
-            await self.service.send_chat(text)
-        except Exception as exc:  # noqa: BLE001 - 发不出去只记一笔（她还在世界里）
-            log.warning("[MC Chat] 回复发送失败：%s", exc)
+        lines = [line.strip() for line in str(reply).splitlines() if line.strip()]
+        for line in lines[:MAX_CHAT_LINES]:
+            text = line
+            if len(text) > limit:
+                text = text[: limit - 1].rstrip() + "…"
+            try:
+                await self.service.send_chat(text)
+            except Exception as exc:  # noqa: BLE001 - 发不出去只记一笔（她还在世界里）
+                log.warning("[MC Chat] 回复发送失败：%s", exc)
+                return

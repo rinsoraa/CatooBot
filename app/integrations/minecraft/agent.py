@@ -21,6 +21,7 @@
 from __future__ import annotations
 
 import logging
+import secrets
 import time
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
@@ -32,6 +33,7 @@ from app.integrations.minecraft.confirmation import (
     CODE_MISMATCH,
     CODE_NOT_TRUSTED,
     CODE_REQUIRED,
+    CODE_TASK_UNAUTHORIZED,
     CONFIRMATION_RISKS,
     ConfirmationOutcome,
     ConfirmationStore,
@@ -341,6 +343,10 @@ class GateFacts:
     minecraft_player: str = ""
     #: 可信玩家名单（配置；只有 ``minecraft_player`` 非空时才参与判定）
     trusted_players: tuple[str, ...] = ()
+    #: Phase 5A：这一轮是**任务步骤**（origin == task），且拿到了已校验的步骤授权
+    task_id: str = ""
+    task_step_id: str = ""
+    task_authorized: bool = False
 
 
 class MinecraftActionPolicy:
@@ -419,7 +425,19 @@ class MinecraftActionPolicy:
                 f"{risk} 级动作未获允许",
                 turn_origin=origin,
             )
-        if risk in EXPLICIT_INTENT_RISKS and not facts.explicit_intent:
+        if origin == "task":
+            # Phase 5A §十六/§十七：任务步骤**绝不**冒充用户回合 —— 它的放行来自
+            # "已确认的冻结计划 + 步骤授权"（bridge 先向 TaskRuntime 校验
+            # plan_hash + tool + arguments_hash 三者都对得上）。
+            if risk in EXPLICIT_INTENT_RISKS and not facts.task_authorized:
+                return self._reject(
+                    tool,
+                    risk,
+                    CODE_TASK_UNAUTHORIZED,
+                    "这个任务步骤没有有效授权（计划未确认、授权已过期或参数对不上）",
+                    turn_origin=origin,
+                )
+        elif risk in EXPLICIT_INTENT_RISKS and not facts.explicit_intent:
             return self._reject(
                 tool,
                 risk,
@@ -450,9 +468,11 @@ class MinecraftActionPolicy:
                 "如需打断，先用 minecraft_stop 停止它",
                 turn_origin=origin,
             )
-        if risk in CONFIRMATION_RISKS:
+        if risk in CONFIRMATION_RISKS and origin != "task":
             # §四/§三十三：MEDIUM/HIGH/DESTRUCTIVE 一律要用户确认——这里只标记
             # 「需要确认」，由 bridge 消费一条匹配的 PENDING（消费必须发生在 USER 回合）。
+            # Phase 5A：任务步骤不再逐步确认 —— 用户已经**一次性确认了整份冻结计划**，
+            # 每一步靠 TaskStepAuthorization 放行（上面刚检查过）。
             self._log.info(
                 "[MC Policy] confirmation tool=%s risk=%s turn_origin=%s trusted=%s",
                 tool,
@@ -678,6 +698,10 @@ class MinecraftAgentBridge:
             max_pending=service.config.agent.confirmation.max_pending,
             clock=clock,
         )
+        #: Phase 5A：任务步骤授权校验器（None = 任何任务步骤都不放行，fail-closed）
+        self._task_authorizer: Any = None
+        #: 已校验过的一次性凭据 → (task_id, step_id, 过期时刻)。外部无法伪造（进程内随机串）。
+        self._task_tokens: dict[str, tuple[str, str, float]] = {}
 
     # ------------------------------------------------------------ 事实采集
 
@@ -727,6 +751,7 @@ class MinecraftAgentBridge:
         explicit_intent: bool = False,
         turn_origin: str = "",
         minecraft_player: str = "",
+        task_facts_values: tuple[str, str, bool] = ("", "", False),
     ) -> GateFacts:
         world = self.world_facts()
         current = self.context.current_action or {}
@@ -742,7 +767,107 @@ class MinecraftAgentBridge:
             turn_origin=turn_origin,
             minecraft_player=minecraft_player,
             trusted_players=tuple(self.service.config.agent.trusted_players),
+            task_id=task_facts_values[0],
+            task_step_id=task_facts_values[1],
+            task_authorized=task_facts_values[2],
         )
+
+    # ------------------------------------------------------------ Phase 5A：任务步骤
+
+    def set_task_authorizer(self, authorizer: Any = None) -> None:
+        """装上"这一步有没有被授权"的校验器（由 TaskRuntime 提供）。
+
+        bridge **只相信**这个校验器的回答：WebUI/系统调用永远拿不到 ``TASK`` 回合，
+        也就永远无法自己造出一条任务授权（§八十七 case 6）。
+        """
+        self._task_authorizer = authorizer
+
+    async def invoke_task_step(
+        self,
+        tool: str,
+        arguments: Mapping[str, Any],
+        *,
+        task_id: str,
+        step_id: str,
+        plan_hash: str,
+        risk: str,
+        authorization: Any,
+        call: Callable[[MinecraftService], Awaitable[dict[str, Any]]],
+    ) -> ToolResult:
+        """执行**一个已授权的任务步骤**（§十五/§十七/§十八）。
+
+        与普通工具调用的唯一区别：回合来源是 ``TASK``（**不是** USER），
+        并且必须先通过 TaskRuntime 的步骤授权校验（plan_hash + tool + 参数指纹）。
+        """
+        authorizer = self._task_authorizer
+        authorized = False
+        if authorizer is not None:
+            try:
+                authorized = bool(
+                    await authorizer(
+                        task_id=task_id,
+                        step_id=step_id,
+                        tool=tool,
+                        arguments=dict(arguments),
+                        plan_hash=plan_hash,
+                    )
+                )
+            except Exception:  # noqa: BLE001 - 校验器坏了必须 fail-closed
+                log.exception("[MC Task] authorizer crashed task=%s step=%s", task_id, step_id)
+                authorized = False
+        if not authorized:
+            message = "任务步骤没有有效授权（计划未确认、授权已过期或参数对不上）"
+            return ToolResult(
+                tool_name=tool,
+                success=False,
+                error=message,
+                error_type=CODE_TASK_UNAUTHORIZED,
+                data={
+                    "ok": False,
+                    "error": {"code": CODE_TASK_UNAUTHORIZED, "message": message},
+                    "task_id": task_id,
+                    "step_id": step_id,
+                },
+                metadata={"source_type": "minecraft", "confidence": 0.0},
+            )
+        token = secrets.token_urlsafe(18)
+        self._sweep_task_tokens()
+        self._task_tokens[token] = (str(task_id), str(step_id), self._clock() + 30.0)
+        context = ToolContext(
+            user_id=task_id,
+            session_id=task_id,
+            metadata={
+                BRIDGE_KEY: self,
+                TURN_ORIGIN_KEY: TurnOrigin.TASK.value,
+                INTENT_KEY: False,  # 任务步骤**不是**用户回合（绝不冒充）
+                TASK_TOKEN_KEY: token,
+            },
+        )
+        log.info(
+            "[MC Task] step tool=%s task=%s step=%s risk=%s",
+            tool,
+            task_id,
+            step_id,
+            risk or self.policy.risk_of(tool),
+        )
+        return await self.invoke(tool, arguments, call, context=context)
+
+    def _sweep_task_tokens(self) -> None:
+        now = self._clock()
+        for token, (_task, _step, expires_at) in list(self._task_tokens.items()):
+            if expires_at <= now:
+                self._task_tokens.pop(token, None)
+
+    def _resolve_task_token(self, token: str) -> tuple[str, str, bool]:
+        """把一次性凭据解析成任务事实（bridge 内部用；外部拼不出有效凭据）。"""
+        entry = self._task_tokens.get(str(token))
+        if entry is None:
+            return ("", "", False)
+        task_id, step_id, expires_at = entry
+        if expires_at <= self._clock():
+            self._task_tokens.pop(str(token), None)
+            return ("", "", False)
+        return (task_id, step_id, True)
 
     # ------------------------------------------------------------ 判定/调用
 
@@ -756,6 +881,7 @@ class MinecraftAgentBridge:
                 explicit_intent=explicit_intent(context),
                 turn_origin=turn_origin(context),
                 minecraft_player=minecraft_player(context),
+                task_facts_values=task_facts(context, self._resolve_task_token),
             ),
         )
 
@@ -860,6 +986,14 @@ class MinecraftAgentBridge:
             data["action_id"] = str(action_id)
         if isinstance(payload.get("result"), dict):
             data["result"] = payload["result"]
+        elif not action_id:
+            # Phase 5A：**只读视图**（inventory / world / find_blocks / dig_capability …）的
+            # 载荷本身就是结果，没有 action_id 也没有 ``result`` 包装。以前这些字段被丢掉了，
+            # 于是"读背包"只剩一个空壳（示例：{'ok': True, 'action': …, 'status': …}）——
+            # 任务侧的最终校验（重新读背包）与规划阶段的观察都因此拿不到数据。这里把视图
+            # 原样并入 data（已有键不覆盖），动作路径（有 action_id）完全不受影响。
+            for key, value in payload.items():
+                data.setdefault(key, value)
         if tool == "minecraft_stop":
             data["cancelled"] = list(payload.get("cancelled") or [])
             data["status"] = str(payload.get("status") or "IDLE")
@@ -1066,6 +1200,20 @@ def turn_origin_enum(context: ToolContext) -> TurnOrigin:
         return TurnOrigin(str(getattr(raw, "value", raw)))
     except ValueError:
         return TurnOrigin.BACKGROUND
+
+
+#: Phase 5A：任务步骤的事实键。**不可伪造**：上下文里只放一个 bridge 自己签发的随机凭据，
+#: 真正的事实（task_id / step_id / 已授权）只存在于 bridge 进程内的那张小表里 ——
+#: 任何外部调用方自己拼一个 ToolContext 都拿不到有效的凭据。
+TASK_TOKEN_KEY = "minecraft_task_token"
+
+
+def task_facts(context: ToolContext, verifier: Any = None) -> tuple[str, str, bool]:
+    """本轮是不是一个**已校验**的任务步骤（凭据无效/过期 → 全空，fail-closed）。"""
+    token = str(context.metadata.get(TASK_TOKEN_KEY, "") or "")
+    if not token or verifier is None:
+        return ("", "", False)
+    return verifier(token)
 
 
 def minecraft_player(context: ToolContext) -> str:

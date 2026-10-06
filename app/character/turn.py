@@ -9,7 +9,7 @@ LOW Minecraft 动作只允许在**用户发起的回合**里执行，所以"回�
 * ToolContext 里只落一个**派生**布尔（``minecraft_explicit_intent``），
   策略层读它，读不到就是不允许。
 
-四个来源（任务书 §三/§四）：
+五个来源（任务书 §三/§四 + Phase 5A §十六）：
 
 ===============  =========================================================
 USER             真实用户发来的消息（QQ / WebUI 里用户打的字）
@@ -35,6 +35,10 @@ class TurnOrigin(str, Enum):  # noqa: UP042 - 与项目其它面向 pydantic/JSO
     BACKGROUND = "background"
     #: 系统内部生成（管理台干跑、诊断工具）
     SYSTEM = "system"
+    #: Phase 5A：**已确认任务计划**里的一个步骤（TaskRuntime 发起）。
+    #: 注意：它**不是**用户回合 —— ``is_user`` 仍然是 False。任务步骤的放行来自
+    #: 已确认的 TaskStepAuthorization，绝不是"伪装成用户"。
+    TASK = "task"
 
     @property
     def is_user(self) -> bool:

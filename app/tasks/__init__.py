@@ -1,0 +1,71 @@
+"""Phase 5A · app/tasks/__init__.py"""
+
+from app.tasks.intent import CONFIRM_COMMANDS, TaskIntent, TaskIntentDetector
+from app.tasks.models import (
+    ALLOWED_TASK_TRANSITIONS,
+    TASK_EVENTS,
+    ExpectedFinalState,
+    StepState,
+    TaskAuthorization,
+    TaskFailure,
+    TaskPlan,
+    TaskRecord,
+    TaskState,
+    TaskStep,
+    TaskStepAuthorization,
+    arguments_hash,
+    canonical_arguments,
+    new_task_id,
+)
+from app.tasks.planner import (
+    SAFE_OBSERVATION_TOOLS,
+    ModelTaskPlanner,
+    Observation,
+    ObservationFailed,
+    PlannedTask,
+    plan_resource_task,
+)
+from app.tasks.runtime import (
+    TaskAuthorizationError,
+    TaskBusy,
+    TaskConfig,
+    TaskInvocation,
+    TaskRuntime,
+    classify_failure,
+)
+from app.tasks.store import InMemoryTaskStore, SqliteTaskStore, TaskStore
+
+__all__ = [
+    "ALLOWED_TASK_TRANSITIONS",
+    "CONFIRM_COMMANDS",
+    "ExpectedFinalState",
+    "InMemoryTaskStore",
+    "ModelTaskPlanner",
+    "Observation",
+    "ObservationFailed",
+    "PlannedTask",
+    "SAFE_OBSERVATION_TOOLS",
+    "SqliteTaskStore",
+    "StepState",
+    "TASK_EVENTS",
+    "TaskAuthorization",
+    "TaskAuthorizationError",
+    "TaskBusy",
+    "TaskConfig",
+    "TaskFailure",
+    "TaskIntent",
+    "TaskIntentDetector",
+    "TaskInvocation",
+    "TaskPlan",
+    "TaskRecord",
+    "TaskRuntime",
+    "TaskState",
+    "TaskStep",
+    "TaskStepAuthorization",
+    "TaskStore",
+    "arguments_hash",
+    "canonical_arguments",
+    "classify_failure",
+    "new_task_id",
+    "plan_resource_task",
+]

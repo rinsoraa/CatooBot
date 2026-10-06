@@ -37,6 +37,7 @@ import type {
   MinecraftOverview,
   MinecraftPathfinderInfo,
   MinecraftPlaceFace,
+  MinecraftTaskView,
   MinecraftWorldView,
 } from '@/types/minecraft'
 
@@ -52,6 +53,8 @@ const disabled = ref(false)
 const loading = ref(false)
 const error = ref('')
 const working = ref(false)
+// Phase 5A：当前活动的多步骤任务（没有 = null；只读投影，不含 raw 世界状态）
+const task = ref<MinecraftTaskView | null>(null)
 
 const host = ref('')
 const port = ref('25565')
@@ -84,6 +87,52 @@ const confirmations = computed<MinecraftConfirmationView[]>(
   () => overview.value?.agent?.confirmations?.pending ?? [],
 )
 const trustedPlayers = computed<string[]>(() => overview.value?.agent?.trusted_players ?? [])
+
+/** 任务状态 → 徽标语义色（终态按结果着色，进行中偏中性）。 */
+function taskState(state: string): StatusState {
+  if (state === 'SUCCEEDED') return 'ok'
+  if (state === 'FAILED' || state === 'EXPIRED') return 'error'
+  if (state === 'CANCELLED') return 'idle'
+  if (state === 'PENDING_CONFIRMATION' || state === 'PAUSED' || state === 'REPLANNING') return 'warn'
+  return 'warn'
+}
+
+function taskStepState(state: string): StatusState {
+  if (state === 'SUCCEEDED') return 'ok'
+  if (state === 'FAILED') return 'error'
+  if (state === 'CANCELLED' || state === 'SKIPPED') return 'idle'
+  if (state === 'PENDING') return 'idle'
+  return 'warn'
+}
+
+/** 任务进度：完成/总数（"最后一步 action 完成"不等于整个任务完成）。 */
+const taskProgress = computed(() => task.value?.progress ?? { completed: 0, total: 0 })
+
+async function loadTask(): Promise<void> {
+  try {
+    const payload = await minecraftApi.task()
+    task.value = payload?.task ?? null
+  } catch {
+    /* 保留上一份数据（任务不是这一页的主状态） */
+  }
+}
+
+async function taskAction(action: 'pause' | 'resume' | 'cancel'): Promise<void> {
+  const current = task.value
+  if (!current) return
+  working.value = true
+  try {
+    const updated = await minecraftApi.taskAction(current.task_id, action)
+    task.value = updated
+    const label = action === 'pause' ? '已暂停' : action === 'resume' ? '已继续' : '已取消'
+    toast.success(`${label}任务`, updated.summary || updated.state)
+    await load(true)
+  } catch (caught) {
+    toast.error('任务操作失败', errorMessage(caught))
+  } finally {
+    working.value = false
+  }
+}
 
 function confirmStatusLabel(row: MinecraftConfirmationView): string {
   return row.status === 'PENDING' ? '待确认' : row.status
@@ -801,6 +850,8 @@ async function loadWorld(): Promise<void> {
     /* 保留上一份数据 */
   }
   prefillInventoryTargets()
+  // Phase 5A：当前任务（只读投影 + 暂停/继续/取消按钮）
+  await loadTask()
 }
 
 /** 3×3 上下文必须给出明确的整数坐标（绝不接受 nearest/auto）。 */
@@ -2492,6 +2543,134 @@ onUnmounted(stopPolling)
           >
             CREATE TEST CONFIRMATION
           </button>
+        </section>
+
+        <section class="minecraft__card cb-card" data-test="mc-task">
+          <SectionHeader
+            title="Multi-Step Task（Phase 5A）"
+            description="跨多个行动步骤的任务由任务运行时编排：计划先冻结再由用户在对话里确认，MEDIUM 步骤靠这份授权放行。这里只能暂停 / 继续 / 取消 —— 不能替用户确认，也没有通用回滚。"
+          />
+          <template v-if="task">
+            <dl class="minecraft__facts" data-test="mc-task-facts">
+              <div>
+                <dt>Objective</dt>
+                <dd data-test="mc-task-objective">{{ task.objective }}</dd>
+              </div>
+              <div>
+                <dt>State</dt>
+                <dd data-test="mc-task-state">
+                  <StatusBadge :state="taskState(task.state)" :label="task.state" />
+                </dd>
+              </div>
+              <div>
+                <dt>Progress</dt>
+                <dd data-test="mc-task-progress">
+                  {{ taskProgress.completed }} / {{ taskProgress.total }}
+                </dd>
+              </div>
+              <div>
+                <dt>Current Step</dt>
+                <dd data-test="mc-task-current">
+                  {{ task.current_step ? `${task.current_step.tool}（${task.current_step.state}）` : '—' }}
+                </dd>
+              </div>
+              <div>
+                <dt>Current Action</dt>
+                <dd data-test="mc-task-action">{{ task.current_action ?? '—' }}</dd>
+              </div>
+              <div>
+                <dt>Confirmation</dt>
+                <dd data-test="mc-task-confirmation">
+                  {{ task.confirmation_required ? '等待用户在对话里确认' : (task.confirmation_id ?? '—') }}
+                </dd>
+              </div>
+              <div>
+                <dt>Plan Hash</dt>
+                <dd><code data-test="mc-task-plan-hash">{{ task.plan.plan_hash }}</code></dd>
+              </div>
+              <div>
+                <dt>Rollback</dt>
+                <dd data-test="mc-task-rollback">
+                  {{ task.rollback_supported ? 'supported' : 'NOT SUPPORTED（只能停止 / 重规划）' }}
+                </dd>
+              </div>
+            </dl>
+
+            <table class="minecraft__table" data-test="mc-task-plan">
+              <thead>
+                <tr>
+                  <th scope="col">#</th>
+                  <th scope="col">Step</th>
+                  <th scope="col">Tool</th>
+                  <th scope="col">Risk</th>
+                  <th scope="col">State</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr v-for="(step, index) in task.plan.steps" :key="step.step_id">
+                  <td>{{ index + 1 }}</td>
+                  <td>{{ step.label }}</td>
+                  <td><code>{{ step.tool }}</code></td>
+                  <td><StatusBadge :state="riskState(step.risk)" :label="step.risk" /></td>
+                  <td><StatusBadge :state="taskStepState(step.state)" :label="step.state" /></td>
+                </tr>
+              </tbody>
+            </table>
+
+            <dl class="minecraft__facts" data-test="mc-task-result">
+              <div>
+                <dt>Last Result</dt>
+                <dd>{{ task.last_result ? `${task.last_result.tool}：${task.last_result.summary || task.last_result.status}` : '—' }}</dd>
+              </div>
+              <div>
+                <dt>Summary</dt>
+                <dd data-test="mc-task-summary">{{ task.summary }}</dd>
+              </div>
+              <div v-if="task.failure">
+                <dt>Failure</dt>
+                <dd data-test="mc-task-failure">
+                  {{ task.failure.reason }}（{{ task.failure.message }}）
+                </dd>
+              </div>
+            </dl>
+
+            <div class="minecraft__actions">
+              <button
+                type="button"
+                class="minecraft__button"
+                :disabled="working || task.state === 'PAUSED'"
+                data-test="mc-task-pause"
+                @click="taskAction('pause')"
+              >
+                PAUSE
+              </button>
+              <button
+                type="button"
+                class="minecraft__button"
+                :disabled="working || task.state !== 'PAUSED'"
+                data-test="mc-task-resume"
+                @click="taskAction('resume')"
+              >
+                RESUME
+              </button>
+              <button
+                type="button"
+                class="minecraft__button"
+                :disabled="working"
+                data-test="mc-task-cancel"
+                @click="taskAction('cancel')"
+              >
+                CANCEL TASK
+              </button>
+            </div>
+            <p class="cb-caption">
+              「继续」只会把一份**仍然有效**的授权接着用完；授权过期就得回到对话里重新确认。
+              取消会经 minecraft_stop 真停掉正在跑的动作 —— 但不会把世界恢复原状。
+            </p>
+          </template>
+          <p v-else class="cb-caption" data-test="mc-task-empty">
+            当前没有任务。在游戏里对罐头说「去砍一棵橡树，挖一块原木并捡回来」，她会先列一份计划让你确认。
+          </p>
         </section>
 
         <section

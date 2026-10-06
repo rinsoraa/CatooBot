@@ -1024,6 +1024,19 @@ class MinecraftAgentConfig(BaseModel):
     trusted_players: list[str] = Field(default_factory=list)
 
 
+class TaskRuntimeConfig(BaseModel):
+    """Phase 5A：多步骤任务的上限（保守默认；只暴露这四个旋钮，§九十七）。"""
+
+    #: 一个 Task 从创建到过期的总时长（秒）；到点 EXPIRED 并停掉正在跑的动作
+    ttl_seconds: float = Field(default=600.0, ge=30.0, le=3600.0)
+    #: 计划里最多多少步（防"1000 步"）
+    max_steps: int = Field(default=16, ge=1, le=64)
+    #: 最多重规划几次
+    max_replans: int = Field(default=2, ge=0, le=5)
+    #: 连续多少次"同一个工具 + 同一份参数 + 状态没变"就认为卡住（暂停任务）
+    no_progress_limit: int = Field(default=3, ge=1, le=10)
+
+
 class MinecraftConfig(BaseModel):
     """Minecraft 连接层（Phase 1）：Bridge runtime（mineflayer 子进程）的托管参数。
 
@@ -1086,6 +1099,8 @@ class AppConfig(BaseModel):
     continuity: ContinuityConfig = Field(default_factory=ContinuityConfig)
     runtime: RuntimeConfig = Field(default_factory=RuntimeConfig)
     minecraft: MinecraftConfig = Field(default_factory=MinecraftConfig)
+    #: Phase 5A：多步骤任务运行时（第一期只接入 Minecraft 工具回路）
+    task: TaskRuntimeConfig = Field(default_factory=TaskRuntimeConfig)
     sandbox: SandboxConfig = Field(default_factory=SandboxConfig)
     tools: ToolsConfig = Field(default_factory=ToolsConfig)
     agent: AgentConfig = Field(default_factory=AgentConfig)

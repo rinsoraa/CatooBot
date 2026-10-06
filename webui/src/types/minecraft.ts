@@ -507,3 +507,59 @@ export interface MinecraftWorldView {
   semantic?: MinecraftSemantic | null
   raw?: Record<string, unknown> | null
 }
+
+/** Phase 5A：多步骤任务（TaskRuntime）的只读投影（GET /minecraft/task）。 */
+export interface MinecraftTaskStepView {
+  step_id: string
+  tool: string
+  risk: MinecraftActionRisk
+  state: string
+  /** 一句人话（例如「走到 (12,64,9) 附近」）。 */
+  label: string
+}
+
+export interface MinecraftTaskPlanView {
+  plan_hash: string
+  steps: MinecraftTaskStepView[]
+  expected_final_state: { inventory_delta?: Record<string, number> }
+}
+
+export interface MinecraftTaskView {
+  task_id: string
+  session_id: string
+  origin: string
+  objective: string
+  state: string
+  progress: { completed: number; total: number }
+  current_step: {
+    step_id: string
+    tool: string
+    risk: MinecraftActionRisk
+    state: string
+    arguments: Record<string, unknown>
+  } | null
+  current_action: string | null
+  plan: MinecraftTaskPlanView
+  confirmation_required: boolean
+  confirmation_id: string | null
+  last_result: {
+    tool: string
+    status: string
+    summary: string
+    result: Record<string, unknown>
+  } | null
+  failure: { reason: string; step: string; message: string } | null
+  verification: Record<string, unknown>
+  result: Record<string, unknown>
+  summary: string
+  replans: number
+  expires_at: number
+  /** Phase 5A：不提供通用回滚。 */
+  rollback_supported: boolean
+  updated_at: number
+}
+
+export interface MinecraftTaskCurrentResponse {
+  task: MinecraftTaskView | null
+  session_id: string | null
+}

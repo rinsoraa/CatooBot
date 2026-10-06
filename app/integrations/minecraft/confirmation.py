@@ -49,6 +49,8 @@ CODE_EXPIRED = "minecraft.confirmation_expired"
 CODE_MISMATCH = "minecraft.confirmation_mismatch"
 CODE_NOT_USER_TURN = "minecraft.confirmation_not_user_turn"
 CODE_NOT_TRUSTED = "minecraft.user_not_trusted"
+#: Phase 5A：任务步骤没有有效授权（计划未确认 / 授权过期 / 参数对不上）
+CODE_TASK_UNAUTHORIZED = "minecraft.task_authorization_missing"
 
 
 def arguments_hash(arguments: Mapping[str, Any] | None) -> str:
@@ -73,14 +75,21 @@ class MinecraftActionConfirmation:
     status: str = PENDING
     #: 只给模型/界面的中文摘要（不含机密，不含对话正文）
     summary: str = ""
+    #: Phase 5A：这条确认属于哪个 Task / 哪份冻结计划（直接工具调用时是空串）
+    task_id: str = ""
+    plan_hash: str = ""
 
     @property
     def pending(self) -> bool:
         return self.status == PENDING
 
     def to_payload(self) -> dict[str, Any]:
-        """给 LLM / WebUI 的安全投影（id + 工具 + 风险 + 摘要 + 有效期）。"""
-        return {
+        """给 LLM / WebUI 的安全投影（id + 工具 + 风险 + 摘要 + 有效期）。
+
+        Phase 5A：任务计划的确认额外带 ``task_id`` / ``plan_hash``；
+        **直接工具调用**（没有任务）时这两个字段完全不出现 —— 老消费者一个字节都不受影响。
+        """
+        payload: dict[str, Any] = {
             "confirmation_id": self.confirmation_id,
             "tool": self.tool,
             "risk": self.risk,
@@ -88,6 +97,10 @@ class MinecraftActionConfirmation:
             "expires_at": self.expires_at,
             "status": self.status,
         }
+        if self.task_id:
+            payload["task_id"] = self.task_id
+            payload["plan_hash"] = self.plan_hash
+        return payload
 
     def to_dict(self) -> dict[str, Any]:
         """完整视图（WebUI Debug 用；不含任何机密——本来就只存动作参数）。"""
@@ -130,8 +143,14 @@ class ConfirmationStore:
         risk: str,
         arguments: Mapping[str, Any] | None = None,
         summary: str = "",
+        task_id: str = "",
+        plan_hash: str = "",
     ) -> MinecraftActionConfirmation:
-        """创建一条 PENDING 确认（同一 (session,user,tool,args) 已有 PENDING 时复用它）。"""
+        """创建一条 PENDING 确认（同一 (session,user,tool,args) 已有 PENDING 时复用它）。
+
+        Phase 5A 起可以带 ``task_id`` / ``plan_hash``：任务计划的确认就挂在同一个
+        ConfirmationStore 上（§四十：不建第二套确认数据库）；直接工具调用的行为完全不变。
+        """
         self.sweep()
         digest = arguments_hash(arguments)
         existing = self.find_pending(
@@ -151,6 +170,8 @@ class ConfirmationStore:
             created_at=now,
             expires_at=now + self.ttl_seconds,
             summary=summary or f"{tool}（{risk}）",
+            task_id=str(task_id or ""),
+            plan_hash=str(plan_hash or ""),
         )
         self._items[confirmation.confirmation_id] = confirmation
         self._trim()

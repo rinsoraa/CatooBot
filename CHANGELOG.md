@@ -3,6 +3,58 @@
 本文件记录 CatooBot 的版本演进。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号见 `pyproject.toml`；日期取自真实提交历史（本仓库 2026-09-30 起）。
 
+## Minecraft Phase 5A — 多步骤任务运行时（Task Runtime）
+
+* 新增**通用编排层** `app/tasks/`（`TaskState`/`StepState` 显式枚举 + `ALLOWED_TASK_TRANSITIONS`）：
+  **不新增任何 Minecraft 原子工具**（19 个保持原样），也不把已有工具包装成
+  `minecraft_gather_resource` 这类黑盒。TaskRuntime 只认识「工具 + 参数 + 风险 +
+  action_id + 结果」，链路上仍严格是
+  `LLM → TaskRuntime → Agent Bridge/Tool Loop → Policy → Confirmation → Service →
+  ActionRuntime → Mineflayer`（绝不直接调 Mineflayer 或 runtime HTTP）。
+* **计划与执行分离**：冻结计划有 `plan_hash`（只含决定世界操作的内容）；执行期每步记
+  `template_arguments / resolved_arguments / arguments_hash` 作为审计。用户确认之后计划
+  不可静默修改 —— 任一步参数/工具/顺序被改动都会让 `plan_hash` 对不上，当前步骤直接
+  `AUTHORIZATION` 失败并要求重新确认（授权比对用**存下来的那份** hash，不是现算的）。
+* **两阶段计划（§六十八）**：Phase A 只用 SAFE 工具把"去哪、挖什么、手上有没有工具"查清楚
+  （`world`/`inventory`/`find_blocks`/`dig_capability`），Phase B 生成**解析过坐标**的冻结
+  动作计划再请用户确认 —— 绝不确认"某个未知目标，自动选择"。计划期只挑罐头够得到的那一截
+  树干（`y ≤ bot_y + 1`），运行时说 `can_dig` 就不写多余的 move_to。
+* **授权模型**：一次确认整份冻结计划 → 签出 `TaskAuthorization`；每步执行前比对
+  `TaskStepAuthorization`（step_id + tool + 模板指纹 + plan_hash）。新增 `TurnOrigin.TASK`，
+  它**不是**用户回合：Policy 走单独分支，靠"已确认计划 + 步骤授权"放行 MEDIUM，
+  **绝不冒充 USER**；授权凭据由 bridge 铸一次性 token（进程内随机 + 30s TTL），
+  手工拼 ToolContext 伪造 `task_authorized` 会被拒（fail-closed）。
+* **checkpoint 持久化**：复用同一个 SQLite（迁移 27）：`agent_task_runs`（当前快照）+
+  `agent_task_checkpoints`（append-only 转移日志）。明确写入"跨进程重启不恢复正在跑的动作"：
+  恢复时旧 action 一律按 `RUNTIME_RESTART` 处理并要求重规划。
+* **异步等待与恢复**：持续型动作启动即 `WAITING_ACTION`，事件经
+  `MinecraftTaskCoordinator` 严格按 `action_id` 绑定当前步骤唤醒；别人的事件不会误唤醒本任务。
+* **pause / resume / cancel / expire**：只在安全边界暂停（有前台动作就等它自然结束，
+  绝不在 `bot.dig()` 中间硬切状态）；恢复重新校验授权时效 + 世界事实（旧动作失效 → REPLANNING，
+  授权过期 → 回 PENDING_CONFIRMATION）；取消立刻终态并**经现有 `minecraft_stop`** 真停，
+  迟到的 `completed` 不能翻案、不留前台动作；TTL 到点 EXPIRED。
+* **失败分类与重试**：`AUTHORIZATION/VALIDATION/TARGET_LOST/ACTION_FAILED/TIMEOUT/CANCELLED/
+  WORLD_CHANGED/OFFLINE/BUSY/INTERNAL`；SAFE 最多重试 2 次，LOW/MEDIUM **一律 0 次**
+  （绝不"偷偷再挖一次"）；MEDIUM 失败 → 暂停等用户；连续没有进展 → 暂停（STALLED）。
+* **完成判定**：最后一步 action 完成 ≠ 任务完成。计划里的 `expected_final_state`
+  （如 `inventory_delta: {oak_log: 1}`）必须用 **SAFE 重新读一次背包**复验后才算 SUCCEEDED。
+* **对话入口**：`app/tasks/turn.py` 把用户回合翻译成任务操作（"去砍一棵橡树，挖一块原木并
+  捡回来" → 观察 → 冻结计划 → 列出让他确认；"确认/先停一下/继续/停止这个任务" → 控制命令）；
+  普通对话仍然是普通对话（"你在哪""背包里有什么""附近有铁矿吗"不创建任务）。游戏内回复
+  按行发，确认摘要里每一步都看得见。
+* **API / WebUI**：新增 `GET /api/v1/minecraft/task`、`GET /api/v1/minecraft/task/{id}`、
+  `POST /api/v1/minecraft/task/{id}/{pause|resume|cancel}`（**没有 confirm**）；
+  Minecraft 页新增 Multi-Step Task 面板（Objective/State/Progress/Current Step/Current
+  Action/Confirmation/Plan/Last Result/Failure/Rollback，按钮只有 PAUSE/RESUME/CANCEL）。
+  WebUI 的「继续」只沿用仍在有效期内的授权，过期就如实拒绝。
+* 配置只加四个旋钮（默认保守）：`task.ttl_seconds=600` / `task.max_steps=16` /
+  `task.max_replans=2` / `task.no_progress_limit=3`；其余上限是代码常量。
+* 验证：`tests/test_task_runtime.py`（32）+ `tests/test_task_authorization.py`（12）+
+  `tests/test_task_turn.py`（18）+ `tests/test_minecraft_task_integration.py`（7，确定性 E2E）+
+  `tests/test_web_api_minecraft_task.py`（7）+ WebUI vitest 4 个新增用例。
+  真机 `scripts/task_smoke_real.py`：正向 5 步全 SUCCEEDED + `FINAL INVENTORY VERIFIED
+  {'oak_log': 1}`、pause → resume → SUCCEEDED、cancel → `goal=null`/`isMoving=false` → `REAL SERVER: PASS`。
+
 ## Minecraft Phase 4K — Resource Targeting + 单资源真实闭环
 
 * 新增 LLM 工具 `minecraft_find_blocks`（**SAFE 只读、非独占、不新增 ActionRuntime 复合动作**）：

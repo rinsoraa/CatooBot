@@ -317,6 +317,10 @@ class Bot:
         # Minecraft 连接层（Phase 1）：Bridge runtime 托管 + 事件通道，opt-in。
         # 失败只降级（QQ/WebUI 照常），绝不影响聊天主链路。
         self.minecraft: Any = None
+        #: Phase 5A：多步骤任务运行时 / 事件协调器 / 对话入口（装配失败 = None）
+        self.tasks: Any = None
+        self.task_coordinator: Any = None
+        self.task_turns: Any = None
         if config.minecraft.enabled:
             try:
                 from app.integrations.minecraft.service import MinecraftService
@@ -788,6 +792,44 @@ class Bot:
                 self.log.exception("Minecraft bridge failed to start; continuing without it")
                 self.minecraft = None
                 story.boot_step("Minecraft 桥启动失败（QQ 聊天不受影响）", ok=False)
+        if self.minecraft is not None:
+            # Phase 5A：多步骤任务运行时（checkpoint 复用同一个 SQLite）。
+            # 装配失败 = 没有任务能力，单工具行为完全不受影响（§一百零二）。
+            try:
+                from app.integrations.minecraft.task_adapter import (
+                    MinecraftTaskInvoker,
+                    build_minecraft_task_runtime,
+                )
+                from app.integrations.minecraft.task_coordinator import MinecraftTaskCoordinator
+                from app.tasks.turn import TaskTurnHandler
+
+                self.tasks = await build_minecraft_task_runtime(
+                    self.minecraft,
+                    tools_config=self.config.tools,
+                    database=self.database,
+                    config=self.config.task,
+                    logger=self.log,
+                )
+                self.task_coordinator = MinecraftTaskCoordinator(self.tasks, self.minecraft)
+                self.task_coordinator.start()
+                # 观察与执行走同一条既有工具通道（TaskRuntime 绝不认识 Mineflayer）
+                invoker = MinecraftTaskInvoker(self.minecraft.agent)
+                self.task_turns = TaskTurnHandler(
+                    self.tasks,
+                    observe=lambda tool, arguments: invoker(tool, dict(arguments)),
+                )
+                story.boot_step(
+                    "多步骤任务运行时已就绪",
+                    detail=(
+                        f"TTL {int(self.config.task.ttl_seconds)}s"
+                        f"、最多 {int(self.config.task.max_steps)} 步"
+                    ),
+                )
+            except Exception:  # noqa: BLE001 - 任务装配失败不拖垮启动
+                self.log.exception("Task runtime initialization failed; continuing without it")
+                self.tasks = None
+                self.task_coordinator = None
+                self.task_turns = None
         await self.adapter.start()
         story.boot_step("OneBot 适配器已监听", detail=self.config.onebot.url)
         if self.watchdog is not None:
@@ -927,6 +969,8 @@ class Bot:
         try:
             if self.onebot_gateway is not None:
                 await self.onebot_gateway.stop()
+            if self.task_coordinator is not None:
+                await self.task_coordinator.stop()
             if self.minecraft is not None:
                 await self.minecraft.stop()
             if self.runtime_scheduler is not None:

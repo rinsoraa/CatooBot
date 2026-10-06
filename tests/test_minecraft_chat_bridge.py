@@ -340,3 +340,53 @@ async def test_service_listener_wiring_registers_the_bridge(tmp_path: Any) -> No
     service.add_listener(chat.apply_event)
     assert len(service._listeners) == listeners + 1  # noqa: SLF001
     assert pytest is not None
+
+
+# ------------------------------------------------- Phase 5A：任务入口与多行回复
+
+
+class StubTaskTurns:
+    """任务入口替身：记录每次调用，返回脚本化的结果。"""
+
+    def __init__(self, reply: str | None) -> None:
+        self.reply = reply
+        self.calls: list[dict[str, Any]] = []
+
+    async def handle(self, **kwargs: Any) -> Any:
+        from app.tasks.turn import TaskTurnOutcome
+
+        self.calls.append(dict(kwargs))
+        if self.reply is None:
+            return TaskTurnOutcome(False)
+        return TaskTurnOutcome(True, action="created", reply=self.reply, task_id="task_x")
+
+
+async def test_task_command_is_answered_in_game_without_the_llm(tmp_path: Any) -> None:
+    """任务侧的回复（确认摘要等）由任务入口直接给，不再丢给模型自由发挥。"""
+    async with stack(tmp_path, "这句话不该被用到") as env:
+        stub = StubTaskTurns(
+            "我打算这么做，你看行不行：\n1. 走到 (12,64,9) 附近\n想让我开始就说「确认」。"
+        )
+        env.chat.bot.task_turns = stub  # type: ignore[attr-defined]
+        await env.say("空凛", "去砍一棵橡树，挖一块原木并捡回来")
+    assert env.turns == 0, "任务请求不该再产生一次角色回合"
+    assert stub.calls[0]["session_id"] == chat_session_id("127.0.0.1", 25565, "空凛")
+    assert stub.calls[0]["user_id"] == "空凛"
+    assert env.chat_replies[0].startswith("我打算这么做")
+    # 多行摘要按行发（Minecraft 一行一条），每一步用户都看得见
+    assert len(env.chat_replies) == 3
+    assert "走到 (12,64,9)" in env.chat_replies[1]
+
+
+async def test_task_entry_ignoring_a_message_falls_back_to_normal_chat(tmp_path: Any) -> None:
+    async with stack(tmp_path, decide("minecraft_world"), "我在平原上呢～") as env:
+        env.chat.bot.task_turns = StubTaskTurns(None)  # type: ignore[attr-defined]
+        await env.say("空凛", "罐头，你在哪？")
+    assert env.turns == 1, "任务入口不认领的消息照常走角色回合"
+    assert env.chat_replies == ["我在平原上呢～"]
+
+
+async def test_multiline_character_reply_is_sent_line_by_line(tmp_path: Any) -> None:
+    async with stack(tmp_path, "line one\nline two") as env:
+        await env.say("空凛", "讲两句")
+    assert env.chat_replies == ["line one", "line two"]

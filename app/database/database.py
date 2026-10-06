@@ -1214,6 +1214,44 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_sandbox_experiences_episode
     ON sandbox_experiences(character_id, episode_key);
 """,
     ),
+    (
+        27,
+        "multi-step task runtime (Phase 5A)",
+        """
+-- 一个 Task = 一行（当前完整的 checkpoint）+ 一条 append-only 的转移日志。
+-- 复用**同一个** SQLite 库：Phase 5A 不建第二套存储；跨进程重启时 task 仍然读得回来，
+-- 但正在跑的 Minecraft action 早已失效（见 TaskRuntime 的 runtime_restart 处理）。
+CREATE TABLE IF NOT EXISTS agent_task_runs (
+    task_id       TEXT PRIMARY KEY,
+    session_id    TEXT NOT NULL,
+    user_id       TEXT NOT NULL,
+    origin        TEXT NOT NULL,
+    state         TEXT NOT NULL,
+    objective     TEXT NOT NULL,
+    plan_hash     TEXT NOT NULL,
+    current_step  INTEGER NOT NULL DEFAULT 0,
+    created_at    REAL NOT NULL,
+    updated_at    REAL NOT NULL,
+    expires_at    REAL NOT NULL DEFAULT 0,
+    payload       TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_agent_task_runs_session
+    ON agent_task_runs(session_id, state, updated_at DESC);
+
+-- 每一次会改变 Task state 的转移都追加一行（§九：Task 必须有 checkpoint）。
+CREATE TABLE IF NOT EXISTS agent_task_checkpoints (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    task_id     TEXT NOT NULL,
+    state       TEXT NOT NULL,
+    step_id     TEXT NOT NULL DEFAULT '',
+    event       TEXT NOT NULL DEFAULT '',
+    detail      TEXT NOT NULL DEFAULT '',
+    created_at  REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_agent_task_checkpoints_task
+    ON agent_task_checkpoints(task_id, id);
+""",
+    ),
 ]
 
 

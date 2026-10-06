@@ -23,6 +23,8 @@ from app.integrations.minecraft.service import (
     MinecraftService,
     canonical_item_name,
 )
+from app.tasks.runtime import TaskAuthorizationError as _TaskError
+from app.tasks.runtime import TaskBusy as _TaskBusy
 from app.web.api.common import (
     API_PREFIX,
     bad_request,
@@ -853,6 +855,90 @@ class MinecraftApiRoutes(WebContext):
             request=request,
         )
 
+    # ------------------------------------------------- Phase 5A：多步骤任务
+
+    def _task_runtime(self) -> Any:
+        """任务运行时（没装配时给 None —— 读端点照旧 200，只是"现在没有任务"）。"""
+        return getattr(self._bot, "tasks", None)
+
+    def _require_task_runtime(self) -> Any:
+        """控制端点必须真的有运行时（拒绝比假装成功好）。"""
+        runtime = self._task_runtime()
+        if runtime is None:
+            raise ApiError(503, "task.disabled", "任务运行时未装配（Minecraft 没打开？）")
+        return runtime
+
+    async def _v1_minecraft_task_current(self, request: web.Request) -> web.Response:
+        """当前活动任务（没有就 ``task: null``；**读端点恒 200**）。
+
+        这是**只读**投影：WebUI 拿它渲染 Objective/State/Progress/步骤/授权/失败，
+        里面没有任何 raw Mineflayer 状态（§七十九）。没装配任务运行时也不是故障 ——
+        只是"现在没有任务"（与其他读端点同一约定）。
+        """
+        runtime = self._task_runtime()
+        session_id = str(request.query.get("session_id") or "").strip()
+        if runtime is None:
+            return ok({"task": None, "session_id": session_id or None}, request=request)
+        record = await runtime.current(session_id or None)
+        return ok(
+            {
+                "task": runtime.snapshot_payload(record) if record is not None else None,
+                "session_id": session_id or (record.session_id if record is not None else None),
+            },
+            request=request,
+        )
+
+    async def _v1_minecraft_task_get(self, request: web.Request) -> web.Response:
+        runtime = self._task_runtime()
+        task_id = str(request.match_info.get("task_id") or "").strip()
+        record = await runtime.get(task_id) if runtime is not None else None
+        if record is None:
+            raise not_found("任务不存在", code="task.not_found")
+        return ok(runtime.snapshot_payload(record), request=request)
+
+    async def _v1_minecraft_task_action(self, request: web.Request) -> web.Response:
+        """``POST /minecraft/task/{task_id}/{action}``：pause / resume / cancel。
+
+        控制台只能**收窄**权限：暂停、取消谁都能做；「继续」只允许把一份**仍在有效期
+        内**的授权接着用完（授权过期就如实拒绝，让它回到需要用户确认的状态）。
+        计划确认（``confirm_and_start``）永远不在这里暴露 —— 它必须来自用户自己的
+        回合（§八十七 case 6）。
+        """
+        runtime = self._require_task_runtime()
+        task_id = str(request.match_info.get("task_id") or "").strip()
+        action = str(request.match_info.get("action") or "").strip()
+        body = await read_json(request)
+        record = await runtime.get(task_id)
+        if record is None:
+            raise not_found("任务不存在", code="task.not_found")
+        try:
+            if action == "pause":
+                result = await runtime.pause(
+                    task_id, reason=str(body.get("reason") or "WebUI 暂停")
+                )
+            elif action == "resume":
+                result = await runtime.resume(
+                    task_id,
+                    user_id=record.user_id,
+                    session_id=record.session_id,
+                    origin="webui",
+                    non_user_ok=True,
+                )
+            elif action == "cancel":
+                result = await runtime.cancel(
+                    task_id, reason=str(body.get("reason") or "WebUI 取消")
+                )
+            else:
+                raise bad_request(
+                    "action 必须是 pause / resume / cancel",
+                    code="task.action_invalid",
+                    field="action",
+                )
+        except (_TaskError, _TaskBusy) as exc:
+            code = str(getattr(exc, "code", "") or "task.action_failed")
+            raise ApiError(409 if code.startswith("task.") else 400, code, str(exc)) from exc
+        return ok(runtime.snapshot_payload(result), request=request)
+
     # ------------------------------------------------------- bridge callbacks
 
     async def _v1_minecraft_events(self, request: web.Request) -> web.Response:
@@ -874,6 +960,15 @@ class MinecraftApiRoutes(WebContext):
     def _register_v1_minecraft(self, app: web.Application) -> None:
         wrap = json_endpoint
         app.router.add_get(f"{API_PREFIX}/minecraft", wrap(self._v1_minecraft_get))
+        # Phase 5A：多步骤任务（只读投影 + 暂停/继续/取消；确认永远不在这里）
+        app.router.add_get(f"{API_PREFIX}/minecraft/task", wrap(self._v1_minecraft_task_current))
+        app.router.add_get(
+            f"{API_PREFIX}/minecraft/task/{{task_id}}", wrap(self._v1_minecraft_task_get)
+        )
+        app.router.add_post(
+            f"{API_PREFIX}/minecraft/task/{{task_id}}/{{action}}",
+            wrap(self._v1_minecraft_task_action),
+        )
         app.router.add_get(f"{API_PREFIX}/minecraft/world", wrap(self._v1_minecraft_world))
         app.router.add_get(f"{API_PREFIX}/minecraft/inventory", wrap(self._v1_minecraft_inventory))
         app.router.add_get(

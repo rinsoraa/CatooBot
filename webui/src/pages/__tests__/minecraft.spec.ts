@@ -116,6 +116,61 @@ const WORLD_VIEW = {
   raw: { self: {}, blocks: {} },
 }
 
+const TASK_VIEW = {
+  task_id: 'task_abc',
+  session_id: 'minecraft:127.0.0.1:25565:空凛',
+  origin: 'user',
+  objective: '去附近找一棵橡木，挖一块原木并捡回来',
+  state: 'RUNNING',
+  progress: { completed: 1, total: 3 },
+  current_step: {
+    step_id: 'step_2',
+    tool: 'minecraft_dig',
+    risk: 'MEDIUM',
+    state: 'WAITING_ACTION',
+    arguments: { x: 12, y: 64, z: 9, expected_block: 'oak_log' },
+  },
+  current_action: 'act_dig_1',
+  plan: {
+    plan_hash: 'abc123',
+    steps: [
+      {
+        step_id: 'step_1',
+        tool: 'minecraft_move_to',
+        risk: 'LOW',
+        state: 'SUCCEEDED',
+        label: '走到 (12,64,9) 附近',
+      },
+      {
+        step_id: 'step_2',
+        tool: 'minecraft_dig',
+        risk: 'MEDIUM',
+        state: 'WAITING_ACTION',
+        label: '挖掉 (12,64,9) 的 oak_log',
+      },
+      {
+        step_id: 'step_3',
+        tool: 'minecraft_inventory',
+        risk: 'SAFE',
+        state: 'PENDING',
+        label: '重新读一次背包',
+      },
+    ],
+    expected_final_state: { inventory_delta: { oak_log: 1 } },
+  },
+  confirmation_required: false,
+  confirmation_id: null,
+  last_result: { tool: 'minecraft_move_to', status: 'SUCCEEDED', summary: '到了', result: {} },
+  failure: null,
+  verification: {},
+  result: {},
+  summary: '任务进行中 1/3',
+  replans: 0,
+  expires_at: 1700000000,
+  rollback_supported: false,
+  updated_at: 1700000000,
+}
+
 const DISABLED_OVERVIEW = {
   enabled: false,
   auth_configured: false,
@@ -153,6 +208,8 @@ function makeHandler(
     pickupItem?: MockReply
     digCapability?: MockReply
     findBlocks?: MockReply
+    task?: MockReply
+    taskAction?: MockReply
   } = {},
 ) {
   return (request: MockRequest): MockReply => {
@@ -162,6 +219,12 @@ function makeHandler(
     }
     if (url.pathname === '/api/v1/minecraft/world' && request.method === 'GET') {
       return ok(WORLD_VIEW)
+    }
+    if (url.pathname === '/api/v1/minecraft/task' && request.method === 'GET') {
+      return overrides.task ?? ok({ task: null, session_id: null })
+    }
+    if (/^\/api\/v1\/minecraft\/task\/[^/]+\/(pause|resume|cancel)$/.test(url.pathname)) {
+      return overrides.taskAction ?? ok({ ...TASK_VIEW, state: 'PAUSED' })
     }
     if (url.pathname === '/api/v1/minecraft/join' && request.method === 'POST') {
       return overrides.join ?? ok({ session_id: 'mc_new', status: 'CONNECTING' })
@@ -1917,5 +1980,54 @@ describe('Minecraft 页 · follow_player（Phase 3D）', () => {
     await wrapper.get('[data-test="mc-follow"]').trigger('click') // 玩家名空
     await flushAll()
     expect(calls.some((c) => c.url.endsWith('/minecraft/follow_player'))).toBe(false)
+  })
+
+  // ------------------------------------------------- Phase 5A：多步骤任务
+
+  it('没有任务时给出引导而不是空表', async () => {
+    const { wrapper } = await mountPage(makeHandler())
+    await flushAll()
+    expect(wrapper.find('[data-test="mc-task"]').exists()).toBe(true)
+    expect(wrapper.find('[data-test="mc-task-empty"]').exists()).toBe(true)
+    expect(wrapper.find('[data-test="mc-task-facts"]').exists()).toBe(false)
+  })
+
+  it('有任务时展示目标 / 状态 / 进度 / 步骤 / 授权 / 回滚不可用', async () => {
+    const { wrapper } = await mountPage(makeHandler({ task: ok({ task: TASK_VIEW, session_id: 's' }) }))
+    await flushAll()
+    expect(wrapper.get('[data-test="mc-task-objective"]').text()).toContain('橡木')
+    expect(wrapper.get('[data-test="mc-task-state"]').text()).toContain('RUNNING')
+    expect(wrapper.get('[data-test="mc-task-progress"]').text()).toContain('1 / 3')
+    expect(wrapper.get('[data-test="mc-task-current"]').text()).toContain('minecraft_dig')
+    expect(wrapper.get('[data-test="mc-task-action"]').text()).toContain('act_dig_1')
+    expect(wrapper.get('[data-test="mc-task-plan-hash"]').text()).toContain('abc123')
+    expect(wrapper.get('[data-test="mc-task-rollback"]').text()).toContain('NOT SUPPORTED')
+    // 计划逐步展开（每一步一句人话）+ 风险徽标
+    const table = wrapper.get('[data-test="mc-task-plan"]').text()
+    expect(table).toContain('走到 (12,64,9) 附近')
+    expect(table).toContain('挖掉 (12,64,9) 的 oak_log')
+    expect(table).toContain('MEDIUM')
+    // 面板里绝不出现 raw 世界状态
+    expect(wrapper.get('[data-test="mc-task"]').text()).not.toContain('raw')
+  })
+
+  it('PAUSE 调任务端点并在面板上体现新状态', async () => {
+    const { wrapper, calls } = await mountPage(
+      makeHandler({ task: ok({ task: TASK_VIEW, session_id: 's' }) }),
+    )
+    await flushAll()
+    await wrapper.get('[data-test="mc-task-pause"]').trigger('click')
+    await flushAll()
+    expect(
+      calls.some((call) => call.url.endsWith('/minecraft/task/task_abc/pause')),
+    ).toBe(true)
+    expect(wrapper.get('[data-test="mc-task-state"]').text()).toContain('PAUSED')
+  })
+
+  it('没有任务时 PAUSE / CANCEL 不可用（没有可操作对象）', async () => {
+    const { wrapper } = await mountPage(makeHandler())
+    await flushAll()
+    expect(wrapper.find('[data-test="mc-task-pause"]').exists()).toBe(false)
+    expect(wrapper.find('[data-test="mc-task-cancel"]').exists()).toBe(false)
   })
 })

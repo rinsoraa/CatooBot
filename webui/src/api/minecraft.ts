@@ -3,6 +3,8 @@
 import { api } from '@/api/client'
 
 import type {
+  MinecraftTaskCurrentResponse,
+  MinecraftTaskView,
   MinecraftContainerDirection,
   MinecraftDigCapabilityResponse,
   MinecraftFindBlocksResponse,
@@ -171,6 +173,22 @@ export const minecraftApi = {
       entity_id: entityId,
       expected_item: expectedItem,
     })
+  },
+  /** Phase 5A：当前活动的多步骤任务（没有就 task: null）。 */
+  task(sessionId?: string) {
+    const query = sessionId ? `?session_id=${encodeURIComponent(sessionId)}` : ''
+    return api.get<MinecraftTaskCurrentResponse>(`/minecraft/task${query}`)
+  },
+  /** Phase 5A：单个任务的只读详情。 */
+  taskDetail(taskId: string) {
+    return api.get<MinecraftTaskView>(`/minecraft/task/${encodeURIComponent(taskId)}`)
+  },
+  /** Phase 5A：暂停 / 继续 / 取消（都只能**收窄**权限，没有确认这条路）。 */
+  taskAction(taskId: string, action: 'pause' | 'resume' | 'cancel', reason?: string) {
+    return api.post<MinecraftTaskView>(
+      `/minecraft/task/${encodeURIComponent(taskId)}/${action}`,
+      reason ? { reason } : {},
+    )
   },
   /** Phase 4A：确认门 Debug（只能缩小授权：造测试条 / 取消 / 置过期）。 */
   confirm(action: 'create_test' | 'cancel' | 'expire', body: Record<string, unknown> = {}) {
