@@ -99,6 +99,8 @@ _TOOL_STATUS: dict[str, int] = {
     "minecraft.not_connected": 409,
     "minecraft.action_busy": 409,
     "minecraft.action_invalid": 422,
+    # Phase 4H.1：导航结束但实际位置不在到达半径内（原来只有 path_not_found）
+    "minecraft.path_not_reached": 500,
     "minecraft.action_not_allowed": 403,
     "minecraft.user_not_trusted": 403,
     "minecraft.confirmation_required": 409,

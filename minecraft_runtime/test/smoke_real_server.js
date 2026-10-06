@@ -10,6 +10,9 @@
  *   1. move_to（近距离，若干方向反复试）—— Phase 3E 起是**持续型动作**：
  *      HTTP 只回 RUNNING，终态（completed/failed/cancelled/timeout）经事件送达；
  *      **前一个 exclusive 动作没进终态之前，绝不提交下一个**。
+ *   1b. REAL MOVE_TO FALSE-SUCCESS GUARD（Phase 4H.1 §二十七-§三十二）：对**真的不可达**
+ *      的目标（不改世界）发 move_to → 必须是结构化失败（path.not_found / path.not_reached），
+ *      **绝不允许 completed**；终态之后 goal 必须已清（不再需要 smoke 自己收残留）
  *   2. move_to（远一点）→ STOP → CANCELLED + goal null + isMoving false + 位置停住
  *   3. follow_player（第二个真实客户端当目标）→ 目标走动 → 继续跟 → STOP
  *   4. HARD IDLE BARRIER：确认没有任何前台动作/导航残留，才进入 Phase 4B
@@ -50,7 +53,8 @@ const path = require('path')
 const fs = require('fs')
 
 const RUNTIME_DIR = path.join(__dirname, '..')
-const { normalizeItemName } = require(path.join(RUNTIME_DIR, 'runtime.js'))
+const { normalizeItemName, MOVE_DEFAULTS } = require(path.join(RUNTIME_DIR, 'runtime.js'))
+const MOVE_RADIUS = MOVE_DEFAULTS.radius
 const HOST = process.env.SMOKE_HOST || '127.0.0.1'
 const PORT = Number.parseInt(process.env.SMOKE_PORT || '25565', 10)
 
@@ -278,45 +282,172 @@ async function main() {
       console.log(`[smoke] REAL SERVER: NOT AVAILABLE（无法进入世界：${snap && snap.last_error}）`)
       process.exit(0)
     }
-    const origin = (await status()).position
+    let origin = (await status()).position
     console.log(`[smoke] 已进入世界 @ ${JSON.stringify(origin)}`)
 
-    // ---- 1. 近距离 move_to（持续型动作：必须等终态才能提交下一个） ----
+    // 罐头的位置会**跨会话保留**（上一次 smoke 可能把它留在了洞穴/深水里），而 dig / place /
+    // container / craft / pickup 的夹具都需要正常地表地形。开局先用 /spreadplayers 把罐头放到
+    // 附近的地表安全点（原版指令会挑"站在最高方块上"的位置，不会有掉落伤害）；
+    // 只动罐头自己，绝不改世界上的任何方块。
+    {
+      const spawnX = Math.round(origin.x)
+      const spawnZ = Math.round(origin.z)
+      await request(runtimePort, 'POST', '/minecraft/chat', {
+        message: `/spreadplayers ${spawnX} ${spawnZ} 4 48 false @s`,
+      })
+      const relocated = await waitFor(async () => {
+        const now = (await status()).position
+        const moved = Math.hypot(now.x - origin.x, now.z - origin.z) > 3
+        const resurfaced = now.y > origin.y + 3 || (moved && Math.abs(now.y - origin.y) <= 3)
+        return moved || resurfaced ? now : null
+      }, '把罐头放到地表安全点', 8000)
+      if (relocated) {
+        origin = (await status()).position
+        console.log(`[smoke] 开局把罐头放到地表安全点 @ ${JSON.stringify(origin)}`)
+      } else {
+        console.log('[smoke] /spreadplayers 没生效：就地在当前坐标继续（不伪造结论）')
+      }
+    }
+
+    // ---- 1. 近距离 move_to 正向验证（Phase 4H.1：completed 必须真的"在 1.5 格内"）----
+    // 真机地形千奇百怪（洞穴/水/悬崖里某些方向就是**没有**非破坏性路径），所以按
+    // 方向 × 距离逐个试，只要能拿到一条"真的走通"的路径就够了；失败的方向按结构化
+    // 失败如实跳过（旧代码这些方向会因为 2.4.5 的空路径静默 resolve 而假装 completed）。
+    const MOVE_DIRECTIONS = [
+      [4, 0],
+      [-4, 0],
+      [0, 4],
+      [0, -4],
+      [3, 3],
+      [-3, 3],
+      [3, -3],
+      [-3, -3],
+      [6, 0],
+      [-6, 0],
+      [0, 6],
+      [0, -6],
+    ]
     let moved = null
     let movedDir = null
     let lastMoveFailure = null
-    for (const [dx, dz] of [[4, 0], [-4, 0], [0, 4], [0, -4]]) {
-      const resp = await request(runtimePort, 'POST', '/minecraft/move_to', {
-        x: origin.x + dx,
-        y: origin.y,
-        z: origin.z + dz,
-      })
-      if (!(resp.status === 200 && resp.body.status === 'RUNNING' && resp.body.action_id)) {
-        lastMoveFailure = `启动被拒：${JSON.stringify(resp.body)}`
-        continue
+    const tryPositiveMoves = async () => {
+      for (const [dx, dz] of MOVE_DIRECTIONS) {
+        if (moved) return
+        const resp = await request(runtimePort, 'POST', '/minecraft/move_to', {
+          x: origin.x + dx,
+          y: origin.y,
+          z: origin.z + dz,
+        })
+        if (!(resp.status === 200 && resp.body.status === 'RUNNING' && resp.body.action_id)) {
+          lastMoveFailure = `启动被拒：${JSON.stringify(resp.body)}`
+          continue
+        }
+        const actionId = resp.body.action_id
+        const terminal = await waitForActionTerminal(actionId, `move_to ${dx},${dz} 终态`, 40000)
+        if (terminal && terminal.event === 'minecraft.action.completed') {
+          const result = terminal.result || {}
+          const settled = (await status()).position
+          const movedBy = Math.hypot(settled.x - origin.x, settled.z - origin.z)
+          if (movedBy < 1) {
+            // "报到达但根本没挪动"不算正向证据（Phase 4H.1 之前正是这种假成功）→ 换方向
+            lastMoveFailure = `completed 但只挪了 ${movedBy.toFixed(2)} 格`
+            continue
+          }
+          moved = { ...resp.body, result }
+          movedDir = [dx, dz]
+          return
+        }
+        lastMoveFailure = terminal
+          ? `${terminal.event}${terminal.code ? `/${terminal.code}` : ''}${terminal.error ? `（${terminal.error}）` : ''}`
+          : '终态事件超时'
       }
-      const actionId = resp.body.action_id
-      const terminal = await waitForActionTerminal(actionId, `move_to ${dx},${dz} 终态`, 40000)
-      if (terminal && terminal.event === 'minecraft.action.completed') {
-        moved = { ...resp.body, result: terminal.result }
-        movedDir = [dx, dz]
-        break
-      }
-      lastMoveFailure = terminal
-        ? `${terminal.event}${terminal.error ? `（${terminal.error}）` : ''}`
-        : '终态事件超时'
     }
-    check(
-      Boolean(moved),
-      `move_to 近距离 → completed（${moved ? JSON.stringify(moved.result) : `四个方向都失败，最后：${lastMoveFailure}`}）`,
-    )
 
+    // 方块交互/导航之前先把罐头挪到**干燥、开阔**的落脚点（洞穴/水里导航常常没有
+    // 非破坏性路径）。这条只在正向段全军覆没时用一次，并且**只改罐头自己**（/tp），
+    // 不动世界上的任何方块。
+    const relocateForMoveTests = async () => {
+      const local = (await request(runtimePort, 'GET', '/minecraft/world/snapshot?layers=local')).body
+      const columns = (local.blocks && local.blocks.local && local.blocks.local.columns) || []
+      const FLUID = /water|lava|seagrass|kelp|bubble|magma|ice/i
+      const byColumn = new Map()
+      for (const col of columns) {
+        if (!col.pos || !col.name || typeof col.distance !== 'number') continue
+        const key = `${col.pos.x},${col.pos.z}`
+        const current = byColumn.get(key)
+        if (!current || col.pos.y > current.pos.y) byColumn.set(key, col)
+      }
+      const spot = [...byColumn.values()]
+        .filter((col) => !FLUID.test(col.name))
+        .filter((col) => col.distance >= 3 && col.distance <= 24)
+        .sort((a, b) => a.distance - b.distance)[0]
+      if (!spot) {
+        console.log('[smoke] 附近没有干燥落脚点：就地在当前坐标继续')
+        return false
+      }
+      const x = spot.pos.x + 0.5
+      const y = spot.pos.y + 1
+      const z = spot.pos.z + 0.5
+      await request(runtimePort, 'POST', '/minecraft/chat', { message: `/tp @s ${x} ${y} ${z}` })
+      const ok = await waitFor(async () => {
+        const now = (await status()).position
+        return Math.hypot(now.x - x, now.z - z) < 3 && Math.abs(now.y - y) < 4
+      }, '挪到干燥落脚点', 8000)
+      console.log(
+        ok
+          ? `[smoke] move_to positive：已把罐头挪到 (${Math.round(x)}, ${Math.round(y)}, ${Math.round(z)})（${spot.name}）再试`
+          : '[smoke] move_to positive：传送没生效，就地在当前坐标再试',
+      )
+      return ok
+    }
+
+    await tryPositiveMoves()
+    if (!moved) {
+      console.log(
+        `[smoke] move_to positive 第一轮全部没有非破坏性路径（最后：${lastMoveFailure}）`
+          + ' → 挪到干燥落脚点再试一轮',
+      )
+      await relocateForMoveTests()
+      origin = (await status()).position
+      await tryPositiveMoves()
+    }
+
+    check(Boolean(moved), `move_to positive → completed（${moved ? `action_id=${moved.action_id}` : `所有方向都失败，最后：${lastMoveFailure}`}）`)
+    console.log(`[smoke] ✓ move_to positive → RUNNING → completed（${moved ? `${movedDir} 方向` : '未完成'}）`)
     if (moved) {
-      // ---- 2. 远一点 → STOP → 位置必须停住 ----
-      // 真机上"25 格外"可能根本没有非破坏性路径（水/悬崖/虚空）：mineflayer-pathfinder 的
-      // goto() 在**空路径**上会静默 resolve（不报 NoPath），看起来像"瞬间完成"。
-      // 所以这里像 Test A 一样按方向重试，只为拿到一个"真的走在路上"的取消窗口；
-      // 四个方向都拿不到就如实 SKIPPED —— 绝不把"动作自己已经结束"记成 STOP 失败。
+      // §五/§二十一：唯一硬门禁 —— distance_to_target 是**重新读到的实际位置**算出来的
+      // （GoalNear 口径：罐头占的方块格 → 目标方块格），不是 Pathfinder 的预测值。
+      check(
+        typeof moved.result.distance_to_target === 'number' &&
+          moved.result.distance_to_target <= MOVE_RADIUS,
+        `positive final distance <= ${MOVE_RADIUS}（GoalNear 口径 ${moved.result.distance_to_target} 格，`
+          + `原始浮点 ${moved.result.raw_distance_to_target} 格）`,
+      )
+      const positiveStatus = await status()
+      const positivePathfinder = positiveStatus.pathfinder || {}
+      check(
+        positivePathfinder.goal === null && positivePathfinder.moving === false,
+        'move_to positive → goal cleanup = PASS（成功后 goal=null / isMoving=false）',
+      )
+      // 独立量测（不采信动作自己报的数）：smoke 自己从 /status 读位置再算一遍
+      const positiveTarget = {
+        x: origin.x + movedDir[0],
+        y: origin.y,
+        z: origin.z + movedDir[1],
+      }
+      const positiveActual = Math.hypot(
+        positiveStatus.position.x - positiveTarget.x,
+        positiveStatus.position.y - positiveTarget.y,
+        positiveStatus.position.z - positiveTarget.z,
+      )
+      check(
+        positiveActual <= MOVE_RADIUS + 2,
+        `move_to positive → 独立量测也同意到达（实际 ${positiveActual.toFixed(2)} 格）`,
+      )
+    }
+
+    // ---- 2. 远距离 move_to → STOP（保持 Phase 3C 契约）----
+    if (moved) {
       const baseDir = Math.hypot(movedDir[0], movedDir[1]) || 1
       const bux = movedDir[0] / baseDir
       const buz = movedDir[1] / baseDir
@@ -325,6 +456,10 @@ async function main() {
         [-bux, -buz],
         [-buz, bux],
         [buz, -bux],
+        [(bux + buz) / Math.SQRT2, (buz - bux) / Math.SQRT2],
+        [(bux - buz) / Math.SQRT2, (buz + bux) / Math.SQRT2],
+        [(-bux + buz) / Math.SQRT2, (-buz - bux) / Math.SQRT2],
+        [(-bux - buz) / Math.SQRT2, (-buz + bux) / Math.SQRT2],
       ]
       let stopVerified = false
       for (const [ux, uz] of directions) {
@@ -349,12 +484,10 @@ async function main() {
           (row) => TERMINAL_EVENTS.includes(row.event) && row.action_id === moveId,
         )
         if (finishedEarly) {
-          const reached =
-            finishedEarly.result && finishedEarly.result.distance_to_target
           console.log(
-            `[smoke] 远距离 move_to（方向 ${ux},${uz}）在被取消前就进入终态（${finishedEarly.event}`
-              + `${reached === undefined ? '' : `，distance_to_target=${reached}`}）`
-              + ' —— 这个方向没有可取消窗口（真机地形 + Pathfinder 空路径瞬时完成），换方向重试',
+            `[smoke] 远距离 move_to（方向 ${ux},${uz}）在被取消前就进入终态`
+              + `（${finishedEarly.event}${finishedEarly.code ? `/${finishedEarly.code}` : ''}）`
+              + ' —— 这个方向没有可取消窗口，换方向重试',
           )
           continue
         }
@@ -362,7 +495,7 @@ async function main() {
           const terminal = await waitForActionTerminal(moveId, '远距离 move_to 终态', 20000)
           console.log(
             `[smoke] 远距离目标（方向 ${ux},${uz}）未能开始移动`
-              + `（${terminal ? terminal.event : '终态超时'}）——换方向重试`,
+              + `（${terminal ? `${terminal.event}${terminal.code ? `/${terminal.code}` : ''}` : '终态超时'}）——换方向重试`,
           )
           continue
         }
@@ -373,36 +506,163 @@ async function main() {
           Boolean(terminal) && terminal.event === 'minecraft.action.cancelled',
           `move_to 终态 = cancelled（${terminal ? terminal.event : '超时'}）`,
         )
-        const stopped = await status()
+        const settledStop = await waitForValue(async () => {
+          const snap = await status()
+          return snap.pathfinder.goal === null && snap.pathfinder.moving === false ? snap : null
+        }, 'STOP 后回到静止', 8000)
+        check(Boolean(settledStop), 'goal == null 且 isMoving == false（STOP 后回到静止）')
+        const stopped = settledStop || (await status())
         check(stopped.pathfinder.goal === null, 'goal == null')
         check(stopped.pathfinder.moving === false, 'isMoving == false')
+        // 硬证据是 goal == null + isMoving == false。位置检查改成"**停稳之后**再测一段"
+        // （STOP 瞬间可能还在空中收尾；水里/冰面上会有环境滑动，所以把量到的数打出来）。
+        const driftA = (await status()).position
         await sleep(600)
-        const later = await status()
-        // 半格余量：真实服务器的惯性/下落收尾不算"还在走"
-        check(distance2d(later.position, stopped.position) <= 0.6, '停止后位置不再漂移')
+        const driftB = (await status()).position
+        const drift = distance2d(driftB, driftA)
+        check(drift <= 0.6, `停止后位置不再漂移（实测 ${drift.toFixed(2)} 格 / 阈值 0.6）`)
+        console.log('[smoke] ✓ move_to STOP → CANCELLED + goal=null + isMoving=false + 位置稳定')
         stopVerified = true
         break
       }
       if (!stopVerified) {
         console.log(
           '[smoke] SKIPPED move_to STOP：四个方向都没拿到可取消窗口'
-            + '（真机地形 + Pathfinder 对空路径静默 resolve）'
+            + '（真机地形：这个方向没有非破坏性路径）'
             + ' —— 取消语义由 4H 的 pickup STOP 段与 Node 单测独立验证',
         )
-        // 收掉可能残留的 GoalNear：向"当前站的位置"发一个零距离 move_to ——
-        // 目标已经满足 → Pathfinder 自己 emit goal_reached 并清 stateGoal。
-        const here = (await status()).position
-        const zero = await request(runtimePort, 'POST', '/minecraft/move_to', {
-          x: here.x,
-          y: here.y,
-          z: here.z,
-        })
-        if (zero.status === 200 && zero.body.action_id) {
-          await waitForActionTerminal(zero.body.action_id, '零距离 move_to 终态', 15000)
-          console.log('[smoke] 已用零距离 move_to 把残留的导航 Goal 收掉')
-        }
       }
-      // STOP 段结论（见上：要么逐项 ✗，要么已 SKIPPED）——后续段落继续按真实结果判定
+      // §三十三：**不再用"零距离 move_to"清残留 Goal** —— 任何终态（成功/失败/取消）
+      // 都由 runtime 自己收掉导航意图，这里只做验证。
+      const afterStop = (await status()).pathfinder || {}
+      check(
+        afterStop.goal === null && afterStop.moving === false,
+        'move_to goal cleanup = PASS（STOP 段之后没有残留 Goal / 没有在移动）',
+      )
+    }
+
+    // ---- 2b. REAL MOVE_TO FALSE-SUCCESS GUARD（Phase 4H.1 的核心证据，§二十七-§三十二）----
+    // 目标必须**真的不可达**（罐头不能挖、不能放、不能飞），而且**不改变世界**（§二十八）。
+    // 旧代码在这些目标上会因为 mineflayer-pathfinder 2.4.5 的 goto() 空路径静默 resolve
+    // 而报 completed（真机实测：completed 时还在 28 格外）。
+    {
+      const base = (await status()).position
+      // 守卫的目标是"找不到路"，但我们不希望它把罐头带进洞穴/远走 —— 结束后 tp 回原位，
+      // 后面的段落（dig / place / craft / pickup）地形环境不受影响。
+      const guardOrigin = { x: base.x, y: base.y, z: base.z }
+      const candidates = [
+        { label: '脚下 20 格的实心岩层', x: base.x, y: base.y - 20, z: base.z },
+        { label: '斜下方 30 格外的岩层', x: base.x + 30, y: base.y - 20, z: base.z },
+        { label: '头顶 30 格的空气', x: base.x, y: base.y + 30, z: base.z },
+      ]
+      let guard = null
+      const guardNotes = []
+      for (const candidate of candidates) {
+        const resp = await request(runtimePort, 'POST', '/minecraft/move_to', {
+          x: candidate.x,
+          y: candidate.y,
+          z: candidate.z,
+        })
+        if (!(resp.status === 200 && resp.body.status === 'RUNNING' && resp.body.action_id)) {
+          guardNotes.push(`${candidate.label}：启动被拒 ${JSON.stringify(resp.body)}`)
+          continue
+        }
+        const terminal = await waitForActionTerminal(
+          resp.body.action_id,
+          `false-success guard 终态（${candidate.label}）`,
+          45000,
+        )
+        if (!terminal) {
+          guardNotes.push(`${candidate.label}：终态事件超时`)
+          continue
+        }
+        if (terminal.event === 'minecraft.action.completed') {
+          // completed 只有在"罐头其实没到"时才算假成功 —— 这里用 smoke **自己**从 /status
+          // 读到的实际位置独立量测（不采信动作自己报的距离）。如果这个候选其实可达
+          // （比如岩层里正好有洞穴），那就换下一个候选，不算假成功。
+          const arrived = (await status()).position
+          const actualDistance = Math.hypot(
+            arrived.x - candidate.x,
+            arrived.y - candidate.y,
+            arrived.z - candidate.z,
+          )
+          if (actualDistance <= MOVE_RADIUS + 2) {
+            guardNotes.push(
+              `${candidate.label}：其实可达（completed 且实际 ${actualDistance.toFixed(2)} 格）`,
+            )
+            continue
+          }
+          check(
+            false,
+            `move_to false-success guard：completed 但罐头实际在 ${actualDistance.toFixed(2)} 格外`
+              + `（动作自己报 ${terminal.result && terminal.result.distance_to_target} 格）`
+              + ' —— 假成功回来了',
+          )
+          guard = { candidate, terminal, falseSuccess: true }
+          break
+        }
+        const code = terminal.code || ''
+        if (
+          terminal.event === 'minecraft.action.failed' &&
+          (code === 'path.not_found' || code === 'path.not_reached')
+        ) {
+          guard = { candidate, terminal }
+          break
+        }
+        guardNotes.push(`${candidate.label} → ${terminal.event}${code ? `/${code}` : ''}`)
+      }
+
+      if (guard && guard.falseSuccess) {
+        // 上面已经 check(false)，这里不再重复
+      } else if (guard) {
+        const detail = guard.terminal.detail || {}
+        console.log('[smoke] ✓ move_to false-success guard')
+        console.log('  Pathfinder finished/empty-path scenario（目标：不可达）')
+        console.log(
+          `  → NOT SUCCEEDED（${guard.terminal.event} / ${guard.terminal.code}：`
+            + `${guard.terminal.error || '-'}）`,
+        )
+        check(true, 'move_to false-success guard：NOT SUCCEEDED（结构化失败，不是 completed）')
+        check(
+          guard.terminal.event === 'minecraft.action.failed' &&
+            (guard.terminal.code === 'path.not_found' || guard.terminal.code === 'path.not_reached'),
+          `结构化失败 = PASS（${guard.terminal.event} / ${guard.terminal.code}，目标：${guard.candidate.label}）`,
+        )
+        check(
+          detail && typeof detail.distance_to_target === 'number' && detail.distance_to_target >= 5,
+          `失败 detail 如实带距离（${detail && detail.distance_to_target} 格，半径 ${detail && detail.radius}）`,
+        )
+        console.log(`  → structured failure：${JSON.stringify(detail)}`)
+        // 失败终态之后同样不该有残留导航意图（§三十三）。给一个**有界**的等待：
+        // mineflayer 的一次 in-flight A* 结果可能在这一瞬间把 path 又填回来（几十毫秒内自愈）。
+        const guardSettled = await waitForValue(async () => {
+          const snap = await status()
+          return snap.pathfinder.goal === null && snap.pathfinder.moving === false ? snap : null
+        }, '失败终态后回到静止', 4000)
+        check(
+          Boolean(guardSettled),
+          'move_to goal cleanup = PASS（失败终态之后没有残留 Goal / 没有在移动）',
+        )
+      } else {
+        check(
+          false,
+          `move_to false-success guard：没有得到结构化失败（${guardNotes.join('；')}）`
+            + ' —— §三十二：这一项不允许 SKIPPED',
+        )
+      }
+
+      // 不管守卫结果如何，都把罐头放回原位（只动自己，不动世界）
+      const stray = (await status()).position
+      if (
+        Math.hypot(stray.x - guardOrigin.x, stray.z - guardOrigin.z) > 2 ||
+        Math.abs(stray.y - guardOrigin.y) > 2
+      ) {
+        await request(runtimePort, 'POST', '/minecraft/chat', {
+          message: `/tp @s ${guardOrigin.x} ${guardOrigin.y} ${guardOrigin.z}`,
+        })
+        await sleep(900)
+        console.log('[smoke] false-success guard：已把罐头 tp 回原位（守卫不带偏后续段落的地形）')
+      }
     }
 
     await ensureIdle('move_to 段收尾')
@@ -1120,12 +1380,23 @@ async function main() {
                       return destOk && srcOk ? rows : null
                     }, '真实槽位表反映这次搬运', 15000)
                     check(Boolean(slotsMoved), '真实槽位表改变（重读确认，不硬编码 +count）')
-                    // 第三层：WorldPerception 输入（inventory 层里应该能看到 destinationSlot 上的物品）
-                    const perceivableMove = await waitForValue(async () => {
+                    // 第三层：WorldPerception 输入是不是**新鲜**的。
+                    // 注意口径：感知快照里没有 inventory 层（只有 self.held_item + 方块层），
+                    // 所以这里比对"感知的 self.held_item == 重读的真实主手"——搬运只动背包槽位、
+                    // 不动方块，感知能反映的就是这个（旧写法在快照 JSON 里搜物品名，
+                    // 只有"被搬的正好是手持物"时才碰巧通过）。
+                    const freshPerception = await waitForValue(async () => {
                       const snap = await snapshot('local')
-                      return JSON.stringify(snap).includes(name(item)) ? true : null
-                    }, 'WorldPerception 反映搬运结果', 10000)
-                    check(Boolean(perceivableMove), 'WorldPerception 输入反映搬运结果')
+                      const held = ((await request(runtimePort, 'GET', '/minecraft/inventory')).body || {})
+                        .held_item
+                      const selfHeld =
+                        snap && snap.self && snap.self.held_item
+                          ? { name: snap.self.held_item }
+                          : null
+                      const sameName = held && selfHeld ? name(held.name) === name(selfHeld.name) : !held && !selfHeld
+                      return sameName ? true : null
+                    }, 'WorldPerception 的 self 与真实主手一致', 10000)
+                    check(Boolean(freshPerception), 'WorldPerception 输入反映搬运结果')
 
                     // 把搬走的 1 个搬回去（恢复槽位布局；同物品合并 → 允许）
                     const undo = await request(runtimePort, 'POST', '/minecraft/inventory_move', {
@@ -2012,6 +2283,48 @@ async function main() {
         const resp = await request(runtimePort, 'POST', '/minecraft/dropped_items', {})
         return resp.status === 200 && resp.body ? resp.body.result : null
       }
+      // 把罐头挪到**离掉落物 minDist~maxDist 格的一块干燥落脚点**上（只动自己，不动世界）。
+      // 4H 的 STOP 段需要"要走一段"的窗口；直接往 -7 格 tp 有可能掉下悬崖/落水，
+      // 那样 pickup 会以 target_too_far / invalid 起不来，就等于自己把这一段做成 SKIPPED。
+      const tpToDrySpotNear = async (drop, minDist, maxDist, label) => {
+        const local = (await request(runtimePort, 'GET', '/minecraft/world/snapshot?layers=local')).body
+        const columns = (local.blocks && local.blocks.local && local.blocks.local.columns) || []
+        const FLUID = /water|lava|seagrass|kelp|bubble|magma|ice/i
+        const byColumn = new Map()
+        for (const col of columns) {
+          if (!col.pos || !col.name) continue
+          const key = `${col.pos.x},${col.pos.z}`
+          const current = byColumn.get(key)
+          if (!current || col.pos.y > current.pos.y) byColumn.set(key, col)
+        }
+        const middle = (minDist + maxDist) / 2
+        const found = [...byColumn.values()]
+          .filter((col) => !FLUID.test(col.name))
+          .map((col) => ({
+            col,
+            gap: Math.hypot(
+              col.pos.x + 0.5 - drop.position.x,
+              col.pos.z + 0.5 - drop.position.z,
+            ),
+          }))
+          .filter((row) => row.gap >= minDist && row.gap <= maxDist)
+          .sort((a, b) => Math.abs(a.gap - middle) - Math.abs(b.gap - middle))[0]
+        if (!found) {
+          console.log(`[smoke] ${label}：附近没有 ${minDist}~${maxDist} 格的干燥落脚点（就地继续）`)
+          return null
+        }
+        const x = found.col.pos.x + 0.5
+        const y = found.col.pos.y + 1
+        const z = found.col.pos.z + 0.5
+        await say(`/tp @s ${x} ${y} ${z}`)
+        await sleep(1200)
+        console.log(
+          `[smoke] ${label}：把罐头挪到 (${Math.round(x)},${Math.round(y)},${Math.round(z)})`
+            + `（离掉落物约 ${found.gap.toFixed(1)} 格，${found.col.name}）`,
+        )
+        return { x, y, z }
+      }
+
       const waitForDrop = async (predicate, label, timeoutMs = 12000) => {
         const deadline = Date.now() + timeoutMs
         while (Date.now() < deadline) {
@@ -2186,19 +2499,26 @@ async function main() {
         //     **先 STOP 再拾取**：STOP 段必须把罐头 tp 走，而 tp 回来的落点如果正好贴着掉落物，
         //     服务器会按 vanilla 规则立刻把它自动收进背包 —— 那样真实拾取就没有目标可测了。
         let stopDone = false
+        //: STOP 段把罐头挪走之前先记住原位——采完证据要 tp 回来再造第二个掉落物做真实拾取。
         let stopOrigin = null
         if (targetDrop.distance < 6) {
-          const here = (await status()).position
-          stopOrigin = { x: Math.round(here.x), y: Math.round(here.y), z: Math.round(here.z) }
-          const away = { x: stopOrigin.x - 7, y: stopOrigin.y, z: stopOrigin.z }
-          await say(`/tp @s ${away.x} ${away.y} ${away.z}`)
-          await sleep(1200)
+          stopOrigin = (await status()).position
+          await tpToDrySpotNear(targetDrop, 6, 12, '4H STOP 段')
         }
-        const beforeStop = await waitForDrop(
+        let beforeStop = await waitForDrop(
           (view) => view.items.find((row) => row.entity_id === entityId) || null,
           '停止测试前目标仍在',
           6000,
         )
+        if (beforeStop && beforeStop.distance > 12) {
+          // 第一次挪得太远（或掉到下层）→ 换个近一点的干燥落脚点，保证 pickup 能启动
+          await tpToDrySpotNear(targetDrop, 4, 8, '4H STOP 段（拉近一点）')
+          beforeStop = await waitForDrop(
+            (view) => view.items.find((row) => row.entity_id === entityId) || null,
+            '拉近之后目标仍在',
+            6000,
+          )
+        }
         if (!beforeStop) {
           console.log('[smoke] SKIPPED 4H STOP：目标实体已经不在了（不能伪造取消）')
         } else {
@@ -2442,6 +2762,7 @@ async function main() {
     process.exitCode = failed ? 1 : 0
   } catch (error) {
     console.log(`[smoke] REAL SERVER: FAIL（${error.message}）`)
+    console.log(`[smoke] 出错位置：${String(error.stack || '').split(String.fromCharCode(10)).slice(1, 3).join(' | ')}`)
     console.log(runtimeLog.join('').split('\n').slice(-10).join('\n'))
     process.exitCode = 1
   } finally {

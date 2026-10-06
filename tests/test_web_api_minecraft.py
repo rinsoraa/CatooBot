@@ -1773,6 +1773,17 @@ def test_phase4g_error_codes_agree_between_service_and_api():
         assert _TOOL_STATUS[exc.code] == expected, exc.code
 
 
+def test_phase4h1_error_codes_agree_between_service_and_api():
+    """两个事实源必须一致：Service 异常自带的 HTTP 语义 vs API 的错误码映射表。"""
+    from app.integrations.minecraft.service import MinecraftPathNotReached
+    from app.web.api.minecraft import _TOOL_STATUS
+
+    exc = MinecraftPathNotReached()
+    assert exc.code == "minecraft.path_not_reached"
+    assert exc.status == 500
+    assert _TOOL_STATUS[exc.code] == 500
+
+
 # ------------------------------------------------ Phase 4H：掉落物 / 拾取端点
 
 

@@ -24,6 +24,12 @@
 | `minecraft_runtime/package.json` | 依赖 `mineflayer-pathfinder@^2.4.5`；`npm test` 加入 move_to 单测 |
 | `minecraft_runtime/runtime.js` | 加载 pathfinder 插件；spawn 后 `configureMovements`；`ACTION_REGISTRY` 抽取导出；`move_to` 注册（exclusive/LOW/30s/距离校验/run/cleanup）；`POST /minecraft/move_to`；`status.pathfinder` 诊断；`require.main` 守卫 + `module.exports`（供测试） |
 | `minecraft_runtime/action_runtime.js` | 成功响应带 `result`（§八）；动作自带 `ActionError` 码保留（`path.not_found` 不被包成 `action.failed`）；FAILED 事件带 `code` |
+
+> **Phase 4H.1 起本文件里的 `goto()` 语义已作废**：`move_to` 不再调用 `bot.pathfinder.goto()`
+> （mineflayer-pathfinder 2.4.5 在空路径上会静默 resolve，把"没找到路"报成成功），
+> 改为自己挂 Pathfinder 生命周期 + 用实际位置硬校验到达，并新增 `path.not_reached`。
+> 见 [MINECRAFT_PHASE4H1.md](MINECRAFT_PHASE4H1.md)。本文件其余内容（坐标校验、
+> 非破坏性 Movements、ActionRuntime 契约）仍然有效。
 | `minecraft_runtime/test/e2e.js` | Phase 3C Test A/B/C（成功 / STOP 真停 / 超时），E2E 用 `MC_MOVE_TIMEOUT_MS=2500` |
 | `app/config/settings.py` | `MoveToConfig.max_distance` + `MinecraftActionConfig` + `MinecraftConfig.action` |
 | `app/integrations/minecraft/runtime_client.py` | `move_to()` |

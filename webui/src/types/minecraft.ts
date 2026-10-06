@@ -111,7 +111,10 @@ export interface MinecraftMoveToResult {
   result?: {
     target: { x: number; y: number; z: number }
     final_position: { x: number; y: number; z: number }
+    /** Phase 4H.1：到达判定的口径（罐头占的方块格 → 目标方块格），completed 时必 <= 1.5 */
     distance_to_target: number
+    /** Phase 4H.1：同一瞬间重新读到的实际位置算出的浮点三维距离（含站立高度差） */
+    raw_distance_to_target?: number
   }
 }
 

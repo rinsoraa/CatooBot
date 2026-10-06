@@ -152,6 +152,8 @@ RUNTIME_ERROR_CODES: dict[str, str] = {
     "action.unknown": "minecraft.action_invalid",
     "action.failed": "minecraft.action_failed",
     "path.not_found": "minecraft.path_not_found",
+    # Phase 4H.1：Pathfinder 结束了（或空路径静默 resolve），但实际位置不在到达半径内
+    "path.not_reached": "minecraft.path_not_reached",
     "player.not_found": "minecraft.player_not_found",
     "player.lost": "minecraft.player_lost",
     "follow.target_too_far": "minecraft.follow_target_too_far",

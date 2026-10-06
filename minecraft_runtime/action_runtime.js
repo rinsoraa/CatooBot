@@ -31,8 +31,11 @@
  *     同步反馈给调用方（如 player.not_found → 404）；
  *   - 启动成功 → execute 立刻返回 ``status: RUNNING``，**终态（STOP/超时/目标丢失…）
  *     由 action 事件异步送达**；
- *   - ``wait(bot, params, token, state)``：后台生命周期（state 来自 start 的返回值），
- *     resolve = 自行收尾（罕见），reject = 失败原因（ActionCancelled 走取消语义）。
+ *   - ``wait(bot, params, token, state, controller)``：后台生命周期（state 来自 start 的
+ *     返回值），resolve = 自行收尾（罕见），reject = 失败原因（ActionCancelled 走取消语义）。
+ *     Phase 4H.1：``controller`` 与 start 拿到的是同一个对象，动作可以把私有资源挂在它上面
+ *     （move_to 把 Pathfinder 生命周期监听器放在 ``controller.moveListeners``，
+ *     这样 stop/超时/断开的 cleanup 也能摘掉它们）。
  *
  * Action-scoped 资源（Phase 4E 引入）：``start``/``run`` 会拿到 ActionRuntime 的
  * ``controller`` 对象，动作可以把私有资源挂在它上面（container 动作把打开的 window 放在
@@ -292,7 +295,7 @@ function createActionRuntime({ registry, getBot, isOnline, emit, log, now = () =
         // 终态在后台按同一套规则落定并发事件（不阻塞调用方）。
         const followState = await def.start(getBot(), validated, controller.token, controller)
         const lifecycle = Promise.resolve(
-          def.wait(getBot(), validated, controller.token, followState),
+          def.wait(getBot(), validated, controller.token, followState, controller),
         )
         void runCancellable(lifecycle, controller.token).then(
           // 自行收尾（罕见）：与同步路径同形——结果包在 ``result`` 里，

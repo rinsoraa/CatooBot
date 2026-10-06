@@ -440,12 +440,16 @@ async function main() {
           moveOk.result && typeof moveOk.result.distance_to_target === 'number',
           'Test A：completed 事件带 distance_to_target',
         )
-        // 容差说明：distance_to_target 是**三维**距离（含 Y），地形起伏/站立高度会让它比
-        // GoalNear 半径（1.5）略大；硬证据是终态 completed + goal 清空，这里只做
-        // "没有停在半路"的粗检（CI 上曾出现 2.21 这种踩线的抖动）。
+        // Phase 4H.1：completed 的语义收紧了 —— distance_to_target 用**重新读到的实际位置**
+        // 按 GoalNear 口径（罐头占的方块格 → 目标方块格）算，所以它必须真的 <= 1.5。
+        // 旧的 2.5 容差是为了容忍"Pathfinder 说到了、其实还差一米多"的假成功。
         assert(
-          moveOk.result.distance_to_target <= 2.5,
-          `Test A：到达目标附近（${moveOk.result.distance_to_target} 格）`,
+          moveOk.result.distance_to_target <= 1.5,
+          `Test A：真的在到达半径内（${moveOk.result.distance_to_target} 格）`,
+        )
+        assert(
+          typeof moveOk.result.raw_distance_to_target === 'number',
+          `Test A：原始浮点距离也如实上报（${moveOk.result.raw_distance_to_target} 格）`,
         )
         const movedStatus = (await request(runtimePort, 'GET', '/minecraft/status')).body
         const movedDistance = Math.hypot(
@@ -567,6 +571,61 @@ async function main() {
           `Test C：move_to 超时 → TIMEOUT 且 goal 清空（最后一次响应：${JSON.stringify(timeoutFail && timeoutFail.body)}）`,
         )
         console.log('[e2e] move_to TIMEOUT ✓ goal=null moving=false')
+
+        // ---- Test D（Phase 4H.1）：不可达目标 → 绝不假成功（§十/§二十九） ----
+        // 目标在头顶 40 格的空气里：罐头不能飞、也不能搭方块（这些能力本阶段就没有），
+        // 所以唯一正确的结果是"结构化失败"，绝不能是 completed（旧代码在这里假成功）。
+        {
+          const dHere = (await request(runtimePort, 'GET', '/minecraft/status')).body.position
+          const resp = await request(runtimePort, 'POST', '/minecraft/move_to', {
+            x: dHere.x,
+            y: dHere.y + 40,
+            z: dHere.z,
+          })
+          assert(
+            resp.status === 200 && resp.body.status === 'RUNNING',
+            `Test D：启动 → RUNNING（得到 ${JSON.stringify(resp.body)}）`,
+          )
+          const actionId = resp.body.action_id
+          const isTerminal = (row) =>
+            [
+              'minecraft.action.completed',
+              'minecraft.action.failed',
+              'minecraft.action.cancelled',
+              'minecraft.action.timeout',
+            ].includes(row.event) && row.action_id === actionId
+          let terminal = null
+          try {
+            await waitFor(() => {
+              terminal = events.find(isTerminal) || null
+              return Boolean(terminal)
+            }, 'Test D：终态事件', 45000)
+          } catch {
+            terminal = null
+          }
+          assert(
+            !terminal || terminal.event !== 'minecraft.action.completed',
+            `Test D：不可达目标绝不 completed（得到 ${terminal ? terminal.event : '终态超时'}）`,
+          )
+          if (terminal && terminal.event === 'minecraft.action.failed') {
+            assert(
+              terminal.code === 'path.not_found' || terminal.code === 'path.not_reached',
+              `Test D：结构化错误码（得到 ${terminal.code}）`,
+            )
+            assert(
+              terminal.detail && typeof terminal.detail.distance_to_target === 'number',
+              'Test D：失败 detail 带实际距离（distance_to_target）',
+            )
+            console.log(`[e2e] move_to false-success guard ✓ ${terminal.event}/${terminal.code}`)
+          } else {
+            console.log(
+              `[e2e] move_to false-success guard ✓ 没有假成功（终态 ${terminal ? terminal.event : '超时'}）`,
+            )
+          }
+          const afterD = (await request(runtimePort, 'GET', '/minecraft/status')).body
+          assert(afterD.pathfinder.goal === null, 'Test D：终态之后 goal 已清（runtime 自己收）')
+          assert(afterD.action.active_count === 0, 'Test D：终态之后没有僵尸动作')
+        }
 
         // 移动测试收尾：无僵尸动作、连接仍 ONLINE
         const moveSettled = (await request(runtimePort, 'GET', '/minecraft/status')).body

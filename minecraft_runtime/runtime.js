@@ -939,6 +939,63 @@ function detachPickupListeners(bot, listeners) {
   }
 }
 
+// Phase 4H.1：move_to 的到达判定 —— 只用**重新读取的**实际位置算，绝不相信 Pathfinder 的 resolve。
+//
+// 距离口径与 mineflayer 的 GoalNear 完全一致：GoalNear 在构造时就把目标取整成方块格
+// （``this.x = Math.floor(x)``），它的 ``isEnd`` 比的也是 ``bot.entity.position.floored()``；
+// 所以这里同样比"罐头现在占的方块格 → 目标方块格"。原始浮点三维距离（含站在方块顶上的
+// 高度差与脚下的小数偏移）另算一份，只做诊断，不参与门禁。
+function moveArrivalView(bot, state) {
+  const position = bot && bot.entity ? bot.entity.position : null
+  const cell = position && typeof position.floored === 'function' ? position.floored() : null
+  const targetCell = new Vec3(state.goal.x, state.goal.y, state.goal.z)
+  return {
+    position,
+    cell,
+    distance: cell ? cell.distanceTo(targetCell) : null,
+    rawDistance: position ? position.distanceTo(state.target) : null,
+    // GoalNear 自己的判据（§二/§八）：唯一权威的"到没到"
+    goalSatisfied: Boolean(
+      cell && typeof state.goal.isEnd === 'function' && state.goal.isEnd(cell),
+    ),
+  }
+}
+
+/** 到达的唯一硬门禁（§五/§二十一）：实际位置满足 GoalNear 半径，与"移动了多少格"无关。 */
+function moveArrival(bot, state) {
+  const view = moveArrivalView(bot, state)
+  return {
+    ...view,
+    reached: Boolean(
+      view.goalSatisfied && view.distance !== null && view.distance <= MOVE_TO_RADIUS,
+    ),
+  }
+}
+
+/** Phase 4H.1：move_to 生命周期监听器的幂等摘除（wait 与 cleanup 都会调）。 */
+function detachPathListeners(bot, listeners) {
+  if (!bot || !Array.isArray(listeners)) return
+  for (const [event, handler] of listeners.splice(0, listeners.length)) {
+    try {
+      if (typeof bot.removeListener === 'function') bot.removeListener(event, handler)
+      else if (typeof bot.off === 'function') bot.off(event, handler)
+    } catch (error) {
+      log('warn', 'move_to listener detach failed', { event, error: error.message })
+    }
+  }
+}
+
+/** 收掉导航意图（setGoal(null)）：到达/失败/取消都必须清，失败只记日志。 */
+function releaseMoveGoal(bot) {
+  try {
+    if (bot && bot.pathfinder && typeof bot.pathfinder.setGoal === 'function') {
+      bot.pathfinder.setGoal(null)
+    }
+  } catch (error) {
+    log('warn', 'move_to setGoal(null) failed', { error: error.message })
+  }
+}
+
 /** 停掉导航意图（setGoal(null) + 清控制位），失败只记日志。 */
 function releasePickupNavigation(bot) {
   try {
@@ -1581,53 +1638,172 @@ const ACTION_REGISTRY = {
         return coords
       },
       async start(bot, params) {
-        // Phase 3E：启动阶段无副作用——只把 Goal 对象建好。真正的 setGoal 由 wait 里的
-        // goto 完成（goto 在其 Promise 体内同步登记 Goal，先于 HTTP 响应写出），
-        // 因此调用方拿到 RUNNING 时导航已经就位。
-        return { goal: new goals.GoalNear(params.x, params.y, params.z, MOVE_TO_RADIUS) }
-      },
-      async wait(bot, params, token, state) {
-        try {
-          // goto 在 goal_reached 时 resolve；noPath/内部超时/被改目标都以具名错误 reject
-          await bot.pathfinder.goto(state.goal)
-        } catch (error) {
-          // 失败也清 Goal：绝不留残余的导航意图（任务书 §十：不自动绕圈/换目标）
-          try {
-            bot.pathfinder.setGoal(null)
-          } catch (cleanupError) {
-            log('warn', 'move_to failure cleanup failed', { error: cleanupError.message })
-          }
-          const name = error && error.name
-          if (name === 'NoPath') {
-            throw new ActionError('无法找到到达目标的非破坏性路径', 'path.not_found', 500)
-          }
-          if (name === 'Timeout') {
-            throw new ActionError('路径计算超时（非破坏性）', 'path.not_found', 500)
-          }
-          throw new ActionError(
-            `移动失败：${String(error && error.message ? error.message : error)}`,
-            'action.failed',
-            500,
-          )
-        }
-        const position = bot.entity.position
-        const target = new Vec3(params.x, params.y, params.z)
+        // Phase 4H.1：启动阶段仍然无副作用 —— 只把目标与 Goal 对象建好；真正的 setGoal
+        // 由 wait 完成（§七：**先挂监听再 setGoal**，否则第一个 goal_reached / path_update
+        // 会丢事件，导航就再也不会落终态）。
         return {
-          target: { x: params.x, y: params.y, z: params.z },
-          final_position: { x: round2(position.x), y: round2(position.y), z: round2(position.z) },
-          distance_to_target: round2(position.distanceTo(target)),
+          target: new Vec3(params.x, params.y, params.z),
+          goal: new goals.GoalNear(params.x, params.y, params.z, MOVE_TO_RADIUS),
         }
       },
-      cleanup(bot) {
+      wait(bot, params, token, state, controller) {
+        // Phase 4H.1：**不再用 ``bot.pathfinder.goto()``**。mineflayer-pathfinder 2.4.5 的
+        // goto 在"空路径"上会静默 resolve（``if (results.path.length === 0) cleanup()`` 排在
+        // noPath 判断**之前**），于是"根本没找到路 / 根本没走"会被报成成功 —— 真机实测
+        // completed 时罐头还在 28 格外。现在由 CatooBot 自己挂 Pathfinder 生命周期监听，
+        // 并且**自己用重新读取的实际位置**决定什么时候才算真的到达（§二/§五/§八/§十五）。
+        return new Promise((resolvePromise, rejectPromise) => {
+          let settled = false
+          const listeners = []
+          const on = (event, handler) => {
+            if (typeof bot.on !== 'function') return
+            bot.on(event, handler)
+            listeners.push([event, handler])
+          }
+          // 让 cleanup（stop / 超时 / 断开）也能摘掉这些监听器：复用 ActionRuntime 的
+          // controller 与它已有的 cleaned 标记，不另建第二套 cleanup 状态（§二十四）。
+          if (controller) controller.moveListeners = listeners
+
+          /** 失败 detail（§二十）：目标 / 实际 / 距离 / 半径都如实带出去。 */
+          const detail = (reason) => {
+            const view = moveArrival(bot, state)
+            return {
+              target: { x: params.x, y: params.y, z: params.z },
+              actual: view.position
+                ? {
+                    x: round2(view.position.x),
+                    y: round2(view.position.y),
+                    z: round2(view.position.z),
+                  }
+                : null,
+              distance_to_target: view.distance === null ? null : round2(view.distance),
+              raw_distance_to_target: view.rawDistance === null ? null : round2(view.rawDistance),
+              radius: MOVE_TO_RADIUS,
+              goal_reached: view.goalSatisfied,
+              reason,
+            }
+          }
+          const finish = (error, value) => {
+            if (settled) return
+            settled = true
+            detachPathListeners(bot, listeners)
+            // SUCCEEDED / FAILED 都不会触发 ActionRuntime 的 cleanup（既定契约），
+            // 所以到达与失败都必须自己收掉导航意图（Phase 4H 的教训）。
+            releaseMoveGoal(bot)
+            if (error) rejectPromise(error)
+            else resolvePromise(value)
+          }
+          const cancelled = () => Boolean(token && token.cancelled)
+          const dead = () => settled || cancelled()
+          const succeed = () => {
+            // §十九：距离必须来自**到达判定瞬间重新读取**的实际位置（不是 Pathfinder 的预测）
+            const view = moveArrival(bot, state)
+            const position = view.position
+            finish(null, {
+              target: { x: params.x, y: params.y, z: params.z },
+              final_position: position
+                ? { x: round2(position.x), y: round2(position.y), z: round2(position.z) }
+                : null,
+              distance_to_target: view.distance === null ? null : round2(view.distance),
+              raw_distance_to_target: view.rawDistance === null ? null : round2(view.rawDistance),
+            })
+          }
+          const notReached = (reason, message) => {
+            const info = detail(reason)
+            finish(
+              new ActionError(
+                `${message}（距目标 ${info.distance_to_target} 格，半径 ${MOVE_TO_RADIUS}）`,
+                'path.not_reached',
+                500,
+                info,
+              ),
+            )
+          }
+
+          // §八：**即使收到 goal_reached 也要二次验证** —— 重新读位置，不采信 Pathfinder 的说法
+          on('goal_reached', () => {
+            if (dead()) return
+            if (moveArrival(bot, state).reached) succeed()
+            else {
+              notReached(
+                'goal_reached_without_arrival',
+                'Pathfinder 报告到达了，但罐头实际位置不在到达半径内',
+              )
+            }
+          })
+          on('path_update', (results) => {
+            if (dead()) return
+            const status = String((results && results.status) || '')
+            const path = (results && results.path) || []
+            if (status === 'noPath') {
+              // §十一：空路径 + noPath 也必须如实失败（2.4.5 的 goto 正是在这里静默成功的）
+              finish(
+                new ActionError(
+                  '无法找到到达目标的非破坏性路径',
+                  'path.not_found',
+                  500,
+                  detail('no_path'),
+                ),
+              )
+              return
+            }
+            if (status === 'timeout') {
+              // §十三：路径搜索超时 → FAILED（清 Goal），绝不 SUCCEEDED
+              finish(
+                new ActionError(
+                  '路径计算超时（非破坏性）',
+                  'path.not_found',
+                  500,
+                  detail('path_search_timeout'),
+                ),
+              )
+              return
+            }
+            // §十二：partial 只是"先走近一点"，继续等后续事件（整体 30s 超时兜底）
+            if (status === 'partial') return
+            if (path.length === 0) {
+              // §十：path=[] + success 正是 2.4.5 假成功的形状 —— 只有真的在半径内才算到达
+              if (moveArrival(bot, state).reached) succeed()
+              else {
+                notReached(
+                  'empty_path_without_arrival',
+                  'Pathfinder 结束了但没有派生出任何路径，且罐头不在到达半径内',
+                )
+              }
+            }
+          })
+          on('path_stop', () => {
+            // §十五：token 已排除（不是我们取消的）—— 说明底层导航自己停了 → 验证位置
+            if (dead()) return
+            if (moveArrival(bot, state).reached) succeed()
+            else notReached('path_stopped_short', '导航在到达目标之前停住了')
+          })
+          on('goal_updated', (newGoal) => {
+            if (dead()) return
+            if (newGoal !== state.goal) {
+              // §十四：Goal 被换成别的（防御分支；独占路径下正常不会发生）→ 立刻失败
+              finish(
+                new ActionError(
+                  '导航目标被换成了别的目标',
+                  'goal.changed',
+                  409,
+                  detail('goal_changed'),
+                ),
+              )
+            }
+          })
+
+          // §七：监听器全部就位**之后**才 setGoal
+          bot.pathfinder.setGoal(state.goal)
+        })
+      },
+      cleanup(bot, controller) {
         // Phase 3C §十一/§十二：先硬清 Goal（真正停止导航），再清控制位；
         // 顺序保证「Minecraft 已停止执行导航后才对外报 CANCELLED」。
-        if (bot && bot.pathfinder) {
-          try {
-            bot.pathfinder.setGoal(null)
-          } catch (error) {
-            log('warn', 'move_to cleanup setGoal(null) failed', { error: error.message })
-          }
-        }
+        // Phase 4H.1：同时摘掉生命周期监听器（挂在 controller.moveListeners 上），
+        // 复用 ActionRuntime 的 cleaned 标记，cleanup 仍然恰好一次。
+        detachPathListeners(bot, controller ? controller.moveListeners : null)
+        releaseMoveGoal(bot)
         if (bot && typeof bot.clearControlStates === 'function') bot.clearControlStates()
       },
     },

@@ -3,6 +3,37 @@
 本文件记录 CatooBot 的版本演进。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号见 `pyproject.toml`；日期取自真实提交历史（本仓库 2026-09-30 起）。
 
+## Minecraft Phase 4H.1 — Move_to Reliability Hardening（消除 Pathfinder 假成功）
+
+* **生产 bug 修复（不是新能力）**：`minecraft_move_to` 的 `SUCCEEDED` 以前由
+  `bot.pathfinder.goto()` 的 resolve 决定，而 mineflayer-pathfinder **2.4.5** 的 `goto()` 在
+  **空路径**上会静默 resolve（`if (results.path.length === 0) cleanup()` 排在 `noPath` 判断之前）
+  —— 真机上 `completed` 时罐头还在 28 格外（有时位移为 0）。现在 `move_to.wait()` 自己挂
+  Pathfinder 生命周期（`goal_reached` / `path_update` / `goal_updated` / `path_stop`，
+  **先挂监听再 setGoal**）并用**重新读取的实际位置**决定到达：唯一硬门禁是
+  GoalNear 半径（1.5 格，口径与 `GoalNear.isEnd(floored)` 一致），与"移动了多少格"无关。
+* 事件语义逐条落定：`noPath`（含空路径）→ `path.not_found`；路径搜索 `timeout` →
+  `path.not_found`；`partial` → 继续等；`success` + 空路径 → 只有真在半径内才成功，
+  否则 **新增的 `path.not_reached`**；`path_stop` → 验证位置；换 Goal → `goal.changed`；
+  token（STOP/超时/断开）永远最高优先级，晚到的 `goal_reached` 不会翻案。
+  失败都带结构化 `detail{target, actual, distance_to_target, raw_distance_to_target,
+  radius, goal_reached, reason}`；成功/失败/取消都会自己清 Goal（SUCCEEDED/FAILED 不触发
+  ActionRuntime 的 cleanup），cleanup 仍然恰好一次。
+* 对外稳定码新增 **`minecraft.path_not_reached`**（Service 异常 + `_TOOL_STATUS` 500 + 契约表）；
+  `MOVE_TO_RADIUS` / `MOVE_MAX_DISTANCE` / `MOVE_TIMEOUT_MS` / 依赖版本**都没有动**
+  （不靠升级上游，自己在 runtime 里加防御层）。
+* 验证：Node `move_to.test.js` **25 → 76 checks**（含核心回归 B：`path=[] + success` + 实际
+  28 格 → 绝不 SUCCEEDED；STOP/超时竞态只允许一个终态；cleanup 恰好一次）；
+  flying-squid E2E 的 Test A 容差 2.5 → **1.5**，并新增 **Test D（false-success guard）**：
+  对不可达目标 move_to 绝不 completed；pytest **2289**；真机 smoke 新增
+  **REAL MOVE_TO FALSE-SUCCESS GUARD** 硬门禁（目标不可达且不改世界）→
+  实测 `FAILED / path.not_found` + `distance_to_target 13.04`（旧代码在这里报 completed），
+  同一次运行里正向（`positive final distance <= 1.5`）、真 STOP（`CANCELLED` + `goal=null` +
+  `isMoving=false` + 漂移 0.00）与 Phase 4H 的整条拾取链全部 PASS → `REAL SERVER: PASS`。
+* smoke 侧顺带如实化：删掉"用零距离 move_to 清残留 Goal"的 workaround（§三十三，现在由
+  runtime 自己清）、开局把罐头放到地表安全点、STOP 段改为挑干燥落脚点、修掉一条"目标搞错"
+  的旧感知断言（感知层没有 inventory，只有 `self.held_item`）。
+
 ## Minecraft Phase 4H — Dropped Item Perception + 单实体 Pickup
 
 * 新增 LLM 工具 `minecraft_dropped_items`（SAFE 只读、**非独占**）：把地上的 Item 实体投影成

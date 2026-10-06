@@ -17,6 +17,7 @@ from app.integrations.minecraft.service import (
     MinecraftFollowTargetTooFar,
     MinecraftNotConnected,
     MinecraftPathNotFound,
+    MinecraftPathNotReached,
     MinecraftPlayerLost,
     MinecraftPlayerNotFound,
     MinecraftRuntimeDown,
@@ -405,6 +406,20 @@ async def test_move_to_no_path(fake_runtime: FakeRuntime, make_service) -> None:
     with pytest.raises(MinecraftPathNotFound) as excinfo:
         await service.move_to(1, 2, 3)
     assert excinfo.value.code == "minecraft.path_not_found"
+    assert excinfo.value.status == 500
+
+
+async def test_move_to_not_reached_is_a_distinct_code(
+    fake_runtime: FakeRuntime, make_service
+) -> None:
+    """Phase 4H.1 §五：Pathfinder 结束但位置不满足 → ``path.not_reached``（不是假成功，
+    也不跟"明确无路径"（path.not_found）混成一个码）。
+    """
+    fake_runtime.move_to_plan.append({"error": ("path.not_reached", 500)})
+    service = make_service(make_config(fake_runtime))
+    with pytest.raises(MinecraftPathNotReached) as excinfo:
+        await service.move_to(1, 2, 3)
+    assert excinfo.value.code == "minecraft.path_not_reached"
     assert excinfo.value.status == 500
 
 

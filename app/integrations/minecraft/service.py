@@ -131,6 +131,15 @@ class MinecraftPathNotFound(MinecraftBridgeError):
         super().__init__(message, code="minecraft.path_not_found")
 
 
+class MinecraftPathNotReached(MinecraftBridgeError):
+    """Phase 4H.1：Pathfinder 结束了但罐头实际位置不在到达半径内（绝不假报成功）。"""
+
+    status = 500
+
+    def __init__(self, message: str = "导航结束了，但罐头不在目标附近") -> None:
+        super().__init__(message, code="minecraft.path_not_reached")
+
+
 class MinecraftPlayerNotFound(MinecraftBridgeError):
     """Phase 3D：跟随目标玩家不存在（不在线/不在视野内）——不启动 Pathfinder。"""
 
@@ -630,6 +639,8 @@ def _translate(exc: MinecraftRuntimeError) -> MinecraftBridgeError:
         return MinecraftActionFailed(str(exc))
     if exc.code == "path.not_found":
         return MinecraftPathNotFound(str(exc))
+    if exc.code == "path.not_reached":
+        return MinecraftPathNotReached(str(exc))
     if exc.code == "block.not_found":
         return MinecraftBlockNotFound(str(exc))
     if exc.code == "block.changed":
