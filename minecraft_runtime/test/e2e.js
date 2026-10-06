@@ -155,7 +155,7 @@ async function main() {
       MC_CALLBACK_TOKEN: 'e2e-token',
       MC_AUTH_FILE: authFile,
       MC_CONNECT_TIMEOUT: '30',
-      MC_MOVE_TIMEOUT_MS: '2500', // Test C 依赖：可达的 12–16 格约需 3s+ → 确定性超时
+      MC_MOVE_TIMEOUT_MS: '2500', // Test C 依赖：可达的 40+ 格约需 9s → 确定性超时（4H.1 起）
       MC_FOLLOW_TIMEOUT_MS: '8000', // Test C 的 3s 宽限必须在超时之前完成；Test E 等 8s
       MC_FOLLOW_MAX_CHASE_DISTANCE: '16', // Test D 用 30 格验证「超上限即失败」
       MC_DIG_TIMEOUT_MS: '2500', // dig Test F 依赖：石头徒手 ~7.5s → 确定性超时
@@ -530,7 +530,10 @@ async function main() {
         // ---- Test C：move_to 超时 → TIMEOUT + goal 清空（§十三） ----
         let timeoutVerified = false
         let timeoutFail = null
-        for (const distance of [16, 12, 20, 10, 14, 24]) {
+        // Phase 4H.1 起：**不可达**的目标会立刻以 path.not_found 失败（不再"静默成功/挂到超时"），
+        // 所以这里要靠**足够远**的可行目标来制造确定的超时窗口：40+ 格在假服务器上要走 9s 上下，
+        // 远超 MC_MOVE_TIMEOUT_MS=2500。太远没路的那些会被上面的 try/catch 换掉。
+        for (const distance of [40, 32, 48, 24, 56, 16]) {
           const timeoutOrigin = (await request(runtimePort, 'GET', '/minecraft/status')).body.position
           const target = {
             x: timeoutOrigin.x + ux * distance,
