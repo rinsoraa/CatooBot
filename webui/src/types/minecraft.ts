@@ -228,6 +228,50 @@ export interface MinecraftInventoryActionResult {
   [key: string]: unknown
 }
 
+// ---------------- Phase 4E · Container（Chest / Barrel） ----------------
+
+/** 容器里的一个非空格子（只读 projection：没有 NBT / 内部 id / window）。 */
+export interface MinecraftContainerSlot {
+  slot: number
+  name: string
+  count: number
+}
+
+/** 容器语义状态（`minecraft_container_inspect` 的 inspection 结果）。 */
+export interface MinecraftContainerView {
+  type: string
+  label: string
+  position: MinecraftPosition
+  size: number
+}
+
+export interface MinecraftContainerSnapshot {
+  ok: boolean
+  container: MinecraftContainerView
+  slots: MinecraftContainerSlot[]
+}
+
+/** INSPECT 端点的响应：标准信封 + 快照在 result 里。 */
+export interface MinecraftContainerInspectResponse {
+  ok: boolean
+  action: string
+  status: MinecraftActionStatus
+  action_id?: string
+  result: MinecraftContainerSnapshot
+}
+
+/** withdraw = 从箱子拿到背包；deposit = 从背包放进箱子。 */
+export type MinecraftContainerDirection = 'withdraw' | 'deposit'
+
+/** container_transfer 的启动响应（持续型：终态由事件送达）。 */
+export interface MinecraftContainerTransferResult {
+  ok: boolean
+  action: string
+  status: MinecraftActionStatus
+  action_id?: string
+  [key: string]: unknown
+}
+
 // ---------------- Phase 3E · LLM Agent（Tool Debug + Context） ----------------
 
 export type MinecraftActionRisk = 'SAFE' | 'LOW' | 'MEDIUM' | 'HIGH' | 'DESTRUCTIVE'

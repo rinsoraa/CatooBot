@@ -215,6 +215,298 @@ function requireInventorySlot(value, field, bot) {
   return value
 }
 
+// ---------------------------------------------------------- Phase 4E: container
+
+//: 本阶段只支持这两种**方块**（按 block.name 判定；trapped_chest / shulker / furnace /
+//: hopper / dispenser / crafting_table 等一律 unsupported —— 绝不按"看起来像容器"判断）
+const CONTAINER_BLOCK_TYPES = Object.freeze({
+  // 归一化后的方块名：1.16.x 的 mineflayer 给的是 'chest'；老/新版本可能带 minecraft: 前缀，
+  // 两种写法都接受（与 item 名一样只在比较时归一化，回执也用归一化名）
+  chest: 'Chest',
+  barrel: 'Barrel',
+})
+//: 单方块容器的容器槽位数：从真实 window 结构得出后必须等于它（双箱是 54 → 拒绝）
+const CONTAINER_SLOT_COUNT = 27
+//: 容器窗口里玩家背包部分的槽位数（主背包 27 + 快捷栏 9）
+const CONTAINER_PLAYER_SLOTS = 36
+const CONTAINER_DIRECTIONS = Object.freeze(['withdraw', 'deposit'])
+const CONTAINER_DEFAULT_TIMEOUT_MS = Number.parseInt(
+  process.env.MC_CONTAINER_TIMEOUT_MS || '30000',
+  10,
+)
+const CONTAINER_MAX_DISTANCE = Number.parseFloat(process.env.MC_CONTAINER_MAX_DISTANCE || '5')
+
+function containerTimeoutMs() {
+  const raw = Number.parseInt(process.env.MC_CONTAINER_TIMEOUT_MS || '', 10)
+  return Number.isFinite(raw) && raw > 0 ? raw : CONTAINER_DEFAULT_TIMEOUT_MS
+}
+
+function containerMaxDistance() {
+  const raw = Number.parseFloat(process.env.MC_CONTAINER_MAX_DISTANCE || '')
+  return Number.isFinite(raw) && raw > 0 ? raw : CONTAINER_MAX_DISTANCE
+}
+
+/** §五：方块坐标必须是整数（容器交互没有小数坐标），且在世界边界内。 */
+function validateBlockCoords(params) {
+  const coords = {}
+  for (const name of ['x', 'y', 'z']) {
+    const value = params[name]
+    if (typeof value !== 'number' || !Number.isFinite(value) || !Number.isInteger(value)) {
+      throw new ActionError(`坐标 ${name} 必须是整数（方块坐标没有小数）`, 'action.invalid', 400)
+    }
+    coords[name] = value
+  }
+  if (Math.abs(coords.x) > 3.0e7 || Math.abs(coords.z) > 3.0e7 || coords.y < -512 || coords.y > 2048) {
+    throw new ActionError('坐标超出 Minecraft 世界边界', 'action.invalid', 400)
+  }
+  return coords
+}
+
+/** 方块名归一化：去掉 minecraft: 前缀（回执也用归一化名，与 item 名同一套规则）。 */
+function normalizeBlockName(name) {
+  return String(name ?? '')
+    .trim()
+    .toLowerCase()
+    .replace(/^minecraft:/, '')
+}
+
+function blockNameOf(block) {
+  return block && block.name ? normalizeBlockName(block.name) : ''
+}
+
+/** 支持的单方块容器的显示名（空串 = 本阶段不支持）。 */
+function containerTypeLabel(blockName) {
+  return CONTAINER_BLOCK_TYPES[normalizeBlockName(blockName)] || ''
+}
+
+/** §六/§七：只按 block.name 判类型（不靠 blockEntity、不靠"看起来像"）→ 否则 unsupported。 */
+function requireContainerBlock(bot, params) {
+  const block = bot.blockAt(new Vec3(params.x, params.y, params.z))
+  if (!block) {
+    throw new ActionError(
+      `目标位置没有加载方块（${params.x},${params.y},${params.z}）`,
+      'block.unavailable',
+      404,
+    )
+  }
+  if (!containerTypeLabel(block.name)) {
+    throw new ActionError(
+      `这个位置不是箱子或桶（${block.name}）——本阶段只支持单方块 Chest / Barrel`,
+      'container.unsupported',
+      422,
+      { block: block.name },
+    )
+  }
+  return block
+}
+
+/** §八/§九：眼睛 → 容器方块中心的距离（与 dig/place 同口径）；超了拒绝，绝不自己走过去。 */
+function requireContainerDistance(bot, block) {
+  const maxDistance = containerMaxDistance()
+  const center = block.position.offset(0.5, 0.5, 0.5)
+  const eyes = bot.entity.position.offset(0, 1.65, 0)
+  const distance = eyes.distanceTo(center)
+  if (distance > maxDistance) {
+    throw new ActionError(
+      `容器距离 ${distance.toFixed(1)} 格，超过上限 ${maxDistance} 格（本阶段不会自己走过去）`,
+      'container.too_far',
+      422,
+      { distance: round2(distance) },
+    )
+  }
+}
+
+/** 容器槽位数：**从真实窗口结构推导**（不硬编码 27）；拿不到结构返回 null。 */
+function containerSlotCountOf(window) {
+  if (!window || !Number.isInteger(window.inventoryStart)) return null
+  return window.inventoryStart
+}
+
+/** §十/§十二：单方块容器 —— 容器侧必须是 27 格、玩家侧必须是 36 格（双箱 54 → 拒绝）。 */
+function requireSingleContainerWindow(window) {
+  const size = containerSlotCountOf(window)
+  const playerSlots =
+    Number.isInteger(window.inventoryEnd) && Number.isInteger(window.inventoryStart)
+      ? window.inventoryEnd - window.inventoryStart
+      : null
+  if (size !== CONTAINER_SLOT_COUNT || playerSlots !== CONTAINER_PLAYER_SLOTS) {
+    throw new ActionError(
+      `只支持单方块容器（容器槽位 ${size === null ? '未知' : size}，玩家背包 ${playerSlots === null ? '未知' : playerSlots} 格）`,
+      'container.unsupported',
+      422,
+      size === null ? null : { container_slots: size, player_slots: playerSlots },
+    )
+  }
+  return size
+}
+
+/** 玩家窗口绝对槽位（9..44，Phase 4D 的编号）→ 容器窗口里的绝对槽位。 */
+function windowSlotForInventorySlot(window, bot, inventorySlot) {
+  const bounds = inventorySlotBounds(bot)
+  const offset = window.inventoryStart - bounds.start
+  const windowSlot = inventorySlot + offset
+  if (
+    !Number.isInteger(windowSlot) ||
+    windowSlot < window.inventoryStart ||
+    windowSlot >= window.inventoryEnd
+  ) {
+    throw new ActionError('容器窗口里的玩家背包结构与预期不符', 'container.unsupported', 422)
+  }
+  return windowSlot
+}
+
+function readWindowSlot(window, slot) {
+  const item = window && Array.isArray(window.slots) ? window.slots[slot] : null
+  return item && item.name ? item : null
+}
+
+/** LLM 只看到 {name, count}（不含 NBT / 内部 id / cursor / window 对象）。 */
+function describeItem(item) {
+  return item && item.name ? { name: normalizeItemName(item.name), count: item.count || 0 } : null
+}
+
+function itemCountOf(item, wantedName) {
+  if (!item || !item.name) return 0
+  return normalizeItemName(item.name) === wantedName ? item.count || 0 : 0
+}
+
+/** §二十四：真实堆叠上限 —— item.stackSize，其次 minecraft-data；拿不到 → 0（保守：不允许合并）。 */
+function itemStackCapacity(bot, item) {
+  if (!item) return 0
+  if (Number.isFinite(item.stackSize) && item.stackSize > 0) return item.stackSize
+  const entry =
+    bot && bot.registry && bot.registry.items && Number.isFinite(item.type)
+      ? bot.registry.items[item.type]
+      : null
+  if (entry && Number.isFinite(entry.stackSize) && entry.stackSize > 0) return entry.stackSize
+  return 0
+}
+
+/** §十一：只返回**非空**容器槽位（槽位号是容器内的 0..size-1；不带 window / NBT / cursor）。 */
+function readContainerSlots(window, size) {
+  const slots = []
+  for (let slot = 0; slot < size; slot += 1) {
+    const item = readWindowSlot(window, slot)
+    if (!item) continue
+    slots.push({ slot, name: normalizeItemName(item.name), count: item.count || 0 })
+  }
+  return slots
+}
+
+/** 关闭窗口（幂等：当前窗口不是它 → 什么都不做）。绝不抛：把错误如实回给调用方。 */
+function closeContainerWindow(bot, window) {
+  if (!window) return { ok: true, error: '' }
+  if (bot && bot.currentWindow !== undefined && bot.currentWindow !== window) {
+    return { ok: true, error: '' }
+  }
+  try {
+    if (bot && typeof bot.closeWindow === 'function') {
+      const pending = bot.closeWindow(window)
+      // pre-1.17 的 resync click 失败不代表"窗口还开着"（close_window 包已同步发出）
+      if (pending && typeof pending.catch === 'function') pending.catch(() => {})
+    } else if (typeof window.close === 'function') {
+      window.close()
+    }
+    return { ok: true, error: '' }
+  } catch (error) {
+    return { ok: false, error: String(error && error.message ? error.message : error) }
+  }
+}
+
+/** 正常收尾的关闭：先摘掉 controller 上的记录（cleanup 不再重复关），再真的关。 */
+function closeAndForget(bot, controller, window) {
+  if (controller) controller.window = null
+  return closeContainerWindow(bot, window)
+}
+
+/** cleanup 的兜底关闭：controller.window 是动作自己记下的窗口（至多一次、绝不抛）。 */
+function closeTrackedWindow(bot, controller) {
+  const window = controller ? controller.window : null
+  if (!window) return
+  controller.window = null
+  const closed = closeContainerWindow(bot, window)
+  if (!closed.ok) {
+    log('warn', 'container cleanup close failed', { error: closed.error })
+  }
+}
+
+/** 打开容器窗口：失败 → container.open_failed；超时/取消期间才开出来 → 立刻关掉再取消。 */
+async function openContainerWindow(bot, block, token, controller) {
+  if (bot.currentWindow) {
+    // 上一次异常可能留下一个开着的窗口：openBlock 会等不到新的 windowOpen，先 best-effort 关掉
+    log('warn', 'closing a leftover window before opening a container', {
+      window_id: bot.currentWindow.id,
+    })
+    closeContainerWindow(bot, bot.currentWindow)
+  }
+  if (typeof bot.openContainer !== 'function') {
+    throw new ActionError('当前 runtime 不支持打开容器', 'container.open_failed', 500)
+  }
+  let window = null
+  try {
+    window = await bot.openContainer(block)
+  } catch (error) {
+    const message = String(error && error.message ? error.message : error)
+    throw new ActionError(`打开容器失败：${message}`, 'container.open_failed', 500)
+  }
+  if (token && token.cancelled) {
+    closeContainerWindow(bot, window)
+    throw new ActionCancelled(token.reason)
+  }
+  if (!window || !Array.isArray(window.slots)) {
+    throw new ActionError('服务器没有返回可用的容器窗口', 'container.open_failed', 500)
+  }
+  if (controller) controller.window = window
+  return window
+}
+
+/** §二十-§二十三：source 的**真实状态**校验（打开窗口之后按现状判定，旧 inspect 结果不算数）。 */
+function requireContainerTransferSource(source, params) {
+  if (!source || !source.name) {
+    throw new ActionError('要移动的那个槽位是空的', 'item.not_found', 404)
+  }
+  const actual = normalizeItemName(source.name)
+  if (actual !== params.item) {
+    throw new ActionError(`槽位上是 ${actual}，不是 ${params.item}`, 'item.changed', 409, {
+      expected: params.item,
+      actual,
+    })
+  }
+  if ((source.count || 0) < params.count) {
+    throw new ActionError(
+      `槽位上只有 ${source.count || 0} 个，不够 ${params.count} 个`,
+      'item.count_insufficient',
+      409,
+      { available: source.count || 0, requested: params.count },
+    )
+  }
+}
+
+/** §二十一/§二十三：destination 空或同名未满才允许；否则拒绝（绝不交换、绝不换槽）。 */
+function requireContainerTransferDestination(bot, destination, params) {
+  if (!destination || !destination.name) return
+  const actual = normalizeItemName(destination.name)
+  const capacity = itemStackCapacity(bot, destination)
+  const stackable = actual === params.item && capacity > 0 && (destination.count || 0) < capacity
+  if (!stackable) {
+    throw new ActionError(`目标槽位已经被 ${actual} 占用`, 'destination.occupied', 409, {
+      actual,
+    })
+  }
+}
+
+/** transfer 抛错 → 稳定错误码（窗口没了 ≠ 普通失败）。 */
+function classifyContainerTransferError(error) {
+  const message = String(error && error.message ? error.message : error)
+  if (/destination full/i.test(message)) {
+    return new ActionError('目标槽位放不下', 'destination.occupied', 409)
+  }
+  if (/window|closed/i.test(message)) {
+    return new ActionError('容器窗口已经关闭', 'container.closed', 409)
+  }
+  return new ActionError(`搬运物品失败：${message}`, 'action.failed', 500)
+}
+
 // Phase 3D：follow_player（动态跟随）
 const FOLLOW_DEFAULT_DISTANCE = 2.5
 const FOLLOW_MIN_DISTANCE = 1.5
@@ -1359,6 +1651,232 @@ const ACTION_REGISTRY = {
         if (bot && typeof bot.clearControlStates === 'function') bot.clearControlStates()
       },
     },
+    container_inspect: {
+      // Phase 4E：读一个 Chest / Barrel 的**真实内容**（SAFE 只读，但 **exclusive**：
+      // 打开真实窗口是有生命周期的客户端状态，不能和其他前台动作并发）。
+      // 内部固定 open → read → close；无论成功失败都 close（cleanup 再兜一层）。
+      exclusive: true,
+      timeout_ms: containerTimeoutMs(),
+      risk: 'SAFE',
+      validate(params) {
+        return validateBlockCoords(params)
+      },
+      async run(bot, params, token, controller) {
+        if (bot === null || bot.entity === null) {
+          throw new ActionError('罐头还没有进入世界', 'action.not_online', 400)
+        }
+        const block = requireContainerBlock(bot, params)
+        requireContainerDistance(bot, block)
+        const window = await openContainerWindow(bot, block, token, controller)
+        try {
+          const size = requireSingleContainerWindow(window)
+          const snapshot = {
+            ok: true,
+            container: {
+              type: blockNameOf(block),
+              label: containerTypeLabel(block.name),
+              position: { x: params.x, y: params.y, z: params.z },
+              size,
+            },
+            slots: readContainerSlots(window, size),
+          }
+          // §十三/§三十一：先关窗再报成功；关不上要如实说，绝不把"看过了"当成一切正常
+          const closed = closeAndForget(bot, controller, window)
+          if (!closed.ok) {
+            throw new ActionError(`关闭容器失败：${closed.error}`, 'container.close_failed', 500, {
+              snapshot,
+            })
+          }
+          return snapshot
+        } catch (error) {
+          closeTrackedWindow(bot, controller)
+          throw error
+        }
+      },
+      cleanup(bot, controller) {
+        closeTrackedWindow(bot, controller)
+      },
+    },
+    container_transfer: {
+      // Phase 4E：一个物品在「容器槽 ↔ 自己背包槽」之间移动**一次**（MEDIUM；exclusive + 确认）。
+      // 一个方向、一个 container_slot、一个 inventory_slot、一个 item、一个 count；
+      // 目标被占用就拒绝（绝不交换 / 绝不换槽）；报成功之前必须关窗，结果以真实重读为准。
+      exclusive: true,
+      timeout_ms: containerTimeoutMs(),
+      risk: 'MEDIUM',
+      detached: true,
+      validate(params) {
+        const coords = validateBlockCoords(params)
+        const direction = String(params.direction ?? '')
+          .trim()
+          .toLowerCase()
+        if (!CONTAINER_DIRECTIONS.includes(direction)) {
+          throw new ActionError(
+            `direction 必须是 ${CONTAINER_DIRECTIONS.join(' / ')}（拿出去 withdraw / 放进去 deposit）`,
+            'action.invalid',
+            400,
+          )
+        }
+        const containerSlot = params.container_slot
+        if (
+          typeof containerSlot !== 'number' ||
+          !Number.isInteger(containerSlot) ||
+          containerSlot < 0
+        ) {
+          throw new ActionError('container_slot 必须是 >= 0 的整数', 'slot.invalid', 400)
+        }
+        const inventorySlot = requireInventorySlot(params.inventory_slot, 'inventory_slot', state.bot)
+        const item = params.item
+        if (typeof item !== 'string' || !item.trim()) {
+          throw new ActionError('item 不能为空', 'item.invalid', 400)
+        }
+        if (item.length > MAX_PLACE_ITEM_CHARS) {
+          throw new ActionError('item 过长', 'item.invalid', 400)
+        }
+        const count = params.count
+        if (typeof count !== 'number' || !Number.isInteger(count) || count < 1) {
+          throw new ActionError('count 必须是 >= 1 的整数', 'item.invalid', 400)
+        }
+        return {
+          ...coords,
+          direction,
+          container_slot: containerSlot,
+          inventory_slot: inventorySlot,
+          item: normalizeItemName(item),
+          count,
+        }
+      },
+      async start(bot, params, token, controller) {
+        // §十六/§三十四：确认只是授权 —— 真正执行前 open → reread → validate 必须完整跑一遍。
+        if (bot === null || bot.entity === null) {
+          throw new ActionError('罐头还没有进入世界', 'action.not_online', 400)
+        }
+        const block = requireContainerBlock(bot, params)
+        requireContainerDistance(bot, block)
+        const window = await openContainerWindow(bot, block, token, controller)
+        try {
+          const size = requireSingleContainerWindow(window)
+          if (params.container_slot >= size) {
+            throw new ActionError(`container_slot 超出容器范围（0~${size - 1}）`, 'slot.invalid', 400, {
+              container_slots: size,
+            })
+          }
+          const inventoryWindowSlot = windowSlotForInventorySlot(window, bot, params.inventory_slot)
+          const containerBefore = readWindowSlot(window, params.container_slot)
+          const inventoryBefore = readWindowSlot(window, inventoryWindowSlot)
+          const sourceBefore = params.direction === 'withdraw' ? containerBefore : inventoryBefore
+          const destinationBefore =
+            params.direction === 'withdraw' ? inventoryBefore : containerBefore
+          requireContainerTransferSource(sourceBefore, params)
+          requireContainerTransferDestination(bot, destinationBefore, params)
+          return {
+            window,
+            item_type: sourceBefore.type,
+            container_type: blockNameOf(block),
+            container_before: describeItem(containerBefore),
+            inventory_before: describeItem(inventoryBefore),
+            source_slot:
+              params.direction === 'withdraw' ? params.container_slot : inventoryWindowSlot,
+            destination_slot:
+              params.direction === 'withdraw' ? inventoryWindowSlot : params.container_slot,
+            // before 一律存**快照副本**（不是 window.slots 里的活对象）：搬运后要拿它算
+            // "真实变化量"，活对象可能被窗口更新就地改写，那样差值会永远算成 0。
+            source_before: describeItem(sourceBefore),
+            destination_before: describeItem(destinationBefore),
+            inventory_window_slot: inventoryWindowSlot,
+          }
+        } catch (error) {
+          // start 抛错不会走 cleanup（FAILED 不强制清理）→ 自己关掉再抛
+          closeTrackedWindow(bot, controller)
+          throw error
+        }
+      },
+      async wait(bot, params, token, state) {
+        const window = state.window
+        if (!window || (bot.currentWindow !== undefined && bot.currentWindow !== window)) {
+          throw new ActionError('容器窗口已经关闭（可能被服务器或玩家关掉了）', 'container.closed', 409)
+        }
+        let failure = null
+        let result = null
+        try {
+          // §二十五：Mineflayer 原生 transfer —— source / destination 都**钉死在单槽**
+          await bot.transfer({
+            window,
+            itemType: state.item_type,
+            count: params.count,
+            sourceStart: state.source_slot,
+            sourceEnd: state.source_slot + 1,
+            destStart: state.destination_slot,
+            destEnd: state.destination_slot + 1,
+          })
+        } catch (error) {
+          if (token && token.cancelled) {
+            // 取消/超时：先关窗（cleanup 会再兜一次，幂等），再按取消语义收尾
+            closeAndForget(bot, null, window)
+            throw new ActionCancelled(token.reason)
+          }
+          failure = classifyContainerTransferError(error)
+        }
+        if (!failure) {
+          // §二十七-§二十九：不信 transfer 的 resolve —— 重新读 container + inventory 两侧
+          const containerAfter = readWindowSlot(window, params.container_slot)
+          const inventoryAfter = readWindowSlot(window, state.inventory_window_slot)
+          const sourceAfter = params.direction === 'withdraw' ? containerAfter : inventoryAfter
+          const destinationAfter = params.direction === 'withdraw' ? inventoryAfter : containerAfter
+          const movedOut =
+            itemCountOf(state.source_before, params.item) - itemCountOf(sourceAfter, params.item)
+          const gainedIn =
+            itemCountOf(destinationAfter, params.item) -
+            itemCountOf(state.destination_before, params.item)
+          result = {
+            direction: params.direction,
+            position: { x: params.x, y: params.y, z: params.z },
+            container_type: state.container_type,
+            item: params.item,
+            count: params.count,
+            container_slot: params.container_slot,
+            inventory_slot: params.inventory_slot,
+            container_before: state.container_before,
+            container_after: describeItem(containerAfter),
+            inventory_before: state.inventory_before,
+            inventory_after: describeItem(inventoryAfter),
+            moved_out: movedOut,
+            gained_in: gainedIn,
+          }
+          if (movedOut < params.count || gainedIn <= 0) {
+            failure = new ActionError(
+              `搬运后状态不对（移出 ${movedOut}，目标增加 ${gainedIn}）`,
+              'container.transfer_unconfirmed',
+              500,
+              {
+                container_after: result.container_after,
+                inventory_after: result.inventory_after,
+              },
+            )
+          }
+        }
+        // §三十一：先关窗，再落终态；关不上要如实报（世界状态已变，绝不吞掉）
+        const closed = closeAndForget(bot, null, window)
+        if (failure) {
+          if (!closed.ok && failure instanceof ActionError) {
+            throw new ActionError(failure.message, failure.code, failure.status, {
+              ...(failure.detail || {}),
+              close_error: closed.error,
+            })
+          }
+          throw failure
+        }
+        if (!closed.ok) {
+          throw new ActionError(`关闭容器失败：${closed.error}`, 'container.close_failed', 500, {
+            result,
+          })
+        }
+        return result
+      },
+      cleanup(bot, controller) {
+        closeTrackedWindow(bot, controller)
+      },
+    },
     follow_player: {
       // Phase 3D：动态跟随（LOW；不改世界，但属于持续自动移动 → exclusive + STOP + timeout）
       exclusive: true,
@@ -1959,6 +2477,33 @@ async function handleRequest(request, response) {
       jsonResponse(response, 200, { ok: true, ...result })
       return
     }
+    if (request.method === 'POST' && path === '/minecraft/container_inspect') {
+      // Phase 4E：读一个 Chest / Barrel 的真实内容（SAFE 只读；内部 open → read → close）
+      const body = await readBody(request)
+      const result = await actionRuntime.execute('container_inspect', {
+        x: body.x,
+        y: body.y,
+        z: body.z,
+      })
+      jsonResponse(response, 200, { ok: true, ...result })
+      return
+    }
+    if (request.method === 'POST' && path === '/minecraft/container_transfer') {
+      // Phase 4E：单物品在「容器槽 ↔ 背包槽」之间移动一次（MEDIUM）。启动即 RUNNING。
+      const body = await readBody(request)
+      const result = await actionRuntime.execute('container_transfer', {
+        x: body.x,
+        y: body.y,
+        z: body.z,
+        direction: body.direction,
+        container_slot: body.container_slot,
+        inventory_slot: body.inventory_slot,
+        item: body.item,
+        count: body.count,
+      })
+      jsonResponse(response, 200, { ok: true, ...result })
+      return
+    }
     if (request.method === 'POST' && path === '/minecraft/place') {
       // Phase 4C：放置单方块（MEDIUM）。启动即 RUNNING，结果经事件送达。
       const body = await readBody(request)
@@ -2082,6 +2627,23 @@ module.exports = {
   },
   EQUIP_DEFAULTS: { timeoutMs: EQUIP_DEFAULT_TIMEOUT_MS },
   INVENTORY_MOVE_DEFAULTS: { timeoutMs: MOVE_DEFAULT_TIMEOUT_MS },
+  CONTAINER_DEFAULTS: {
+    timeoutMs: CONTAINER_DEFAULT_TIMEOUT_MS,
+    maxDistance: CONTAINER_MAX_DISTANCE,
+    slotCount: CONTAINER_SLOT_COUNT,
+    playerSlots: CONTAINER_PLAYER_SLOTS,
+    directions: [...CONTAINER_DIRECTIONS],
+  },
+  CONTAINER_BLOCK_TYPES,
+  containerTypeLabel,
+  containerSlotCountOf,
+  requireSingleContainerWindow,
+  windowSlotForInventorySlot,
+  readContainerSlots,
+  describeItem,
+  itemStackCapacity,
+  closeContainerWindow,
+  closeTrackedWindow,
   PLAYER_WINDOW_SLOTS,
   inventorySlotBounds,
   inventorySlots,

@@ -390,6 +390,8 @@ async def test_minecraft_projection_includes_agent_block(tmp_path):
             "minecraft_move_to",
             "minecraft_follow_player",
             "minecraft_stop",
+            "minecraft_container_inspect",
+            "minecraft_container_transfer",
             "minecraft_dig",
             "minecraft_equip",
             "minecraft_inventory",
@@ -1068,3 +1070,287 @@ async def test_equip_and_move_endpoints_disabled_without_minecraft(tmp_path):
             body={"source_slot": 37, "destination_slot": 9, "item": "dirt", "count": 1},
         )
         assert status == 503 and error_code(payload) == "minecraft.disabled"
+
+
+# ------------------------------------------------ Phase 4E：容器端点
+
+
+async def test_container_inspect_endpoint_reads_real_content(tmp_path):
+    """§三十七：WebUI 的 INSPECT 走 `POST /minecraft/container_inspect`（SAFE 只读、同步返回）。
+
+    它不需要确认门，但仍然受「在线 + 独占」约束。
+    """
+    from tests.test_minecraft_service import FakeRuntime
+
+    # 未装配连接层 → 503
+    async with api_server(tmp_path) as (client, bot, server):
+        await client.login()
+        status, payload = await client.post(
+            "/api/v1/minecraft/container_inspect", body={"x": 100, "y": 64, "z": 100}
+        )
+        assert status == 503 and error_code(payload) == "minecraft.disabled"
+
+    fake = FakeRuntime()
+    await fake.start()
+    try:
+        fake.online = True
+        async with api_server(tmp_path) as (client, bot, server):
+            await client.login()
+            service = MinecraftService(
+                bot, MinecraftConfig(enabled=True, auto_start_runtime=False, runtime_port=fake.port)
+            )
+            bot.minecraft = service
+            try:
+                from app.integrations.minecraft.agent import MinecraftAgentBridge
+                from app.integrations.minecraft.events import parse_bridge_event
+
+                service.agent = MinecraftAgentBridge(service)
+                await service.status()
+                service.agent.apply_event(
+                    parse_bridge_event(
+                        {
+                            "event": "minecraft.spawned",
+                            "session_id": "s1",
+                            "timestamp": 1.0,
+                            "username": "Catodayo",
+                        }
+                    )
+                )
+
+                # 坐标必须整数 → 422（垃圾参数不碰 runtime）
+                for bad in ({"x": 100.5, "y": 64, "z": 100}, {"y": 64, "z": 100}, {"x": 1}):
+                    status, payload = await client.post(
+                        "/api/v1/minecraft/container_inspect", body=bad
+                    )
+                    assert status == 422 and error_code(payload) == "minecraft.action_invalid", bad
+                assert fake.container_inspect_calls == []
+
+                status, payload = await client.post(
+                    "/api/v1/minecraft/container_inspect", body={"x": 100, "y": 64, "z": 100}
+                )
+                assert status == 200, payload
+                data = payload["data"]
+                assert data["action"] == "container_inspect" and data["status"] == "SUCCEEDED"
+                snapshot = data["result"]
+                assert snapshot["container"]["type"] == "minecraft:chest"
+                assert snapshot["container"]["size"] == 27
+                assert snapshot["slots"] == [
+                    {"slot": 0, "name": "dirt", "count": 12},
+                    {"slot": 7, "name": "sand", "count": 32},
+                ]
+                assert fake.container_inspect_calls == [{"x": 100, "y": 64, "z": 100}]
+                # 只读：绝不出现待确认
+                assert service.agent.confirmations.pending() == []
+
+                # runtime 侧的类型拒绝如实透传
+                fake.container_inspect_plan.append(
+                    {
+                        "error": ("container.unsupported", 422),
+                        "detail": {"block": "minecraft:furnace"},
+                    }
+                )
+                status, payload = await client.post(
+                    "/api/v1/minecraft/container_inspect", body={"x": 100, "y": 64, "z": 100}
+                )
+                assert status == 422 and error_code(payload) == "minecraft.container_unsupported"
+                fake.container_inspect_plan.append({"error": ("container.too_far", 422)})
+                status, payload = await client.post(
+                    "/api/v1/minecraft/container_inspect", body={"x": 100, "y": 64, "z": 100}
+                )
+                assert status == 422 and error_code(payload) == "minecraft.container_too_far"
+            finally:
+                await service._cleanup()
+    finally:
+        await fake.stop()
+
+
+async def test_container_transfer_endpoint_validates_then_requires_confirmation(tmp_path):
+    """§三十七：WebUI 的 Transfer 先校验参数，再过确认门；它**拿不到**执行权。"""
+    from tests.test_minecraft_service import FakeRuntime
+
+    fake = FakeRuntime()
+    await fake.start()
+    try:
+        fake.online = True
+        async with api_server(tmp_path) as (client, bot, server):
+            await client.login()
+            service = MinecraftService(
+                bot,
+                MinecraftConfig(
+                    enabled=True,
+                    auto_start_runtime=False,
+                    runtime_port=fake.port,
+                    agent={"tools": {"allow_medium": True}},
+                ),
+            )
+            bot.minecraft = service
+            try:
+                from app.integrations.minecraft.agent import MinecraftAgentBridge
+                from app.integrations.minecraft.events import parse_bridge_event
+
+                service.agent = MinecraftAgentBridge(service)
+                await service.status()
+                service.agent.apply_event(
+                    parse_bridge_event(
+                        {
+                            "event": "minecraft.spawned",
+                            "session_id": "s1",
+                            "timestamp": 1.0,
+                            "username": "Catodayo",
+                        }
+                    )
+                )
+
+                good = {
+                    "x": 100,
+                    "y": 64,
+                    "z": 100,
+                    "direction": "withdraw",
+                    "container_slot": 0,
+                    "inventory_slot": 9,
+                    "item": "dirt",
+                    "count": 1,
+                }
+                bad_cases = [
+                    {**good, "direction": "take"},
+                    {**good, "direction": None},
+                    {**good, "container_slot": -1},
+                    {**good, "container_slot": 1.5},
+                    {**good, "inventory_slot": 8},
+                    {**good, "inventory_slot": 45},
+                    {**good, "count": 0},
+                    {**good, "item": ""},
+                    {**good, "x": 100.5},
+                    {k: v for k, v in good.items() if k != "direction"},
+                ]
+                for bad in bad_cases:
+                    status, payload = await client.post(
+                        "/api/v1/minecraft/container_transfer", body=bad
+                    )
+                    assert status == 422 and error_code(payload) == "minecraft.action_invalid", bad
+                assert service.agent.confirmations.pending() == [], "垃圾参数绝不挂待确认"
+                assert fake.container_transfer_calls == []
+
+                # 合法参数 → 409（确认门），摘要写清箱子位置 / 第几格 / 物品 / 数量
+                status, payload = await client.post(
+                    "/api/v1/minecraft/container_transfer", body=good
+                )
+                assert status == 409 and error_code(payload) == "minecraft.confirmation_required"
+                detail = payload.get("detail") or payload["error"]["detail"]
+                assert (
+                    detail["confirmation"]["summary"]
+                    == "从 (100, 64, 100) 的容器第 0 格取 dirt ×1 到背包第 9 格"
+                )
+                assert fake.container_transfer_calls == [], "确认前绝不搬东西"
+
+                # §三十五：开发者入口（SYSTEM 回合）消费不了确认 —— WebUI 不能自授权
+                status, payload = await client.post(
+                    "/api/v1/minecraft/container_transfer", body=good
+                )
+                assert status == 409
+                assert error_code(payload) == "minecraft.confirmation_not_user_turn"
+                assert fake.container_transfer_calls == []
+                assert len(service.agent.confirmations.pending()) == 1, "来源门不消费确认"
+            finally:
+                await service._cleanup()
+    finally:
+        await fake.stop()
+
+
+async def test_container_endpoints_translate_policy_denials(tmp_path):
+    """未启用 MEDIUM 时如实 403；不在世界里时如实 409（都绝不碰 runtime）。"""
+    from tests.test_minecraft_service import FakeRuntime
+
+    fake = FakeRuntime()
+    await fake.start()
+    try:
+        async with api_server(tmp_path) as (client, bot, server):
+            await client.login()
+            service = MinecraftService(
+                bot,
+                MinecraftConfig(
+                    enabled=True,
+                    auto_start_runtime=False,
+                    runtime_port=fake.port,
+                    agent={"tools": {"allow_medium": False}},
+                ),
+            )
+            bot.minecraft = service
+            try:
+                from app.integrations.minecraft.agent import MinecraftAgentBridge
+
+                service.agent = MinecraftAgentBridge(service)
+                body = {
+                    "x": 100,
+                    "y": 64,
+                    "z": 100,
+                    "direction": "withdraw",
+                    "container_slot": 0,
+                    "inventory_slot": 9,
+                    "item": "dirt",
+                    "count": 1,
+                }
+                # 不在世界里：inspect（SAFE）也如实 409（离线没有读箱子这回事）
+                status, payload = await client.post(
+                    "/api/v1/minecraft/container_inspect", body={"x": 100, "y": 64, "z": 100}
+                )
+                assert status == 409 and error_code(payload) == "minecraft.offline"
+                assert fake.container_inspect_calls == []
+
+                # 上线后：allow_medium=false → transfer 403（在确认门之前就被风险开关拦下）
+                fake.online = True
+                await service.status()
+                from app.integrations.minecraft.events import parse_bridge_event
+
+                service.agent.apply_event(
+                    parse_bridge_event(
+                        {
+                            "event": "minecraft.spawned",
+                            "session_id": "s1",
+                            "timestamp": 1.0,
+                            "username": "Catodayo",
+                        }
+                    )
+                )
+                status, payload = await client.post(
+                    "/api/v1/minecraft/container_transfer", body=body
+                )
+                assert status == 403 and error_code(payload) == "minecraft.action_not_allowed"
+                assert fake.container_transfer_calls == []
+                assert service.agent.confirmations.pending() == [], "风险开关先于确认门"
+
+                # 而 inspect 是 SAFE：在线即可读（只读，不需要确认）
+                status, payload = await client.post(
+                    "/api/v1/minecraft/container_inspect", body={"x": 100, "y": 64, "z": 100}
+                )
+                assert status == 200, payload
+                assert payload["data"]["result"]["container"]["size"] == 27
+            finally:
+                await service._cleanup()
+    finally:
+        await fake.stop()
+
+
+def test_phase4e_error_codes_agree_between_service_and_api():
+    """两个事实源必须一致：Service 异常自带的 HTTP 语义 vs API 的错误码映射表。"""
+    from app.integrations.minecraft.service import (
+        MinecraftContainerClosed,
+        MinecraftContainerCloseFailed,
+        MinecraftContainerOpenFailed,
+        MinecraftContainerTooFar,
+        MinecraftContainerTransferUnconfirmed,
+        MinecraftContainerUnsupported,
+    )
+    from app.web.api.minecraft import _TOOL_STATUS
+
+    pairs = [
+        (MinecraftContainerUnsupported(), 422),
+        (MinecraftContainerTooFar(), 422),
+        (MinecraftContainerOpenFailed(), 500),
+        (MinecraftContainerClosed(), 409),
+        (MinecraftContainerCloseFailed(), 500),
+        (MinecraftContainerTransferUnconfirmed(), 500),
+    ]
+    for exc, expected in pairs:
+        assert exc.status == expected, exc.code
+        assert _TOOL_STATUS[exc.code] == expected, exc.code

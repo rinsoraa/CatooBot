@@ -219,6 +219,60 @@ class FakeMinecraftService:
             raise outcome
         return {"action_id": "act_move_item_1", "action": "inventory_move", **outcome}
 
+    async def container_inspect(self, x: Any, y: Any, z: Any) -> dict[str, Any]:
+        self._record("container_inspect", x=x, y=y, z=z)
+        outcome = self._next(
+            "container_inspect",
+            {
+                "status": "SUCCEEDED",
+                "result": {
+                    "ok": True,
+                    "container": {
+                        "type": "minecraft:chest",
+                        "label": "Chest",
+                        "position": {"x": x, "y": y, "z": z},
+                        "size": 27,
+                    },
+                    "slots": [
+                        {"slot": 0, "name": "dirt", "count": 12},
+                        {"slot": 7, "name": "sand", "count": 32},
+                    ],
+                },
+            },
+        )
+        if isinstance(outcome, Exception):
+            raise outcome
+        return {"action_id": "act_cinspect_1", "action": "container_inspect", **outcome}
+
+    async def container_transfer(
+        self,
+        x: Any,
+        y: Any,
+        z: Any,
+        direction: Any,
+        container_slot: Any,
+        inventory_slot: Any,
+        item: Any,
+        count: Any,
+    ) -> dict[str, Any]:
+        self._record(
+            "container_transfer",
+            x=x,
+            y=y,
+            z=z,
+            direction=direction,
+            container_slot=container_slot,
+            inventory_slot=inventory_slot,
+            item=item,
+            count=count,
+        )
+        outcome = self._next(
+            "container_transfer", {"status": "RUNNING", "action_id": "act_ctransfer_1"}
+        )
+        if isinstance(outcome, Exception):
+            raise outcome
+        return {"action_id": "act_ctransfer_1", "action": "container_transfer", **outcome}
+
     async def dig(self, x: Any, y: Any, z: Any, expected_block: Any) -> dict[str, Any]:
         self._record("dig", x=x, y=y, z=z, expected_block=expected_block)
         outcome = self._next("dig", {"status": "RUNNING", "action_id": "act_dig_1"})
@@ -341,7 +395,7 @@ async def test_minecraft_stop_tool_registered() -> None:
 
 
 async def test_all_tools_share_one_risk_table() -> None:
-    """Phase 4D 起十一个生产 Tool（含 SAFE 的 inventory/只读，和四个 MEDIUM 写动作）。"""
+    """Phase 4E 起十三个生产 Tool（SAFE 只读 + 五个 MEDIUM 写动作）。"""
     runtime = await _runtime()
     for name in ACTION_RISK:
         tool = runtime.registry.maybe_get(name)
@@ -352,6 +406,8 @@ async def test_all_tools_share_one_risk_table() -> None:
     assert runtime.registry.names() == [
         "calculator",
         "minecraft_chat",
+        "minecraft_container_inspect",
+        "minecraft_container_transfer",
         "minecraft_dig",
         "minecraft_equip",
         "minecraft_follow_player",
@@ -476,6 +532,8 @@ def test_risk_flags_gate_every_level() -> None:
     assert table.risk_of("minecraft_place") == "MEDIUM"
     assert table.risk_of("minecraft_equip") == "MEDIUM"
     assert table.risk_of("minecraft_inventory_move") == "MEDIUM"
+    assert table.risk_of("minecraft_container_inspect") == "SAFE"
+    assert table.risk_of("minecraft_container_transfer") == "MEDIUM"
     assert table.risk_of("minecraft_inventory") == "SAFE"
     assert table.allowed_by_config("minecraft_dig") is False
     assert table.allowed_by_config("minecraft_place") is False

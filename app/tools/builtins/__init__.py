@@ -13,6 +13,8 @@ from app.tools.builtins.minecraft_actions import (
     MinecraftMoveToTool,
     MinecraftStopTool,
 )
+from app.tools.builtins.minecraft_container import MinecraftContainerInspectTool
+from app.tools.builtins.minecraft_container_transfer import MinecraftContainerTransferTool
 from app.tools.builtins.minecraft_dig import MinecraftDigTool
 from app.tools.builtins.minecraft_equip import MinecraftEquipTool
 from app.tools.builtins.minecraft_inventory import MinecraftInventoryTool
@@ -26,6 +28,8 @@ from app.tools.builtins.time import TimeTool
 __all__ = [
     "CalculatorTool",
     "MinecraftChatTool",
+    "MinecraftContainerInspectTool",
+    "MinecraftContainerTransferTool",
     "MinecraftDigTool",
     "MinecraftEquipTool",
     "MinecraftFollowPlayerTool",

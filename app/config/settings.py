@@ -890,6 +890,19 @@ class InventoryMoveConfig(BaseModel):
     timeout: float = Field(default=15.0, ge=5.0, le=120.0)
 
 
+class ContainerConfig(BaseModel):
+    """Phase 4E：container（读 Chest / Barrel + 单物品存取）的安全门。
+
+    第一版只支持**单方块** chest / barrel、只在一个容器槽与一个背包槽之间搬一次；
+    不导航、不自动开未知容器、不操作双箱/潜影盒/熔炉。
+    """
+
+    #: 单次容器动作的超时（秒）
+    timeout: float = Field(default=30.0, ge=5.0, le=120.0)
+    #: 最大交互距离（格，眼睛 → 容器方块中心，与 dig/place 同口径）
+    max_distance: float = Field(default=5.0, gt=0, le=6.0)
+
+
 class MinecraftActionConfig(BaseModel):
     """Action Runtime 的动作级配置（Phase 3C 起）。"""
 
@@ -902,6 +915,8 @@ class MinecraftActionConfig(BaseModel):
     #: Phase 4D：背包写操作（拿到手上 / 单物品单槽位搬运）
     equip: EquipConfig = Field(default_factory=EquipConfig)
     inventory_move: InventoryMoveConfig = Field(default_factory=InventoryMoveConfig)
+    #: Phase 4E：单方块容器（读 Chest / Barrel + 单物品存取）
+    container: ContainerConfig = Field(default_factory=ContainerConfig)
 
 
 class MinecraftAgentToolsConfig(BaseModel):

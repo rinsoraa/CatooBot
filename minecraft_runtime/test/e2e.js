@@ -909,6 +909,207 @@ async function main() {
         console.log('[e2e] equip / inventory_move STOP：SKIPPED（假服务器背包永远是空的，没有可取消的窗口）')
       }
 
+      // ---------------- Phase 4E：container（flying-squid 会真的发 chest GUI 窗口） ----------------
+      // flying-squid 的 chest 插件会发 open_window(3x9) + window_items → inspect 的
+      // 「open → read → close」可以在这台假服务器上**真实**走一遍（内容当然是空的）。
+      // withdraw / deposit 的成功路径需要"箱子里真的有东西"，而假服务器没有 /give、
+      // 也没有掉落 → 那部分只能在真实服务器 smoke 验证（这里只验证拒绝路径）。
+      if (cycle === 1) {
+        const setBlock = (x, y, z, id) =>
+          observer.chat(`/setblock ${Math.round(x)} ${Math.round(y)} ${Math.round(z)} ${id}`)
+        const here = (await request(runtimePort, 'GET', '/minecraft/status')).body.position
+        const cx = Math.round(here.x) + 1
+        const cy = Math.round(here.y)
+        const cz = Math.round(here.z)
+        const stonePos = { x: cx, y: cy, z: cz + 1 }
+        const chestPos = { x: cx, y: cy + 1, z: cz }
+
+        // 非容器方块 → container.unsupported（绝不靠"看起来像"判断）
+        setBlock(stonePos.x, stonePos.y, stonePos.z, 'minecraft:stone')
+        await sleep(700)
+        const notContainer = await request(runtimePort, 'POST', '/minecraft/container_inspect', {
+          x: stonePos.x,
+          y: stonePos.y,
+          z: stonePos.z,
+        })
+        assert(
+          notContainer.status === 422 && notContainer.body.error.code === 'container.unsupported',
+          `非容器方块 → container.unsupported（得到 ${JSON.stringify(notContainer.body)}）`,
+        )
+        // 小数坐标 → action.invalid（方块坐标没有小数）
+        const floatCoords = await request(runtimePort, 'POST', '/minecraft/container_inspect', {
+          x: chestPos.x + 0.5,
+          y: chestPos.y,
+          z: chestPos.z,
+        })
+        assert(
+          floatCoords.status === 400 && floatCoords.body.error.code === 'action.invalid',
+          `小数坐标 → action.invalid（得到 ${JSON.stringify(floatCoords.body)}）`,
+        )
+        console.log('[e2e] container_inspect ✓ 参数与类型拒绝（不打开任何窗口）')
+
+        // 真放一个箱子（上方是空气 → flying-squid 才允许打开）→ inspect 真实开窗读内容
+        setBlock(chestPos.x, chestPos.y, chestPos.z, 'minecraft:chest')
+        await sleep(900)
+        const inspect = await request(runtimePort, 'POST', '/minecraft/container_inspect', {
+          x: chestPos.x,
+          y: chestPos.y,
+          z: chestPos.z,
+        })
+        assert(
+          inspect.status === 200 && inspect.body.status === 'SUCCEEDED',
+          `真实 chest 窗口 inspect 成功（得到 ${JSON.stringify(inspect.body)}）`,
+        )
+        const snapshot = inspect.body.result || {}
+        assert(
+          snapshot.container && snapshot.container.type === 'chest',
+          `容器类型来自真实方块（得到 ${JSON.stringify(snapshot.container)}）`,
+        )
+        assert(
+          snapshot.container.size === 27,
+          `单方块容器 = 27 格（从真实 window 结构推导，得到 ${snapshot.container.size}）`,
+        )
+        assert(
+          Array.isArray(snapshot.slots) && snapshot.slots.length === 0,
+          `空箱子 → 没有非空格子（得到 ${JSON.stringify(snapshot.slots)}）`,
+        )
+        assert(
+          Object.keys(snapshot).sort().join(',') === 'container,ok,slots',
+          `快照只有约定字段（得到 ${Object.keys(snapshot).sort().join(',')}）`,
+        )
+        console.log('[e2e] container_inspect ✓ 真实 open → read → close（27 格空箱子）')
+
+        // 再读一次：上一次的窗口必须已经关掉（否则第二次 open 会拿不到新窗口）
+        const again = await request(runtimePort, 'POST', '/minecraft/container_inspect', {
+          x: chestPos.x,
+          y: chestPos.y,
+          z: chestPos.z,
+        })
+        assert(
+          again.status === 200 && again.body.status === 'SUCCEEDED',
+          `窗口没有泄漏：第二次 inspect 仍然成功（得到 ${JSON.stringify(again.body)}）`,
+        )
+        console.log('[e2e] container_inspect ✓ close 是硬要求（第二次仍能打开）')
+
+        // transfer：空箱子里没有东西 → item.not_found（绝不假装搬成功）
+        const withdraw = await request(runtimePort, 'POST', '/minecraft/container_transfer', {
+          x: chestPos.x,
+          y: chestPos.y,
+          z: chestPos.z,
+          direction: 'withdraw',
+          container_slot: 0,
+          inventory_slot: 9,
+          item: 'dirt',
+          count: 1,
+        })
+        assert(
+          withdraw.status === 404 && withdraw.body.error.code === 'item.not_found',
+          `空箱子取东西 → item.not_found（得到 ${JSON.stringify(withdraw.body)}）`,
+        )
+        // 方向 / 槽位 / 数量的参数校验
+        const badDirection = await request(runtimePort, 'POST', '/minecraft/container_transfer', {
+          x: chestPos.x,
+          y: chestPos.y,
+          z: chestPos.z,
+          direction: 'take',
+          container_slot: 0,
+          inventory_slot: 9,
+          item: 'dirt',
+          count: 1,
+        })
+        assert(
+          badDirection.status === 400 && badDirection.body.error.code === 'action.invalid',
+          `direction 非法 → action.invalid（得到 ${JSON.stringify(badDirection.body)}）`,
+        )
+        const badSlot = await request(runtimePort, 'POST', '/minecraft/container_transfer', {
+          x: chestPos.x,
+          y: chestPos.y,
+          z: chestPos.z,
+          direction: 'withdraw',
+          container_slot: 27,
+          inventory_slot: 9,
+          item: 'dirt',
+          count: 1,
+        })
+        assert(
+          badSlot.status === 400 && badSlot.body.error.code === 'slot.invalid',
+          `container_slot 越界 → slot.invalid（得到 ${JSON.stringify(badSlot.body)}）`,
+        )
+        const badInventorySlot = await request(
+          runtimePort,
+          'POST',
+          '/minecraft/container_transfer',
+          {
+            x: chestPos.x,
+            y: chestPos.y,
+            z: chestPos.z,
+            direction: 'withdraw',
+            container_slot: 0,
+            inventory_slot: 45,
+            item: 'dirt',
+            count: 1,
+          },
+        )
+        assert(
+          badInventorySlot.status === 400 && badInventorySlot.body.error.code === 'slot.invalid',
+          `inventory_slot 45 → slot.invalid（得到 ${JSON.stringify(badInventorySlot.body)}）`,
+        )
+        console.log('[e2e] container_transfer ✓ 空箱子 / 非法参数都如实拒绝（不伪造成功）')
+
+        // 独占：move_to 跑着的时候 container 动作必须被拒
+        const busyMove = await request(runtimePort, 'POST', '/minecraft/move_to', {
+          x: here.x + 6,
+          y: here.y,
+          z: here.z,
+        })
+        if (busyMove.status === 200 && busyMove.body.status === 'RUNNING') {
+          const busyInspect = await request(runtimePort, 'POST', '/minecraft/container_inspect', {
+            x: chestPos.x,
+            y: chestPos.y,
+            z: chestPos.z,
+          })
+          assert(
+            busyInspect.status === 409 && busyInspect.body.error.code === 'action.busy',
+            `move_to 跑着时 inspect → action.busy（得到 ${JSON.stringify(busyInspect.body)}）`,
+          )
+          const busyTransfer = await request(runtimePort, 'POST', '/minecraft/container_transfer', {
+            x: chestPos.x,
+            y: chestPos.y,
+            z: chestPos.z,
+            direction: 'withdraw',
+            container_slot: 0,
+            inventory_slot: 9,
+            item: 'dirt',
+            count: 1,
+          })
+          assert(
+            busyTransfer.status === 409 && busyTransfer.body.error.code === 'action.busy',
+            `move_to 跑着时 transfer → action.busy（得到 ${JSON.stringify(busyTransfer.body)}）`,
+          )
+          await request(runtimePort, 'POST', '/minecraft/stop', {})
+          await waitFor(
+            () =>
+              events.some(
+                (e) =>
+                  e.event === 'minecraft.action.cancelled' &&
+                  e.action_id === busyMove.body.action_id,
+              ),
+            'move_to cancelled（4E 独占段收尾）',
+            10000,
+          )
+          console.log('[e2e] container ✓ 独占（开窗动作不与前台动作并发）')
+        } else {
+          console.log('[e2e] container 独占检查：move_to 没进入 RUNNING，跳过')
+        }
+
+        // 收尾：把测试用的石头与箱子清掉（不留痕迹）
+        setBlock(chestPos.x, chestPos.y, chestPos.z, 'air')
+        setBlock(stonePos.x, stonePos.y, stonePos.z, 'air')
+        await sleep(400)
+        // inspect 是即时的，没有"挖到一半"那种可取消窗口 → 与 dig/equip 同理
+        console.log('[e2e] container STOP：SKIPPED（inspect 毫秒级完成，没有可取消窗口）')
+      }
+
       // ---------------- Phase 3D：follow_player（Test A 跟随 / B STOP / C 丢失 / D 太远 / E 超时） ----------------
       if (cycle === 1) {
         const botPosNow = async () =>

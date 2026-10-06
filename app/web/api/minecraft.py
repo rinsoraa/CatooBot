@@ -126,6 +126,13 @@ _TOOL_STATUS: dict[str, int] = {
     "minecraft.slot_invalid": 422,
     "minecraft.equip_unconfirmed": 500,
     "minecraft.move_unconfirmed": 500,
+    # Phase 4E：container（读 Chest / Barrel + 单物品存取）
+    "minecraft.container_unsupported": 422,
+    "minecraft.container_too_far": 422,
+    "minecraft.container_open_failed": 500,
+    "minecraft.container_closed": 409,
+    "minecraft.container_close_failed": 500,
+    "minecraft.container_transfer_unconfirmed": 500,
 }
 
 
@@ -411,6 +418,94 @@ class MinecraftApiRoutes(WebContext):
             )
         return ok(result.data, request=request)
 
+    async def _v1_minecraft_container_inspect(self, request: web.Request) -> web.Response:
+        """Phase 4E：读一个 Chest / Barrel 的内容（SAFE，开发调试入口）。
+
+        只读 inspection：不需要确认门，但仍然**独占**（打开窗口是有生命周期的客户端状态）。
+        """
+        try:
+            service = _service(self._bot)
+        except MinecraftBridgeError as exc:
+            raise _translate(exc) from exc
+        bridge = getattr(service, "agent", None)
+        if bridge is None:
+            raise ApiError(503, "minecraft.disabled", "Minecraft Agent 未装配")
+        body = await read_json(request)
+        arguments = {"x": body.get("x"), "y": body.get("y"), "z": body.get("z")}
+        try:
+            service.validate_container_inspect(arguments["x"], arguments["y"], arguments["z"])
+        except MinecraftBridgeError as exc:
+            raise _translate(exc) from exc
+        result = await bridge.invoke_developer(
+            "minecraft_container_inspect",
+            arguments,
+            lambda svc: svc.container_inspect(arguments["x"], arguments["y"], arguments["z"]),
+        )
+        if not result.success:
+            code = result.error_type or "minecraft.action_failed"
+            raise ApiError(
+                _TOOL_STATUS.get(code, 500), code, result.error or code, detail=result.data
+            )
+        return ok(result.data, request=request)
+
+    async def _v1_minecraft_container_transfer(self, request: web.Request) -> web.Response:
+        """Phase 4E：单物品在容器槽 ↔ 背包槽之间搬一次（MEDIUM，开发调试入口）。
+
+        与 dig/place/equip/inventory_move 同规矩：先校验参数，再过确认门；WebUI
+        **拿不到**执行权（非用户回合 → 409 confirmation_not_user_turn）。
+        """
+        try:
+            service = _service(self._bot)
+        except MinecraftBridgeError as exc:
+            raise _translate(exc) from exc
+        bridge = getattr(service, "agent", None)
+        if bridge is None:
+            raise ApiError(503, "minecraft.disabled", "Minecraft Agent 未装配")
+        body = await read_json(request)
+        arguments = {
+            "x": body.get("x"),
+            "y": body.get("y"),
+            "z": body.get("z"),
+            "direction": body.get("direction"),
+            "container_slot": body.get("container_slot"),
+            "inventory_slot": body.get("inventory_slot"),
+            "item": body.get("item"),
+            "count": body.get("count"),
+        }
+        try:
+            service.validate_container_transfer(
+                arguments["x"],
+                arguments["y"],
+                arguments["z"],
+                arguments["direction"],
+                arguments["container_slot"],
+                arguments["inventory_slot"],
+                arguments["item"],
+                arguments["count"],
+            )
+        except MinecraftBridgeError as exc:
+            raise _translate(exc) from exc
+        result = await bridge.invoke_developer(
+            "minecraft_container_transfer",
+            arguments,
+            lambda svc: svc.container_transfer(
+                arguments["x"],
+                arguments["y"],
+                arguments["z"],
+                arguments["direction"],
+                arguments["container_slot"],
+                arguments["inventory_slot"],
+                arguments["item"],
+                arguments["count"],
+            ),
+        )
+        if not result.success:
+            code = result.error_type or "minecraft.action_failed"
+            raise ApiError(
+                _TOOL_STATUS.get(code, 500), code, result.error or code, detail=result.data
+            )
+        return ok(result.data, request=request)
+
     async def _v1_minecraft_equip(self, request: web.Request) -> web.Response:
         """Phase 4D：把指定物品拿到主手（开发调试入口；**必须**过 MEDIUM 确认门）。"""
         try:
@@ -585,6 +680,14 @@ class MinecraftApiRoutes(WebContext):
         app.router.add_post(f"{API_PREFIX}/minecraft/dig", wrap(self._v1_minecraft_dig))
         app.router.add_post(f"{API_PREFIX}/minecraft/place", wrap(self._v1_minecraft_place))
         app.router.add_post(f"{API_PREFIX}/minecraft/equip", wrap(self._v1_minecraft_equip))
+        app.router.add_post(
+            f"{API_PREFIX}/minecraft/container_inspect",
+            wrap(self._v1_minecraft_container_inspect),
+        )
+        app.router.add_post(
+            f"{API_PREFIX}/minecraft/container_transfer",
+            wrap(self._v1_minecraft_container_transfer),
+        )
         app.router.add_post(
             f"{API_PREFIX}/minecraft/inventory_move", wrap(self._v1_minecraft_inventory_move)
         )

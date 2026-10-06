@@ -346,6 +346,74 @@ class MinecraftMoveUnconfirmed(MinecraftBridgeError):
         super().__init__(message, code="minecraft.move_unconfirmed", detail=detail or {})
 
 
+class MinecraftContainerUnsupported(MinecraftBridgeError):
+    """不是本阶段支持的单方块容器（非 chest/barrel 方块、双箱、窗口结构不符）。"""
+
+    status = 422
+
+    def __init__(self, message: str = "只支持单方块 Chest / Barrel", *, block: str = "") -> None:
+        super().__init__(
+            message,
+            code="minecraft.container_unsupported",
+            detail={"block": block} if block else None,
+        )
+
+
+class MinecraftContainerTooFar(MinecraftBridgeError):
+    """容器离得太远（本阶段绝不自动走过去）。"""
+
+    status = 422
+
+    def __init__(self, message: str = "容器太远", *, distance: float | None = None) -> None:
+        super().__init__(
+            message,
+            code="minecraft.container_too_far",
+            detail={"distance": distance} if distance is not None else None,
+        )
+
+
+class MinecraftContainerOpenFailed(MinecraftBridgeError):
+    """打开容器失败（服务器没给窗口 / 方块其实不是容器）。"""
+
+    status = 500
+
+    def __init__(self, message: str = "打开容器失败") -> None:
+        super().__init__(message, code="minecraft.container_open_failed")
+
+
+class MinecraftContainerClosed(MinecraftBridgeError):
+    """容器窗口在动作过程中被关掉（玩家/服务器关掉，或方块被破坏）。"""
+
+    status = 409
+
+    def __init__(self, message: str = "容器窗口已经关闭") -> None:
+        super().__init__(message, code="minecraft.container_closed")
+
+
+class MinecraftContainerCloseFailed(MinecraftBridgeError):
+    """动作做完了但窗口关不上：世界状态可能已经变了，必须如实上报（绝不吞掉）。"""
+
+    status = 500
+
+    def __init__(
+        self, message: str = "关闭容器失败", *, detail: dict[str, Any] | None = None
+    ) -> None:
+        super().__init__(message, code="minecraft.container_close_failed", detail=detail or {})
+
+
+class MinecraftContainerTransferUnconfirmed(MinecraftBridgeError):
+    """transfer resolve 了但重读的真实状态不符（不硬编码 ±count）。"""
+
+    status = 500
+
+    def __init__(
+        self, message: str = "未能确认搬运结果", *, detail: dict[str, Any] | None = None
+    ) -> None:
+        super().__init__(
+            message, code="minecraft.container_transfer_unconfirmed", detail=detail or {}
+        )
+
+
 class MinecraftBlockPlaceUnconfirmed(MinecraftBridgeError):
     """placeBlock resolve 了但世界里没出现预期方块：客户端/服务器不同步，不能报成功。"""
 
@@ -453,6 +521,19 @@ def _translate(exc: MinecraftRuntimeError) -> MinecraftBridgeError:
         )
     if exc.code == "move.unconfirmed":
         return MinecraftMoveUnconfirmed(str(exc), detail=dict(exc.detail))
+    # Phase 4E：container（Chest / Barrel 单方块读取与单项存取）
+    if exc.code == "container.unsupported":
+        return MinecraftContainerUnsupported(str(exc), block=str(exc.detail.get("block") or ""))
+    if exc.code == "container.too_far":
+        return MinecraftContainerTooFar(str(exc), distance=exc.detail.get("distance"))
+    if exc.code == "container.open_failed":
+        return MinecraftContainerOpenFailed(str(exc))
+    if exc.code == "container.closed":
+        return MinecraftContainerClosed(str(exc))
+    if exc.code == "container.close_failed":
+        return MinecraftContainerCloseFailed(str(exc), detail=dict(exc.detail))
+    if exc.code == "container.transfer_unconfirmed":
+        return MinecraftContainerTransferUnconfirmed(str(exc), detail=dict(exc.detail))
     if exc.code == "player.not_found":
         return MinecraftPlayerNotFound(str(exc))
     # player.lost / follow.target_too_far 发生在持续动作的后台阶段，正常经事件上报；
@@ -509,6 +590,11 @@ DIG_MAX_BLOCK_CHARS = 64
 #: Phase 4D：mineflayer 玩家窗口可操作的槽位范围（主背包 9-35 + 快捷栏 36-44）
 PLAYER_SLOT_MIN = 9
 PLAYER_SLOT_MAX = 44
+
+#: Phase 4E：容器动作的槽位 / 方向词表（与 runtime 同一份语义）
+CONTAINER_DIRECTIONS: tuple[str, ...] = ("withdraw", "deposit")
+#: 单方块容器的容器侧槽位数（runtime 从真实窗口结构推导后必须等于它；双箱是 54）
+CONTAINER_SLOT_COUNT = 27
 
 #: Phase 4C：place 只允许这六个方向（与 runtime 同一张表，绝不接受任意向量）
 PLACE_FACES: tuple[str, ...] = ("up", "down", "north", "south", "east", "west")
@@ -770,6 +856,9 @@ class MinecraftService:
         # Phase 4C：place 的安全门
         env["MC_PLACE_TIMEOUT_MS"] = str(int(self.config.action.place.timeout * 1000))
         env["MC_PLACE_MAX_DISTANCE"] = str(self.config.action.place.max_distance)
+        # Phase 4E：container 的安全门（超时/距离）
+        env["MC_CONTAINER_TIMEOUT_MS"] = str(int(self.config.action.container.timeout * 1000))
+        env["MC_CONTAINER_MAX_DISTANCE"] = str(self.config.action.container.max_distance)
         # Phase 4D：背包写操作的超时
         env["MC_EQUIP_TIMEOUT_MS"] = str(int(self.config.action.equip.timeout * 1000))
         env["MC_INVENTORY_MOVE_TIMEOUT_MS"] = str(
@@ -1126,6 +1215,125 @@ class MinecraftService:
         try:
             await self._ensure_runtime()
             return await self._client.inventory_move(source, destination, clean_item, clean_count)
+        except MinecraftRuntimeError as exc:
+            if exc.unreachable:
+                self._mark_runtime_down(str(exc))
+            raise _translate(exc) from exc
+
+    @staticmethod
+    def validate_container_inspect(x: Any, y: Any, z: Any) -> dict[str, int]:
+        """container_inspect 的参数校验（纯函数）：整数坐标 + 世界边界。"""
+        coords: dict[str, int] = {}
+        for name, value in (("x", x), ("y", y), ("z", z)):
+            if isinstance(value, bool) or not isinstance(value, int):
+                raise MinecraftActionInvalid(f"坐标 {name} 必须是整数（方块坐标没有小数）")
+            coords[name] = int(value)
+        if abs(coords["x"]) > 3.0e7 or abs(coords["z"]) > 3.0e7 or not -512 <= coords["y"] <= 2048:
+            raise MinecraftActionInvalid("坐标超出 Minecraft 世界边界")
+        return coords
+
+    @staticmethod
+    def validate_container_transfer(
+        x: Any,
+        y: Any,
+        z: Any,
+        direction: Any,
+        container_slot: Any,
+        inventory_slot: Any,
+        item: Any,
+        count: Any,
+    ) -> tuple[dict[str, int], str, int, int, str, int]:
+        """container_transfer 的参数校验（纯函数）。
+
+        坐标是整数；direction ∈ withdraw/deposit；container_slot >= 0（真正上界由真实
+        窗口大小决定，在 runtime 里校验）；inventory_slot 沿用 Phase 4D 的 9~44；
+        count >= 1；item 非空。**先校验再进确认门**：垃圾参数不该挂出一条待确认。
+        """
+        coords = MinecraftService.validate_container_inspect(x, y, z)
+        name = str(direction or "").strip().lower()
+        if name not in CONTAINER_DIRECTIONS:
+            raise MinecraftActionInvalid(f"direction 必须是 {'/'.join(CONTAINER_DIRECTIONS)} 之一")
+        if isinstance(container_slot, bool) or not isinstance(container_slot, int):
+            raise MinecraftActionInvalid("container_slot 必须是整数")
+        if container_slot < 0:
+            raise MinecraftActionInvalid("container_slot 不能是负数")
+        if isinstance(inventory_slot, bool) or not isinstance(inventory_slot, int):
+            raise MinecraftActionInvalid("inventory_slot 必须是整数")
+        if not PLAYER_SLOT_MIN <= inventory_slot <= PLAYER_SLOT_MAX:
+            raise MinecraftActionInvalid(
+                f"inventory_slot 必须在 {PLAYER_SLOT_MIN}~{PLAYER_SLOT_MAX} 之间"
+                "（主背包 9-35 + 快捷栏 36-44）"
+            )
+        if isinstance(count, bool) or not isinstance(count, int) or count < 1:
+            raise MinecraftActionInvalid("count 必须是 >= 1 的整数")
+        if not isinstance(item, str) or not item.strip():
+            raise MinecraftActionInvalid("item 不能为空")
+        if len(item) > PLACE_MAX_ITEM_CHARS:
+            raise MinecraftActionInvalid(f"item 最长 {PLACE_MAX_ITEM_CHARS} 个字符")
+        if any(ord(ch) < 32 or ord(ch) == 127 for ch in item):
+            raise MinecraftActionInvalid("item 不能包含控制字符")
+        return (
+            coords,
+            name,
+            int(container_slot),
+            int(inventory_slot),
+            item.strip(),
+            int(count),
+        )
+
+    async def container_inspect(self, x: Any, y: Any, z: Any) -> dict[str, Any]:
+        """读取一个 Chest / Barrel 的**真实内容**（Phase 4E · SAFE 只读）。
+
+        同步动作：runtime 内部 open → read → close 后直接返回快照
+        （``{ok, container:{type,label,position,size}, slots:[{slot,name,count}]}``）。
+        SAFE 只代表"对支持的 normal chest/barrel 做只读 inspection"——
+        打开窗口仍是独占的客户端状态，不与其他前台动作并发。
+        """
+        self._require_enabled()
+        coords = self.validate_container_inspect(x, y, z)
+        try:
+            await self._ensure_runtime()
+            return await self._client.container_inspect(coords["x"], coords["y"], coords["z"])
+        except MinecraftRuntimeError as exc:
+            if exc.unreachable:
+                self._mark_runtime_down(str(exc))
+            raise _translate(exc) from exc
+
+    async def container_transfer(
+        self,
+        x: Any,
+        y: Any,
+        z: Any,
+        direction: Any,
+        container_slot: Any,
+        inventory_slot: Any,
+        item: Any,
+        count: Any,
+    ) -> dict[str, Any]:
+        """把一个明确物品在「容器槽 ↔ 自己背包槽」之间移动一次（Phase 4E · MEDIUM）。
+
+        一个方向、一个 container_slot、一个 inventory_slot、一个 item、一个 count；
+        目标被别的物品占用时**拒绝**（绝不交换、绝不换槽）；只支持单方块 Chest / Barrel。
+        返回启动即 ``RUNNING``，终态经事件送达（成功带 container/inventory 的 before/after）。
+        """
+        self._require_enabled()
+        coords, direction_name, cslot, islot, clean_item, clean_count = (
+            self.validate_container_transfer(
+                x, y, z, direction, container_slot, inventory_slot, item, count
+            )
+        )
+        try:
+            await self._ensure_runtime()
+            return await self._client.container_transfer(
+                coords["x"],
+                coords["y"],
+                coords["z"],
+                direction_name,
+                cslot,
+                islot,
+                clean_item,
+                clean_count,
+            )
         except MinecraftRuntimeError as exc:
             if exc.unreachable:
                 self._mark_runtime_down(str(exc))

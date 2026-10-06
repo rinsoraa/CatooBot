@@ -118,6 +118,7 @@ v0.4 行为引擎（回复延迟/分段/作息，规格不在 docs/specs/）标 
 | [MINECRAFT_PHASE4B.md](MINECRAFT_PHASE4B.md) | Minecraft 单方块挖掘（Phase 4B）：第一个世界修改动作 minecraft_dig（MEDIUM + 确认 + expected_block + block_changed）、感知联动、真实服务器 smoke | 已实现（真实服务器 smoke PASS） |
 | [MINECRAFT_PHASE4C.md](MINECRAFT_PHASE4C.md) | Minecraft 背包只读切片 + 单方块放置（Phase 4C）：minecraft_inventory（SAFE）/ minecraft_place（MEDIUM + face 六向 + expected_item 手主持物硬约束 + 二次验证） | 已实现（真实服务器 place PASS） |
 | [MINECRAFT_PHASE4D.md](MINECRAFT_PHASE4D.md) | Minecraft 背包控制（Phase 4D）：minecraft_equip（换主手）/ minecraft_inventory_move（单物品单槽位搬运，目标被占用即拒绝，绝不隐式交换）+ 调试槽位表 | 已实现（真实服务器 equip + move PASS） |
+| [MINECRAFT_PHASE4E.md](MINECRAFT_PHASE4E.md) | Minecraft 容器控制（Phase 4E）：minecraft_container_inspect（单方块 Chest/Barrel 只读，SAFE 但独占）/ minecraft_container_transfer（单物品单槽位存取，MEDIUM + 确认，绝不交换）+ 窗口生命周期与 cleanup | 已实现（真实服务器 inspect + withdraw + deposit PASS） |
 | bible_source_罐头.txt | 内置角色的人物档案源文件（Bible 编译器输入） | **本地内容资产**：按「Character Bible 不得上传」约束，已移至 `config/bible_source_罐头.txt`（`config/` 不在发布镜像内） |
 
 ## 运维速查

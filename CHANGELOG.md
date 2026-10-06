@@ -3,6 +3,30 @@
 本文件记录 CatooBot 的版本演进。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号见 `pyproject.toml`；日期取自真实提交历史（本仓库 2026-09-30 起）。
 
+## Minecraft Phase 4E — Container Control（Chest / Barrel 读取 + 单项存取）
+
+* 新增 LLM 工具 `minecraft_container_inspect`（SAFE 只读，但**独占**）：读一个**单方块**
+  Chest / Barrel 的真实内容（`{type, label, position, size}` + 只列非空格子的 `slots`）；
+  内部固定 open → read → close，**没有** open/close 这种长期状态型工具（LLM 永远不持有半开的窗口）。
+* 新增 LLM 工具 `minecraft_container_transfer`（MEDIUM）：**一个方向、一个容器格、一个背包格、
+  一个物品、一个数量**（`direction = withdraw | deposit`）；目标格被别的物品占用 →
+  `destination_occupied`（**绝不隐式交换、绝不换格**）；用 `bot.transfer` 把 source/destination
+  各钉死在单槽；执行后**重新读**容器与背包两侧，按真实变化量判定，否则
+  `container_transfer_unconfirmed`；报成功之前必须关窗，关不上如实报 `container_close_failed`。
+* 只支持单方块 chest / barrel：trapped chest、双箱（窗口 54 格）、潜影盒、熔炉、漏斗、
+  发射器等一律 `container_unsupported`；不做箱对箱搬运、批量整理、deposit-all/withdraw-all。
+* 窗口生命周期是硬要求：成功/失败/异常/超时/取消/断开都必须 best-effort close；
+  ActionRuntime 的 `start`/`run`/`cleanup` 新增 controller 参数（动作私有资源挂在其上），
+  cleanup 至多一次、可重复调用、close 异常不阻止终态。
+* 调试面：`POST /api/v1/minecraft/container_inspect`、`POST /api/v1/minecraft/container_transfer`；
+  WebUI 新增 Container 面板（INSPECT 结果表 + 一键填 source + Transfer 表单）。
+* 验证：Node `container.test.js` 85 checks（A–O 生命周期 + 类型/结构拒绝）、
+  `container_transfer.test.js` 88 checks（P–AC：withdraw/deposit/单槽钉死/占用/合并/
+  重读复核/取消与超时竞态/终态恰好一次）；Python 测试 +35；flying-squid E2E 用**真实 chest GUI**
+  验证 open → read → close（并证明窗口没泄漏）；真实服务器 smoke 真机 inspect + withdraw + deposit
+  且容器与背包逐项恢复。
+* `allow_medium` 默认仍是 `false`（现在覆盖五个 MEDIUM 动作）。
+
 ## Minecraft Phase 4D — Inventory Control（Equip + 单项 Inventory Move）
 
 * 新增 LLM 工具 `minecraft_equip`（MEDIUM）：把背包里**明确指定**的物品拿到主手；

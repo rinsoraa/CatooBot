@@ -145,6 +145,8 @@ function makeHandler(
     place?: MockReply
     equip?: MockReply
     inventoryMove?: MockReply
+    containerInspect?: MockReply
+    containerTransfer?: MockReply
   } = {},
 ) {
   return (request: MockRequest): MockReply => {
@@ -229,6 +231,36 @@ function makeHandler(
       return (
         overrides.inventoryMove ??
         ok({ ok: true, action: 'inventory_move', action_id: 'act_move_ui', status: 'RUNNING' })
+      )
+    }
+    if (url.pathname === '/api/v1/minecraft/container_inspect' && request.method === 'POST') {
+      return (
+        overrides.containerInspect ??
+        ok({
+          ok: true,
+          action: 'container_inspect',
+          action_id: 'act_cinspect_ui',
+          status: 'SUCCEEDED',
+          result: {
+            ok: true,
+            container: {
+              type: 'minecraft:chest',
+              label: 'Chest',
+              position: { x: 100, y: 64, z: 100 },
+              size: 27,
+            },
+            slots: [
+              { slot: 0, name: 'dirt', count: 12 },
+              { slot: 7, name: 'sand', count: 32 },
+            ],
+          },
+        })
+      )
+    }
+    if (url.pathname === '/api/v1/minecraft/container_transfer' && request.method === 'POST') {
+      return (
+        overrides.containerTransfer ??
+        ok({ ok: true, action: 'container_transfer', action_id: 'act_ctransfer_ui', status: 'RUNNING' })
       )
     }
     return fail(404, 'resource.not_found', `未模拟 ${request.method} ${url.pathname}`)
@@ -829,6 +861,170 @@ describe('Minecraft 页 · Inventory Control（Phase 4D）', () => {
     expect(wrapper.get('[data-test="mc-inventory-held"]').text()).toContain('dirt')
     expect(wrapper.get('[data-test="mc-inventory-range"]').text()).toContain('9–44')
     expect(wrapper.text()).toContain('一次只动一个物品、一个来源槽、一个目标槽、一个数量')
+  })
+})
+
+describe('Minecraft 页 · Container（Phase 4E）', () => {
+  async function inspectSomeContainer(wrapper: VueWrapper): Promise<void> {
+    await wrapper.get('[data-test="mc-container-x"]').setValue('100')
+    await wrapper.get('[data-test="mc-container-y"]').setValue('64')
+    await wrapper.get('[data-test="mc-container-z"]').setValue('100')
+    await wrapper.get('[data-test="mc-container-inspect"]').trigger('click')
+    await flushAll()
+  }
+
+  it('INSPECT 把坐标发到 /minecraft/container_inspect 并渲染内容', async () => {
+    const { wrapper, calls } = await mountPage(makeHandler())
+    await flushAll()
+    await inspectSomeContainer(wrapper)
+    const call = calls.find((c) => c.url.endsWith('/minecraft/container_inspect'))
+    expect(call).toBeTruthy()
+    expect(call?.body).toEqual({ x: 100, y: 64, z: 100 })
+    expect(wrapper.get('[data-test="mc-container-type"]').text()).toContain('Chest')
+    expect(wrapper.get('[data-test="mc-container-size"]').text()).toBe('27')
+    expect(wrapper.get('[data-test="mc-container-position"]').text()).toBe('100, 64, 100')
+    expect(wrapper.get('[data-test="mc-container-slot-0"]').text()).toContain('dirt')
+    expect(wrapper.get('[data-test="mc-container-slot-7"]').text()).toContain('sand')
+  })
+
+  it('INSPECT 坐标不是整数时本地拦截（不发请求）', async () => {
+    const { wrapper, calls } = await mountPage(makeHandler())
+    await flushAll()
+    await wrapper.get('[data-test="mc-container-x"]').setValue('100.5')
+    await wrapper.get('[data-test="mc-container-y"]').setValue('64')
+    await wrapper.get('[data-test="mc-container-z"]').setValue('100')
+    await wrapper.get('[data-test="mc-container-inspect"]').trigger('click')
+    await flushAll()
+    expect(calls.some((c) => c.url.endsWith('/minecraft/container_inspect'))).toBe(false)
+    expect(useToast().items.value.at(-1)?.message).toBe('容器坐标不合法')
+  })
+
+  it('INSPECT 被拒绝时如实报错（不假装读到了）', async () => {
+    const { wrapper } = await mountPage(
+      makeHandler({
+        containerInspect: fail(422, 'minecraft.container_unsupported', '这个位置不是箱子或桶'),
+      }),
+    )
+    await flushAll()
+    await inspectSomeContainer(wrapper)
+    expect(useToast().items.value.at(-1)?.message).toBe('INSPECT 被拒绝')
+    expect(useToast().items.value.at(-1)?.detail).toContain('不是箱子或桶')
+    expect(wrapper.get('[data-test="mc-container-type"]').text()).toBe('—')
+  })
+
+  it('INSPECT 后自动填好 Transfer 的 container_slot / item / 空背包格', async () => {
+    const { wrapper } = await mountPage(makeHandler())
+    await flushAll()
+    await inspectSomeContainer(wrapper)
+    // 第一格有东西的容器槽 = 0（dirt）；第一个空背包格 = 11（9/10/36 被占）
+    expect((wrapper.get('[data-test="mc-container-slot"]').element as HTMLInputElement).value).toBe(
+      '0',
+    )
+    expect((wrapper.get('[data-test="mc-container-item"]').element as HTMLInputElement).value).toBe(
+      'dirt',
+    )
+    expect(
+      (wrapper.get('[data-test="mc-container-inventory-slot"]').element as HTMLInputElement).value,
+    ).toBe('11')
+  })
+
+  it('容器槽位表点一行 → 填入 container_slot / item', async () => {
+    const { wrapper } = await mountPage(makeHandler())
+    await flushAll()
+    await inspectSomeContainer(wrapper)
+    await wrapper.get('[data-test="mc-container-use-7"]').trigger('click')
+    await flushAll()
+    expect((wrapper.get('[data-test="mc-container-slot"]').element as HTMLInputElement).value).toBe(
+      '7',
+    )
+    expect((wrapper.get('[data-test="mc-container-item"]').element as HTMLInputElement).value).toBe(
+      'sand',
+    )
+  })
+
+  it('TRANSFER 把 8 个字段发到 /minecraft/container_transfer', async () => {
+    const { wrapper, calls } = await mountPage(makeHandler())
+    await flushAll()
+    await wrapper.get('[data-test="mc-container-x"]').setValue('100')
+    await wrapper.get('[data-test="mc-container-y"]').setValue('64')
+    await wrapper.get('[data-test="mc-container-z"]').setValue('100')
+    await wrapper.get('[data-test="mc-container-direction"]').setValue('deposit')
+    await wrapper.get('[data-test="mc-container-slot"]').setValue('3')
+    await wrapper.get('[data-test="mc-container-inventory-slot"]').setValue('9')
+    await wrapper.get('[data-test="mc-container-item"]').setValue('sand')
+    await wrapper.get('[data-test="mc-container-count"]').setValue('2')
+    await wrapper.get('[data-test="mc-container-transfer"]').trigger('click')
+    await flushAll()
+    const call = calls.find((c) => c.url.endsWith('/minecraft/container_transfer'))
+    expect(call).toBeTruthy()
+    expect(call?.body).toEqual({
+      x: 100,
+      y: 64,
+      z: 100,
+      direction: 'deposit',
+      container_slot: 3,
+      inventory_slot: 9,
+      item: 'sand',
+      count: 2,
+    })
+  })
+
+  it('TRANSFER 在本地就拦住非法槽位 / 数量 / 缺物品（不发请求）', async () => {
+    const { wrapper, calls } = await mountPage(makeHandler())
+    await flushAll()
+    await wrapper.get('[data-test="mc-container-x"]').setValue('100')
+    await wrapper.get('[data-test="mc-container-y"]').setValue('64')
+    await wrapper.get('[data-test="mc-container-z"]').setValue('100')
+    const run = () => wrapper.get('[data-test="mc-container-transfer"]').trigger('click')
+    const set = async (key: string, value: string) => {
+      await wrapper.get(`[data-test="${key}"]`).setValue(value)
+    }
+
+    await set('mc-container-slot', '-1')
+    await run()
+    await set('mc-container-slot', '0')
+    await set('mc-container-inventory-slot', '8') // 主背包从 9 开始
+    await run()
+    await set('mc-container-inventory-slot', '45') // 副手
+    await run()
+    await set('mc-container-inventory-slot', '9')
+    await set('mc-container-count', '0')
+    await run()
+    await set('mc-container-count', '1')
+    await set('mc-container-item', '')
+    await run()
+    await flushAll()
+    expect(calls.some((c) => c.url.endsWith('/minecraft/container_transfer'))).toBe(false)
+  })
+
+  it('TRANSFER 被确认门拒绝时如实报错（WebUI 拿不到执行权）', async () => {
+    const { wrapper } = await mountPage(
+      makeHandler({
+        containerTransfer: fail(
+          409,
+          'minecraft.confirmation_required',
+          '这个 Minecraft 动作需要用户确认',
+        ),
+      }),
+    )
+    await flushAll()
+    await wrapper.get('[data-test="mc-container-x"]').setValue('100')
+    await wrapper.get('[data-test="mc-container-y"]').setValue('64')
+    await wrapper.get('[data-test="mc-container-z"]').setValue('100')
+    await wrapper.get('[data-test="mc-container-slot"]').setValue('0')
+    await wrapper.get('[data-test="mc-container-inventory-slot"]').setValue('9')
+    await wrapper.get('[data-test="mc-container-item"]').setValue('dirt')
+    await wrapper.get('[data-test="mc-container-transfer"]').trigger('click')
+    await flushAll()
+    expect(useToast().items.value.at(-1)?.message).toBe('TRANSFER 被拒绝')
+    expect(useToast().items.value.at(-1)?.detail).toContain('需要用户确认')
+  })
+
+  it('未 INSPECT 时如实说「还没有 INSPECT 过容器」', async () => {
+    const { wrapper } = await mountPage(makeHandler())
+    await flushAll()
+    expect(wrapper.get('[data-test="mc-container"]').text()).toContain('还没有 INSPECT 过容器')
+    expect(wrapper.get('[data-test="mc-container-type"]').text()).toBe('—')
   })
 })
 

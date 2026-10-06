@@ -18,6 +18,9 @@ import { toast } from '@/composables/toast'
 import type {
   MinecraftActionView,
   MinecraftAgentContext,
+  MinecraftContainerDirection,
+  MinecraftContainerSlot,
+  MinecraftContainerSnapshot,
   MinecraftAgentToolRow,
   MinecraftConfirmationView,
   MinecraftInventorySlot,
@@ -138,6 +141,17 @@ const placeTarget = reactive({
   z: '',
   face: 'up' as MinecraftPlaceFace,
   expectedItem: '',
+})
+// Phase 4E：Container（读 Chest / Barrel + 单物品存取；只支持单方块 chest/barrel）
+const containerTarget = reactive({ x: '', y: '', z: '' })
+const containerSnapshot = ref<MinecraftContainerSnapshot | null>(null)
+const CONTAINER_DIRECTIONS: MinecraftContainerDirection[] = ['withdraw', 'deposit']
+const containerMove = reactive({
+  direction: 'withdraw' as MinecraftContainerDirection,
+  containerSlot: '',
+  inventorySlot: '',
+  item: '',
+  count: '1',
 })
 // Phase 4D：Equip / Move Test（一次只操作一个物品 / 一个槽位；MEDIUM 必须确认）
 const equipTarget = reactive({ item: '' })
@@ -563,6 +577,113 @@ async function loadWorld(): Promise<void> {
     /* 保留上一份数据 */
   }
   prefillInventoryTargets()
+}
+
+function containerCoords(): [number, number, number] | null {
+  const raw = [containerTarget.x, containerTarget.y, containerTarget.z]
+  if (raw.some((value) => String(value).trim() === '')) {
+    toast.error('容器坐标不合法', 'X / Y / Z 都要填写（方块坐标是整数）')
+    return null
+  }
+  const coords = raw.map(Number)
+  if (!coords.every((value) => Number.isInteger(value))) {
+    toast.error('容器坐标不合法', '方块坐标必须是整数（没有小数）')
+    return null
+  }
+  return [coords[0]!, coords[1]!, coords[2]!]
+}
+
+/** INSPECT：读容器内容（SAFE，同步返回；只支持单方块 Chest / Barrel）。 */
+async function inspectContainer(): Promise<void> {
+  const coords = containerCoords()
+  if (!coords) return
+  working.value = true
+  try {
+    const payload = await minecraftApi.containerInspect(coords[0], coords[1], coords[2])
+    const snapshot = payload.result
+    if (!snapshot || !snapshot.container) {
+      toast.error('INSPECT 没有返回容器内容', '看 runtime 日志')
+      return
+    }
+    containerSnapshot.value = snapshot
+    toast.success(
+      `看到了 ${snapshot.container.label}`,
+      `里面 ${snapshot.slots.length} 格有东西（共 ${snapshot.container.size} 格）`,
+    )
+    // 顺手把 Transfer 的默认值填上：第一格有东西的 → 第一个空背包槽
+    const first = snapshot.slots[0]
+    if (first) {
+      containerMove.containerSlot = String(first.slot)
+      containerMove.item = first.name
+    }
+    if (containerMove.inventorySlot === '') {
+      const occupied = new Set(slotRows.value.map((row) => row.slot))
+      for (let slot = inventoryStart.value; slot <= hotbarStart.value + 8; slot += 1) {
+        if (!occupied.has(slot)) {
+          containerMove.inventorySlot = String(slot)
+          break
+        }
+      }
+    }
+  } catch (caught) {
+    toast.error('INSPECT 被拒绝', errorMessage(caught))
+  } finally {
+    working.value = false
+  }
+}
+
+/** 照容器槽位表点一行：填进 Transfer 的 container_slot / item。 */
+function useContainerSlot(row: MinecraftContainerSlot): void {
+  containerMove.containerSlot = String(row.slot)
+  containerMove.item = row.name
+}
+
+async function transferContainerItem(): Promise<void> {
+  const coords = containerCoords()
+  if (!coords) return
+  const containerSlot = Number(containerMove.containerSlot)
+  const inventorySlot = Number(containerMove.inventorySlot)
+  const count = Number(containerMove.count)
+  const item = containerMove.item.trim()
+  if (!Number.isInteger(containerSlot) || containerSlot < 0) {
+    toast.error('container_slot 不合法', '单方块箱子是 0~26（先 INSPECT 看 slot）')
+    return
+  }
+  if (!Number.isInteger(inventorySlot) || inventorySlot < 9 || inventorySlot > 44) {
+    toast.error('inventory_slot 不合法', '必须是 9~44 的整数（主背包 9-35 + 快捷栏 36-44）')
+    return
+  }
+  if (!item) {
+    toast.error('缺少物品名', '先 INSPECT 看清那一格是什么，再填这里的 item')
+    return
+  }
+  if (!Number.isInteger(count) || count < 1) {
+    toast.error('数量不合法', 'count 必须是 >= 1 的整数')
+    return
+  }
+  working.value = true
+  try {
+    const result = await minecraftApi.containerTransfer(
+      coords[0],
+      coords[1],
+      coords[2],
+      containerMove.direction,
+      containerSlot,
+      inventorySlot,
+      item,
+      count,
+    )
+    toast.success('已开始搬运', `${result.action} · ${result.status}（结果会由事件确认）`)
+    await load(true)
+  } catch (caught) {
+    // MEDIUM 动作必须用户确认：这里只会拿到 minecraft.confirmation_required
+    toast.error('TRANSFER 被拒绝', errorMessage(caught))
+    if (caught instanceof ApiError && catchConfirmationId(caught)) {
+      toast.info('已挂起一条待确认', '确认只能由用户在对话里做出；这里只能 CANCEL / EXPIRE')
+    }
+  } finally {
+    working.value = false
+  }
 }
 
 /** Move Test 默认值：第一个有东西的槽 → 第一个空槽（都是 9~44 里的真实槽位）。 */
@@ -1188,6 +1309,185 @@ onUnmounted(stopPolling)
           </p>
         </section>
 
+        <section class="minecraft__card cb-card" data-test="mc-container">
+          <SectionHeader
+            title="Container（Phase 4E）"
+            description="只支持**单方块** Chest / Barrel：INSPECT 只读看内容（SAFE），TRANSFER 在容器第几格与背包第几格之间搬一次（MEDIUM，必须用户确认）。"
+          />
+          <div class="minecraft__form" data-test="mc-container-form">
+            <label class="minecraft__field">
+              <span>X</span>
+              <input
+                v-model="containerTarget.x"
+                type="text"
+                inputmode="numeric"
+                data-test="mc-container-x"
+              />
+            </label>
+            <label class="minecraft__field">
+              <span>Y</span>
+              <input
+                v-model="containerTarget.y"
+                type="text"
+                inputmode="numeric"
+                data-test="mc-container-y"
+              />
+            </label>
+            <label class="minecraft__field">
+              <span>Z</span>
+              <input
+                v-model="containerTarget.z"
+                type="text"
+                inputmode="numeric"
+                data-test="mc-container-z"
+              />
+            </label>
+            <button
+              type="button"
+              class="minecraft__button"
+              :disabled="working || !isOnline"
+              data-test="mc-container-inspect"
+              @click="inspectContainer"
+            >
+              INSPECT
+            </button>
+            <button
+              type="button"
+              class="minecraft__button minecraft__button--danger"
+              :disabled="working"
+              data-test="mc-container-stop"
+              @click="stopAction"
+            >
+              STOP
+            </button>
+          </div>
+
+          <dl class="minecraft__facts" data-test="mc-container-facts">
+            <div>
+              <dt>Type</dt>
+              <dd data-test="mc-container-type">
+                {{
+                  containerSnapshot
+                    ? `${containerSnapshot.container.label}（${containerSnapshot.container.type}）`
+                    : '—'
+                }}
+              </dd>
+            </div>
+            <div>
+              <dt>Position</dt>
+              <dd data-test="mc-container-position">
+                {{
+                  containerSnapshot
+                    ? `${containerSnapshot.container.position.x}, ${containerSnapshot.container.position.y}, ${containerSnapshot.container.position.z}`
+                    : '—'
+                }}
+              </dd>
+            </div>
+            <div>
+              <dt>Size</dt>
+              <dd data-test="mc-container-size">{{ containerSnapshot?.container.size ?? '—' }}</dd>
+            </div>
+          </dl>
+
+          <table class="minecraft__table" data-test="mc-container-table">
+            <thead>
+              <tr>
+                <th>格子</th>
+                <th>物品</th>
+                <th>数量</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-for="row in containerSnapshot?.slots ?? []" :key="row.slot" :data-test="`mc-container-slot-${row.slot}`">
+                <td>{{ row.slot }}</td>
+                <td>{{ row.name }}</td>
+                <td>{{ row.count }}</td>
+                <td>
+                  <button
+                    type="button"
+                    class="minecraft__button"
+                    :disabled="working"
+                    :data-test="`mc-container-use-${row.slot}`"
+                    @click="useContainerSlot(row)"
+                  >
+                    用作来源
+                  </button>
+                </td>
+              </tr>
+              <tr v-if="!containerSnapshot">
+                <td colspan="4" class="cb-caption">还没有 INSPECT 过容器。</td>
+              </tr>
+              <tr v-else-if="!containerSnapshot.slots.length">
+                <td colspan="4" class="cb-caption">这个容器是空的。</td>
+              </tr>
+            </tbody>
+          </table>
+
+          <div class="minecraft__form" data-test="mc-container-move-form">
+            <label class="minecraft__field">
+              <span>Direction</span>
+              <select v-model="containerMove.direction" data-test="mc-container-direction">
+                <option v-for="direction in CONTAINER_DIRECTIONS" :key="direction" :value="direction">
+                  {{ direction }}
+                </option>
+              </select>
+            </label>
+            <label class="minecraft__field">
+              <span>Container Slot</span>
+              <input
+                v-model="containerMove.containerSlot"
+                type="text"
+                inputmode="numeric"
+                data-test="mc-container-slot"
+              />
+            </label>
+            <label class="minecraft__field">
+              <span>Inventory Slot</span>
+              <input
+                v-model="containerMove.inventorySlot"
+                type="text"
+                inputmode="numeric"
+                data-test="mc-container-inventory-slot"
+              />
+            </label>
+            <label class="minecraft__field">
+              <span>Item</span>
+              <input
+                v-model="containerMove.item"
+                type="text"
+                placeholder="dirt"
+                data-test="mc-container-item"
+              />
+            </label>
+            <label class="minecraft__field">
+              <span>Count</span>
+              <input
+                v-model="containerMove.count"
+                type="text"
+                inputmode="numeric"
+                data-test="mc-container-count"
+              />
+            </label>
+            <button
+              type="button"
+              class="minecraft__button"
+              :disabled="working || !isOnline"
+              data-test="mc-container-transfer"
+              @click="transferContainerItem"
+            >
+              TRANSFER
+            </button>
+          </div>
+
+          <p class="cb-caption">
+            一次只动一个物品、一个容器格、一个背包格、一个数量；目标格被别的物品占用时直接拒绝（绝不交换、
+            绝不换格）。只支持单方块 Chest / Barrel（双箱、潜影盒、熔炉、漏斗都不支持）；不批量整理、
+            不箱对箱搬运、不自动补货。<strong>TRANSFER 是 MEDIUM</strong>：这里的按钮只能发起确认，
+            真正的确认必须由用户在对话里做出。
+          </p>
+        </section>
+
         <section class="minecraft__card cb-card" data-test="mc-agent">
           <SectionHeader
             title="LLM Tool Debug（只读）"
@@ -1271,10 +1571,11 @@ onUnmounted(stopPolling)
           </table>
           <p class="cb-caption">
             LOW 动作（移动 / 跟随）只有在用户明确要求的对话里才会执行；模型自己想动也会被拒。
-            会修改世界的动作有四个：minecraft_dig / minecraft_place（各一个方块）、
-            minecraft_equip（换主手）、minecraft_inventory_move（搬一格）——它们都是 MEDIUM，
-            除了用户明确要求，还必须经过确认门。连续挖矿/建造、攻击、合成、容器、
-            批量整理背包等能力都还没有。
+            会改状态的 MEDIUM 动作有五个：minecraft_dig / minecraft_place（各一个方块）、
+            minecraft_equip（换主手）、minecraft_inventory_move（搬一格自己的背包）、
+            minecraft_container_transfer（单方块箱子/桶里搬一格）——除了用户明确要求，
+            还必须经过确认门；minecraft_container_inspect 是 SAFE 只读（但仍然独占）。
+            连续挖矿/建造、攻击、合成、容器自动化（箱对箱/漏斗）、批量整理背包都还没有。
           </p>
         </section>
 

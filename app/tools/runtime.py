@@ -85,6 +85,8 @@ class ToolRuntime:
         from app.tools.builtins import (
             CalculatorTool,
             MinecraftChatTool,
+            MinecraftContainerInspectTool,
+            MinecraftContainerTransferTool,
             MinecraftDigTool,
             MinecraftEquipTool,
             MinecraftFollowPlayerTool,
@@ -120,6 +122,9 @@ class ToolRuntime:
             # Phase 4D：背包写操作（MEDIUM；单物品单槽位，必须用户确认）
             ("minecraft_equip", lambda: MinecraftEquipTool()),
             ("minecraft_inventory_move", lambda: MinecraftInventoryMoveTool()),
+            # Phase 4E：单方块容器（读 Chest/Barrel 的 SAFE inspection + MEDIUM 单项存取）
+            ("minecraft_container_inspect", lambda: MinecraftContainerInspectTool()),
+            ("minecraft_container_transfer", lambda: MinecraftContainerTransferTool()),
             ("query_image_memory", lambda: QueryImageMemoryTool()),
             (
                 "weather",

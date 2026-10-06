@@ -3,6 +3,9 @@
 import { api } from '@/api/client'
 
 import type {
+  MinecraftContainerDirection,
+  MinecraftContainerInspectResponse,
+  MinecraftContainerTransferResult,
   MinecraftFollowPlayerResult,
   MinecraftInventoryActionResult,
   MinecraftInventorySlotsView,
@@ -89,6 +92,32 @@ export const minecraftApi = {
     return api.post<MinecraftInventoryActionResult>('/minecraft/inventory_move', {
       source_slot: sourceSlot,
       destination_slot: destinationSlot,
+      item,
+      count,
+    })
+  },
+  /** Phase 4E：读一个 Chest / Barrel 的内容（SAFE 只读，同步返回快照）。 */
+  containerInspect(x: number, y: number, z: number) {
+    return api.post<MinecraftContainerInspectResponse>('/minecraft/container_inspect', { x, y, z })
+  },
+  /** Phase 4E：单物品在容器槽 ↔ 背包槽之间搬一次（必须过 MEDIUM 确认门）。 */
+  containerTransfer(
+    x: number,
+    y: number,
+    z: number,
+    direction: MinecraftContainerDirection,
+    containerSlot: number,
+    inventorySlot: number,
+    item: string,
+    count: number,
+  ) {
+    return api.post<MinecraftContainerTransferResult>('/minecraft/container_transfer', {
+      x,
+      y,
+      z,
+      direction,
+      container_slot: containerSlot,
+      inventory_slot: inventorySlot,
       item,
       count,
     })

@@ -82,6 +82,24 @@ class FakeRuntime:
         }
         self.equip_calls: list[dict[str, Any]] = []
         self.equip_plan: list[dict[str, Any]] = []
+        # Phase 4E：container（inspect 是同步动作；transfer 是持续型）
+        self.container_inspect_calls: list[dict[str, Any]] = []
+        self.container_inspect_plan: list[dict[str, Any]] = []
+        self.container_inspect_result: dict[str, Any] = {
+            "ok": True,
+            "container": {
+                "type": "minecraft:chest",
+                "label": "Chest",
+                "position": {"x": 100, "y": 64, "z": 100},
+                "size": 27,
+            },
+            "slots": [
+                {"slot": 0, "name": "dirt", "count": 12},
+                {"slot": 7, "name": "sand", "count": 32},
+            ],
+        }
+        self.container_transfer_calls: list[dict[str, Any]] = []
+        self.container_transfer_plan: list[dict[str, Any]] = []
         self.inventory_move_calls: list[dict[str, Any]] = []
         self.inventory_move_plan: list[dict[str, Any]] = []
         self.pathfinder_state: dict[str, Any] = {
@@ -107,6 +125,8 @@ class FakeRuntime:
         app.router.add_get("/minecraft/inventory", self._inventory)
         app.router.add_post("/minecraft/place", self._place)
         app.router.add_get("/minecraft/inventory/slots", self._inventory_slots)
+        app.router.add_post("/minecraft/container_inspect", self._container_inspect)
+        app.router.add_post("/minecraft/container_transfer", self._container_transfer)
         app.router.add_post("/minecraft/equip", self._equip)
         app.router.add_post("/minecraft/inventory_move", self._inventory_move)
         app.router.add_post("/minecraft/stop", self._stop)
@@ -276,6 +296,55 @@ class FakeRuntime:
     async def _inventory_slots(self, request: web.Request) -> web.Response:
         self.inventory_slots_calls += 1
         return web.json_response(dict(self.inventory_slots_payload))
+
+    async def _container_inspect(self, request: web.Request) -> web.Response:
+        body = await request.json()
+        self.container_inspect_calls.append(body)
+        plan = self.container_inspect_plan.pop(0) if self.container_inspect_plan else {}
+        if "error" in plan:
+            code, status = plan["error"]
+            payload: dict[str, Any] = {
+                "ok": False,
+                "error": {"code": code, "message": f"{code}（fake runtime）"},
+            }
+            if plan.get("detail"):
+                payload["error"]["detail"] = plan["detail"]
+            return web.json_response(payload, status=status)
+        return web.json_response(
+            {
+                "ok": True,
+                "action_id": plan.get("action_id", "act_cinspect_1"),
+                "action": "container_inspect",
+                "status": "SUCCEEDED",
+                "result": plan.get("result", self.container_inspect_result),
+            }
+        )
+
+    async def _container_transfer(self, request: web.Request) -> web.Response:
+        body = await request.json()
+        self.container_transfer_calls.append(body)
+        plan = (
+            self.container_transfer_plan.pop(0)
+            if self.container_transfer_plan
+            else {"status": "RUNNING"}
+        )
+        if "error" in plan:
+            code, status = plan["error"]
+            payload: dict[str, Any] = {
+                "ok": False,
+                "error": {"code": code, "message": f"{code}（fake runtime）"},
+            }
+            if plan.get("detail"):
+                payload["error"]["detail"] = plan["detail"]
+            return web.json_response(payload, status=status)
+        return web.json_response(
+            {
+                "ok": True,
+                "action_id": plan.get("action_id", "act_ctransfer_1"),
+                "action": "container_transfer",
+                "status": plan["status"],
+            }
+        )
 
     async def _equip(self, request: web.Request) -> web.Response:
         body = await request.json()

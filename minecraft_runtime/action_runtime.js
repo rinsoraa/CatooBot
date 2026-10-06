@@ -34,6 +34,11 @@
  *   - ``wait(bot, params, token, state)``：后台生命周期（state 来自 start 的返回值），
  *     resolve = 自行收尾（罕见），reject = 失败原因（ActionCancelled 走取消语义）。
  *
+ * Action-scoped 资源（Phase 4E 引入）：``start``/``run`` 会拿到 ActionRuntime 的
+ * ``controller`` 对象，动作可以把私有资源挂在它上面（container 动作把打开的 window 放在
+ * ``controller.window``），``cleanup(bot, controller)`` 拿到同一个对象做 best-effort 清理。
+ * cleanup 可以返回 promise（runtime 不等待它，但兜住 rejection）。
+ *
  * 本模块不依赖任何 Minecraft 对象：bot 通过 getBot() 注入，动作由调用方注册。
  */
 
@@ -152,7 +157,17 @@ function createActionRuntime({ registry, getBot, isOnline, emit, log, now = () =
     if (controller.cleaned) return
     controller.cleaned = true
     try {
-      def.cleanup(getBot())
+      // Phase 4E：把 controller 一起交给 cleanup —— 动作私有资源（如打开着的 container
+      // 窗口）挂在它上面，cleanup 才有东西可关。cleanup 可能是 async：这里**不等待**
+      // （终态不允许被 close 拖住），但必须兜住 rejection。
+      const pending = def.cleanup(getBot(), controller)
+      if (pending && typeof pending.then === 'function') {
+        pending.then(undefined, (error) => {
+          log(
+            `[Minecraft Action] async cleanup failed action=${controller.record.action} id=${controller.record.action_id} error=${error && error.message ? error.message : error}`,
+          )
+        })
+      }
     } catch (cleanupError) {
       log(
         `[Minecraft Action] cleanup failed action=${controller.record.action} id=${controller.record.action_id} error=${cleanupError.message}`,
@@ -275,7 +290,7 @@ function createActionRuntime({ registry, getBot, isOnline, emit, log, now = () =
       if (def.detached) {
         // 持续型动作：启动阶段同步语义（失败仍反馈给调用方），启动成功即返回 RUNNING；
         // 终态在后台按同一套规则落定并发事件（不阻塞调用方）。
-        const followState = await def.start(getBot(), validated, controller.token)
+        const followState = await def.start(getBot(), validated, controller.token, controller)
         const lifecycle = Promise.resolve(
           def.wait(getBot(), validated, controller.token, followState),
         )
@@ -302,7 +317,10 @@ function createActionRuntime({ registry, getBot, isOnline, emit, log, now = () =
         )
         return { action_id: record.action_id, action: name, status: STATES.RUNNING }
       }
-      const value = await runCancellable(def.run(getBot(), validated, controller.token), controller.token)
+      const value = await runCancellable(
+        def.run(getBot(), validated, controller.token, controller),
+        controller.token,
+      )
       // race 防线（Phase 3B.1 §六）：stop/cancelAll/timeout 与底层完成同时到达时，
       // 终态只能是 CANCELLED/TIMEOUT —— 绝不出现「记录 CANCELLED、响应 SUCCEEDED」双终态。
       // （正常微任务顺序下由 token.onCancel 先手 reject；这里是任何交错下的兜底。）

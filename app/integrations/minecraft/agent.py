@@ -79,6 +79,9 @@ ACTION_RISK: dict[str, str] = {
     # Phase 4D：背包写操作（改真实角色状态，且影响后续 place/dig 的物品语义 → MEDIUM）
     "minecraft_equip": "MEDIUM",
     "minecraft_inventory_move": "MEDIUM",
+    # Phase 4E：容器（读=Chest/Barrel 只读 inspection；存取=改容器与背包 → MEDIUM）
+    "minecraft_container_inspect": "SAFE",
+    "minecraft_container_transfer": "MEDIUM",
 }
 
 #: Tool → Action Runtime 动作名（chat 也走统一生命周期）
@@ -92,6 +95,8 @@ TOOL_ACTION: dict[str, str] = {
     "minecraft_place": "place",
     "minecraft_equip": "equip",
     "minecraft_inventory_move": "inventory_move",
+    "minecraft_container_inspect": "container_inspect",
+    "minecraft_container_transfer": "container_transfer",
 }
 
 #: 离线也能用的 Tool：minecraft_world（离线也要能回答「我不在游戏里」）
@@ -157,10 +162,18 @@ RUNTIME_ERROR_CODES: dict[str, str] = {
     "slot.invalid": "minecraft.slot_invalid",
     "equip.unconfirmed": "minecraft.equip_unconfirmed",
     "move.unconfirmed": "minecraft.move_unconfirmed",
+    # Phase 4E：container（读 Chest / Barrel + 单物品存取）
+    "container.unsupported": "minecraft.container_unsupported",
+    "container.too_far": "minecraft.container_too_far",
+    "container.open_failed": "minecraft.container_open_failed",
+    "container.closed": "minecraft.container_closed",
+    "container.close_failed": "minecraft.container_close_failed",
+    "container.transfer_unconfirmed": "minecraft.container_transfer_unconfirmed",
 }
 
 #: 一句话活动（§二十二：SUCCEEDED → minecraft.activity）。只写事实，不写情绪。
-_ACTIVITY_TEMPLATES: dict[str, str] = {
+#: 值可以是 ``str``，也可以是"按方向取模板"的 ``dict``（Phase 4E 的 container_transfer）。
+_ACTIVITY_TEMPLATES: dict[str, Any] = {
     "move_to": "刚走到 {where}",
     "follow_player": "刚结束跟随 {who}",
     "look_at": "刚看向 {where}",
@@ -170,6 +183,12 @@ _ACTIVITY_TEMPLATES: dict[str, str] = {
     "place": "刚放好了 {block}",
     "equip": "刚把 {block} 拿到手里",
     "inventory_move": "刚把 {block} 从 {source} 格移到了 {destination} 格",
+    # Phase 4E：容器动作只写事实（绝不写"整理了一下仓库"这种掩盖精确范围的句子）
+    "container_inspect": "刚打开了一个 {container} 并查看了里面的东西",
+    "container_transfer": {
+        "withdraw": "刚从 {where} 的 {container} 取出了 {block} ×{count}",
+        "deposit": "刚把 {block} ×{count} 放回 {where} 的 {container}",
+    },
 }
 
 #: activity 取哪个结果字段当"那个方块/物品"（dig 看挖掉的、place 看放上的、equip/move 看物品名）
@@ -178,7 +197,22 @@ _ACTIVITY_BLOCK_FIELDS: dict[str, str] = {
     "place": "block_after",
     "equip": "item",
     "inventory_move": "item",
+    "container_transfer": "item",
 }
+
+#: 容器类型 → 中文/英文显示名（activity 与摘要里都用它，绝不写死"箱子"）
+_CONTAINER_LABELS: dict[str, str] = {
+    # 归一化后的方块名（runtime 侧已经去掉 minecraft: 前缀）
+    "chest": "Chest",
+    "barrel": "Barrel",
+}
+
+
+def _container_label(type_name: Any) -> str:
+    """容器类型 → 显示名（未知一律"容器"；绝不猜类型）。"""
+    key = str(type_name or "").strip().lower().removeprefix("minecraft:")
+    return _CONTAINER_LABELS.get(key, "容器")
+
 
 _TERMINAL_STATUSES = frozenset({"SUCCEEDED", "FAILED", "CANCELLED", "TIMEOUT"})
 
@@ -458,14 +492,22 @@ class MinecraftAgentContext:
 
     @staticmethod
     def _describe(record: Mapping[str, Any]) -> str:
-        template = _ACTIVITY_TEMPLATES.get(
-            str(record.get("action") or ""), "刚做完一个 Minecraft 动作"
-        )
+        action = str(record.get("action") or "")
+        template: Any = _ACTIVITY_TEMPLATES.get(action, "刚做完一个 Minecraft 动作")
         result = record.get("result") or {}
-        where = _format_position(result.get("final_position") or result.get("target"))
+        if isinstance(template, dict):
+            # Phase 4E：container_transfer 的句子取决于 direction（拿出去 / 放进去）
+            template = template.get(str(result.get("direction") or ""), "刚做完一个 Minecraft 动作")
+        where = _format_position(
+            result.get("final_position") or result.get("target") or result.get("position")
+        )
         who = str(result.get("username") or "").strip()
-        field = _ACTIVITY_BLOCK_FIELDS.get(str(record.get("action") or ""), "block_before")
+        field = _ACTIVITY_BLOCK_FIELDS.get(action, "block_before")
         block = str(result.get(field) or "").strip()
+        container_type = result.get("container_type")
+        container = result.get("container")
+        if not container_type and isinstance(container, Mapping):
+            container_type = container.get("type")
         try:
             return template.format(
                 where=where or "目标位置",
@@ -473,6 +515,8 @@ class MinecraftAgentContext:
                 block=block or "一个方块",
                 source=result.get("source_slot"),
                 destination=result.get("destination_slot"),
+                container=_container_label(container_type),
+                count=result.get("count") or 1,
             )
         except (KeyError, IndexError):  # pragma: no cover - 模板是常量，坏不了
             return "刚做完一个 Minecraft 动作"
@@ -930,6 +974,24 @@ def _confirmation_summary(tool: str, risk: str, arguments: Mapping[str, Any] | N
         block = str(args.get("expected_block") or "方块")
         where = _format_position(args)
         return f"挖掉 {block}（{where}）" if where else f"挖掉 {block}"
+    if tool == "minecraft_container_transfer":
+        # 摘要就是用户的授权文本：位置 + 第几格 + 什么物品 × 多少 + 另一个槽位，全部写清。
+        # 容器类型在**执行时**才由 runtime 验证（本阶段只可能是 Chest / Barrel），
+        # 所以这里不写死类型，只说"容器"。
+        where = _format_position(args)
+        container_slot = args.get("container_slot")
+        inventory_slot = args.get("inventory_slot")
+        item = args.get("item") or "物品"
+        count = args.get("count")
+        if str(args.get("direction") or "") == "deposit":
+            return (
+                f"把背包第 {inventory_slot} 格的 {item} ×{count} "
+                f"放入 {where} 的容器第 {container_slot} 格"
+            )
+        return (
+            f"从 {where} 的容器第 {container_slot} 格取 {item} ×{count} "
+            f"到背包第 {inventory_slot} 格"
+        )
     if tool == "minecraft_equip":
         return f"把 {args.get('item') or '物品'} 拿到手里"
     if tool == "minecraft_inventory_move":
@@ -999,6 +1061,22 @@ def _summarize(tool: str, data: Mapping[str, Any]) -> str:
                 f"已停止正在进行的 Minecraft 行动（{', '.join(str(item) for item in cancelled)}）。"
             )
         return "当前没有正在进行的 Minecraft 行动（无需停止）。"
+    if tool == "minecraft_container_inspect":
+        raw_result: Any = data.get("result")
+        snapshot: dict[str, Any] = raw_result if isinstance(raw_result, dict) else {}
+        raw_container: Any = snapshot.get("container")
+        container: dict[str, Any] = raw_container if isinstance(raw_container, dict) else {}
+        slots: list[Any] = snapshot.get("slots") or []
+        label = _container_label(container.get("type"))
+        where = _format_position(container.get("position"))
+        head = f"看了 {where} 的 {label}" if where else f"看了 {label}"
+        if not slots:
+            return head + "：里面是空的。"
+        items = "、".join(
+            f"{row.get('name')}×{row.get('count')}（第 {row.get('slot')} 格）" for row in slots[:6]
+        )
+        more = f"，另有 {len(slots) - 6} 格" if len(slots) > 6 else ""
+        return f"{head}：{items}{more}。"
     if status == "RUNNING":
         return f"{action} 已开始（action_id={data.get('action_id')}），完成与否会由事件告知。"
     where = _format_position((data.get("result") or {}).get("final_position"))

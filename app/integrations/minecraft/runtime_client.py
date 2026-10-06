@@ -111,6 +111,42 @@ class MinecraftRuntimeClient:
             },
         )
 
+    async def container_inspect(self, x: int, y: int, z: int) -> dict[str, Any]:
+        """读一个 Chest / Barrel 的内容（Phase 4E：同步动作，结果直接返回）。
+
+        runtime 内部固定 open → read → close；绝不把"开着的窗口"暴露给上层。
+        """
+        return await self._request(
+            "POST", "/minecraft/container_inspect", body={"x": x, "y": y, "z": z}
+        )
+
+    async def container_transfer(
+        self,
+        x: int,
+        y: int,
+        z: int,
+        direction: str,
+        container_slot: int,
+        inventory_slot: int,
+        item: str,
+        count: int,
+    ) -> dict[str, Any]:
+        """单物品在「容器槽 ↔ 背包槽」之间移动一次（Phase 4E：启动即 RUNNING）。"""
+        return await self._request(
+            "POST",
+            "/minecraft/container_transfer",
+            body={
+                "x": x,
+                "y": y,
+                "z": z,
+                "direction": direction,
+                "container_slot": container_slot,
+                "inventory_slot": inventory_slot,
+                "item": item,
+                "count": count,
+            },
+        )
+
     async def place(self, x: int, y: int, z: int, face: str, expected_item: str) -> dict[str, Any]:
         """放置单个方块（Phase 4C：启动即返回 RUNNING，终态经事件送达）。"""
         return await self._request(

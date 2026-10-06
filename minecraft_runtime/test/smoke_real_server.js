@@ -21,7 +21,10 @@
  *   8. Phase 4D：inventory/slots → equip（含 already_equipped）→ inventory_move →
  *      重读槽位表 → **恢复原状**（槽位布局 + 主手）→ ensureIdle → disconnect
  *      （背包里没有可换的物品 / 没有空槽 → 明确 SKIPPED，不伪造结论）
- *   9. disconnect
+ *   9. Phase 4E：container（Chest / Barrel）—— inspect（open → read → close，两次证明没漏窗口）
+ *      → withdraw 1 个 → 重读容器与背包 → deposit 放回原槽 → 逐槽比对恢复原状 → 清夹具
+ *      （支持 SMOKE_CONTAINER_TARGET="x,y,z" 用操作者自己的箱子；否则就地造临时箱子）
+ *  10. disconnect
  *
  * 认证：默认用 minecraft_runtime/auth.json（本地文件，绝不进 Git）。
  * 服务器没开 / 连不上 → 打印 NOT AVAILABLE 并以 0 退出（文档记录用）；
@@ -452,6 +455,43 @@ async function main() {
       )
       return hit ? hit.name : null
     }
+    // 方块交互（dig / place / container）之前：把罐头挪到**干燥实地**。
+    // 水里或水边放方块会被服务器拒绝（水会流回目标格，客户端看到的"空气"其实是水），
+    // dig 也常被水干扰 → 先用 /tp（bot 有 op）挪到最近的"实心且非流体"柱子上；
+    // 挪不动就照旧继续（只记日志，不伪造结论）。
+    const say = (message) => request(runtimePort, 'POST', '/minecraft/chat', { message })
+    const relocateToDryLand = async () => {
+      const local = await snapshot('local')
+      const columns = (local.blocks && local.blocks.local && local.blocks.local.columns) || []
+      const FLUID = /water|lava|seagrass|kelp|bubble|magma|ice/i
+      const spot = columns
+        .filter((col) => col.pos && typeof col.distance === 'number' && col.name)
+        .filter((col) => col.distance >= 4 && col.distance <= 24)
+        .filter((col) => !FLUID.test(col.name))
+        .sort((a, b) => a.distance - b.distance)[0]
+      if (!spot) {
+        console.log('[smoke] 附近没有干燥落脚点：就地继续（方块交互可能被水干扰）')
+        return
+      }
+      const x = spot.pos.x + 0.5
+      const y = spot.pos.y + 1
+      const z = spot.pos.z + 0.5
+      await say(`/tp @s ${x} ${y} ${z}`)
+      const moved = await waitFor(async () => {
+        const now = (await status()).position
+        return Math.hypot(now.x - x, now.z - z) < 3 && Math.abs(now.y - y) < 4
+      }, '挪到干燥实地', 8000)
+      if (moved) {
+        console.log(
+          `[smoke] 已把罐头挪到干燥实地 (${Math.round(x)}, ${Math.round(y)}, ${Math.round(z)})`
+            + `（${spot.name}）`,
+        )
+      } else {
+        console.log('[smoke] 传送没生效：就地继续（不伪造结论）')
+      }
+    }
+    await relocateToDryLand()
+
     // 徒手可挖（不需要工具）的方块
     const HAND_DIGGABLE = ['dirt', 'grass_block', 'sand', 'gravel', 'clay', 'snow', 'oak_log']
     // STOP 段要"徒手要挖几秒"的方块：只认**天然木头**（约 3s，且不会去动玩家的建筑）。
@@ -1124,6 +1164,367 @@ async function main() {
     // equip / inventory_move 都是 MEDIUM 但**毫秒级**：真实服务器上不存在
     // "挖到一半"那种可取消窗口（Node 单测已用假 bot 覆盖 CANCELLED/TIMEOUT/race/cleanup）。
     console.log('[smoke] SKIPPED equip / inventory_move STOP：动作毫秒级完成，真实服务器上没有可取消窗口')
+
+    // ---- 7. Phase 4E：container（inspect → withdraw → deposit → 恢复原状） ----
+    if (!digReady) {
+      console.log('[smoke] ✗ Phase 4E：runtime 未空闲，container 硬门禁不能执行')
+    } else {
+      const name = (value) => normalizeItemName(value || '')
+      const FIXTURE_ITEM = 'minecraft:oak_planks'
+      const FIXTURE_COUNT = 3
+      const readSlots = async () => {
+        const resp = await request(runtimePort, 'GET', '/minecraft/inventory/slots')
+        return resp.status === 200 && resp.body ? resp.body.slots || [] : []
+      }
+      const signature = (rows) =>
+        rows
+          .map((row) => `${row.slot}:${name(row.name)}×${row.count}`)
+          .sort((a, b) => Number.parseInt(a, 10) - Number.parseInt(b, 10))
+          .join('|')
+      const inspect = (pos) =>
+        request(runtimePort, 'POST', '/minecraft/container_inspect', {
+          x: pos.x,
+          y: pos.y,
+          z: pos.z,
+        })
+      const say = (message) =>
+        request(runtimePort, 'POST', '/minecraft/chat', { message })
+
+      const inventoryBeforeAll = await readSlots()
+      const playerSignatureBefore = signature(inventoryBeforeAll)
+
+      // (a) 找容器：优先操作者指定的；否则在 bot 旁边找一个空气格放临时箱子
+      let containerPos = null
+      let containerOrigin = 'air'
+      let createdFixture = false
+      const override = (process.env.SMOKE_CONTAINER_TARGET || '').trim()
+      if (override) {
+        const [x, y, z] = override.split(',').map((value) => Number.parseInt(value, 10))
+        if (Number.isFinite(x) && Number.isFinite(y) && Number.isFinite(z)) {
+          containerPos = { x, y, z }
+          console.log(`[smoke] container：用操作者指定的目标 (${x},${y},${z})`)
+        } else {
+          console.log(`[smoke] SMOKE_CONTAINER_TARGET 格式不对（应为 "x,y,z"）：${override}`)
+        }
+      } else {
+        const origin = (await status()).position
+        const base = { x: Math.round(origin.x), y: Math.round(origin.y), z: Math.round(origin.z) }
+        // 优先 bot 头部/上方（几乎总是空气），再退到脚边；只覆盖 air / water ——
+        // 其它方块一律不动，绝不在操作者的世界里乱改
+        const offsets = [
+          [1, 1, 0],
+          [0, 1, 1],
+          [1, 1, 1],
+          [-1, 1, 0],
+          [0, 1, -1],
+          [0, 2, 0],
+          [0, 3, 0],
+          [1, 0, 0],
+          [0, 0, 1],
+          [-1, 0, 0],
+          [0, 0, -1],
+        ]
+        for (const [dx, dy, dz] of offsets) {
+          const spot = { x: base.x + dx, y: base.y + dy, z: base.z + dz }
+          const raw = await blockAt(spot)
+          const original = !raw || raw === 'air' || raw === 'water' ? raw || 'air' : null
+          if (original === null) continue
+          await say(`/setblock ${spot.x} ${spot.y} ${spot.z} minecraft:chest`)
+          const opened = await waitForValue(async () => {
+            const probe = await inspect(spot)
+            return probe.status === 200 && probe.body.status === 'SUCCEEDED' ? probe.body.result : null
+          }, `临时箱子 (${spot.x},${spot.y},${spot.z}) 可以打开`, 6000)
+          if (opened) {
+            containerPos = spot
+            containerOrigin = original
+            createdFixture = true
+            console.log(
+              `[smoke] container：在 (${spot.x},${spot.y},${spot.z}) 放了临时箱子`
+                + `（原方块是 ${original}，结束后原样还原）`,
+            )
+            break
+          }
+          // 打不开 → 立刻还原，再试下一个位置
+          await say(`/setblock ${spot.x} ${spot.y} ${spot.z} ${original}`)
+        }
+        if (!containerPos) {
+          console.log(
+            '[smoke] SKIPPED container：附近放不出可以被打开的临时箱子，也没有 SMOKE_CONTAINER_TARGET'
+              + '（不伪造结论）',
+          )
+        }
+      }
+
+      if (!containerPos) {
+        console.log('[smoke] ✗ Phase 4E：没有可用容器，无法完成 withdraw / deposit 真机验证')
+      } else {
+        // (b) inspect：真实 open → read → close（两层证据：HTTP 快照 + 再看一次证明窗口没漏）
+        const first = await inspect(containerPos)
+        const snapshotOne = first.body && first.body.result
+        check(
+          first.status === 200 && first.body.status === 'SUCCEEDED' && Boolean(snapshotOne),
+          `container_inspect 成功（HTTP ${first.status}，type=${snapshotOne && snapshotOne.container.type}）`,
+        )
+        check(
+          Boolean(snapshotOne) &&
+            name(snapshotOne.container.type) === 'chest' &&
+            snapshotOne.container.size === 27,
+          `容器类型/大小来自真实 window（type=${snapshotOne && snapshotOne.container.type}，`
+            + `size=${snapshotOne && snapshotOne.container.size}）`,
+        )
+        const second = await inspect(containerPos)
+        check(
+          second.status === 200 && second.body.status === 'SUCCEEDED',
+          '窗口没有泄漏：第二次 inspect 仍然成功（close 是硬要求）',
+        )
+
+        // (c) 往容器里放一个测试物品（/replaceitem 是 1.16 的写法；1.17+ 是 /item）
+        await say(
+          `/replaceitem block ${containerPos.x} ${containerPos.y} ${containerPos.z} `
+            + `container.0 ${FIXTURE_ITEM} ${FIXTURE_COUNT}`,
+        )
+        await sleep(600)
+        let filled = await waitForValue(async () => {
+          const probe = await inspect(containerPos)
+          const snap = probe.body && probe.body.result
+          if (!snap) return null
+          const row = (snap.slots || []).find((entry) => entry.slot === 0)
+          return row && name(row.name) === name(FIXTURE_ITEM) ? snap : null
+        }, '容器第 0 格出现测试物品', 8000)
+        if (!filled) {
+          // 换 1.17+ 的写法再试一次
+          await say(
+            `/item replace block ${containerPos.x} ${containerPos.y} ${containerPos.z} `
+              + `container.0 with ${FIXTURE_ITEM} ${FIXTURE_COUNT}`,
+          )
+          await sleep(600)
+          filled = await waitForValue(async () => {
+            const probe = await inspect(containerPos)
+            const snap = probe.body && probe.body.result
+            if (!snap) return null
+            const row = (snap.slots || []).find((entry) => entry.slot === 0)
+            return row && name(row.name) === name(FIXTURE_ITEM) ? snap : null
+          }, '容器第 0 格出现测试物品（/item 写法）', 8000)
+        }
+        if (!filled) {
+          console.log(
+            '[smoke] SKIPPED container 读写：这台服务器不接受 /replaceitem 或 /item 装填箱子'
+              + '（无法在真机上造出"箱子里有东西"，不伪造结论）',
+          )
+          if (createdFixture) {
+            await say(
+              `/setblock ${containerPos.x} ${containerPos.y} ${containerPos.z} ${containerOrigin}`,
+            )
+          }
+        } else {
+          const slotZero = filled.slots.find((entry) => entry.slot === 0)
+          check(
+            slotZero && slotZero.count === FIXTURE_COUNT && name(slotZero.name) === name(FIXTURE_ITEM),
+            `真实箱子内容与命令一致（第 0 格 ${slotZero && slotZero.name}×${slotZero && slotZero.count}）`,
+          )
+          console.log(
+            `[smoke]    箱子内容（真实 read）：${JSON.stringify(filled.slots)}`,
+          )
+
+          // (d) 找一个空背包槽（避开选中的快捷栏槽 → 不动主手）
+          const inventoryView = await request(runtimePort, 'GET', '/minecraft/inventory')
+          const selectedHotbar = 36 + Number((inventoryView.body && inventoryView.body.selected_hotbar_slot) || 0)
+          const occupied = new Set((await readSlots()).map((row) => row.slot))
+          let targetSlot = null
+          for (let slot = 9; slot <= 44; slot += 1) {
+            if (!occupied.has(slot) && slot !== selectedHotbar) {
+              targetSlot = slot
+              break
+            }
+          }
+          if (targetSlot === null) {
+            console.log('[smoke] SKIPPED withdraw：背包里没有空槽（不隐式交换）')
+          } else {
+            console.log(`[smoke] withdraw：容器第 0 格 → 背包第 ${targetSlot} 格，取 1 个`)
+            const withdraw = await request(runtimePort, 'POST', '/minecraft/container_transfer', {
+              x: containerPos.x,
+              y: containerPos.y,
+              z: containerPos.z,
+              direction: 'withdraw',
+              container_slot: 0,
+              inventory_slot: targetSlot,
+              item: name(FIXTURE_ITEM),
+              count: 1,
+            })
+            const started =
+              withdraw.status === 200 &&
+              withdraw.body.status === 'RUNNING' &&
+              Boolean(withdraw.body.action_id)
+            if (!started) {
+              console.log(`[smoke]    withdraw 启动失败：${JSON.stringify(withdraw)}`)
+              check(false, `withdraw 启动必须 200/RUNNING 且带 action_id（HTTP ${withdraw.status}）`)
+            } else {
+              check(true, `withdraw 启动 → RUNNING（action_id=${withdraw.body.action_id}）`)
+              const terminal = await waitForActionTerminal(
+                withdraw.body.action_id,
+                'withdraw 终态事件',
+                30000,
+              )
+              if (!terminal || terminal.event !== 'minecraft.action.completed') {
+                check(
+                  false,
+                  `withdraw 终态是 ${terminal && terminal.event}`
+                    + `（${(terminal && (terminal.error || terminal.reason)) || '-'}）`,
+                )
+              } else {
+                const result = terminal.result || {}
+                check(
+                  result.direction === 'withdraw' &&
+                    result.container_slot === 0 &&
+                    result.inventory_slot === targetSlot,
+                  `withdraw 结果带明确方向与槽位（${JSON.stringify({
+                    direction: result.direction,
+                    container_slot: result.container_slot,
+                    inventory_slot: result.inventory_slot,
+                  })}）`,
+                )
+                check(
+                  result.container_before && result.container_after &&
+                    result.container_before.count === FIXTURE_COUNT &&
+                    result.container_after.count === FIXTURE_COUNT - 1,
+                  `container_before/after 如实上报（${JSON.stringify(result.container_before)} → `
+                    + `${JSON.stringify(result.container_after)}）`,
+                )
+                check(
+                  result.inventory_before === null &&
+                    result.inventory_after &&
+                    result.inventory_after.count === 1,
+                  `inventory_before/after 如实上报（${JSON.stringify(result.inventory_before)} → `
+                    + `${JSON.stringify(result.inventory_after)}）`,
+                )
+                check(
+                  result.moved_out >= 1 && result.gained_in >= 1,
+                  `真实变化量：移出 ${result.moved_out} / 目标增加 ${result.gained_in}`,
+                )
+                // 第二层：重新读容器 + 背包（不抄事件里的结论）
+                const afterWithdraw = await waitForValue(async () => {
+                  const probe = await inspect(containerPos)
+                  const snap = probe.body && probe.body.result
+                  const rows = await readSlots()
+                  if (!snap) return null
+                  const row = (snap.slots || []).find((entry) => entry.slot === 0)
+                  const target = rows.find((entry) => entry.slot === targetSlot)
+                  const containerOk = row && row.count === FIXTURE_COUNT - 1
+                  const inventoryOk = target && name(target.name) === name(FIXTURE_ITEM)
+                  return containerOk && inventoryOk ? { snap, rows } : null
+                }, '重新读取容器与背包（withdraw 之后）', 15000)
+                check(
+                  Boolean(afterWithdraw),
+                  '重新 inspect 与重读槽位表都反映这次搬运（不硬编码 ±1）',
+                )
+                if (afterWithdraw) {
+                  console.log(
+                    `[smoke]    重读：容器 ${JSON.stringify(afterWithdraw.snap.slots)}；`
+                      + `背包 ${JSON.stringify(afterWithdraw.rows.filter((r) => r.slot === targetSlot))}`,
+                  )
+                }
+
+                // (e) deposit 放回原槽 → 容器与背包都必须恢复
+                console.log(`[smoke] deposit：背包第 ${targetSlot} 格 → 容器第 0 格，放回 1 个`)
+                const deposit = await request(runtimePort, 'POST', '/minecraft/container_transfer', {
+                  x: containerPos.x,
+                  y: containerPos.y,
+                  z: containerPos.z,
+                  direction: 'deposit',
+                  container_slot: 0,
+                  inventory_slot: targetSlot,
+                  item: name(FIXTURE_ITEM),
+                  count: 1,
+                })
+                const depositStarted =
+                  deposit.status === 200 &&
+                  deposit.body.status === 'RUNNING' &&
+                  Boolean(deposit.body.action_id)
+                if (!depositStarted) {
+                  console.log(`[smoke]    deposit 启动失败：${JSON.stringify(deposit)}`)
+                  check(false, `deposit 启动必须 200/RUNNING（HTTP ${deposit.status}）`)
+                } else {
+                  check(true, `deposit 启动 → RUNNING（action_id=${deposit.body.action_id}）`)
+                  const depositTerminal = await waitForActionTerminal(
+                    deposit.body.action_id,
+                    'deposit 终态事件',
+                    30000,
+                  )
+                  if (!depositTerminal || depositTerminal.event !== 'minecraft.action.completed') {
+                    check(
+                      false,
+                      `deposit 终态是 ${depositTerminal && depositTerminal.event}`
+                        + `（${(depositTerminal && (depositTerminal.error || depositTerminal.reason)) || '-'}）`,
+                    )
+                  } else {
+                    const depositResult = depositTerminal.result || {}
+                    check(
+                      depositResult.direction === 'deposit' &&
+                        depositResult.container_after &&
+                        depositResult.container_after.count === FIXTURE_COUNT,
+                      `deposit 把东西放回了原槽（container_after=${JSON.stringify(
+                        depositResult.container_after,
+                      )}）`,
+                    )
+                    check(
+                      depositResult.inventory_after === null,
+                      `背包格已空（inventory_after=${JSON.stringify(depositResult.inventory_after)}）`,
+                    )
+                    // 最终状态：容器内容 + 背包布局都回到测试前
+                    const restored = await waitForValue(async () => {
+                      const probe = await inspect(containerPos)
+                      const snap = probe.body && probe.body.result
+                      const rows = await readSlots()
+                      if (!snap) return null
+                      const row = (snap.slots || []).find((entry) => entry.slot === 0)
+                      const containerOk =
+                        row && row.count === FIXTURE_COUNT && name(row.name) === name(FIXTURE_ITEM)
+                      return containerOk ? { snap, rows } : null
+                    }, '容器内容恢复（deposit 之后）', 15000)
+                    check(Boolean(restored), '容器状态已恢复（第 0 格回到测试前的数量）')
+                    if (restored) {
+                      check(
+                        signature(restored.rows) === playerSignatureBefore,
+                        `背包布局已恢复（before=${playerSignatureBefore || '空'} / `
+                          + `after=${signature(restored.rows) || '空'}）`,
+                      )
+                      console.log(
+                        `[smoke]    Phase 4E 结束状态：容器 ${JSON.stringify(restored.snap.slots)}；`
+                          + `背包 ${signature(restored.rows) || '空'}`,
+                      )
+                    }
+                  }
+                }
+              }
+            }
+          }
+
+          // (f) 清夹具：临时箱子自己 setblock air 还原（操作者指定的容器不动）
+          if (createdFixture) {
+            await say(
+              `/setblock ${containerPos.x} ${containerPos.y} ${containerPos.z} ${containerOrigin}`,
+            )
+            await sleep(500)
+            const gone = await waitForValue(async () => {
+              const probe = await inspect(containerPos)
+              return probe.status !== 200 ? true : null
+            }, '临时箱子已清掉', 8000)
+            check(
+              Boolean(gone),
+              `临时箱子已还原成 ${containerOrigin}`
+                + `（(${containerPos.x},${containerPos.y},${containerPos.z}) 不再是容器）`,
+            )
+          } else {
+            console.log('[smoke] 用的是操作者自己的容器：只把物品放回原槽，不动方块')
+          }
+        }
+      }
+
+      // container 动作是毫秒级的，真实服务器上没有"挖到一半"那种可取消窗口
+      console.log(
+        '[smoke] SKIPPED container STOP：inspect/transfer 毫秒级完成，真实服务器上没有可取消窗口',
+      )
+    }
 
     await ensureIdle('smoke 收尾')
 
