@@ -219,6 +219,45 @@ class FakeMinecraftService:
             raise outcome
         return {"action_id": "act_move_item_1", "action": "inventory_move", **outcome}
 
+    async def dropped_items(self) -> dict[str, Any]:
+        self._record("dropped_items")
+        outcome = self._next(
+            "dropped_items",
+            {
+                "status": "SUCCEEDED",
+                "result": {
+                    "ok": True,
+                    "online": True,
+                    "total": 2,
+                    "truncated": False,
+                    "items": [
+                        {
+                            "entity_id": 123,
+                            "item": {"name": "dirt", "count": 3},
+                            "position": {"x": 100.35, "y": 64.12, "z": 101.84},
+                            "distance": 3.7,
+                        },
+                        {
+                            "entity_id": 130,
+                            "item": {"name": "oak_log", "count": 1},
+                            "position": {"x": 106.02, "y": 64.0, "z": 99.5},
+                            "distance": 6.1,
+                        },
+                    ],
+                },
+            },
+        )
+        if isinstance(outcome, Exception):
+            raise outcome
+        return {"action_id": "act_dropped_1", "action": "dropped_items", **outcome}
+
+    async def pickup_item(self, entity_id: Any, expected_item: Any) -> dict[str, Any]:
+        self._record("pickup_item", entity_id=entity_id, expected_item=expected_item)
+        outcome = self._next("pickup_item", {"status": "RUNNING", "action_id": "act_pickup_1"})
+        if isinstance(outcome, Exception):
+            raise outcome
+        return {"action_id": "act_pickup_1", "action": "pickup_item", **outcome}
+
     async def recipe_lookup(self, item: Any, crafting_table: Any = None) -> dict[str, Any]:
         self._record("recipe_lookup", item=item, crafting_table=crafting_table)
         canonical = str(item or "").strip().lower().replace("minecraft:", "")
@@ -437,7 +476,7 @@ async def test_minecraft_stop_tool_registered() -> None:
 
 
 async def test_all_tools_share_one_risk_table() -> None:
-    """Phase 4E 起十三个生产 Tool（SAFE 只读 + 五个 MEDIUM 写动作）。"""
+    """Phase 4H 起十七个生产 Tool（SAFE 只读 + 七个 MEDIUM 写动作）。"""
     runtime = await _runtime()
     for name in ACTION_RISK:
         tool = runtime.registry.maybe_get(name)
@@ -452,12 +491,14 @@ async def test_all_tools_share_one_risk_table() -> None:
         "minecraft_container_transfer",
         "minecraft_craft",
         "minecraft_dig",
+        "minecraft_dropped_items",
         "minecraft_equip",
         "minecraft_follow_player",
         "minecraft_inventory",
         "minecraft_inventory_move",
         "minecraft_look_at",
         "minecraft_move_to",
+        "minecraft_pickup_item",
         "minecraft_place",
         "minecraft_recipe_lookup",
         "minecraft_stop",
@@ -580,6 +621,8 @@ def test_risk_flags_gate_every_level() -> None:
     assert table.risk_of("minecraft_container_transfer") == "MEDIUM"
     assert table.risk_of("minecraft_recipe_lookup") == "SAFE"
     assert table.risk_of("minecraft_craft") == "MEDIUM"
+    assert table.risk_of("minecraft_dropped_items") == "SAFE"
+    assert table.risk_of("minecraft_pickup_item") == "MEDIUM"
     assert table.risk_of("minecraft_inventory") == "SAFE"
     assert table.allowed_by_config("minecraft_dig") is False
     assert table.allowed_by_config("minecraft_place") is False

@@ -120,6 +120,25 @@ class FakeRuntime:
         }
         self.craft_calls: list[dict[str, Any]] = []
         self.craft_plan: list[dict[str, Any]] = []
+        # Phase 4H：dropped_items（同步只读）+ pickup_item（持续型）
+        self.dropped_items_calls = 0
+        self.dropped_items_result: dict[str, Any] = {
+            "ok": True,
+            "online": True,
+            "total": 1,
+            "truncated": False,
+            "items": [
+                {
+                    "entity_id": 123,
+                    "item": {"name": "dirt", "count": 3},
+                    "position": {"x": 100.35, "y": 64.12, "z": 101.84},
+                    "distance": 3.7,
+                }
+            ],
+        }
+        self.dropped_items_plan: list[dict[str, Any]] = []
+        self.pickup_calls: list[dict[str, Any]] = []
+        self.pickup_plan: list[dict[str, Any]] = []
         self.inventory_move_calls: list[dict[str, Any]] = []
         self.inventory_move_plan: list[dict[str, Any]] = []
         self.pathfinder_state: dict[str, Any] = {
@@ -145,6 +164,8 @@ class FakeRuntime:
         app.router.add_get("/minecraft/inventory", self._inventory)
         app.router.add_post("/minecraft/place", self._place)
         app.router.add_get("/minecraft/inventory/slots", self._inventory_slots)
+        app.router.add_post("/minecraft/dropped_items", self._dropped_items)
+        app.router.add_post("/minecraft/pickup_item", self._pickup_item)
         app.router.add_post("/minecraft/recipe_lookup", self._recipe_lookup)
         app.router.add_post("/minecraft/craft", self._craft)
         app.router.add_post("/minecraft/container_inspect", self._container_inspect)
@@ -318,6 +339,51 @@ class FakeRuntime:
     async def _inventory_slots(self, request: web.Request) -> web.Response:
         self.inventory_slots_calls += 1
         return web.json_response(dict(self.inventory_slots_payload))
+
+    async def _dropped_items(self, request: web.Request) -> web.Response:
+        await request.read()
+        self.dropped_items_calls += 1
+        plan = self.dropped_items_plan.pop(0) if self.dropped_items_plan else {}
+        if "error" in plan:
+            code, status = plan["error"]
+            payload: dict[str, Any] = {
+                "ok": False,
+                "error": {"code": code, "message": f"{code}（fake runtime）"},
+            }
+            if plan.get("detail"):
+                payload["error"]["detail"] = plan["detail"]
+            return web.json_response(payload, status=status)
+        return web.json_response(
+            {
+                "ok": True,
+                "action_id": "act_dropped_1",
+                "action": "dropped_items",
+                "status": "SUCCEEDED",
+                "result": plan.get("result", self.dropped_items_result),
+            }
+        )
+
+    async def _pickup_item(self, request: web.Request) -> web.Response:
+        body = await request.json()
+        self.pickup_calls.append(body)
+        plan = self.pickup_plan.pop(0) if self.pickup_plan else {"status": "RUNNING"}
+        if "error" in plan:
+            code, status = plan["error"]
+            payload: dict[str, Any] = {
+                "ok": False,
+                "error": {"code": code, "message": f"{code}（fake runtime）"},
+            }
+            if plan.get("detail"):
+                payload["error"]["detail"] = plan["detail"]
+            return web.json_response(payload, status=status)
+        return web.json_response(
+            {
+                "ok": True,
+                "action_id": plan.get("action_id", "act_pickup_1"),
+                "action": "pickup_item",
+                "status": plan["status"],
+            }
+        )
 
     async def _recipe_lookup(self, request: web.Request) -> web.Response:
         body = await request.json()

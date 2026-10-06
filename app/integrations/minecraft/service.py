@@ -450,6 +450,94 @@ class MinecraftRecipeChanged(MinecraftBridgeError):
         super().__init__(message, code="minecraft.recipe_changed")
 
 
+class MinecraftItemEntityNotFound(MinecraftBridgeError):
+    """附近找不到这个掉落物实体（已经被捡走、消失，或区块没加载）。"""
+
+    status = 404
+
+    def __init__(self, message: str = "附近找不到这个掉落物实体") -> None:
+        super().__init__(message, code="minecraft.item_entity_not_found")
+
+
+class MinecraftItemEntityInvalid(MinecraftBridgeError):
+    """那个实体不是掉落物（玩家/怪物/投射物…），或者读不到它身上的物品。"""
+
+    status = 422
+
+    def __init__(
+        self, message: str = "那个实体不是掉落物", *, detail: dict[str, Any] | None = None
+    ) -> None:
+        super().__init__(message, code="minecraft.item_entity_invalid", detail=detail or {})
+
+
+class MinecraftItemEntityChanged(MinecraftBridgeError):
+    """实体身上的物品与 expected_item 不一致（第二层身份校验失败）。"""
+
+    status = 409
+
+    def __init__(
+        self, message: str = "实体身上的物品与预期不一致", *, expected: str = "", actual: str = ""
+    ) -> None:
+        super().__init__(
+            message,
+            code="minecraft.item_entity_changed",
+            detail={"expected": expected, "actual": actual},
+        )
+
+
+class MinecraftPickupTargetReplaced(MinecraftBridgeError):
+    """entity_id 还在，但已经指向了**另一个**实体对象（绝不自动改绑）。"""
+
+    status = 409
+
+    def __init__(
+        self, message: str = "目标实体已经被替换", *, detail: dict[str, Any] | None = None
+    ) -> None:
+        super().__init__(message, code="minecraft.pickup_target_replaced", detail=detail or {})
+
+
+class MinecraftPickupTargetLost(MinecraftBridgeError):
+    """目标被别的玩家捡走 / 消失，追不回来了。"""
+
+    status = 409
+
+    def __init__(
+        self, message: str = "目标掉落物已经丢了", *, detail: dict[str, Any] | None = None
+    ) -> None:
+        super().__init__(message, code="minecraft.pickup_target_lost", detail=detail or {})
+
+
+class MinecraftPickupTargetTooFar(MinecraftBridgeError):
+    """掉落物离得太远（本阶段不会追太远）。"""
+
+    status = 422
+
+    def __init__(
+        self, message: str = "掉落物太远", *, detail: dict[str, Any] | None = None
+    ) -> None:
+        super().__init__(message, code="minecraft.pickup_target_too_far", detail=detail or {})
+
+
+class MinecraftPickupFailed(MinecraftBridgeError):
+    """拾取动作本身失败（启动导航失败等）。"""
+
+    status = 500
+
+    def __init__(self, message: str = "拾取失败") -> None:
+        super().__init__(message, code="minecraft.pickup_failed")
+
+
+class MinecraftPickupUnconfirmed(MinecraftBridgeError):
+    """实体消失了，但背包里的物品没有增加 —— 不能算成功。"""
+
+    status = 500
+
+    def __init__(
+        self, message: str = "未能确认拾取结果", *, detail: dict[str, Any] | None = None
+    ) -> None:
+        super().__init__(message, code="minecraft.pickup_unconfirmed", detail=detail or {})
+
+
 class MinecraftCraftingTableMissing(MinecraftBridgeError):
     """指定的那个位置没有工作台（区块没加载，或者被挖掉了）。"""
 
@@ -624,6 +712,27 @@ def _translate(exc: MinecraftRuntimeError) -> MinecraftBridgeError:
     # Phase 4F：crafting（玩家 2×2）
     if exc.code == "recipe.not_found":
         return MinecraftRecipeNotFound(str(exc))
+    # Phase 4H：掉落物 / 拾取
+    if exc.code == "item_entity.not_found":
+        return MinecraftItemEntityNotFound(str(exc))
+    if exc.code == "item_entity.invalid":
+        return MinecraftItemEntityInvalid(str(exc), detail=dict(exc.detail))
+    if exc.code == "item_entity.changed":
+        return MinecraftItemEntityChanged(
+            str(exc),
+            expected=str(exc.detail.get("expected") or ""),
+            actual=str(exc.detail.get("actual") or ""),
+        )
+    if exc.code == "target.replaced":
+        return MinecraftPickupTargetReplaced(str(exc), detail=dict(exc.detail))
+    if exc.code == "pickup.target_lost":
+        return MinecraftPickupTargetLost(str(exc), detail=dict(exc.detail))
+    if exc.code == "pickup.target_too_far":
+        return MinecraftPickupTargetTooFar(str(exc), detail=dict(exc.detail))
+    if exc.code == "pickup.failed":
+        return MinecraftPickupFailed(str(exc))
+    if exc.code == "pickup.unconfirmed":
+        return MinecraftPickupUnconfirmed(str(exc), detail=dict(exc.detail))
     if exc.code == "table.missing":
         return MinecraftCraftingTableMissing(str(exc))
     if exc.code == "table.invalid":
@@ -967,6 +1076,9 @@ class MinecraftService:
         # Phase 4C：place 的安全门
         env["MC_PLACE_TIMEOUT_MS"] = str(int(self.config.action.place.timeout * 1000))
         env["MC_PLACE_MAX_DISTANCE"] = str(self.config.action.place.max_distance)
+        # Phase 4H：拾取（有限导航 + 收集确认）
+        env["MC_PICKUP_TIMEOUT_MS"] = str(int(self.config.action.pickup.timeout * 1000))
+        env["MC_PICKUP_MAX_DISTANCE"] = str(self.config.action.pickup.max_distance)
         # Phase 4G：工作台的最大交互距离（眼睛 → 方块中心）
         env["MC_CRAFTING_TABLE_MAX_DISTANCE"] = str(
             self.config.action.craft.crafting_table.max_distance
@@ -1341,6 +1453,27 @@ class MinecraftService:
             raise _translate(exc) from exc
 
     @staticmethod
+    def validate_pickup(entity_id: Any, expected_item: Any) -> tuple[int, str]:
+        """pickup_item 的参数校验（纯函数）。
+
+        entity_id 是 >= 0 的整数；expected_item 是**第二层身份校验**（非空物品名）——
+        光有 entity id 不是足够的人类可读安全约束（§十四）。真正的"实体还在不在 /
+        还是不是掉落物 / 物品对不对 / 距离够不够"由 runtime 用实时状态判定。
+        """
+        if isinstance(entity_id, bool) or not isinstance(entity_id, int):
+            raise MinecraftActionInvalid("entity_id 必须是整数（用 minecraft_dropped_items 拿）")
+        if entity_id < 0:
+            raise MinecraftActionInvalid("entity_id 不能是负数")
+        if not isinstance(expected_item, str) or not expected_item.strip():
+            raise MinecraftActionInvalid("expected_item 不能为空（第二层身份校验）")
+        clean = expected_item.strip()
+        if len(clean) > PLACE_MAX_ITEM_CHARS:
+            raise MinecraftActionInvalid(f"expected_item 最长 {PLACE_MAX_ITEM_CHARS} 个字符")
+        if any(ord(ch) < 32 or ord(ch) == 127 for ch in clean):
+            raise MinecraftActionInvalid("expected_item 不能包含控制字符")
+        return int(entity_id), clean
+
+    @staticmethod
     def validate_crafting_table(crafting_table: Any) -> dict[str, int] | None:
         """crafting_table 参数校验（纯函数，§五）。
 
@@ -1401,6 +1534,38 @@ class MinecraftService:
         if any(ord(ch) < 32 or ord(ch) == 127 for ch in clean):
             raise MinecraftActionInvalid("recipe_id 不能包含控制字符")
         return clean, MinecraftService.validate_crafting_table(crafting_table)
+
+    async def dropped_items(self) -> dict[str, Any]:
+        """读附近的**掉落物实体**（Phase 4H · SAFE 只读）。
+
+        同步动作：直接返回语义投影（`entity_id` / `item{name,count}` / `position` /
+        `distance`，按距离升序、最多 32 条 + `truncated`）；只列 Item Entity，
+        玩家/怪物/投射物等一律不进列表，也不泄露 raw entity/metadata。
+        """
+        self._require_enabled()
+        try:
+            await self._ensure_runtime()
+            return await self._client.dropped_items()
+        except MinecraftRuntimeError as exc:
+            if exc.unreachable:
+                self._mark_runtime_down(str(exc))
+            raise _translate(exc) from exc
+
+    async def pickup_item(self, entity_id: Any, expected_item: Any) -> dict[str, Any]:
+        """走过去捡起**一个明确指定**的掉落物实体（Phase 4H · MEDIUM · 需要用户确认）。
+
+        一次只捡一个实体：不捡附近所有掉落物、不自动挖、不自动 loot、不追超过上限的距离。
+        返回启动即 ``RUNNING``；终态经事件送达（成功带 ``result`` 的 before/after）。
+        """
+        self._require_enabled()
+        clean_id, clean_item = self.validate_pickup(entity_id, expected_item)
+        try:
+            await self._ensure_runtime()
+            return await self._client.pickup_item(clean_id, clean_item)
+        except MinecraftRuntimeError as exc:
+            if exc.unreachable:
+                self._mark_runtime_down(str(exc))
+            raise _translate(exc) from exc
 
     async def recipe_lookup(self, item: Any, crafting_table: Any = None) -> dict[str, Any]:
         """查一个目标物品能做的配方（Phase 4F/4G · SAFE 只读）。

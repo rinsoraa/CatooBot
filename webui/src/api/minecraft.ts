@@ -4,6 +4,8 @@ import { api } from '@/api/client'
 
 import type {
   MinecraftContainerDirection,
+  MinecraftDroppedItemsResponse,
+  MinecraftPickupItemResult,
   MinecraftCraftingTable,
   MinecraftCraftResult,
   MinecraftRecipeLookupResponse,
@@ -137,6 +139,17 @@ export const minecraftApi = {
     return api.post<MinecraftCraftResult>('/minecraft/craft', {
       recipe_id: recipeId,
       ...(craftingTable ? { crafting_table: craftingTable } : {}),
+    })
+  },
+  /** Phase 4H：看附近地上的掉落物实体（SAFE 只读，同步返回）。 */
+  droppedItems() {
+    return api.post<MinecraftDroppedItemsResponse>('/minecraft/dropped_items', {})
+  },
+  /** Phase 4H：捡起一个明确的掉落物实体（必须过 MEDIUM 确认门）。 */
+  pickupItem(entityId: number, expectedItem: string) {
+    return api.post<MinecraftPickupItemResult>('/minecraft/pickup_item', {
+      entity_id: entityId,
+      expected_item: expectedItem,
     })
   },
   /** Phase 4A：确认门 Debug（只能缩小授权：造测试条 / 取消 / 置过期）。 */

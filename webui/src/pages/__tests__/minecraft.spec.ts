@@ -149,6 +149,8 @@ function makeHandler(
     containerTransfer?: MockReply
     recipeLookup?: MockReply
     craft?: MockReply
+    droppedItems?: MockReply
+    pickupItem?: MockReply
   } = {},
 ) {
   return (request: MockRequest): MockReply => {
@@ -257,6 +259,43 @@ function makeHandler(
             ],
           },
         })
+      )
+    }
+    if (url.pathname === '/api/v1/minecraft/dropped_items' && request.method === 'POST') {
+      return (
+        overrides.droppedItems ??
+        ok({
+          ok: true,
+          action: 'dropped_items',
+          action_id: 'act_dropped_ui',
+          status: 'SUCCEEDED',
+          result: {
+            ok: true,
+            online: true,
+            total: 2,
+            truncated: false,
+            items: [
+              {
+                entity_id: 123,
+                item: { name: 'dirt', count: 3 },
+                position: { x: 100.35, y: 64.12, z: 101.84 },
+                distance: 3.7,
+              },
+              {
+                entity_id: 130,
+                item: { name: 'oak_log', count: 1 },
+                position: { x: 106.02, y: 64, z: 99.5 },
+                distance: 6.1,
+              },
+            ],
+          },
+        })
+      )
+    }
+    if (url.pathname === '/api/v1/minecraft/pickup_item' && request.method === 'POST') {
+      return (
+        overrides.pickupItem ??
+        ok({ ok: true, action: 'pickup_item', action_id: 'act_pickup_ui', status: 'RUNNING' })
       )
     }
     if (url.pathname === '/api/v1/minecraft/recipe_lookup' && request.method === 'POST') {
@@ -1299,6 +1338,120 @@ describe('Minecraft 页 · Crafting（Phase 4F）', () => {
     await flushAll()
     expect(wrapper.get('[data-test="mc-craft"]').text()).toContain('还没有查过配方')
     expect(wrapper.get('[data-test="mc-recipe-status"]').text()).toBe('—')
+  })
+})
+
+describe('Minecraft 页 · Dropped Items / Pickup（Phase 4H）', () => {
+  async function refreshDropped(wrapper: VueWrapper): Promise<void> {
+    await wrapper.get('[data-test="mc-dropped-refresh"]').trigger('click')
+    await flushAll()
+  }
+
+  it('REFRESH 拉取掉落物并渲染 entity_id / 物品 / 数量 / 坐标 / 距离', async () => {
+    const { wrapper, calls } = await mountPage(makeHandler())
+    await flushAll()
+    await refreshDropped(wrapper)
+    expect(calls.some((c) => c.url.endsWith('/minecraft/dropped_items'))).toBe(true)
+    const row = wrapper.get('[data-test="mc-dropped-123"]')
+    expect(row.text()).toContain('123')
+    expect(row.text()).toContain('dirt')
+    expect(row.text()).toContain('3')
+    expect(row.text()).toContain('3.7 格')
+    expect(wrapper.get('[data-test="mc-dropped-summary"]').text()).toContain('2 个')
+  })
+
+  it('空列表 / 离线时如实显示', async () => {
+    const { wrapper } = await mountPage(
+      makeHandler({
+        droppedItems: ok({
+          ok: true,
+          action: 'dropped_items',
+          status: 'SUCCEEDED',
+          result: { ok: true, online: true, total: 0, truncated: false, items: [] },
+        }),
+      }),
+    )
+    await flushAll()
+    await refreshDropped(wrapper)
+    expect(wrapper.get('[data-test="mc-dropped-table"]').text()).toContain('附近没有掉落物')
+    expect(wrapper.get('[data-test="mc-dropped-summary"]').text()).toBe('附近没有掉落物')
+    expect(useToast().items.value.at(-1)?.message).toBe('附近没有掉落物')
+  })
+
+  it('刷新失败时如实报错（不假装看到了）', async () => {
+    const { wrapper } = await mountPage(
+      makeHandler({ droppedItems: fail(500, 'minecraft.action_failed', '读取实体列表失败') }),
+    )
+    await flushAll()
+    await refreshDropped(wrapper)
+    expect(useToast().items.value.at(-1)?.message).toBe('刷新掉落物失败')
+    expect(useToast().items.value.at(-1)?.detail).toContain('读取实体列表失败')
+    expect(wrapper.get('[data-test="mc-dropped-summary"]').text()).toBe('还没有刷新过')
+  })
+
+  it('点一行"用作目标" → 填入 entity_id 与物品名', async () => {
+    const { wrapper } = await mountPage(makeHandler())
+    await flushAll()
+    await refreshDropped(wrapper)
+    await wrapper.get('[data-test="mc-dropped-use-130"]').trigger('click')
+    await flushAll()
+    expect(
+      (wrapper.get('[data-test="mc-pickup-entity-id"]').element as HTMLInputElement).value,
+    ).toBe('130')
+    expect((wrapper.get('[data-test="mc-pickup-item"]').element as HTMLInputElement).value).toBe(
+      'oak_log',
+    )
+  })
+
+  it('PICKUP 把 entity_id 与 expected_item 一起发到后端', async () => {
+    const { wrapper, calls } = await mountPage(makeHandler())
+    await flushAll()
+    await wrapper.get('[data-test="mc-pickup-entity-id"]').setValue('123')
+    await wrapper.get('[data-test="mc-pickup-item"]').setValue('dirt')
+    await wrapper.get('[data-test="mc-pickup-run"]').trigger('click')
+    await flushAll()
+    const call = calls.find((c) => c.url.endsWith('/minecraft/pickup_item'))
+    expect(call).toBeTruthy()
+    expect(call?.body).toEqual({ entity_id: 123, expected_item: 'dirt' })
+  })
+
+  it('PICKUP 本地拦截非法 entity_id / 缺物品名（不发请求）', async () => {
+    const { wrapper, calls } = await mountPage(makeHandler())
+    await flushAll()
+    await wrapper.get('[data-test="mc-pickup-entity-id"]').setValue('abc')
+    await wrapper.get('[data-test="mc-pickup-item"]').setValue('dirt')
+    await wrapper.get('[data-test="mc-pickup-run"]').trigger('click')
+    await flushAll()
+    expect(useToast().items.value.at(-1)?.message).toBe('entity_id 不合法')
+
+    await wrapper.get('[data-test="mc-pickup-entity-id"]').setValue('123')
+    await wrapper.get('[data-test="mc-pickup-item"]').setValue('   ')
+    await wrapper.get('[data-test="mc-pickup-run"]').trigger('click')
+    await flushAll()
+    expect(useToast().items.value.at(-1)?.message).toBe('缺少 expected_item')
+    expect(calls.some((c) => c.url.endsWith('/minecraft/pickup_item'))).toBe(false)
+  })
+
+  it('PICKUP 被确认门拒绝时如实报错（WebUI 拿不到执行权）', async () => {
+    const { wrapper } = await mountPage(
+      makeHandler({
+        pickupItem: fail(409, 'minecraft.confirmation_required', '这个 Minecraft 动作需要用户确认'),
+      }),
+    )
+    await flushAll()
+    await wrapper.get('[data-test="mc-pickup-entity-id"]').setValue('123')
+    await wrapper.get('[data-test="mc-pickup-item"]').setValue('dirt')
+    await wrapper.get('[data-test="mc-pickup-run"]').trigger('click')
+    await flushAll()
+    expect(useToast().items.value.at(-1)?.message).toBe('PICKUP 被拒绝')
+    expect(useToast().items.value.at(-1)?.detail).toContain('需要用户确认')
+  })
+
+  it('未刷新时如实说"还没有刷新过掉落物列表"', async () => {
+    const { wrapper } = await mountPage(makeHandler())
+    await flushAll()
+    expect(wrapper.get('[data-test="mc-dropped"]').text()).toContain('还没有刷新过掉落物列表')
+    expect(wrapper.get('[data-test="mc-dropped-summary"]').text()).toBe('还没有刷新过')
   })
 })
 

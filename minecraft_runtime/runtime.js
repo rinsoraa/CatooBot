@@ -757,6 +757,204 @@ function recipeSetsFor(bot, itemName, craftingTable = null) {
   return { entry, all, twoByTwo: executable, craftableIds, craftingTable }
 }
 
+// ------------------------------------------------- Phase 4H: dropped items
+
+const DROPPED_ITEMS_TIMEOUT_MS = Number.parseInt(
+  process.env.MC_DROPPED_ITEMS_TIMEOUT_MS || '5000',
+  10,
+)
+const PICKUP_DEFAULT_TIMEOUT_MS = Number.parseInt(process.env.MC_PICKUP_TIMEOUT_MS || '30000', 10)
+const PICKUP_MAX_DISTANCE = Number.parseFloat(process.env.MC_PICKUP_MAX_DISTANCE || '16')
+//: 进入这个半径就停导航、交给服务器收集（runtime 常量，第一版不暴露配置）
+const PICKUP_RADIUS = 1.2
+//: 一次最多把多少个掉落物给模型看（多出来的截断并在结果里说明）
+const PICKUP_MAX_ITEMS = 32
+//: 监督循环周期：实体还在不在 / 身份没变 / 物品没变 / 距离还行
+const PICKUP_POLL_MS = 250
+//: entityGone 之后再等多久背包到账（到点还没增加 → pickup_unconfirmed）
+const PICKUP_INVENTORY_GRACE_MS = 1500
+
+function pickupTimeoutMs() {
+  const raw = Number.parseInt(process.env.MC_PICKUP_TIMEOUT_MS || '', 10)
+  return Number.isFinite(raw) && raw > 0 ? raw : PICKUP_DEFAULT_TIMEOUT_MS
+}
+
+function pickupMaxDistance() {
+  const raw = Number.parseFloat(process.env.MC_PICKUP_MAX_DISTANCE || '')
+  return Number.isFinite(raw) && raw > 0 ? raw : PICKUP_MAX_DISTANCE
+}
+
+//: 监督循环周期与"entityGone 后的背包宽限"每次读取（测试可以把它们调小）
+function pickupPollMs() {
+  const raw = Number.parseInt(process.env.MC_PICKUP_POLL_MS || '', 10)
+  return Number.isFinite(raw) && raw > 0 ? raw : PICKUP_POLL_MS
+}
+
+function pickupInventoryGraceMs() {
+  const raw = Number.parseInt(process.env.MC_PICKUP_INVENTORY_GRACE_MS || '', 10)
+  return Number.isFinite(raw) && raw >= 0 ? raw : PICKUP_INVENTORY_GRACE_MS
+}
+
+/**
+ * §五：掉落物实体在 entity metadata 里的 item 槽位。
+ * 与 mineflayer 自己的判定公式一致（entities.js 的 itemDrop 分支），不写死数字。
+ */
+function droppedItemSlotIndex(bot) {
+  const base = bot && bot.supportFeature && bot.supportFeature('itemsAreAlsoBlocks') ? 5 : 6
+  return base + (bot && bot.supportFeature && bot.supportFeature('entityMetadataHasLong') ? 1 : 0)
+}
+
+/**
+ * §五：**唯一**的"这是不是掉落物实体"判断（所有地方都只走这个 helper）。
+ * 不假设 ``entity.name === 'item'`` 是唯一形态：mineflayer 自己同时接受 ``item_stack``。
+ */
+function isDroppedItemEntity(bot, entity) {
+  if (!entity || typeof entity !== 'object') return false
+  const raw = entity.name !== undefined && entity.name !== null ? entity.name : entity.displayName
+  const name = String(raw || '').toLowerCase()
+  return name === 'item' || name === 'item_stack'
+}
+
+/** 把 mineflayer 的原始物品槽解码成 ``{name, count}``（解不出来返回 null）。 */
+function decodeRawItemStack(bot, raw) {
+  if (!raw || typeof raw !== 'object') return null
+  // 老版本明确给 present；1.21+ 用组件描述物品，**没有** present 字段（有 itemId 就是有物品）
+  if (raw.present === false) return null
+  if (!Number.isFinite(raw.itemId)) return null
+  const entry = bot && bot.registry && bot.registry.items ? bot.registry.items[raw.itemId] : null
+  if (!entry || !entry.name) return null
+  return { name: normalizeItemName(entry.name), count: raw.itemCount || 1 }
+}
+
+/**
+ * 掉落物的语义栈 ``{name, count}``（读不出来就返回 null，绝不猜）。
+ *
+ * 数据来源是 mineflayer 解析后的 ``entity.metadata``，它有两种形态：
+ *   * 现代版本（1.20.2+）：**按 metadata key 索引的对象**，物品栈那一个的值类型是字符串
+ *     ``'item_stack'``（见 mineflayer 自己的 `packet.metadata.some(m => m.type === 'item_stack')`）；
+ *   * 老版本：同样是按 key 索引的对象，但类型是数值。
+ * 所以这里先按物品表的 ``metadataKeys`` 找名字叫 item/item_stack 的那一项，
+ * 找不到就扫描所有值取第一个能解码成物品栈的（Item 实体身上只有这一个栈）——
+ * **完全不硬编码槽位数字**。
+ */
+function droppedItemStack(bot, entity) {
+  if (!isDroppedItemEntity(bot, entity)) return null
+  const metadata = entity.metadata
+  const registryItem = bot && bot.registry && bot.registry.entitiesByName
+    ? bot.registry.entitiesByName[entity.name]
+    : null
+  const keys = registryItem && Array.isArray(registryItem.metadataKeys)
+    ? registryItem.metadataKeys
+    : null
+  if (metadata && typeof metadata === 'object') {
+    if (keys) {
+      const index = keys.findIndex((key) => key === 'item' || key === 'item_stack')
+      if (index >= 0) {
+        const stack = decodeRawItemStack(bot, metadata[index])
+        if (stack) return stack
+      }
+    }
+    for (const value of Object.values(metadata)) {
+      const stack = decodeRawItemStack(bot, value)
+      if (stack) return stack
+    }
+  }
+  if (Array.isArray(metadata)) {
+    // 原始形态（老版本/某些插件）：条目是 {key, type, value}
+    const index = droppedItemSlotIndex(bot)
+    const slot =
+      metadata.find((entry) => entry && (entry.type === index || entry.type === 'item_stack')) ||
+      metadata[index]
+    const stack = decodeRawItemStack(bot, slot && slot.value)
+    if (stack) return stack
+  }
+  if (entity.item && entity.item.name) {
+    // 某些版本/插件会把栈直接挂在 entity.item 上（防御性回退，字段仍然是语义的）
+    return { name: normalizeItemName(entity.item.name), count: entity.item.count || 1 }
+  }
+  return null
+}
+
+function entityPositionOf(entity) {
+  const position = entity && entity.position
+  if (!position) return null
+  const { x, y, z } = position
+  if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z)) return null
+  return { x, y, z }
+}
+
+/** 眼睛 → 实体位置的距离（与交互动作同口径：读的是 bot.entity.position 上方 1.65） */
+function distanceToEntity(bot, entity) {
+  const position = entityPositionOf(entity)
+  if (!position || !bot || !bot.entity || !bot.entity.position) return null
+  return round2(bot.entity.position.distanceTo(new Vec3(position.x, position.y, position.z)))
+}
+
+/**
+ * §六/§九/§十：掉落物的**只读语义投影**（排序 + 上限）。
+ * 只给 entity_id / item{name,count} / position / distance；
+ * 不泄露 raw metadata / packet / 内部数字 id / entity object / UUID / velocity。
+ */
+function droppedItemsView(bot) {
+  if (bot === null || bot === undefined) {
+    return { ok: true, online: false, total: 0, truncated: false, items: [] }
+  }
+  const entities =
+    bot.entities && typeof bot.entities === 'object' ? Object.values(bot.entities) : []
+  const rows = []
+  for (const entity of entities) {
+    if (!isDroppedItemEntity(bot, entity)) continue
+    const stack = droppedItemStack(bot, entity)
+    const position = entityPositionOf(entity)
+    // 读不到物品/位置（还在初始化、或数据不全）→ 宁可不列出来，也不给半个实体
+    if (!stack || !position || !Number.isFinite(entity.id)) continue
+    rows.push({
+      entity_id: entity.id,
+      item: { name: stack.name, count: stack.count },
+      position: { x: round2(position.x), y: round2(position.y), z: round2(position.z) },
+      distance: distanceToEntity(bot, entity),
+    })
+  }
+  // §九：距离升序，其次 entity_id 升序（同一世界状态下输出稳定）
+  rows.sort((a, b) => a.distance - b.distance || a.entity_id - b.entity_id)
+  return {
+    ok: true,
+    online: true,
+    total: rows.length,
+    truncated: rows.length > PICKUP_MAX_ITEMS,
+    items: rows.slice(0, PICKUP_MAX_ITEMS),
+  }
+}
+
+/** §三十六：拾取监听器的挂载/摘除（幂等；cleanup 与 wait 都会调）。 */
+function detachPickupListeners(bot, listeners) {
+  if (!bot || !Array.isArray(listeners)) return
+  for (const [event, handler] of listeners.splice(0, listeners.length)) {
+    try {
+      if (typeof bot.removeListener === 'function') bot.removeListener(event, handler)
+      else if (typeof bot.off === 'function') bot.off(event, handler)
+    } catch (error) {
+      log('warn', 'pickup listener detach failed', { event, error: error.message })
+    }
+  }
+}
+
+/** 停掉导航意图（setGoal(null) + 清控制位），失败只记日志。 */
+function releasePickupNavigation(bot) {
+  try {
+    if (bot && bot.pathfinder && typeof bot.pathfinder.setGoal === 'function') {
+      bot.pathfinder.setGoal(null)
+    }
+  } catch (error) {
+    log('warn', 'pickup setGoal(null) failed', { error: error.message })
+  }
+  try {
+    if (bot && typeof bot.clearControlStates === 'function') bot.clearControlStates()
+  } catch (error) {
+    log('warn', 'pickup clearControlStates failed', { error: error.message })
+  }
+}
+
 // Phase 3D：follow_player（动态跟随）
 const FOLLOW_DEFAULT_DISTANCE = 2.5
 const FOLLOW_MIN_DISTANCE = 1.5
@@ -2344,6 +2542,253 @@ const ACTION_REGISTRY = {
         if (bot && typeof bot.clearControlStates === 'function') bot.clearControlStates()
       },
     },
+    dropped_items: {
+      // Phase 4H：读"附近有哪些掉落物实体"（SAFE 只读；**非独占** —— 纯读取，
+      // 可与导航/挖/放/合成并行，但必须在线）。
+      exclusive: false,
+      timeout_ms: DROPPED_ITEMS_TIMEOUT_MS,
+      risk: 'SAFE',
+      validate() {
+        return {}
+      },
+      async run(bot) {
+        if (bot === null || bot === undefined) {
+          throw new ActionError('罐头还没有进入世界', 'action.not_online', 400)
+        }
+        return droppedItemsView(bot)
+      },
+    },
+    pickup_item: {
+      // Phase 4H：拾取**一个明确指定**的掉落物实体（MEDIUM：改背包 + bot 会主动移动）。
+      // 内部自己管 pathfinding + 目标实体 + 收集等待，绝不嵌套 move_to（那会 action.busy）。
+      exclusive: true,
+      timeout_ms: pickupTimeoutMs(),
+      risk: 'MEDIUM',
+      detached: true,
+      validate(params) {
+        const entityId = params.entity_id
+        if (typeof entityId !== 'number' || !Number.isInteger(entityId) || entityId < 0) {
+          throw new ActionError('entity_id 必须是 >= 0 的整数（用 minecraft_dropped_items 拿）', 'action.invalid', 400)
+        }
+        const expected = params.expected_item
+        if (typeof expected !== 'string' || !expected.trim()) {
+          throw new ActionError('expected_item 不能为空（第二层身份校验）', 'action.invalid', 400)
+        }
+        if (expected.length > MAX_PLACE_ITEM_CHARS) {
+          throw new ActionError('expected_item 过长', 'action.invalid', 400)
+        }
+        return { entity_id: entityId, expected_item: normalizeItemName(expected) }
+      },
+      async start(bot, params, token, controller) {
+        // §十三：执行前必须重新确认「实体还在 / 还是掉落物 / id 对得上 / 物品一致 / 距离还行」
+        if (bot === null || bot.entity === null) {
+          throw new ActionError('罐头还没有进入世界', 'action.not_online', 400)
+        }
+        const entities = bot.entities || {}
+        const targetEntity = entities[params.entity_id]
+        if (!targetEntity) {
+          throw new ActionError(
+            `附近找不到实体 #${params.entity_id}（可能已经被捡走或消失了）`,
+            'item_entity.not_found',
+            404,
+          )
+        }
+        if (!isDroppedItemEntity(bot, targetEntity)) {
+          throw new ActionError(
+            `实体 #${params.entity_id} 不是一个掉落物（本工具只捡掉落物）`,
+            'item_entity.invalid',
+            422,
+            { entity_id: params.entity_id },
+          )
+        }
+        const stack = droppedItemStack(bot, targetEntity)
+        if (!stack) {
+          throw new ActionError(
+            `读不到实体 #${params.entity_id} 上的物品（数据还没到）`,
+            'item_entity.invalid',
+            422,
+            { entity_id: params.entity_id },
+          )
+        }
+        if (stack.name !== params.expected_item) {
+          throw new ActionError(
+            `实体 #${params.entity_id} 上是 ${stack.name}，不是 ${params.expected_item}`,
+            'item_entity.changed',
+            409,
+            { expected: params.expected_item, actual: stack.name },
+          )
+        }
+        const distance = distanceToEntity(bot, targetEntity)
+        const maxDistance = pickupMaxDistance()
+        if (distance !== null && distance > maxDistance) {
+          throw new ActionError(
+            `掉落物距离 ${distance} 格，超过上限 ${maxDistance} 格（本阶段不会追太远）`,
+            'pickup.target_too_far',
+            422,
+            { distance, max_distance: maxDistance },
+          )
+        }
+        // §三十六：监听收集 / 实体消失（cleanup 与 wait 都会摘，幂等）
+        const listeners = []
+        const collectedBy = { bot: false, other: false }
+        const scope = { collectedBy, gone: false, goneAt: 0, listeners }
+        const onCollect = (collector, collected) => {
+          if (collected !== targetEntity) return
+          if (collector === bot.entity) collectedBy.bot = true
+          else collectedBy.other = true
+        }
+        const onGone = (entity) => {
+          if (entity !== targetEntity) return
+          scope.gone = true
+          scope.goneAt = Date.now()
+        }
+        if (typeof bot.on === 'function') {
+          bot.on('playerCollect', onCollect)
+          bot.on('entityGone', onGone)
+          listeners.push(['playerCollect', onCollect], ['entityGone', onGone])
+        }
+        if (controller) controller.pickupListeners = listeners
+        // §二十二/§二十四：官方动态 Goal（跟着活 entity 走），不嵌套 move_to
+        bot.pathfinder.setGoal(new goals.GoalFollow(targetEntity, PICKUP_RADIUS), true)
+        log('info', 'pickup started', {
+          entity_id: params.entity_id,
+          item: stack.name,
+          distance,
+        })
+        return {
+          // 内部状态（只给 wait 用，绝不进事件）：持有**实体对象引用**做身份绑定
+          targetEntity,
+          scope,
+          entity_id: params.entity_id,
+          expected_item: params.expected_item,
+          count_before: stack.count,
+          distance_start: distance,
+          distance_collected: null,
+          inventory_before: countInventoryItem(bot, params.expected_item),
+          navigating: true,
+        }
+      },
+      wait(bot, params, token, state) {
+        const scope = state.scope
+        const maxDistance = pickupMaxDistance()
+        return new Promise((resolvePromise, rejectPromise) => {
+          let settled = false
+          const finish = (error, value) => {
+            if (settled) return
+            settled = true
+            clearInterval(timer)
+            detachPickupListeners(bot, scope.listeners)
+            if (error) rejectPromise(error)
+            else resolvePromise(value)
+          }
+          const fail = (message, code, status, detail) => {
+            // 失败时自己收导航（绝不留残余 Goal）
+            releasePickupNavigation(bot)
+            finish(new ActionError(message, code, status, detail || null))
+          }
+          const timer = setInterval(() => {
+            if (token && token.cancelled) {
+              finish(null)
+              return
+            }
+            const current = bot.entities ? bot.entities[state.entity_id] : null
+            const replaced = current !== state.targetEntity
+            const sawEvent = scope.gone || scope.collectedBy.bot || scope.collectedBy.other
+            // §二十五：身份绑定 —— id 被重新分配/实体被替换时**绝不**自动改绑
+            // （"被收集/消失"不算替换：那种情况交给下面的收集确认去判）
+            if (replaced && !sawEvent) {
+              fail(
+                `实体 #${state.entity_id} 已经被替换成了别的实体（不自动改绑）`,
+                'target.replaced',
+                409,
+                { entity_id: state.entity_id },
+              )
+              return
+            }
+            // §三十五：物品被换掉 → 立即失败
+            const stack = droppedItemStack(bot, state.targetEntity)
+            if (stack && stack.name !== state.expected_item) {
+              fail(
+                `实体 #${state.entity_id} 上的物品变成了 ${stack.name}`,
+                'item_entity.changed',
+                409,
+                { expected: state.expected_item, actual: stack.name },
+              )
+              return
+            }
+            // §三十四：别的玩家先捡走了 → 立刻失败，绝不追替代实体
+            if (scope.collectedBy.other) {
+              fail(
+                `实体 #${state.entity_id} 被别的玩家捡走了`,
+                'pickup.target_lost',
+                409,
+                { entity_id: state.entity_id },
+              )
+              return
+            }
+            // 实体还在才谈距离（被收集掉之后就没有距离可算了）
+            if (!replaced) {
+              const distance = distanceToEntity(bot, state.targetEntity)
+              // §二十六：目标被拉远 → 停止（不无限追）
+              if (distance !== null && distance > maxDistance) {
+                fail(
+                  `掉落物跑到 ${distance} 格之外，超过上限 ${maxDistance} 格`,
+                  'pickup.target_too_far',
+                  422,
+                  { distance, max_distance: maxDistance },
+                )
+                return
+              }
+              // §二十八：进入拾取半径 → 停导航，等服务器收集
+              if (state.navigating && distance !== null && distance <= PICKUP_RADIUS) {
+                state.navigating = false
+                state.distance_collected = distance
+                releasePickupNavigation(bot)
+              }
+            }
+            // §二十九/§三十三：只要"我们这边的收集/消失信号"到了就去核对背包；
+            // **真正算不算成功只看 inventory 有没有增加**（下面那条硬门禁）
+            const collected = scope.collectedBy.bot || scope.gone
+            if (!collected) return
+            const inventoryAfter = countInventoryItem(bot, state.expected_item)
+            if (inventoryAfter > state.inventory_before) {
+              // §三十六：**成功也必须收掉导航** —— 服务器可能在两次轮询之间就把物品收进背包
+              // （掉落物掉到下层、罐头跟着掉下去正好踩到），这时上面的"进入半径"分支从来没跑过。
+              // SUCCEEDED 不触发 cleanup（ActionRuntime 的既定契约），所以这里必须自己收。
+              if (state.navigating) {
+                state.navigating = false
+                releasePickupNavigation(bot)
+              }
+              finish(null, {
+                entity_id: state.entity_id,
+                item: { name: state.expected_item, count_before: state.count_before },
+                distance_start: state.distance_start,
+                distance_collected: state.distance_collected,
+                inventory_before: state.inventory_before,
+                inventory_after: inventoryAfter,
+                collected_count: inventoryAfter - state.inventory_before,
+                collected: true,
+              })
+              return
+            }
+            // entityGone 但背包还没到账：给一小段宽限（inventory 包可能滞后）
+            if (scope.gone && Date.now() - scope.goneAt > pickupInventoryGraceMs()) {
+              fail(
+                `实体 #${state.entity_id} 消失了，但背包里的 ${state.expected_item} 没有增加`,
+                'pickup.unconfirmed',
+                500,
+                { inventory_before: state.inventory_before, inventory_after: inventoryAfter },
+              )
+            }
+          }, pickupPollMs())
+        })
+      },
+      cleanup(bot, controller) {
+        // §三十六：cleanup 至少 setGoal(null) + clearControlStates，且至多一次
+        detachPickupListeners(bot, controller ? controller.pickupListeners : null)
+        releasePickupNavigation(bot)
+      },
+    },
     follow_player: {
       // Phase 3D：动态跟随（LOW；不改世界，但属于持续自动移动 → exclusive + STOP + timeout）
       exclusive: true,
@@ -2944,6 +3389,23 @@ async function handleRequest(request, response) {
       jsonResponse(response, 200, { ok: true, ...result })
       return
     }
+    if (request.method === 'POST' && path === '/minecraft/dropped_items') {
+      // Phase 4H：读附近的掉落物实体（SAFE 只读；同步返回语义投影）
+      await readBody(request).catch(() => ({}))
+      const result = await actionRuntime.execute('dropped_items', {})
+      jsonResponse(response, 200, { ok: true, ...result })
+      return
+    }
+    if (request.method === 'POST' && path === '/minecraft/pickup_item') {
+      // Phase 4H：捡起一个明确的掉落物实体（MEDIUM）。启动即 RUNNING，终态经事件送达。
+      const body = await readBody(request)
+      const result = await actionRuntime.execute('pickup_item', {
+        entity_id: body.entity_id,
+        expected_item: body.expected_item,
+      })
+      jsonResponse(response, 200, { ok: true, ...result })
+      return
+    }
     if (request.method === 'POST' && path === '/minecraft/recipe_lookup') {
       // Phase 4F/4G：查配方（不带工作台 = 玩家 2×2；带坐标 = 那张工作台的 3×3）
       const body = await readBody(request)
@@ -3114,6 +3576,19 @@ module.exports = {
   },
   EQUIP_DEFAULTS: { timeoutMs: EQUIP_DEFAULT_TIMEOUT_MS },
   INVENTORY_MOVE_DEFAULTS: { timeoutMs: MOVE_DEFAULT_TIMEOUT_MS },
+  PICKUP_DEFAULTS: {
+    timeoutMs: PICKUP_DEFAULT_TIMEOUT_MS,
+    maxDistance: PICKUP_MAX_DISTANCE,
+    radius: PICKUP_RADIUS,
+    maxItems: PICKUP_MAX_ITEMS,
+    pollMs: PICKUP_POLL_MS,
+    inventoryGraceMs: PICKUP_INVENTORY_GRACE_MS,
+    droppedItemsTimeoutMs: DROPPED_ITEMS_TIMEOUT_MS,
+  },
+  isDroppedItemEntity,
+  droppedItemStack,
+  droppedItemSlotIndex,
+  droppedItemsView,
   CRAFT_DEFAULTS: {
     timeoutMs: CRAFT_DEFAULT_TIMEOUT_MS,
     lookupTimeoutMs: LOOKUP_DEFAULT_TIMEOUT_MS,

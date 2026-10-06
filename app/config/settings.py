@@ -896,6 +896,19 @@ class RecipeLookupConfig(BaseModel):
     timeout: float = Field(default=10.0, ge=1.0, le=60.0)
 
 
+class PickupConfig(BaseModel):
+    """Phase 4H：单实体拾取（有限导航 + 收集确认）的安全门。
+
+    第一版只有一个最大距离与超时：进入拾取半径（runtime 常量）就停导航、等服务器收集，
+    不把半径/轮询周期这类内部旋钮暴露成用户配置。
+    """
+
+    #: 目标掉落物离眼睛的最大距离（格）；超出的直接拒绝，绝不追太远
+    max_distance: float = Field(default=16.0, gt=0, le=64.0)
+    #: 单次拾取的最长秒数（导航 + 等待收集）
+    timeout: float = Field(default=30.0, ge=5.0, le=120.0)
+
+
 class CraftingTableConfig(BaseModel):
     """Phase 4G：指定工作台（3×3）时的安全门。只加一个距离，不做一堆细碎开关。"""
 
@@ -941,6 +954,8 @@ class MinecraftActionConfig(BaseModel):
     #: Phase 4F：玩家自身 2×2 背包合成（查配方 + 执行一次）
     recipe_lookup: RecipeLookupConfig = Field(default_factory=RecipeLookupConfig)
     craft: CraftConfig = Field(default_factory=CraftConfig)
+    #: Phase 4H：捡起一个明确的掉落物实体（有限导航 + 有限距离）
+    pickup: PickupConfig = Field(default_factory=PickupConfig)
 
 
 class MinecraftAgentToolsConfig(BaseModel):

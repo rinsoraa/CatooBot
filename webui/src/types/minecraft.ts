@@ -330,6 +330,42 @@ export interface MinecraftCraftResult {
   [key: string]: unknown
 }
 
+// ---------------- Phase 4H · 掉落物实体（感知 / 拾取） ----------------
+
+/** 地上的一个掉落物实体（只读语义投影：没有 raw metadata / UUID / velocity）。 */
+export interface MinecraftDroppedItem {
+  entity_id: number
+  item: { name: string; count: number }
+  position: MinecraftPosition
+  distance: number
+}
+
+export interface MinecraftDroppedItemsView {
+  ok: boolean
+  online: boolean
+  total: number
+  /** 超过上限（32）时只列前 32 条，这里会标 true。 */
+  truncated: boolean
+  items: MinecraftDroppedItem[]
+}
+
+export interface MinecraftDroppedItemsResponse {
+  ok: boolean
+  action: string
+  status: MinecraftActionStatus
+  action_id?: string
+  result: MinecraftDroppedItemsView
+}
+
+/** pickup 的启动响应（持续型：终态由事件送达）。 */
+export interface MinecraftPickupItemResult {
+  ok: boolean
+  action: string
+  status: MinecraftActionStatus
+  action_id?: string
+  [key: string]: unknown
+}
+
 // ---------------- Phase 3E · LLM Agent（Tool Debug + Context） ----------------
 
 export type MinecraftActionRisk = 'SAFE' | 'LOW' | 'MEDIUM' | 'HIGH' | 'DESTRUCTIVE'

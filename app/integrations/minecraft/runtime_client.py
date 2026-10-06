@@ -111,6 +111,18 @@ class MinecraftRuntimeClient:
             },
         )
 
+    async def dropped_items(self) -> dict[str, Any]:
+        """读附近的掉落物实体（Phase 4H：同步只读语义投影）。"""
+        return await self._request("POST", "/minecraft/dropped_items", body={})
+
+    async def pickup_item(self, entity_id: int, expected_item: str) -> dict[str, Any]:
+        """捡起一个明确的掉落物实体（Phase 4H：启动即 RUNNING）。"""
+        return await self._request(
+            "POST",
+            "/minecraft/pickup_item",
+            body={"entity_id": entity_id, "expected_item": expected_item},
+        )
+
     async def recipe_lookup(
         self, item: str, crafting_table: dict[str, int] | None = None
     ) -> dict[str, Any]:

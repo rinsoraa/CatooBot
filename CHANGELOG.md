@@ -3,6 +3,40 @@
 本文件记录 CatooBot 的版本演进。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号见 `pyproject.toml`；日期取自真实提交历史（本仓库 2026-09-30 起）。
 
+## Minecraft Phase 4H — Dropped Item Perception + 单实体 Pickup
+
+* 新增 LLM 工具 `minecraft_dropped_items`（SAFE 只读、**非独占**）：把地上的 Item 实体投影成
+  语义列表（每条只有 `entity_id` / `item{name,count}` / `position` / `distance`），按距离再按
+  `entity_id` 排序、上限 32 条 + `truncated`；玩家/动物/怪物/箭/经验球/船/展示框一律不出现；
+  读不出物品栈或位置的实体整条不列；**不泄露** raw metadata / packet / 内部数字 id / UUID / velocity。
+* 新增 LLM 工具 `minecraft_pickup_item`（MEDIUM、独占、detached）：`{entity_id, expected_item}`
+  两个参数都必填，确认指纹绑 `tool + entity_id + expected_item`，摘要写成
+  「拾取附近的 minecraft:oak_log（实体 #123）」。内部自己管导航（`GoalFollow(entity, 1.2)` dynamic，
+  **不嵌套 move_to**、不用 mineflayer-collectblock），每 ~250ms 监管一次实体是否还在、
+  身份是否被替换（绝不改绑）、物品名是否被换、距离是否还在上限内；进入 1.2 格半径就停导航 +
+  清控制位，等服务器 `playerCollect` / `entityGone`，**成功判定 = 目标真的被我们收走 且
+  背包增加**（`after > before`，不是 `after === before + count`）；被别的玩家捡走 →
+  `pickup_target_lost`，实体消失但背包没增加 → `pickup_unconfirmed`（宽限 1.5s）。
+* 真机抓出并修掉两处**成功路径**缺陷：① 服务器可能在两次轮询之间就把物品收进背包
+  （掉落物掉到下层、罐头踩到），这时"进入半径"分支从没跑过 —— SUCCEEDED 不触发 cleanup，
+  于是残留一个 `GoalFollow`；现在成功分支也自己 `setGoal(null)`（Node 测试 W4 钉住）。
+  ② 掉落物读取原先要求 metadata 里有 `present` 字段，而 1.21+ 的物品栈
+  （`{itemId, itemCount, components…}`）**没有**它 —— 真机上 `dropped_items` 恒返回 0 条；
+  现在按 `metadataKeys` 找 `item`/`item_stack`（1.21.1 是第 8 项）+ 值扫描回退，并保留
+  `present: false` = 空栈的老语义，**绝不硬编码槽位数字**。
+* 确认门 / 可信玩家 / 一次性 / TTL / 开发者入口不得自授权全部不变；`allow_medium` 默认仍是
+  **false**（现在覆盖七个 MEDIUM 动作）；配置只加 `pickup.max_distance`（16）与 `pickup.timeout`（30）。
+* 验证：Node `dropped_items.test.js` 42 checks（含真实 1.21.1 metadata 形态）
+  + `pickup_item.test.js` 77 checks（H–W，含"成功也必须收导航"）；Python 测试 +33（pytest 2287）；
+  WebUI 新增 Dropped Items 面板与 Pickup Test 表单（PICKUP 只能发起确认请求）；
+  flying-squid E2E 覆盖拒绝路径（真机 Item Entity 造不出来 → 明确 SKIPPED）；
+  **真实服务器 smoke 真机把掉落物捡进背包**（dig → dropped_items → 真 STOP → pickup：
+  playerCollect / 实体消失 / 背包 0 → 2 三项硬证据）→ `REAL SERVER: PASS`。
+* 顺带把 smoke 脚本里的两处**噪声**改成如实陈述：① 远距离 `move_to` 在真机上可能"瞬间完成"
+  （Pathfinder 对空路径静默 resolve）——改成按方向重试拿取消窗口，四个方向都拿不到就 SKIPPED，
+  不再把"动作自己已经结束"记成 STOP 失败；② 背包比对区分"丢东西"（硬失败）与
+  "多出地上散落物"（vanilla 行走自动拾取，如实打印备注）。
+
 ## Minecraft Phase 4G — Crafting Table（3×3 · 明确指定工作台）
 
 * `minecraft_recipe_lookup` 与 `minecraft_craft` 增加**可选** `crafting_table: {x,y,z}`：

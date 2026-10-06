@@ -72,7 +72,7 @@ async function main() {
     assert(typeof def.cleanup === 'function', '有 cleanup（stopDigging + 清控制位）')
     assert(
       Object.keys(ACTION_REGISTRY).sort().join(',') ===
-        'chat,container_inspect,container_transfer,craft,dig,equip,follow_player,inventory_move,look_at,move_to,place,recipe_lookup,stop',
+        'chat,container_inspect,container_transfer,craft,dig,dropped_items,equip,follow_player,inventory_move,look_at,move_to,pickup_item,place,recipe_lookup,stop',
       `注册表只有已批准动作（得到 ${Object.keys(ACTION_REGISTRY).sort().join(',')}）`,
     )
     // §三 禁止清单：连续挖掘/范围破坏/批量放置类动作一个都不许有

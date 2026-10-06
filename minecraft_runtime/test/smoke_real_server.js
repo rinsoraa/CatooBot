@@ -29,7 +29,12 @@
  *  11. Phase 4G：3×3 工作台 —— 就地在 bot 旁边放一张临时工作台（记录原方块，最后还原）
  *      → recipe_lookup(chest, table) 拿到 recipe_id → craft(recipe_id, table) → 重读 inventory
  *      → /clear 产物与材料 → 逐槽比对恢复（支持 SMOKE_CRAFTING_TABLE_TARGET="x,y,z"）
- *  12. disconnect
+ *  12. Phase 4H：掉落物感知 + 单实体拾取 —— 放一块 oak_log → dig 出真实掉落物 →
+ *      dropped_items 看到 entity_id/物品/位置/距离 → （可选）真实 STOP（把罐头挪远制造取消窗口）
+ *      → pickup → playerCollect + 实体消失 + 背包增加 → /clear 回收 → 逐槽比对恢复
+ *      （支持 SMOKE_PICKUP_TARGET="entity_id" + SMOKE_PICKUP_ITEM="minecraft:oak_log"；
+ *      上一次中断残留的临时方块用 SMOKE_CLEANUP_BLOCK="x,y,z" 清掉）
+ *  13. disconnect
  *
  * 认证：默认用 minecraft_runtime/auth.json（本地文件，绝不进 Git）。
  * 服务器没开 / 连不上 → 打印 NOT AVAILABLE 并以 0 退出（文档记录用）；
@@ -308,48 +313,96 @@ async function main() {
 
     if (moved) {
       // ---- 2. 远一点 → STOP → 位置必须停住 ----
-      const dirLen = Math.hypot(movedDir[0], movedDir[1]) || 1
-      const ux = movedDir[0] / dirLen
-      const uz = movedDir[1] / dirLen
-      const now = (await status()).position
-      const moveResp = await request(runtimePort, 'POST', '/minecraft/move_to', {
-        x: now.x + ux * 25,
-        y: now.y,
-        z: now.z + uz * 25,
-      })
-      check(
-        moveResp.status === 200 && moveResp.body.status === 'RUNNING',
-        `远距离 move_to 启动 → RUNNING（${JSON.stringify(moveResp.body)}）`,
-      )
-      const moveId = moveResp.body.action_id
-      if (moveResp.body.status === 'RUNNING' && moveId) {
+      // 真机上"25 格外"可能根本没有非破坏性路径（水/悬崖/虚空）：mineflayer-pathfinder 的
+      // goto() 在**空路径**上会静默 resolve（不报 NoPath），看起来像"瞬间完成"。
+      // 所以这里像 Test A 一样按方向重试，只为拿到一个"真的走在路上"的取消窗口；
+      // 四个方向都拿不到就如实 SKIPPED —— 绝不把"动作自己已经结束"记成 STOP 失败。
+      const baseDir = Math.hypot(movedDir[0], movedDir[1]) || 1
+      const bux = movedDir[0] / baseDir
+      const buz = movedDir[1] / baseDir
+      const directions = [
+        [bux, buz],
+        [-bux, -buz],
+        [-buz, bux],
+        [buz, -bux],
+      ]
+      let stopVerified = false
+      for (const [ux, uz] of directions) {
+        const now = (await status()).position
+        const moveResp = await request(runtimePort, 'POST', '/minecraft/move_to', {
+          x: now.x + ux * 25,
+          y: now.y,
+          z: now.z + uz * 25,
+        })
+        if (
+          !(moveResp.status === 200 && moveResp.body.status === 'RUNNING' && moveResp.body.action_id)
+        ) {
+          check(false, `远距离 move_to 启动被拒（${JSON.stringify(moveResp.body)}）`)
+          break
+        }
+        const moveId = moveResp.body.action_id
         const moving = await waitFor(async () => {
           const snap = await status()
           return Boolean(snap.pathfinder && snap.pathfinder.moving)
         }, '导航开始', 8000)
-        if (moving) {
-          const stop = await request(runtimePort, 'POST', '/minecraft/stop', {})
-          check(stop.body.cancelled.includes(moveId), 'STOP 取消了移动中的 move_to')
-          const terminal = await waitForActionTerminal(moveId, 'move_to cancelled 事件', 10000)
-          check(
-            Boolean(terminal) && terminal.event === 'minecraft.action.cancelled',
-            `move_to 终态 = cancelled（${terminal ? terminal.event : '超时'}）`,
+        const finishedEarly = events.find(
+          (row) => TERMINAL_EVENTS.includes(row.event) && row.action_id === moveId,
+        )
+        if (finishedEarly) {
+          const reached =
+            finishedEarly.result && finishedEarly.result.distance_to_target
+          console.log(
+            `[smoke] 远距离 move_to（方向 ${ux},${uz}）在被取消前就进入终态（${finishedEarly.event}`
+              + `${reached === undefined ? '' : `，distance_to_target=${reached}`}）`
+              + ' —— 这个方向没有可取消窗口（真机地形 + Pathfinder 空路径瞬时完成），换方向重试',
           )
-          const stopped = await status()
-          check(stopped.pathfinder.goal === null, 'goal == null')
-          check(stopped.pathfinder.moving === false, 'isMoving == false')
-          await sleep(600)
-          const later = await status()
-          // 半格余量：真实服务器的惯性/下落收尾不算"还在走"
-          check(distance2d(later.position, stopped.position) <= 0.6, '停止后位置不再漂移')
-        } else {
-          // 没开始移动：也要等它自己落定，避免污染后面的段落
+          continue
+        }
+        if (!moving) {
           const terminal = await waitForActionTerminal(moveId, '远距离 move_to 终态', 20000)
           console.log(
-            `[smoke] 远距离目标未能开始移动（${terminal ? terminal.event : '终态超时'}）——跳过 STOP 段`,
+            `[smoke] 远距离目标（方向 ${ux},${uz}）未能开始移动`
+              + `（${terminal ? terminal.event : '终态超时'}）——换方向重试`,
           )
+          continue
+        }
+        const stop = await request(runtimePort, 'POST', '/minecraft/stop', {})
+        check(stop.body.cancelled.includes(moveId), 'STOP 取消了移动中的 move_to')
+        const terminal = await waitForActionTerminal(moveId, 'move_to cancelled 事件', 10000)
+        check(
+          Boolean(terminal) && terminal.event === 'minecraft.action.cancelled',
+          `move_to 终态 = cancelled（${terminal ? terminal.event : '超时'}）`,
+        )
+        const stopped = await status()
+        check(stopped.pathfinder.goal === null, 'goal == null')
+        check(stopped.pathfinder.moving === false, 'isMoving == false')
+        await sleep(600)
+        const later = await status()
+        // 半格余量：真实服务器的惯性/下落收尾不算"还在走"
+        check(distance2d(later.position, stopped.position) <= 0.6, '停止后位置不再漂移')
+        stopVerified = true
+        break
+      }
+      if (!stopVerified) {
+        console.log(
+          '[smoke] SKIPPED move_to STOP：四个方向都没拿到可取消窗口'
+            + '（真机地形 + Pathfinder 对空路径静默 resolve）'
+            + ' —— 取消语义由 4H 的 pickup STOP 段与 Node 单测独立验证',
+        )
+        // 收掉可能残留的 GoalNear：向"当前站的位置"发一个零距离 move_to ——
+        // 目标已经满足 → Pathfinder 自己 emit goal_reached 并清 stateGoal。
+        const here = (await status()).position
+        const zero = await request(runtimePort, 'POST', '/minecraft/move_to', {
+          x: here.x,
+          y: here.y,
+          z: here.z,
+        })
+        if (zero.status === 200 && zero.body.action_id) {
+          await waitForActionTerminal(zero.body.action_id, '零距离 move_to 终态', 15000)
+          console.log('[smoke] 已用零距离 move_to 把残留的导航 Goal 收掉')
         }
       }
+      // STOP 段结论（见上：要么逐项 ✗，要么已 SKIPPED）——后续段落继续按真实结果判定
     }
 
     await ensureIdle('move_to 段收尾')
@@ -1932,6 +1985,452 @@ async function main() {
       console.log(
         '[smoke] SKIPPED 3×3 craft STOP：合成毫秒级完成，真实服务器上没有可取消窗口',
       )
+    }
+
+    // ---- 10. Phase 4H：掉落物感知 + 单实体拾取（dig → drop → dropped_items → pickup）----
+    if (!digReady) {
+      console.log('[smoke] ✗ Phase 4H：runtime 未空闲，掉落物/拾取硬门禁不能执行')
+    } else {
+      const name = (value) => normalizeItemName(value || '')
+      const TEST_LOG = 'minecraft:oak_log'
+      const readSlots = async () => {
+        const resp = await request(runtimePort, 'GET', '/minecraft/inventory/slots')
+        return resp.status === 200 && resp.body ? resp.body.slots || [] : []
+      }
+      const signature = (rows) =>
+        rows
+          .map((row) => `${row.slot}:${name(row.name)}×${row.count}`)
+          .sort((a, b) => Number.parseInt(a, 10) - Number.parseInt(b, 10))
+          .join('|')
+      const inventorySlice = async () => (await request(runtimePort, 'GET', '/minecraft/inventory')).body
+      const say = (message) => request(runtimePort, 'POST', '/minecraft/chat', { message })
+      const totalOf = (body, itemName) => {
+        const hit = ((body && body.items) || []).find((row) => name(row.name) === name(itemName))
+        return hit ? hit.count : 0
+      }
+      const listDropped = async () => {
+        const resp = await request(runtimePort, 'POST', '/minecraft/dropped_items', {})
+        return resp.status === 200 && resp.body ? resp.body.result : null
+      }
+      const waitForDrop = async (predicate, label, timeoutMs = 12000) => {
+        const deadline = Date.now() + timeoutMs
+        while (Date.now() < deadline) {
+          const view = await listDropped()
+          if (view) {
+            const hit = predicate(view)
+            if (hit) return hit
+          }
+          await sleep(300)
+        }
+        console.log(`[smoke] 等待超时：${label}`)
+        return null
+      }
+
+      // 夹具前置（本段自洽）：上一次中断的运行可能留下测试物品或临时方块 —— 先清干净，
+      // 后面的逐槽比对才有意义。
+      const fixtureBotName = (await status()).username
+      if (fixtureBotName) {
+        await say(`/clear ${fixtureBotName} ${TEST_LOG}`)
+        await sleep(400)
+      }
+      const leftoverBlock = (process.env.SMOKE_CLEANUP_BLOCK || '').trim()
+      if (/^-?\d+,-?\d+,-?\d+$/.test(leftoverBlock)) {
+        const [lx, ly, lz] = leftoverBlock.split(',')
+        await say(`/setblock ${lx} ${ly} ${lz} air`)
+        await sleep(400)
+        console.log(`[smoke] 已清理上一次残留的临时方块 (${lx},${ly},${lz})`)
+      }
+
+      const signatureBefore = signature(await readSlots())
+      const sliceBefore = await inventorySlice()
+      const logsBefore = totalOf(sliceBefore, TEST_LOG)
+      console.log(`[smoke] 4H 前：${name(TEST_LOG)}=${logsBefore}（背包 ${signatureBefore || '空'}）`)
+
+      // (a) 指定目标（SMOKE_PICKUP_TARGET）优先；否则自己造一个真实掉落物
+      const overrideTarget = (process.env.SMOKE_PICKUP_TARGET || '').trim()
+      const overrideItem = (process.env.SMOKE_PICKUP_ITEM || '').trim() || TEST_LOG
+      let targetDrop = null
+      let createdBlock = null
+      let blockOrigin = 'air'
+
+      if (overrideTarget) {
+        const wanted = Number.parseInt(overrideTarget, 10)
+        targetDrop = await waitForDrop(
+          (view) => view.items.find((row) => row.entity_id === wanted) || null,
+          `找到操作者指定的实体 #${wanted}`,
+          8000,
+        )
+        console.log(
+          targetDrop
+            ? `[smoke] 4H：用操作者指定的实体 #${wanted}（${targetDrop.item.name} ×${targetDrop.item.count}）`
+            : `[smoke] ✗ 4H：找不到操作者指定的实体 #${wanted}`,
+        )
+      } else {
+        // 就地放一块 oak_log（只覆盖 air/water，记录原方块）→ dig 出真实掉落物
+        const origin = (await status()).position
+        const base = { x: Math.round(origin.x), y: Math.round(origin.y), z: Math.round(origin.z) }
+        const offsets = [
+          [1, 1, 0],
+          [0, 1, 1],
+          [1, 1, 1],
+          [-1, 1, 0],
+          [0, 1, -1],
+          [0, 2, 0],
+          [1, 0, 0],
+          [0, 0, 1],
+        ]
+        for (const [dx, dy, dz] of offsets) {
+          const spot = { x: base.x + dx, y: base.y + dy, z: base.z + dz }
+          const raw = await blockAt(spot)
+          const original = !raw || raw === 'air' || raw === 'water' ? raw || 'air' : null
+          if (original === null) continue
+          await say(`/setblock ${spot.x} ${spot.y} ${spot.z} minecraft:oak_log`)
+          await sleep(500)
+          if ((await blockAt(spot)) === 'oak_log') {
+            createdBlock = spot
+            blockOrigin = original
+            break
+          }
+          await say(`/setblock ${spot.x} ${spot.y} ${spot.z} ${original}`)
+        }
+        if (!createdBlock) {
+          console.log('[smoke] SKIPPED 4H：附近放不出测试用的 oak_log（不伪造结论）')
+        } else {
+          console.log(
+            `[smoke] 4H：在 (${createdBlock.x},${createdBlock.y},${createdBlock.z}) 放了 oak_log`
+              + `（原方块 ${blockOrigin}，结束后还原）→ 挖掉它制造真实掉落物`,
+          )
+          const dig = await request(runtimePort, 'POST', '/minecraft/dig', {
+            x: createdBlock.x,
+            y: createdBlock.y,
+            z: createdBlock.z,
+            expected_block: 'oak_log',
+          })
+          if (!(dig.status === 200 && dig.body.action_id)) {
+            console.log(`[smoke] ✗ 4H：dig 启动失败：${JSON.stringify(dig)}`)
+          } else {
+            const digTerminal = await waitForActionTerminal(dig.body.action_id, 'dig 终态', 30000)
+            check(
+              Boolean(digTerminal) && digTerminal.event === 'minecraft.action.completed',
+              `制造掉落物的 dig 完成（${digTerminal && digTerminal.event}）`,
+            )
+          }
+          targetDrop = await waitForDrop(
+            (view) =>
+              view.items.find(
+                (row) =>
+                  name(row.item.name) === name(TEST_LOG) &&
+                  Math.hypot(
+                    row.position.x - createdBlock.x,
+                    row.position.y - createdBlock.y,
+                    row.position.z - createdBlock.z,
+                  ) <= 3,
+              ) || null,
+            '真实掉落物出现在感知里',
+            12000,
+          )
+        }
+      }
+
+      if (!targetDrop) {
+        // 挖不出来掉落物（服务器可能禁了 drop）→ 再用 /summon 造一个（两种 NBT 写法都试）
+        console.log('[smoke] 4H：没等到挖掘掉落物，尝试 /summon 一个测试 Item Entity……')
+        const origin = (await status()).position
+        const spot = { x: Math.round(origin.x) + 2, y: Math.round(origin.y) + 1, z: Math.round(origin.z) }
+        for (const nbt of [
+          `{Item:{id:"${TEST_LOG}",count:3}}`, // 1.20.5+
+          `{Item:{id:"${TEST_LOG}",Count:3b}}`, // 1.20.4 及更早
+        ]) {
+          await say(`/summon minecraft:item ${spot.x} ${spot.y} ${spot.z} ${nbt}`)
+          targetDrop = await waitForDrop(
+            (view) =>
+              view.items.find(
+                (row) =>
+                  name(row.item.name) === name(TEST_LOG) &&
+                  Math.hypot(row.position.x - spot.x, row.position.z - spot.z) <= 4,
+              ) || null,
+            'summon 出来的掉落物出现在感知里',
+            6000,
+          )
+          if (targetDrop) {
+            console.log(`[smoke] 4H：/summon（${nbt.slice(0, 24)}…）成功造出真实 Item Entity`)
+            break
+          }
+        }
+      }
+
+      if (!targetDrop) {
+        console.log(
+          '[smoke] SKIPPED 4H pickup：真实服务器上造不出 Item Entity'
+            + '（既没有挖掘掉落，/summon 也不可用）——不伪造 PASS',
+        )
+        check(false, 'dropped item perception / pickup = BLOCKED（没有真实 Item Entity 可捡）')
+      } else {
+        // (b) 掉落物感知 = PASS（entity_id / 物品 / 位置 / 距离）
+        check(
+          Number.isFinite(targetDrop.entity_id) &&
+            Boolean(targetDrop.item) &&
+            name(targetDrop.item.name) === name(overrideItem) &&
+            Number.isFinite(targetDrop.distance) &&
+            Boolean(targetDrop.position),
+          `dropped item perception = PASS（#${targetDrop.entity_id} `
+            + `${targetDrop.item.name} ×${targetDrop.item.count}，${targetDrop.distance} 格）`,
+        )
+        check(
+          Object.keys(targetDrop).sort().join(',') === 'distance,entity_id,item,position',
+          `target identity = PASS（只有约定字段：${Object.keys(targetDrop).sort().join(',')}）`,
+        )
+        const entityId = targetDrop.entity_id
+
+        // (c) 真实 STOP：把罐头挪远制造"要走一段"的窗口（绝不瞬移 Item 本身 —— §三十八）。
+        //     **先 STOP 再拾取**：STOP 段必须把罐头 tp 走，而 tp 回来的落点如果正好贴着掉落物，
+        //     服务器会按 vanilla 规则立刻把它自动收进背包 —— 那样真实拾取就没有目标可测了。
+        let stopDone = false
+        let stopOrigin = null
+        if (targetDrop.distance < 6) {
+          const here = (await status()).position
+          stopOrigin = { x: Math.round(here.x), y: Math.round(here.y), z: Math.round(here.z) }
+          const away = { x: stopOrigin.x - 7, y: stopOrigin.y, z: stopOrigin.z }
+          await say(`/tp @s ${away.x} ${away.y} ${away.z}`)
+          await sleep(1200)
+        }
+        const beforeStop = await waitForDrop(
+          (view) => view.items.find((row) => row.entity_id === entityId) || null,
+          '停止测试前目标仍在',
+          6000,
+        )
+        if (!beforeStop) {
+          console.log('[smoke] SKIPPED 4H STOP：目标实体已经不在了（不能伪造取消）')
+        } else {
+          const stopStart = await request(runtimePort, 'POST', '/minecraft/pickup_item', {
+            entity_id: entityId,
+            expected_item: name(beforeStop.item.name),
+          })
+          if (!(stopStart.status === 200 && stopStart.body.status === 'RUNNING')) {
+            check(false, `STOP 段 pickup 启动失败（HTTP ${stopStart.status}）`)
+          } else {
+            await sleep(700) // 让它真的走起来
+            await request(runtimePort, 'POST', '/minecraft/stop', {})
+            const stopTerminal = await waitForActionTerminal(
+              stopStart.body.action_id,
+              'STOP 段 pickup 终态',
+              15000,
+            )
+            if (!stopTerminal) {
+              check(false, 'STOP 段 pickup 未进入终态')
+            } else if (stopTerminal.event === 'minecraft.action.completed') {
+              console.log(
+                '[smoke] SKIPPED 4H STOP：动作在被叫停前就已经完成（不伪造 CANCELLED）',
+              )
+            } else if (stopTerminal.event !== 'minecraft.action.cancelled') {
+              check(false, `STOP 段终态应为 cancelled（得到 ${stopTerminal.event}）`)
+            } else {
+              const settled = await waitForValue(async () => {
+                const snap = await status()
+                const idle =
+                  snap.pathfinder && snap.pathfinder.goal === null && snap.pathfinder.moving === false
+                return idle ? snap : null
+              }, 'STOP 后回到 IDLE', 8000)
+              check(Boolean(settled), 'STOP → CANCELLED + goal null + isMoving false')
+              const posA = (await status()).position
+              await sleep(500)
+              const posB = (await status()).position
+              check(
+                Math.hypot(posB.x - posA.x, posB.z - posA.z) <= 0.3,
+                'STOP 后位置稳定（不再继续走）',
+              )
+              const stillThere = await listDropped()
+              check(
+                Boolean(
+                  (stillThere.items || []).find((row) => row.entity_id === entityId),
+                ),
+                'STOP 后目标掉落物仍在（没有被误捡）',
+              )
+              const invAfterStop = await inventorySlice()
+              check(
+                totalOf(invAfterStop, beforeStop.item.name) === logsBefore,
+                `STOP 后背包没有增加（${beforeStop.item.name} 仍是 ${logsBefore}）`,
+              )
+              stopDone = true
+            }
+          }
+        }
+
+        // (d) 真实拾取（本阶段硬门禁）：回到原来的站姿，**新造一个**掉落物就在脚边，
+        //     从自然站姿走过去 —— 服务器真的把 Item Entity 收进 bot inventory 才算过。
+        if (stopOrigin) {
+          await say(`/tp @s ${stopOrigin.x} ${stopOrigin.y} ${stopOrigin.z}`)
+          await sleep(1200)
+        }
+        if (!stopDone) {
+          console.log('[smoke] SKIPPED 4H STOP 段结论（见上），后续 pickup 仍按真实结果判定')
+        }
+        const nearFixtureDrop = (view) =>
+          view.items.find(
+            (row) =>
+              name(row.item.name) === name(TEST_LOG) &&
+              Math.hypot(
+                row.position.x - createdBlock.x,
+                row.position.y - createdBlock.y,
+                row.position.z - createdBlock.z,
+              ) <= 3,
+          ) || null
+        let pickupDrop = null
+        if (createdBlock) {
+          await say(`/setblock ${createdBlock.x} ${createdBlock.y} ${createdBlock.z} ${TEST_LOG}`)
+          await sleep(500)
+          const dig2 = await request(runtimePort, 'POST', '/minecraft/dig', {
+            x: createdBlock.x,
+            y: createdBlock.y,
+            z: createdBlock.z,
+            expected_block: 'oak_log',
+          })
+          let dig2Done = false
+          if (dig2.status === 200 && dig2.body.action_id) {
+            const dig2Terminal = await waitForActionTerminal(
+              dig2.body.action_id,
+              '拾取用 dig 终态',
+              30000,
+            )
+            dig2Done =
+              Boolean(dig2Terminal) && dig2Terminal.event === 'minecraft.action.completed'
+            check(dig2Done, `拾取用的第二次 dig 完成（${dig2Terminal && dig2Terminal.event}）`)
+          } else {
+            check(false, `拾取用的第二次 dig 启动失败（HTTP ${dig2.status}）`)
+          }
+          if (dig2Done) {
+            pickupDrop = await waitForDrop(nearFixtureDrop, '拾取用掉落物出现在感知里', 12000)
+          }
+        } else {
+          pickupDrop = await waitForDrop(
+            (view) => view.items.find((row) => row.entity_id === entityId) || null,
+            '拾取目标仍在',
+            8000,
+          )
+        }
+
+        if (!pickupDrop) {
+          console.log('[smoke] SKIPPED 4H pickup：真实服务器上造不出 Item Entity —— 不伪造 PASS')
+          check(false, 'real pickup = BLOCKED（没有可拾取的真实 Item Entity）')
+        } else {
+          // 走过去的时候，地上的**别的**掉落物会被服务器自动捡起（vanilla 行走拾取，
+          // 不是 pickup_item 干的）—— 先如实记下来，收尾比对才有解释。
+          const nearbyOthers = (((await listDropped()) || {}).items || []).filter(
+            (row) => row.entity_id !== pickupDrop.entity_id && row.distance <= 8,
+          )
+          if (nearbyOthers.length > 0) {
+            console.log(
+              `[smoke] 4H 备注：拾取前 8 格内还有别的掉落物 ${nearbyOthers
+                .map((row) => `#${row.entity_id} ${row.item.name}×${row.item.count}(${row.distance} 格)`)
+                .join('、')}`
+                + ' —— 走过去时可能被服务器自动捡起（vanilla 行为）',
+            )
+          }
+          const pickupItemName = name(pickupDrop.item.name)
+          const pickupStart = await request(runtimePort, 'POST', '/minecraft/pickup_item', {
+            entity_id: pickupDrop.entity_id,
+            expected_item: pickupItemName,
+          })
+          if (!(pickupStart.status === 200 && pickupStart.body.status === 'RUNNING')) {
+            check(false, `pickup 启动必须 200/RUNNING（HTTP ${pickupStart.status}）`)
+          } else {
+            check(true, `pickup RUNNING = PASS（action_id=${pickupStart.body.action_id}）`)
+            const terminal = await waitForActionTerminal(
+              pickupStart.body.action_id,
+              'pickup 终态事件',
+              40000,
+            )
+            if (!terminal || terminal.event !== 'minecraft.action.completed') {
+              check(
+                false,
+                `real pickup 终态是 ${terminal && terminal.event}`
+                  + `（${(terminal && (terminal.error || terminal.reason)) || '-'}）`,
+              )
+            } else {
+              const result = terminal.result || {}
+              check(
+                result.collected === true && result.entity_id === pickupDrop.entity_id,
+                `real playerCollect = PASS（result=${JSON.stringify(result).slice(0, 180)}）`,
+              )
+              const goneView = await waitForValue(async () => {
+                const view = await listDropped()
+                return (view.items || []).some((row) => row.entity_id === pickupDrop.entity_id)
+                  ? null
+                  : view
+              }, '目标实体从感知里消失', 8000)
+              check(Boolean(goneView), 'target entity gone = PASS（dropped_items 里不再有它）')
+              const invAfter = await inventorySlice()
+              const logsAfter = totalOf(invAfter, pickupItemName)
+              check(
+                logsAfter > logsBefore,
+                `inventory increased = PASS（${pickupItemName} ${logsBefore} → ${logsAfter}）`,
+              )
+            }
+          }
+        }
+      }
+      // (e) 恢复：清掉测试物品 + 还原临时方块 + 逐槽比对
+      const botName = (await status()).username
+      if (botName) {
+        await say(`/clear ${botName} ${TEST_LOG}`)
+      }
+      if (createdBlock) {
+        await say(`/setblock ${createdBlock.x} ${createdBlock.y} ${createdBlock.z} ${blockOrigin}`)
+        await sleep(400)
+        // 还没被捡走的夹具掉落物也清掉：以临时方块为中心 4 格（只动这一段测试自己造的东西）
+        await say(
+          `/kill @e[type=item,x=${createdBlock.x},y=${createdBlock.y},z=${createdBlock.z},distance=..4]`,
+        )
+        await sleep(300)
+      }
+      const clearedFixture = await waitForValue(async () => {
+        const body = await inventorySlice()
+        return totalOf(body, TEST_LOG) === logsBefore ? body : null
+      }, `夹具已清（${TEST_LOG} 回到测试前数量）`, 15000)
+      check(
+        Boolean(clearedFixture),
+        `fixture cleared = PASS（${TEST_LOG} 回到测试前数量 ${logsBefore}）`,
+      )
+      const parseSignature = (sig) =>
+        new Map(
+          (sig ? sig.split('|') : [])
+            .filter(Boolean)
+            .map((entry) => {
+              const [slot, rest] = entry.split(':')
+              const [itemName, count] = rest.split('×')
+              return [`${slot}:${itemName}`, Number.parseInt(count, 10)]
+            }),
+        )
+      const beforeSlots = parseSignature(signatureBefore)
+      const afterSlots = parseSignature(signature(await readSlots()))
+      const lostSlots = []
+      for (const [key, count] of beforeSlots) {
+        const now = afterSlots.get(key) || 0
+        if (now < count) lostSlots.push(`${key} ×${count} → ${now}`)
+      }
+      check(
+        lostSlots.length === 0,
+        `inventory restored = PASS（原有物品一个没丢；before=${signatureBefore || '空'}）`,
+      )
+      if (lostSlots.length > 0) {
+        console.log(`[smoke]    ✗ 有原有物品丢了或变少了：${lostSlots.join('、')}`)
+      }
+      // 多出来的东西：地上散落物被 vanilla 行走拾取是真实服务器上的正常行为，
+      // 不能算这一段的失败，但必须**如实打印**出来，绝不静默放过。
+      const gainedSlots = []
+      for (const [key, count] of afterSlots) {
+        const was = beforeSlots.get(key) || 0
+        if (count > was) gainedSlots.push(`${key} ×${was}→${count}`)
+      }
+      if (gainedSlots.length > 0) {
+        console.log(
+          `[smoke] 4H 备注：背包多出 ${gainedSlots.join('、')}`
+            + '（走过去的路上被服务器自动捡起的地上散落物 —— vanilla 行为，非 pickup_item 所为）',
+        )
+      } else if (lostSlots.length === 0) {
+        console.log('[smoke] ✓ 背包逐槽签名与测试前完全一致')
+      }
+      await sleep(300)
     }
 
     await ensureIdle('smoke 收尾')

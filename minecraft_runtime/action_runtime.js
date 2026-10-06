@@ -311,6 +311,9 @@ function createActionRuntime({ registry, getBot, isOnline, emit, log, now = () =
             const message = String(error && error.message ? error.message : error)
             finish(controller, STATES.FAILED, {
               error: message,
+              // Phase 4H：把结构化 detail 一起带上（expected/actual、inventory before/after …
+              // 都是失败时最有用的事实；纯新增字段，不改终态语义）
+              ...(error instanceof ActionError && error.detail ? { detail: error.detail } : {}),
               ...(error instanceof ActionError ? { code: error.code } : {}),
             })
           },

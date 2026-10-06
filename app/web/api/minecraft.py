@@ -144,6 +144,15 @@ _TOOL_STATUS: dict[str, int] = {
     "minecraft.crafting_table_missing": 404,
     "minecraft.crafting_table_invalid": 422,
     "minecraft.crafting_table_too_far": 422,
+    # Phase 4H：掉落物 / 拾取
+    "minecraft.item_entity_not_found": 404,
+    "minecraft.item_entity_invalid": 422,
+    "minecraft.item_entity_changed": 409,
+    "minecraft.pickup_target_replaced": 409,
+    "minecraft.pickup_target_lost": 409,
+    "minecraft.pickup_target_too_far": 422,
+    "minecraft.pickup_failed": 500,
+    "minecraft.pickup_unconfirmed": 500,
 }
 
 
@@ -421,6 +430,57 @@ class MinecraftApiRoutes(WebContext):
                 arguments["face"],
                 arguments["expected_item"],
             ),
+        )
+        if not result.success:
+            code = result.error_type or "minecraft.action_failed"
+            raise ApiError(
+                _TOOL_STATUS.get(code, 500), code, result.error or code, detail=result.data
+            )
+        return ok(result.data, request=request)
+
+    async def _v1_minecraft_dropped_items(self, request: web.Request) -> web.Response:
+        """Phase 4H：看附近的掉落物实体（SAFE 只读，同步返回）。"""
+        try:
+            service = _service(self._bot)
+        except MinecraftBridgeError as exc:
+            raise _translate(exc) from exc
+        bridge = getattr(service, "agent", None)
+        if bridge is None:
+            raise ApiError(503, "minecraft.disabled", "Minecraft Agent 未装配")
+        result = await bridge.invoke_developer(
+            "minecraft_dropped_items",
+            {},
+            lambda svc: svc.dropped_items(),
+        )
+        if not result.success:
+            code = result.error_type or "minecraft.action_failed"
+            raise ApiError(
+                _TOOL_STATUS.get(code, 500), code, result.error or code, detail=result.data
+            )
+        return ok(result.data, request=request)
+
+    async def _v1_minecraft_pickup_item(self, request: web.Request) -> web.Response:
+        """Phase 4H：捡起一个明确的掉落物实体（MEDIUM，开发调试入口；**拿不到**执行权）。"""
+        try:
+            service = _service(self._bot)
+        except MinecraftBridgeError as exc:
+            raise _translate(exc) from exc
+        bridge = getattr(service, "agent", None)
+        if bridge is None:
+            raise ApiError(503, "minecraft.disabled", "Minecraft Agent 未装配")
+        body = await read_json(request)
+        arguments = {
+            "entity_id": body.get("entity_id"),
+            "expected_item": body.get("expected_item"),
+        }
+        try:
+            service.validate_pickup(arguments["entity_id"], arguments["expected_item"])
+        except MinecraftBridgeError as exc:
+            raise _translate(exc) from exc
+        result = await bridge.invoke_developer(
+            "minecraft_pickup_item",
+            arguments,
+            lambda svc: svc.pickup_item(arguments["entity_id"], arguments["expected_item"]),
         )
         if not result.success:
             code = result.error_type or "minecraft.action_failed"
@@ -752,6 +812,12 @@ class MinecraftApiRoutes(WebContext):
             f"{API_PREFIX}/minecraft/recipe_lookup", wrap(self._v1_minecraft_recipe_lookup)
         )
         app.router.add_post(f"{API_PREFIX}/minecraft/craft", wrap(self._v1_minecraft_craft))
+        app.router.add_post(
+            f"{API_PREFIX}/minecraft/dropped_items", wrap(self._v1_minecraft_dropped_items)
+        )
+        app.router.add_post(
+            f"{API_PREFIX}/minecraft/pickup_item", wrap(self._v1_minecraft_pickup_item)
+        )
         app.router.add_post(
             f"{API_PREFIX}/minecraft/container_inspect",
             wrap(self._v1_minecraft_container_inspect),

@@ -1404,6 +1404,177 @@ async function main() {
         )
       }
 
+      // ---------------- Phase 4H：掉落物感知 + 单实体拾取 ----------------
+      // flying-squid 不产掉落物（挖方块没有 drop、没有 /give），所以：
+      //   * 空列表 / 参数校验 / 目标不存在 / 独占 / 非独占 —— 真实验证；
+      //   * 如果能用 /summon 造一个 Item Entity，就真实验证感知与拾取；
+      //   * 造不出来就明确 SKIPPED（不伪造成功）。
+      if (cycle === 1) {
+        const listDropped = () =>
+          request(runtimePort, 'POST', '/minecraft/dropped_items', {})
+        const tryPickup = (entityId, item) =>
+          request(runtimePort, 'POST', '/minecraft/pickup_item', {
+            entity_id: entityId,
+            expected_item: item,
+          })
+
+        const empty = await listDropped()
+        assert(
+          empty.status === 200 && empty.body.status === 'SUCCEEDED',
+          `dropped_items 同步成功（得到 ${JSON.stringify(empty.body).slice(0, 160)}）`,
+        )
+        assert(
+          empty.body.result.online === true &&
+            Array.isArray(empty.body.result.items) &&
+            empty.body.result.truncated === false,
+          '语义投影形状（online / items / truncated）',
+        )
+        const emptyRaw = JSON.stringify(empty.body.result)
+        for (const forbidden of ['metadata', 'velocity', 'uuid', 'itemId', 'present']) {
+          assert(!emptyRaw.includes(forbidden), `不泄露 ${forbidden}`)
+        }
+        console.log(
+          `[e2e] dropped_items ✓ 只读语义投影（假服务器上 ${empty.body.result.total} 个掉落物）`,
+        )
+
+        // 参数校验 + 目标不存在
+        const badArgs = await request(runtimePort, 'POST', '/minecraft/pickup_item', {
+          entity_id: 'x',
+          expected_item: 'dirt',
+        })
+        assert(
+          badArgs.status === 400 && badArgs.body.error.code === 'action.invalid',
+          `非法 entity_id → action.invalid（得到 ${JSON.stringify(badArgs.body)}）`,
+        )
+        const missing = await tryPickup(999999, 'dirt')
+        assert(
+          missing.status === 404 && missing.body.error.code === 'item_entity.not_found',
+          `不存在的实体 → item_entity.not_found（得到 ${JSON.stringify(missing.body)}）`,
+        )
+        console.log('[e2e] pickup_item ✓ 参数校验 / 目标不存在（不猜、不扫货）')
+
+        // 非独占（读掉落物可以并行）＋ 独占（pickup 与前台动作互斥）
+        const hereDrop = (await request(runtimePort, 'GET', '/minecraft/status')).body.position
+        const busyMove = await request(runtimePort, 'POST', '/minecraft/move_to', {
+          x: hereDrop.x + 6,
+          y: hereDrop.y,
+          z: hereDrop.z,
+        })
+        if (busyMove.status === 200 && busyMove.body.status === 'RUNNING') {
+          const during = await listDropped()
+          assert(
+            during.status === 200 && during.body.status === 'SUCCEEDED',
+            'move_to 跑着时读掉落物仍然可用（SAFE 非独占）',
+          )
+          const busyPickup = await tryPickup(999999, 'dirt')
+          assert(
+            busyPickup.status === 409 && busyPickup.body.error.code === 'action.busy',
+            `move_to 跑着时 pickup → action.busy（得到 ${JSON.stringify(busyPickup.body)}）`,
+          )
+          await request(runtimePort, 'POST', '/minecraft/stop', {})
+          await waitFor(
+            () =>
+              events.some(
+                (e) =>
+                  e.event === 'minecraft.action.cancelled' &&
+                  e.action_id === busyMove.body.action_id,
+              ),
+            'move_to cancelled（4H 独占段收尾）',
+            10000,
+          )
+        } else {
+          console.log('[e2e] 4H 独占检查：move_to 没进入 RUNNING，跳过')
+        }
+
+        // 试着用 /summon 造一个真实 Item Entity（1.16 的 NBT 写法）
+        const here2 = (await request(runtimePort, 'GET', '/minecraft/status')).body.position
+        const itemX = Math.round(here2.x) + 1
+        const itemY = Math.round(here2.y) + 1
+        const itemZ = Math.round(here2.z)
+        await observer.chat(
+          `/summon minecraft:item ${itemX} ${itemY} ${itemZ} `
+            + '{Item:{id:"minecraft:oak_log",Count:1b}}',
+        )
+        // 等真实的 Item Entity 出现在感知里（e2e 里没有 waitForValue，这里自己轮询）
+        const waitForDropped = async (timeoutMs) => {
+          const deadline = Date.now() + timeoutMs
+          while (Date.now() < deadline) {
+            const probe = await listDropped()
+            const items = (probe.body && probe.body.result && probe.body.result.items) || []
+            if (items.length > 0) return items
+            await sleep(300)
+          }
+          return null
+        }
+        const spawned = await waitForDropped(8000)
+        if (!spawned) {
+          console.log(
+            '[e2e] dropped_items / pickup 成功路径：SKIPPED（假服务器不支持 /summon 掉落物，'
+              + '造不出真实 Item Entity；不伪造结论）',
+          )
+        } else {
+          const entry = spawned[0]
+          assert(
+            entry.item && entry.item.name === 'oak_log' && entry.item.count === 1,
+            `真实 Item Entity 的物品语义（得到 ${JSON.stringify(entry.item)}）`,
+          )
+          assert(
+            Object.keys(entry).sort().join(',') === 'distance,entity_id,item,position',
+            `条目字段（得到 ${Object.keys(entry).sort().join(',')}）`,
+          )
+          assert(
+            Number.isFinite(entry.distance) && entry.distance >= 0,
+            `距离是数字（得到 ${entry.distance}）`,
+          )
+          console.log(
+            `[e2e] dropped_items ✓ 真实 Item Entity（#${entry.entity_id} oak_log ×1，`
+              + `${entry.distance} 格）`,
+          )
+
+          const before = (await request(runtimePort, 'GET', '/minecraft/inventory')).body
+          const beforeCount = ((before.items || []).find((row) => row.name === 'oak_log') || {})
+            .count || 0
+
+          const pickup = await tryPickup(entry.entity_id, 'oak_log')
+          if (pickup.status !== 200 || pickup.body.status !== 'RUNNING') {
+            console.log(`[smoke]    pickup 启动失败：${JSON.stringify(pickup)}`)
+            assert(false, `pickup 启动必须 200/RUNNING（HTTP ${pickup.status}）`)
+          } else {
+            assert(true, `pickup 启动 → RUNNING（action_id=${pickup.body.action_id}）`)
+            const terminal = await waitForActionTerminal(
+              pickup.body.action_id,
+              'pickup 终态事件',
+              20000,
+            )
+            if (!terminal) {
+              assert(false, 'pickup 未在 20s 内进入终态')
+            } else if (terminal.event !== 'minecraft.action.completed') {
+              console.log(
+                `[e2e] pickup 终态=${terminal.event}`
+                  + `（${terminal.data && (terminal.data.error || terminal.data.reason)}）`
+                  + ' —— 假服务器不实现物品收集时这是**如实**的失败，不伪造成功',
+              )
+            } else {
+              const after = (await request(runtimePort, 'GET', '/minecraft/inventory')).body
+              const afterCount = ((after.items || []).find((row) => row.name === 'oak_log') || {})
+                .count || 0
+              assert(
+                afterCount > beforeCount,
+                `真实 pickup 后背包里的 oak_log 增加了（${beforeCount} → ${afterCount}）`,
+              )
+              const result = terminal.data.result || {}
+              assert(
+                result.entity_id === entry.entity_id && result.collected === true,
+                `完成的 result 如实（${JSON.stringify(result).slice(0, 160)}）`,
+              )
+              console.log('[e2e] pickup ✓ 真实 Item Entity 被捡进背包（playerCollect + 背包增加）')
+            }
+          }
+          await observer.chat(`/kill @e[type=item,x=${itemX},y=${itemY},z=${itemZ},distance=..4]`)
+          await sleep(400)
+        }
+      }
+
       // ---------------- Phase 3D：follow_player（Test A 跟随 / B STOP / C 丢失 / D 太远 / E 超时） ----------------
       if (cycle === 1) {
         const botPosNow = async () =>

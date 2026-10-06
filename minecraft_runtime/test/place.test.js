@@ -143,7 +143,7 @@ async function main() {
     assert(typeof PLACE.cleanup === 'function', '有 cleanup')
     assert(
       Object.keys(ACTION_REGISTRY).sort().join(',') ===
-        'chat,container_inspect,container_transfer,craft,dig,equip,follow_player,inventory_move,look_at,move_to,place,recipe_lookup,stop',
+        'chat,container_inspect,container_transfer,craft,dig,dropped_items,equip,follow_player,inventory_move,look_at,move_to,pickup_item,place,recipe_lookup,stop',
       `注册表只有已批准动作（得到 ${Object.keys(ACTION_REGISTRY).sort().join(',')}）`,
     )
     // §二 禁止清单：连续建造/整理背包/容器类动作一个都不许有

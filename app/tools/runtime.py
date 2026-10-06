@@ -89,12 +89,14 @@ class ToolRuntime:
             MinecraftContainerTransferTool,
             MinecraftCraftTool,
             MinecraftDigTool,
+            MinecraftDroppedItemsTool,
             MinecraftEquipTool,
             MinecraftFollowPlayerTool,
             MinecraftInventoryMoveTool,
             MinecraftInventoryTool,
             MinecraftLookAtTool,
             MinecraftMoveToTool,
+            MinecraftPickupItemTool,
             MinecraftPlaceTool,
             MinecraftRecipeLookupTool,
             MinecraftStopTool,
@@ -129,6 +131,9 @@ class ToolRuntime:
             ("minecraft_container_transfer", lambda: MinecraftContainerTransferTool()),
             # Phase 4F：玩家自身 2×2 背包合成（查配方 SAFE / 执行一次 MEDIUM）
             ("minecraft_recipe_lookup", lambda: MinecraftRecipeLookupTool()),
+            # Phase 4H：掉落物感知（SAFE 只读）/ 捡起一个明确实体（MEDIUM）
+            ("minecraft_dropped_items", lambda: MinecraftDroppedItemsTool()),
+            ("minecraft_pickup_item", lambda: MinecraftPickupItemTool()),
             ("minecraft_craft", lambda: MinecraftCraftTool()),
             ("query_image_memory", lambda: QueryImageMemoryTool()),
             (

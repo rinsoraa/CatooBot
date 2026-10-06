@@ -85,6 +85,9 @@ ACTION_RISK: dict[str, str] = {
     # Phase 4F：玩家自身 2×2 背包合成（查配方=只读；执行一次配方=改背包 → MEDIUM）
     "minecraft_recipe_lookup": "SAFE",
     "minecraft_craft": "MEDIUM",
+    # Phase 4H：掉落物感知（只读）/ 拾取单个掉落物实体（会移动 + 改背包 → MEDIUM）
+    "minecraft_dropped_items": "SAFE",
+    "minecraft_pickup_item": "MEDIUM",
 }
 
 #: Tool → Action Runtime 动作名（chat 也走统一生命周期）
@@ -102,6 +105,8 @@ TOOL_ACTION: dict[str, str] = {
     "minecraft_container_transfer": "container_transfer",
     "minecraft_recipe_lookup": "recipe_lookup",
     "minecraft_craft": "craft",
+    "minecraft_dropped_items": "dropped_items",
+    "minecraft_pickup_item": "pickup_item",
 }
 
 #: 离线也能用的 Tool：minecraft_world（离线也要能回答「我不在游戏里」）
@@ -121,6 +126,8 @@ NON_EXCLUSIVE_TOOLS: frozenset[str] = frozenset(
         "minecraft_stop",
         # Phase 4F：查配方是纯读取（不碰世界、不碰背包），可与前台动作并行
         "minecraft_recipe_lookup",
+        # Phase 4H：看地上的掉落物也是纯读取（实体列表变化频繁不代表它要独占）
+        "minecraft_dropped_items",
     }
 )
 
@@ -191,6 +198,15 @@ RUNTIME_ERROR_CODES: dict[str, str] = {
     "table.missing": "minecraft.crafting_table_missing",
     "table.invalid": "minecraft.crafting_table_invalid",
     "table.too_far": "minecraft.crafting_table_too_far",
+    # Phase 4H：掉落物 / 拾取
+    "item_entity.not_found": "minecraft.item_entity_not_found",
+    "item_entity.invalid": "minecraft.item_entity_invalid",
+    "item_entity.changed": "minecraft.item_entity_changed",
+    "target.replaced": "minecraft.pickup_target_replaced",
+    "pickup.target_lost": "minecraft.pickup_target_lost",
+    "pickup.target_too_far": "minecraft.pickup_target_too_far",
+    "pickup.failed": "minecraft.pickup_failed",
+    "pickup.unconfirmed": "minecraft.pickup_unconfirmed",
     "craft.failed": "minecraft.craft_failed",
     "craft.unconfirmed": "minecraft.craft_unconfirmed",
 }
@@ -215,6 +231,8 @@ _ACTIVITY_TEMPLATES: dict[str, Any] = {
     },
     # Phase 4F：只写事实（"刚做好了 4 个 stick"），绝不写"做了很多木棍"这种估摸的话
     "craft": "刚做好了 {count} 个 {block}",
+    # Phase 4H：同样是事实（成功才记；没捡到走的是失败路径，不进 activity）
+    "pickup_item": "刚拣起了 {block} ×{count}",
 }
 
 #: activity 取哪个结果字段当"那个方块/物品"（dig 看挖掉的、place 看放上的、equip/move 看物品名）
@@ -225,6 +243,7 @@ _ACTIVITY_BLOCK_FIELDS: dict[str, str] = {
     "inventory_move": "item",
     "container_transfer": "item",
     "craft": "item",
+    "pickup_item": "item",
 }
 
 #: 容器类型 → 中文/英文显示名（activity 与摘要里都用它，绝不写死"箱子"）
@@ -562,7 +581,11 @@ class MinecraftAgentContext:
         )
         who = str(result.get("username") or "").strip()
         field = _ACTIVITY_BLOCK_FIELDS.get(action, "block_before")
-        block = str(result.get(field) or "").strip()
+        block_raw: Any = result.get(field)
+        if isinstance(block_raw, Mapping):
+            # 4H：pickup 的 result.item 是 {name, count_before} 这种语义快照，取名字即可
+            block_raw = block_raw.get("name")
+        block = str(block_raw or "").strip()
         nested = result.get("result")
         nested = nested if isinstance(nested, Mapping) else {}
         container_type = result.get("container_type")
@@ -579,6 +602,7 @@ class MinecraftAgentContext:
                 container=_container_label(container_type),
                 count=result.get("count")
                 or result.get("crafted_count")
+                or result.get("collected_count")
                 or nested.get("crafted_count")
                 or 1,
             )
@@ -1038,6 +1062,12 @@ def _confirmation_summary(tool: str, risk: str, arguments: Mapping[str, Any] | N
         block = str(args.get("expected_block") or "方块")
         where = _format_position(args)
         return f"挖掉 {block}（{where}）" if where else f"挖掉 {block}"
+    if tool == "minecraft_pickup_item":
+        # §十六：说明"捡的是地上的哪一个掉落物"，不写成"在 (x,y,z) 执行拾取"
+        # （Item 会滑动/被推走，位置只是启动时的提示，不是授权身份本体）
+        item = args.get("expected_item") or "掉落物"
+        entity_id = args.get("entity_id")
+        return f"拾取附近的 {item}（实体 #{entity_id}）"
     if tool == "minecraft_craft":
         # §十三/§十五：fingerprint 绑 recipe_id（+ 工作台坐标，见 arguments 本身），
         # 摘要必须把人类可读信息展开 —— 坐标也要写进去（换张工作台就是另一个操作）
@@ -1132,6 +1162,22 @@ def _summarize(tool: str, data: Mapping[str, Any]) -> str:
                 f"已停止正在进行的 Minecraft 行动（{', '.join(str(item) for item in cancelled)}）。"
             )
         return "当前没有正在进行的 Minecraft 行动（无需停止）。"
+    if tool == "minecraft_dropped_items":
+        raw_dropped: Any = data.get("result")
+        dropped: dict[str, Any] = raw_dropped if isinstance(raw_dropped, dict) else {}
+        items = dropped.get("items") or []
+        raw_total = dropped.get("total")
+        drop_total = raw_total if isinstance(raw_total, int) else len(items)
+        if not items:
+            return "附近没有掉落物。"
+        listed = "、".join(
+            f"{row.get('item', {}).get('name')}×{row.get('item', {}).get('count')}"
+            f"（实体 #{row.get('entity_id')}，{row.get('distance')} 格）"
+            for row in items[:5]
+        )
+        more = f"，另有 {drop_total - 5} 个未列出" if drop_total > 5 else ""
+        truncated = "（超过上限，只列了前 32 个）" if dropped.get("truncated") else ""
+        return f"附近有 {drop_total} 个掉落物：{listed}{more}{truncated}。"
     if tool == "minecraft_recipe_lookup":
         raw_lookup: Any = data.get("result")
         lookup: dict[str, Any] = raw_lookup if isinstance(raw_lookup, dict) else {}

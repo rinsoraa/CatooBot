@@ -854,8 +854,9 @@ _NOTES: dict[str, str] = {
         "允许 MEDIUM 动作：minecraft_dig（挖单方块）/ minecraft_place（放单方块）/ "
         "minecraft_equip（换主手）/ minecraft_inventory_move（搬一格自己的背包）/ "
         "minecraft_container_transfer（搬一格箱子或桶）/ minecraft_craft（做一次配方，"
-        "2×2 或给出明确坐标的工作台 3×3），"
-        "都会改状态且一次只动一个明确物品/槽位/配方；打开后仍需用户在对话里确认"
+        "2×2 或给出明确坐标的工作台 3×3）/ minecraft_pickup_item（捡一个明确指定的掉落物，"
+        "会自己走过去），"
+        "都会改状态且一次只动一个明确物品/槽位/配方/实体；打开后仍需用户在对话里确认"
     ),
     "minecraft.agent.tools.allow_high": "允许 HIGH 动作（还没有 HIGH 级动作；保持关闭）",
     "minecraft.agent.tools.allow_destructive": (
@@ -866,6 +867,10 @@ _NOTES: dict[str, str] = {
     "minecraft.action.inventory_move.timeout": "单次背包搬运（单物品单槽位）最长多少秒",
     "minecraft.action.container.timeout": "单次容器动作（读 Chest/Barrel 或搬一格）最长多少秒",
     "minecraft.action.container.max_distance": "最大容器交互距离（格）；超出的直接拒绝",
+    "minecraft.action.pickup.timeout": "拾取一个掉落物最长多少秒（到点按 TIMEOUT 收尾并收掉导航）",
+    "minecraft.action.pickup.max_distance": (
+        "掉落物最远多少格就去捡；启动时太远直接拒绝，追的过程中被拉远也会停下"
+    ),
     "minecraft.action.recipe_lookup.timeout": "查 2×2 配方（配方表 + 当前背包）最长多少秒",
     "minecraft.action.craft.timeout": "单次合成（玩家 2×2 或指定工作台的 3×3）最长多少秒",
     "minecraft.action.craft.crafting_table.max_distance": (
@@ -973,6 +978,7 @@ _SECTION_LABELS: dict[str, str] = {
     "minecraft.action.equip": "Minecraft 换主手（equip · 单个物品）",
     "minecraft.action.inventory_move": "Minecraft 背包搬运（inventory_move · 单槽位）",
     "minecraft.action.container": "Minecraft 容器（Chest / Barrel · 单方块）",
+    "minecraft.action.pickup": "Minecraft 拾取掉落物（pickup · 一次一个明确实体）",
     "minecraft.action.recipe_lookup": "Minecraft 查配方（玩家 2×2）",
     "minecraft.action.craft": "Minecraft 合成（一次一个配方）",
     "minecraft.action.craft.crafting_table": "Minecraft 工作台（3×3 · 明确坐标）",

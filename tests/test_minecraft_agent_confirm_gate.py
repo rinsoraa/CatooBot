@@ -358,7 +358,7 @@ async def test_initiative_turn_cannot_dig_and_creates_no_confirmation() -> None:
 
 
 async def test_production_registry_has_exactly_the_approved_tools() -> None:
-    """§六十八：正式生产 Tool 只有这十三个；attack/craft/容器自动化/批量整理等一律不存在。"""
+    """§六十八：正式生产 Tool 只有这十七个；attack/实体交互/自动扫货等一律不存在。"""
     runtime = ToolRuntime(ToolsConfig(enabled=True))
     await runtime.start()
     minecraft_tools = [name for name in runtime.registry.names() if name.startswith("minecraft_")]
@@ -368,12 +368,14 @@ async def test_production_registry_has_exactly_the_approved_tools() -> None:
         "minecraft_container_transfer",
         "minecraft_craft",
         "minecraft_dig",
+        "minecraft_dropped_items",
         "minecraft_equip",
         "minecraft_follow_player",
         "minecraft_inventory",
         "minecraft_inventory_move",
         "minecraft_look_at",
         "minecraft_move_to",
+        "minecraft_pickup_item",
         "minecraft_place",
         "minecraft_recipe_lookup",
         "minecraft_stop",
@@ -398,7 +400,14 @@ async def test_production_registry_has_exactly_the_approved_tools() -> None:
         "minecraft_container_sort",
         "minecraft_container_to_container",
         "minecraft_drop",
-        "minecraft_pickup",
+        "minecraft_pickup_all",
+        "minecraft_pickup_nearest",
+        "minecraft_collect_all",
+        "minecraft_attack",
+        "minecraft_feed",
+        "minecraft_mount",
+        "minecraft_shears",
+        "minecraft_interact_entity",
         "minecraft_sort_inventory",
         "minecraft_auto_equip",
         "minecraft_mine",
@@ -422,9 +431,11 @@ async def test_risk_table_matches_the_production_tools() -> None:
         "minecraft_container_transfer",
         "minecraft_craft",
         "minecraft_dig",
+        "minecraft_dropped_items",
         "minecraft_equip",
         "minecraft_inventory",
         "minecraft_inventory_move",
+        "minecraft_pickup_item",
         "minecraft_place",
         "minecraft_recipe_lookup",
     }
@@ -435,11 +446,15 @@ async def test_risk_table_matches_the_production_tools() -> None:
     assert ACTION_RISK["minecraft_inventory"] == "SAFE"
     assert ACTION_RISK["minecraft_container_inspect"] == "SAFE"
     assert ACTION_RISK["minecraft_container_transfer"] == "MEDIUM"
+    assert ACTION_RISK["minecraft_recipe_lookup"] == "SAFE"
+    assert ACTION_RISK["minecraft_craft"] == "MEDIUM"
+    assert ACTION_RISK["minecraft_dropped_items"] == "SAFE"
+    assert ACTION_RISK["minecraft_pickup_item"] == "MEDIUM"
     assert "-".join(sorted(CONFIRMATION_RISKS)) == "DESTRUCTIVE-HIGH-MEDIUM"
 
 
 def test_risk_table_is_injectable_not_mutated() -> None:
-    """注入风险表不得污染全局表（生产 ACTION_RISK 保持十三个工具）。"""
+    """注入风险表不得污染全局表（生产 ACTION_RISK 保持十七个工具）。"""
     injected = {**ACTION_RISK, "minecraft_test_medium": "MEDIUM"}
     bridge = MinecraftAgentBridge(FakeMinecraftService(), risk_table=injected)
     assert bridge.policy.risk_of("minecraft_test_medium") == "MEDIUM"

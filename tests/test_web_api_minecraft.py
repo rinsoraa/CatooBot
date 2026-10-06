@@ -394,9 +394,11 @@ async def test_minecraft_projection_includes_agent_block(tmp_path):
             "minecraft_container_transfer",
             "minecraft_craft",
             "minecraft_dig",
+            "minecraft_dropped_items",
             "minecraft_equip",
             "minecraft_inventory",
             "minecraft_inventory_move",
+            "minecraft_pickup_item",
             "minecraft_place",
             "minecraft_recipe_lookup",
         }
@@ -1765,6 +1767,175 @@ def test_phase4g_error_codes_agree_between_service_and_api():
         (MinecraftCraftingTableMissing(), 404),
         (MinecraftCraftingTableInvalid(), 422),
         (MinecraftCraftingTableTooFar(), 422),
+    ]
+    for exc, expected in pairs:
+        assert exc.status == expected, exc.code
+        assert _TOOL_STATUS[exc.code] == expected, exc.code
+
+
+# ------------------------------------------------ Phase 4H：掉落物 / 拾取端点
+
+
+async def test_dropped_items_endpoint_is_read_only(tmp_path):
+    """§五十：WebUI 的 Dropped Items 走 `POST /minecraft/dropped_items`（SAFE 只读）。"""
+    from tests.test_minecraft_service import FakeRuntime
+
+    async with api_server(tmp_path) as (client, bot, server):
+        await client.login()
+        status, payload = await client.post("/api/v1/minecraft/dropped_items", body={})
+        assert status == 503 and error_code(payload) == "minecraft.disabled"
+
+    fake = FakeRuntime()
+    await fake.start()
+    try:
+        fake.online = True
+        async with api_server(tmp_path) as (client, bot, server):
+            await client.login()
+            service = MinecraftService(
+                bot, MinecraftConfig(enabled=True, auto_start_runtime=False, runtime_port=fake.port)
+            )
+            bot.minecraft = service
+            try:
+                from app.integrations.minecraft.agent import MinecraftAgentBridge
+                from app.integrations.minecraft.events import parse_bridge_event
+
+                service.agent = MinecraftAgentBridge(service)
+                await service.status()
+                service.agent.apply_event(
+                    parse_bridge_event(
+                        {
+                            "event": "minecraft.spawned",
+                            "session_id": "s1",
+                            "timestamp": 1.0,
+                            "username": "Catodayo",
+                        }
+                    )
+                )
+
+                status, payload = await client.post("/api/v1/minecraft/dropped_items", body={})
+                assert status == 200, payload
+                data = payload["data"]
+                assert data["action"] == "dropped_items" and data["status"] == "SUCCEEDED"
+                result = data["result"]
+                assert result["total"] == 1 and result["truncated"] is False
+                row = result["items"][0]
+                assert row["entity_id"] == 123
+                assert row["item"] == {"name": "dirt", "count": 3}
+                assert set(row) == {"entity_id", "item", "position", "distance"}
+                assert fake.dropped_items_calls == 1
+                # 只读：不产生待确认
+                assert service.agent.confirmations.pending() == []
+
+                fake.dropped_items_plan.append({"error": ("action.failed", 500)})
+                status, payload = await client.post("/api/v1/minecraft/dropped_items", body={})
+                assert status == 500 and error_code(payload) == "minecraft.action_failed"
+            finally:
+                await service._cleanup()
+    finally:
+        await fake.stop()
+
+
+async def test_pickup_endpoint_requires_confirmation_and_cannot_self_authorise(tmp_path):
+    """§五十：WebUI 的 PICKUP 只能发起确认 —— 拿不到真实执行权。"""
+    from tests.test_minecraft_service import FakeRuntime
+
+    fake = FakeRuntime()
+    await fake.start()
+    try:
+        fake.online = True
+        async with api_server(tmp_path) as (client, bot, server):
+            await client.login()
+            service = MinecraftService(
+                bot,
+                MinecraftConfig(
+                    enabled=True,
+                    auto_start_runtime=False,
+                    runtime_port=fake.port,
+                    agent={"tools": {"allow_medium": True}},
+                ),
+            )
+            bot.minecraft = service
+            try:
+                from app.integrations.minecraft.agent import MinecraftAgentBridge
+                from app.integrations.minecraft.events import parse_bridge_event
+
+                service.agent = MinecraftAgentBridge(service)
+                await service.status()
+                service.agent.apply_event(
+                    parse_bridge_event(
+                        {
+                            "event": "minecraft.spawned",
+                            "session_id": "s1",
+                            "timestamp": 1.0,
+                            "username": "Catodayo",
+                        }
+                    )
+                )
+
+                for bad in (
+                    {},
+                    {"entity_id": 123},
+                    {"expected_item": "dirt"},
+                    {"entity_id": "123", "expected_item": "dirt"},
+                    {"entity_id": 1.5, "expected_item": "dirt"},
+                    {"entity_id": 123, "expected_item": ""},
+                ):
+                    status, payload = await client.post("/api/v1/minecraft/pickup_item", body=bad)
+                    assert status == 422 and error_code(payload) == "minecraft.action_invalid", bad
+                assert service.agent.confirmations.pending() == [], "垃圾参数绝不挂待确认"
+                assert fake.pickup_calls == []
+
+                good = {"entity_id": 123, "expected_item": "dirt"}
+                status, payload = await client.post("/api/v1/minecraft/pickup_item", body=good)
+                assert status == 409 and error_code(payload) == "minecraft.confirmation_required"
+                detail = payload.get("detail") or payload["error"]["detail"]
+                assert detail["confirmation"]["summary"] == "拾取附近的 dirt（实体 #123）"
+                stored = service.agent.confirmations.pending()
+                assert len(stored) == 1 and stored[0].arguments == good, "指纹绑 entity_id + 物品"
+                assert fake.pickup_calls == [], "确认前绝不移动/拾取"
+
+                # WebUI（SYSTEM 回合）不能消费确认
+                status, payload = await client.post("/api/v1/minecraft/pickup_item", body=good)
+                assert status == 409
+                assert error_code(payload) == "minecraft.confirmation_not_user_turn"
+                assert fake.pickup_calls == []
+                assert len(service.agent.confirmations.pending()) == 1, "来源门不消费确认"
+
+                # 换一个 entity_id：仍然是"来源门"先拦（不泄露参数是否匹配）
+                other = {"entity_id": 130, "expected_item": "dirt"}
+                status, payload = await client.post("/api/v1/minecraft/pickup_item", body=other)
+                assert status == 409
+                assert error_code(payload) == "minecraft.confirmation_not_user_turn"
+                assert fake.pickup_calls == []
+            finally:
+                await service._cleanup()
+    finally:
+        await fake.stop()
+
+
+def test_phase4h_error_codes_agree_between_service_and_api():
+    """两个事实源必须一致：Service 异常自带的 HTTP 语义 vs API 的错误码映射表。"""
+    from app.integrations.minecraft.service import (
+        MinecraftItemEntityChanged,
+        MinecraftItemEntityInvalid,
+        MinecraftItemEntityNotFound,
+        MinecraftPickupFailed,
+        MinecraftPickupTargetLost,
+        MinecraftPickupTargetReplaced,
+        MinecraftPickupTargetTooFar,
+        MinecraftPickupUnconfirmed,
+    )
+    from app.web.api.minecraft import _TOOL_STATUS
+
+    pairs = [
+        (MinecraftItemEntityNotFound(), 404),
+        (MinecraftItemEntityInvalid(), 422),
+        (MinecraftItemEntityChanged(), 409),
+        (MinecraftPickupTargetReplaced(), 409),
+        (MinecraftPickupTargetLost(), 409),
+        (MinecraftPickupTargetTooFar(), 422),
+        (MinecraftPickupFailed(), 500),
+        (MinecraftPickupUnconfirmed(), 500),
     ]
     for exc, expected in pairs:
         assert exc.status == expected, exc.code

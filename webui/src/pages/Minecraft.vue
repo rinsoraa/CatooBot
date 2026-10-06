@@ -18,6 +18,8 @@ import { toast } from '@/composables/toast'
 import type {
   MinecraftActionView,
   MinecraftAgentContext,
+  MinecraftDroppedItem,
+  MinecraftDroppedItemsView,
   MinecraftCraftingTable,
   MinecraftRecipeEntry,
   MinecraftRecipeLookupResult,
@@ -145,6 +147,68 @@ const placeTarget = reactive({
   face: 'up' as MinecraftPlaceFace,
   expectedItem: '',
 })
+// Phase 4H：掉落物（只读）与拾取（MEDIUM；只捡一个明确实体）
+const droppedItems = ref<MinecraftDroppedItemsView | null>(null)
+const pickupTarget = reactive({ entityId: '', expectedItem: '' })
+
+function droppedItemsSummary(view: MinecraftDroppedItemsView | null): string {
+  if (!view) return '还没有刷新过'
+  if (!view.online) return '不在世界里'
+  if (!view.items.length) return '附近没有掉落物'
+  return `${view.total} 个${view.truncated ? '（已截断，只列前 32 个）' : ''}`
+}
+
+async function refreshDroppedItems(): Promise<void> {
+  working.value = true
+  try {
+    const payload = await minecraftApi.droppedItems()
+    droppedItems.value = payload.result
+    const view = payload.result
+    if (!view.items.length) {
+      toast.info('附近没有掉落物', '地上目前没有可捡的 Item Entity')
+    } else {
+      toast.success('已刷新掉落物', `共 ${view.total} 个${view.truncated ? '（已截断）' : ''}`)
+    }
+  } catch (caught) {
+    toast.error('刷新掉落物失败', errorMessage(caught))
+  } finally {
+    working.value = false
+  }
+}
+
+/** 照列表点一行：把实体 id 与物品名填进 Pickup Test。 */
+function useDroppedItem(row: MinecraftDroppedItem): void {
+  pickupTarget.entityId = String(row.entity_id)
+  pickupTarget.expectedItem = row.item.name
+}
+
+async function pickupItem(): Promise<void> {
+  const raw = pickupTarget.entityId.trim()
+  const item = pickupTarget.expectedItem.trim()
+  if (!/^\d+$/.test(raw)) {
+    toast.error('entity_id 不合法', '必须是非负整数（先 REFRESH 看地上的掉落物）')
+    return
+  }
+  if (!item) {
+    toast.error('缺少 expected_item', '第二层身份校验：填那个掉落物的物品名')
+    return
+  }
+  working.value = true
+  try {
+    const result = await minecraftApi.pickupItem(Number(raw), item)
+    toast.success('已开始拾取', `${result.action} · ${result.status}（结果会由事件确认）`)
+    await load(true)
+  } catch (caught) {
+    // MEDIUM 动作必须用户确认：这里只会拿到 minecraft.confirmation_required
+    toast.error('PICKUP 被拒绝', errorMessage(caught))
+    if (caught instanceof ApiError && catchConfirmationId(caught)) {
+      toast.info('已挂起一条待确认', '确认只能由用户在对话里做出；这里只能 CANCEL / EXPIRE')
+    }
+  } finally {
+    working.value = false
+  }
+}
+
 // Phase 4F：Crafting（玩家自身 2×2：查配方 = SAFE；执行一次 = MEDIUM 必须确认）
 const recipeQuery = reactive({ item: '' })
 // Phase 4G：2×2（玩家自身）还是 3×3（必须给明确的工作台坐标）
@@ -1414,6 +1478,119 @@ onUnmounted(stopPolling)
           </p>
         </section>
 
+        <section class="minecraft__card cb-card" data-test="mc-dropped">
+          <SectionHeader
+            title="Dropped Items / Pickup（Phase 4H）"
+            description="看地上的掉落物（SAFE 只读，可与前台动作并行）→ 只捡**一个明确指定**的实体（MEDIUM，必须用户确认）。不会自动扫货、不会自动挖、不会追超过 16 格的目标。"
+          />
+          <div class="minecraft__form" data-test="mc-dropped-form">
+            <button
+              type="button"
+              class="minecraft__button"
+              :disabled="working || !isOnline"
+              data-test="mc-dropped-refresh"
+              @click="refreshDroppedItems"
+            >
+              REFRESH
+            </button>
+            <span class="cb-caption" data-test="mc-dropped-summary">
+              {{ droppedItemsSummary(droppedItems) }}
+            </span>
+          </div>
+
+          <table class="minecraft__table" data-test="mc-dropped-table">
+            <thead>
+              <tr>
+                <th>Entity ID</th>
+                <th>Item</th>
+                <th>Count</th>
+                <th>Position</th>
+                <th>Distance</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr
+                v-for="row in droppedItems?.items ?? []"
+                :key="row.entity_id"
+                :data-test="`mc-dropped-${row.entity_id}`"
+              >
+                <td>{{ row.entity_id }}</td>
+                <td>{{ row.item.name }}</td>
+                <td>{{ row.item.count }}</td>
+                <td>{{ `${row.position.x}, ${row.position.y}, ${row.position.z}` }}</td>
+                <td>{{ row.distance }} 格</td>
+                <td>
+                  <button
+                    type="button"
+                    class="minecraft__button"
+                    :disabled="working"
+                    :data-test="`mc-dropped-use-${row.entity_id}`"
+                    @click="useDroppedItem(row)"
+                  >
+                    用作目标
+                  </button>
+                </td>
+              </tr>
+              <tr v-if="!droppedItems">
+                <td colspan="6" class="cb-caption">还没有刷新过掉落物列表。</td>
+              </tr>
+              <tr v-else-if="!droppedItems.items.length">
+                <td colspan="6" class="cb-caption">
+                  {{ droppedItems.online ? '附近没有掉落物。' : '不在世界里。' }}
+                </td>
+              </tr>
+            </tbody>
+          </table>
+
+          <div class="minecraft__form" data-test="mc-pickup-form">
+            <label class="minecraft__field">
+              <span>Entity ID</span>
+              <input
+                v-model="pickupTarget.entityId"
+                type="text"
+                inputmode="numeric"
+                data-test="mc-pickup-entity-id"
+              />
+            </label>
+            <label class="minecraft__field">
+              <span>Expected Item</span>
+              <input
+                v-model="pickupTarget.expectedItem"
+                type="text"
+                placeholder="dirt"
+                data-test="mc-pickup-item"
+              />
+            </label>
+            <button
+              type="button"
+              class="minecraft__button"
+              :disabled="working || !isOnline"
+              data-test="mc-pickup-run"
+              @click="pickupItem"
+            >
+              PICKUP
+            </button>
+            <button
+              type="button"
+              class="minecraft__button minecraft__button--danger"
+              :disabled="working"
+              data-test="mc-pickup-stop"
+              @click="stopAction"
+            >
+              STOP
+            </button>
+          </div>
+
+          <p class="cb-caption">
+            捡拾只针对**一个明确指定的 Item Entity**：entity_id + expected_item 两个参数都要对
+            （地上的东西会滑动/被推走，所以位置不是身份）。成功判据是硬的：实体真的被收集
+            <strong>且</strong>背包里对应物品数量增加 —— 只看"实体消失"不算成功（可能被别人捡走、
+            被服务器销毁或掉进未加载区块）。PICKUP 是 MEDIUM：这里的按钮只能发起确认，
+            真正的确认必须由用户在对话里做出。
+          </p>
+        </section>
+
         <section class="minecraft__card cb-card" data-test="mc-craft">
           <SectionHeader
             title="Crafting（Phase 4F）"
@@ -1859,12 +2036,14 @@ onUnmounted(stopPolling)
           </table>
           <p class="cb-caption">
             LOW 动作（移动 / 跟随）只有在用户明确要求的对话里才会执行；模型自己想动也会被拒。
-            会改状态的 MEDIUM 动作有六个：minecraft_dig / minecraft_place（各一个方块）、
+            会改状态的 MEDIUM 动作有七个：minecraft_dig / minecraft_place（各一个方块）、
             minecraft_equip（换主手）、minecraft_inventory_move（搬一格自己的背包）、
-            minecraft_container_transfer（单方块箱子/桶里搬一格）、minecraft_craft（做一次 2×2 配方）——
-            除了用户明确要求，还必须经过确认门；minecraft_inventory / minecraft_container_inspect /
-            minecraft_recipe_lookup 是 SAFE 只读。连续挖矿/建造、攻击、容器自动化（箱对箱/漏斗）、
-            工作台与熔炉、批量合成与批量整理背包都还没有。
+            minecraft_container_transfer（单方块箱子/桶里搬一格）、minecraft_craft（做一次配方）、
+            minecraft_pickup_item（走过去捡一个明确指定的掉落物）——除了用户明确要求，
+            还必须经过确认门；minecraft_inventory / minecraft_container_inspect /
+            minecraft_recipe_lookup / minecraft_dropped_items 是 SAFE 只读。连续挖矿/建造、
+            攻击/喂食/骑乘等实体交互、容器自动化（箱对箱/漏斗）、工作台与熔炉、批量合成、
+            批量整理背包、自动扫地/自动收集路线都还没有。
           </p>
         </section>
 
