@@ -146,7 +146,7 @@ async function main() {
     assert(EQUIP_DEFAULTS.timeoutMs === 15000, `EQUIP_DEFAULTS.timeoutMs（得到 ${EQUIP_DEFAULTS.timeoutMs}）`)
     assert(
       Object.keys(ACTION_REGISTRY).sort().join(',') ===
-        'chat,container_inspect,container_transfer,dig,equip,follow_player,inventory_move,look_at,move_to,place,stop',
+        'chat,container_inspect,container_transfer,craft,dig,equip,follow_player,inventory_move,look_at,move_to,place,recipe_lookup,stop',
       `注册表只有已批准动作（得到 ${Object.keys(ACTION_REGISTRY).sort().join(',')}）`,
     )
     // §二 禁止清单：容器 / 掉落 / 合成 / 交易 / 批量整理类动作一个都不许有
@@ -158,7 +158,11 @@ async function main() {
       'drop',
       'toss',
       'pickup',
-      'craft',
+      'craft_all',
+      'auto_craft',
+      'craft_chain',
+      'crafting_table',
+      'smelt',
       'trade',
       'sort_inventory',
       'auto_equip',

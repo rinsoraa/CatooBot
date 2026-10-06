@@ -24,7 +24,9 @@
  *   9. Phase 4E：container（Chest / Barrel）—— inspect（open → read → close，两次证明没漏窗口）
  *      → withdraw 1 个 → 重读容器与背包 → deposit 放回原槽 → 逐槽比对恢复原状 → 清夹具
  *      （支持 SMOKE_CONTAINER_TARGET="x,y,z" 用操作者自己的箱子；否则就地造临时箱子）
- *  10. disconnect
+ *  10. Phase 4F：crafting（玩家 2×2）—— /give 木板 → recipe_lookup 拿到 recipe_id（不硬编码）
+ *      → craft（RUNNING → completed）→ 重读 inventory 验证产物增加 / 材料减少 → /clear 恢复
+ *  11. disconnect
  *
  * 认证：默认用 minecraft_runtime/auth.json（本地文件，绝不进 Git）。
  * 服务器没开 / 连不上 → 打印 NOT AVAILABLE 并以 0 退出（文档记录用）；
@@ -1528,6 +1530,175 @@ async function main() {
       // container 动作是毫秒级的，真实服务器上没有"挖到一半"那种可取消窗口
       console.log(
         '[smoke] SKIPPED container STOP：inspect/transfer 毫秒级完成，真实服务器上没有可取消窗口',
+      )
+    }
+
+    // ---- 8. Phase 4F：crafting（玩家自身 2×2）真实合成 ----
+    if (!digReady) {
+      console.log('[smoke] ✗ Phase 4F：runtime 未空闲，crafting 硬门禁不能执行')
+    } else {
+      const name = (value) => normalizeItemName(value || '')
+      const FIXTURE_PLANKS = 'minecraft:oak_planks'
+      const FIXTURE_PLANKS_COUNT = 2
+      const readSlots = async () => {
+        const resp = await request(runtimePort, 'GET', '/minecraft/inventory/slots')
+        return resp.status === 200 && resp.body ? resp.body.slots || [] : []
+      }
+      const signature = (rows) =>
+        rows
+          .map((row) => `${row.slot}:${name(row.name)}×${row.count}`)
+          .sort((a, b) => Number.parseInt(a, 10) - Number.parseInt(b, 10))
+          .join('|')
+      const inventorySlice = async () => (await request(runtimePort, 'GET', '/minecraft/inventory')).body
+      const say = (message) => request(runtimePort, 'POST', '/minecraft/chat', { message })
+      const totalOf = (body, itemName) => {
+        const hit = ((body && body.items) || []).find((row) => name(row.name) === name(itemName))
+        return hit ? hit.count : 0
+      }
+
+      const signatureBefore = signature(await readSlots())
+      const sliceBefore = await inventorySlice()
+      const sticksBefore = totalOf(sliceBefore, 'stick')
+      const planksBefore = totalOf(sliceBefore, FIXTURE_PLANKS)
+      console.log(
+        `[smoke] crafting 前：stick=${sticksBefore}，${name(FIXTURE_PLANKS)}=${planksBefore}`
+          + `（背包 ${signatureBefore || '空'}）`,
+      )
+
+      // 夹具：用服务器命令给罐头两块木板（§三十六；用不了就 SKIPPED，绝不伪造）
+      const botName = (await status()).username
+      let fixtureReady = false
+      if (botName) {
+        await say(`/give ${botName} ${FIXTURE_PLANKS} ${FIXTURE_PLANKS_COUNT}`)
+        const granted = await waitForValue(async () => {
+          const body = await inventorySlice()
+          return totalOf(body, FIXTURE_PLANKS) >= FIXTURE_PLANKS_COUNT ? body : null
+        }, '夹具木板进入背包', 10000)
+        fixtureReady = Boolean(granted)
+        if (!fixtureReady) {
+          console.log('[smoke] SKIPPED crafting：/give 不可用（拿不到木板夹具，不伪造结论）')
+        }
+      } else {
+        console.log('[smoke] SKIPPED crafting：拿不到 bot 用户名，无法 /give 夹具')
+      }
+
+      if (fixtureReady) {
+        // (a) recipe lookup：找到"材料正是 oak_planks ×2"的 2×2 配方（绝不在脚本里写死 recipe_id）
+        const lookupOnce = async () =>
+          (await request(runtimePort, 'POST', '/minecraft/recipe_lookup', { item: 'stick' })).body
+        const lookup = await lookupOnce()
+        const payload = lookup && lookup.result
+        check(
+          Boolean(payload) && payload.status === 'available',
+          `recipe lookup = PASS（status=${payload && payload.status}，共 ${payload && payload.total} 个 2×2 配方）`,
+        )
+        const target = ((payload && payload.recipes) || []).find(
+          (row) =>
+            row.available &&
+            row.requires_table === false &&
+            (row.ingredients || []).length === 1 &&
+            name(row.ingredients[0].name) === name(FIXTURE_PLANKS),
+        )
+        check(
+          Boolean(target),
+          `找到用 ${name(FIXTURE_PLANKS)} 的 2×2 配方`
+            + `（${target ? target.recipe_id : '没有'}；产物 ${target && target.result.count_per_craft} 个 ${target && target.result.name}）`,
+        )
+        if (!target) {
+          console.log('[smoke] ✗ Phase 4F：这个版本里没有"木板→木棍"的 2×2 配方，无法继续')
+        } else {
+          const again = await lookupOnce()
+          const sameId = ((again.result || {}).recipes || []).some(
+            (row) => row.recipe_id === target.recipe_id,
+          )
+          check(sameId, `recipe_id stable = PASS（${target.recipe_id}）`)
+
+          // (b) craft：RUNNING → completed
+          const craft = await request(runtimePort, 'POST', '/minecraft/craft', {
+            recipe_id: target.recipe_id,
+          })
+          const started =
+            craft.status === 200 && craft.body.status === 'RUNNING' && Boolean(craft.body.action_id)
+          check(started, `craft → RUNNING + action_id（HTTP ${craft.status}）`)
+          if (!started) {
+            console.log(`[smoke]    craft 启动失败：${JSON.stringify(craft)}`)
+          } else {
+            const terminal = await waitForActionTerminal(
+              craft.body.action_id,
+              'craft 终态事件',
+              30000,
+            )
+            if (!terminal || terminal.event !== 'minecraft.action.completed') {
+              check(
+                false,
+                `craft 终态是 ${terminal && terminal.event}`
+                  + `（${(terminal && (terminal.error || terminal.reason)) || '-'}）`,
+              )
+            } else {
+              const result = terminal.result || {}
+              check(
+                name(result.item) === 'stick' &&
+                  Boolean(result.result) &&
+                  result.result.crafted_count >= target.result.count_per_craft,
+                `real craft completed（产物 count=${result.result && result.result.crafted_count}`
+                  + `，每刀 ${result.result && result.result.count_per_craft}）`,
+              )
+              check(
+                result.before &&
+                  result.after &&
+                  result.after.result_count - result.before.result_count ===
+                    (result.result && result.result.crafted_count),
+                `产物 before/after 如实上报（${result.before && result.before.result_count} → `
+                  + `${result.after && result.after.result_count}）`,
+              )
+              const consumed = (result.ingredients || [])[0]
+              check(
+                Boolean(consumed) &&
+                  name(consumed.name) === name(FIXTURE_PLANKS) &&
+                  consumed.consumed >= FIXTURE_PLANKS_COUNT,
+                `材料消耗如实上报（${consumed && consumed.name} -${consumed && consumed.consumed}）`,
+              )
+
+              // (c) 重新读真实 inventory：产物增加 + 材料减少（不抄事件里的数字）
+              const craftedCount = (result.result && result.result.crafted_count) || 0
+              const reread = await waitForValue(async () => {
+                const body = await inventorySlice()
+                const sticks = totalOf(body, 'stick')
+                const planks = totalOf(body, FIXTURE_PLANKS)
+                return sticks >= sticksBefore + craftedCount &&
+                  planks <= planksBefore + FIXTURE_PLANKS_COUNT - FIXTURE_PLANKS_COUNT
+                  ? { body, sticks, planks }
+                  : null
+              }, '重读 inventory（产物增加 + 材料减少）', 15000)
+              check(
+                Boolean(reread),
+                'inventory reread agrees = PASS（重读到产物增加与材料减少'
+                  + `：stick ${sticksBefore} → ${reread && reread.sticks}，`
+                  + `${name(FIXTURE_PLANKS)} ${planksBefore} → ${reread && reread.planks}）`,
+              )
+
+              // (d) 清夹具：把测试给的东西清掉，逐槽比对回测试前
+              await say(`/clear ${botName} minecraft:stick`)
+              await say(`/clear ${botName} ${FIXTURE_PLANKS}`)
+              const restored = await waitForValue(async () => {
+                const rows = await readSlots()
+                return signature(rows) === signatureBefore ? rows : null
+              }, '夹具已清、背包回到测试前', 15000)
+              check(Boolean(restored), `fixture restored = PASS（${signatureBefore || '空'}）`)
+              if (!restored) {
+                console.log(
+                  `[smoke]    ✗ 背包没回到测试前：before=${signatureBefore || '空'}`
+                    + ` after=${signature(await readSlots()) || '空'}（请手动清理 stick / oak_planks）`,
+                )
+              }
+            }
+          }
+        }
+      }
+
+      console.log(
+        '[smoke] SKIPPED craft STOP：合成毫秒级完成，真实服务器上没有可取消窗口'
+          + '（Node 单测覆盖 cancel/timeout/race/cleanup 恰好一次）',
       )
     }
 

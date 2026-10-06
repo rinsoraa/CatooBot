@@ -507,6 +507,172 @@ function classifyContainerTransferError(error) {
   return new ActionError(`搬运物品失败：${message}`, 'action.failed', 500)
 }
 
+// ---------------------------------------------------------- Phase 4F: crafting
+
+//: 只支持**玩家自身 2×2 背包合成**（craftingTable = null）；工作台留给后续阶段
+const CRAFT_DEFAULT_TIMEOUT_MS = Number.parseInt(process.env.MC_CRAFT_TIMEOUT_MS || '30000', 10)
+const LOOKUP_DEFAULT_TIMEOUT_MS = Number.parseInt(
+  process.env.MC_RECIPE_LOOKUP_TIMEOUT_MS || '10000',
+  10,
+)
+//: recipe_id 长度上限（可读签名形如 ``stick*4=oak_planks*2``）
+const CRAFT_MAX_RECIPE_ID_CHARS = 200
+//: 一次 lookup 最多列多少个 2×2 配方（有界；按"材料齐了"优先 + 名字稳定排序）
+const RECIPE_MAX_ENTRIES = 12
+
+function craftTimeoutMs() {
+  const raw = Number.parseInt(process.env.MC_CRAFT_TIMEOUT_MS || '', 10)
+  return Number.isFinite(raw) && raw > 0 ? raw : CRAFT_DEFAULT_TIMEOUT_MS
+}
+
+function recipeLookupTimeoutMs() {
+  const raw = Number.parseInt(process.env.MC_RECIPE_LOOKUP_TIMEOUT_MS || '', 10)
+  return Number.isFinite(raw) && raw > 0 ? raw : LOOKUP_DEFAULT_TIMEOUT_MS
+}
+
+/** prismarine-recipe 的 Recipe 类（按 registry 懒加载并缓存：不同版本各自的配方表）。 */
+const RECIPE_CLASSES = new Map()
+function recipeClassFor(bot) {
+  const registry = bot && bot.registry
+  if (!registry) throw new ActionError('罐头还没有进入世界（拿不到物品表）', 'action.not_online', 400)
+  const key = `${registry.version && registry.version.minecraftVersion ? registry.version.minecraftVersion : 'unknown'}`
+  let cached = RECIPE_CLASSES.get(key)
+  if (!cached) {
+    cached = require('prismarine-recipe')(registry).Recipe
+    RECIPE_CLASSES.set(key, cached)
+  }
+  return cached
+}
+
+function registryItemName(registry, id) {
+  const entry = registry && registry.items ? registry.items[id] : null
+  return entry && entry.name ? normalizeItemName(entry.name) : ''
+}
+
+function registryItemId(registry, name) {
+  const entry = registry && registry.itemsByName ? registry.itemsByName[normalizeItemName(name)] : null
+  return entry ? entry.id : null
+}
+
+/** 配方的材料清单（同名合并；只返回 {name, count}，不泄露 id/metadata）。 */
+function describeRecipeIngredients(recipe, registry) {
+  const counts = new Map()
+  const add = (cell, amount) => {
+    if (!cell || cell.id === -1 || cell.id === null || cell.id === undefined) return
+    const name = registryItemName(registry, cell.id)
+    if (!name) return
+    counts.set(name, (counts.get(name) || 0) + amount)
+  }
+  if (recipe.inShape) for (const row of recipe.inShape) for (const cell of row) add(cell, 1)
+  if (recipe.outShape) for (const row of recipe.outShape) for (const cell of row) add(cell, 1)
+  if (recipe.ingredients) for (const cell of recipe.ingredients) add(cell, 1)
+  return [...counts.entries()]
+    .map(([name, count]) => ({ name, count }))
+    .sort((a, b) => a.name.localeCompare(b.name) || a.count - b.count)
+}
+
+function describeRecipeResult(recipe, registry) {
+  return {
+    name: registryItemName(registry, recipe.result.id),
+    count_per_craft: recipe.result.count || 1,
+  }
+}
+
+/** 可读的规范签名：``stick*4=oak_planks*2``（需要工作台的加 ``!`` 前缀）。 */
+function readableRecipeKey(recipe, registry) {
+  const result = describeRecipeResult(recipe, registry)
+  const ingredients = describeRecipeIngredients(recipe, registry)
+  const body = ingredients.map((entry) => `${entry.name}*${entry.count}`).join('+')
+  return `${recipe.requiresTable ? '!' : ''}${result.name}*${result.count_per_craft}=${body}`
+}
+
+/**
+ * 稳定 recipe_id（§七）：可读规范签名；只有**同一个物品的配方里出现同名签名**时才追加
+ * 形状摘要后缀（按形状排序的稳定 hash），绝不使用数组下标。
+ */
+function recipeIdOf(recipe, registry) {
+  const base = readableRecipeKey(recipe, registry)
+  return base
+}
+
+function recipeIdsForList(recipes, registry) {
+  const keys = recipes.map((recipe) => readableRecipeKey(recipe, registry))
+  const duplicates = new Set(keys.filter((key, index) => keys.indexOf(key) !== index))
+  return recipes.map((recipe, index) => {
+    const key = keys[index]
+    if (!duplicates.has(key)) return key
+    return `${key}~${shapeTagOf(recipe)}`
+  })
+}
+
+/** 形状摘要（只在同名签名冲突时使用）：把形状压成 w×h + 每格物品名的短 hash。 */
+function shapeTagOf(recipe) {
+  const crypto = require('crypto')
+  const shape = recipe.inShape
+    ? recipe.inShape.map((row) => row.map((cell) => (cell && cell.id !== -1 ? String(cell.id) : '-')).join(','))
+    : [`shapeless:${(recipe.ingredients || []).map((cell) => (cell ? String(cell.id) : '-')).join(',')}`]
+  return crypto.createHash('sha1').update(JSON.stringify(shape)).digest('hex').slice(0, 6)
+}
+
+/** recipe_id → 目标物品名（第一个 ``*`` 之前就是结果物品名；物品名里不会出现 ``*``）。 */
+function itemNameFromRecipeId(recipeId) {
+  const body = String(recipeId || '').replace(/^!/, '')
+  const star = body.indexOf('*')
+  if (star <= 0) return ''
+  return normalizeItemName(body.slice(0, star))
+}
+
+/** §二十五：按名字汇总**整个玩家背包**（不只 heldItem；crafted item 常落在别的槽位）。 */
+function countInventoryItem(bot, itemName) {
+  const wanted = normalizeItemName(itemName)
+  if (!wanted) return 0
+  let total = 0
+  let items = []
+  try {
+    items = typeof bot.inventory?.items === 'function' ? bot.inventory.items() : []
+  } catch (error) {
+    log('warn', 'inventory read failed', { error: error.message })
+    items = []
+  }
+  for (const item of items) {
+    if (!item || !item.name) continue
+    if (normalizeItemName(item.name) === wanted) total += item.count || 0
+  }
+  return total
+}
+
+function inventoryCountsFor(bot, names) {
+  const counts = {}
+  for (const name of names) counts[normalizeItemName(name)] = countInventoryItem(bot, name)
+  return counts
+}
+
+/** 语义投影（§五/§九）：只有 result / requires_table / available / ingredients。 */
+function describeRecipe(recipe, registry, available) {
+  const result = describeRecipeResult(recipe, registry)
+  return {
+    recipe_id: recipeIdOf(recipe, registry),
+    result,
+    requires_table: Boolean(recipe.requiresTable),
+    available: Boolean(available),
+    ingredients: describeRecipeIngredients(recipe, registry),
+  }
+}
+
+/** 当前物品的配方拆分：全部 / 2×2 可执行 / 现在材料就够的。 */
+function recipeSetsFor(bot, itemName) {
+  const registry = bot.registry
+  const entry = registry && registry.itemsByName ? registry.itemsByName[normalizeItemName(itemName)] : null
+  if (!entry) return null
+  const Recipe = recipeClassFor(bot)
+  const all = Recipe.find(entry.id, null)
+  const twoByTwo = all.filter((recipe) => !recipe.requiresTable)
+  const craftable =
+    typeof bot.recipesFor === 'function' ? bot.recipesFor(entry.id, null, 1, null) : []
+  const craftableIds = new Set(recipeIdsForList(craftable, registry))
+  return { entry, all, twoByTwo, craftableIds }
+}
+
 // Phase 3D：follow_player（动态跟随）
 const FOLLOW_DEFAULT_DISTANCE = 2.5
 const FOLLOW_MIN_DISTANCE = 1.5
@@ -1877,6 +2043,207 @@ const ACTION_REGISTRY = {
         closeTrackedWindow(bot, controller)
       },
     },
+    recipe_lookup: {
+      // Phase 4F：查"当前背包能做的 2×2 配方"（SAFE 只读；**非独占** ——
+      // 纯读取，可与导航/背包读并行，但必须在线）。
+      exclusive: false,
+      timeout_ms: recipeLookupTimeoutMs(),
+      risk: 'SAFE',
+      validate(params) {
+        const item = params.item
+        if (typeof item !== 'string' || !item.trim()) {
+          throw new ActionError('item 不能为空', 'item.invalid', 400)
+        }
+        if (item.length > MAX_PLACE_ITEM_CHARS) {
+          throw new ActionError('item 过长', 'item.invalid', 400)
+        }
+        return { item: normalizeItemName(item) }
+      },
+      async run(bot, params) {
+        if (bot === null || bot === undefined || bot.registry === undefined) {
+          throw new ActionError('罐头还没有进入世界', 'action.not_online', 400)
+        }
+        const registry = bot.registry
+        const sets = recipeSetsFor(bot, params.item)
+        if (!sets || sets.all.length === 0) {
+          // 物品不存在 / 这个版本里没有它的配方：如实回答"没有配方"，不猜
+          return { ok: true, item: params.item, status: 'recipe_not_found', total: 0, recipes: [] }
+        }
+        if (sets.twoByTwo.length === 0) {
+          // 只有工作台配方 —— 绝不自动去找工作台
+          return {
+            ok: true,
+            item: params.item,
+            status: 'crafting_table_required',
+            total: 0,
+            recipes: [],
+          }
+        }
+        const entries = sets.twoByTwo
+          .map((recipe) => {
+            const described = describeRecipe(recipe, registry, false)
+            described.available = sets.craftableIds.has(described.recipe_id)
+            return described
+          })
+          .sort(
+            (a, b) =>
+              Number(b.available) - Number(a.available) ||
+              a.recipe_id.localeCompare(b.recipe_id),
+          )
+        const available = entries.filter((entry) => entry.available).length
+        return {
+          ok: true,
+          item: params.item,
+          status: available > 0 ? 'available' : 'insufficient_material',
+          total: entries.length,
+          recipes: entries.slice(0, RECIPE_MAX_ENTRIES),
+        }
+      },
+    },
+    craft: {
+      // Phase 4F：执行**一次** 2×2 配方（MEDIUM；合成期间 inventory 正在变 →
+      // exclusive + 确认）。一次一个 recipe，不做 recipe chain、不自动准备材料。
+      exclusive: true,
+      timeout_ms: CRAFT_DEFAULT_TIMEOUT_MS,
+      risk: 'MEDIUM',
+      detached: true,
+      validate(params) {
+        const recipeId = params.recipe_id
+        if (typeof recipeId !== 'string' || !recipeId.trim()) {
+          throw new ActionError('recipe_id 不能为空（先用 minecraft_recipe_lookup 拿到它）', 'recipe.invalid', 400)
+        }
+        if (recipeId.length > CRAFT_MAX_RECIPE_ID_CHARS) {
+          throw new ActionError('recipe_id 过长', 'recipe.invalid', 400)
+        }
+        return { recipe_id: recipeId.trim() }
+      },
+      async start(bot, params) {
+        // §十四/§十五：确认只是授权 —— 执行前必须用**当前**配方表与**当前**背包重新解析
+        if (bot === null || bot.entity === null) {
+          throw new ActionError('罐头还没有进入世界', 'action.not_online', 400)
+        }
+        const registry = bot.registry
+        const itemName = itemNameFromRecipeId(params.recipe_id)
+        const sets = itemName ? recipeSetsFor(bot, itemName) : null
+        if (!sets || sets.all.length === 0) {
+          throw new ActionError(`找不到这个配方（${params.recipe_id}）`, 'recipe.not_found', 404)
+        }
+        const ids = recipeIdsForList(sets.all, registry)
+        const index = ids.indexOf(params.recipe_id)
+        if (index < 0) {
+          throw new ActionError('这个配方已经变了（材料或形状不一致）', 'recipe.changed', 409)
+        }
+        const recipe = sets.all[index]
+        if (recipe.requiresTable) {
+          throw new ActionError(
+            '这个配方需要工作台（本阶段只支持玩家 2×2 背包合成）',
+            'recipe.unavailable',
+            409,
+          )
+        }
+        const craftable =
+          typeof bot.recipesFor === 'function' ? bot.recipesFor(sets.entry.id, null, 1, null) : []
+        const craftableIds = new Set(recipeIdsForList(craftable, registry))
+        if (!craftableIds.has(params.recipe_id)) {
+          // §十六/§十七：绝不自动开箱/移动/挖矿/先做中间材料 —— 直接如实失败
+          const result = describeRecipeResult(recipe, registry)
+          const ingredients = describeRecipeIngredients(recipe, registry)
+          const have = inventoryCountsFor(bot, ingredients.map((entry) => entry.name))
+          const missing = ingredients
+            .filter((entry) => (have[entry.name] || 0) < entry.count)
+            .map((entry) => ({
+              name: entry.name,
+              need: entry.count,
+              have: have[entry.name] || 0,
+            }))
+          throw new ActionError(
+            `材料不够：${missing
+              .map((entry) => `${entry.name} 需要 ${entry.need} 个、只有 ${entry.have} 个`)
+              .join('；')}（本阶段不会自己去准备材料）`,
+            'material.insufficient',
+            409,
+            { result, ingredients, missing },
+          )
+        }
+        const result = describeRecipeResult(recipe, registry)
+        const ingredients = describeRecipeIngredients(recipe, registry)
+        return {
+          // 内部状态（只给 wait 用，绝不进事件）：全部是语义快照，不存 live Item
+          recipe,
+          recipe_id: params.recipe_id,
+          item: result.name,
+          count_per_craft: result.count_per_craft,
+          ingredients,
+          before: {
+            result_count: countInventoryItem(bot, result.name),
+            ingredient_counts: inventoryCountsFor(bot, ingredients.map((entry) => entry.name)),
+          },
+        }
+      },
+      async wait(bot, params, token, state) {
+        try {
+          // §十八：只支持 craftingTable = null（玩家自身 2×2）；一次只执行一次配方
+          await bot.craft(state.recipe, 1, null)
+        } catch (error) {
+          if (token && token.cancelled) throw new ActionCancelled(token.reason)
+          const message = String(error && error.message ? error.message : error)
+          if (/craftingTable/i.test(message)) {
+            throw new ActionError(
+              '这个配方需要工作台（本阶段只支持玩家 2×2 背包合成）',
+              'recipe.unavailable',
+              409,
+            )
+          }
+          throw new ActionError(`合成失败：${message}`, 'craft.failed', 500)
+        }
+        if (token && token.cancelled) {
+          // 已经做完了但同时收到 STOP：按 ActionRuntime 的 race 规则只允许一个终态
+          throw new ActionCancelled(token.reason)
+        }
+        // §二十二/§二十三：不信任 bot.craft 的 resolve —— 重新读 inventory 两侧都核验
+        const after = {
+          result_count: countInventoryItem(bot, state.item),
+          ingredient_counts: inventoryCountsFor(
+            bot,
+            state.ingredients.map((entry) => entry.name),
+          ),
+        }
+        const craftedGain = after.result_count - state.before.result_count
+        const ingredients = state.ingredients.map((entry) => {
+          const before = state.before.ingredient_counts[entry.name] || 0
+          const now = after.ingredient_counts[entry.name] || 0
+          return { name: entry.name, expected: entry.count, consumed: before - now }
+        })
+        const consumedEnough = ingredients.every((entry) => entry.consumed >= entry.expected)
+        if (craftedGain < state.count_per_craft || !consumedEnough) {
+          throw new ActionError(
+            `合成结果和预期不一致（产物 +${craftedGain}，材料消耗 ${ingredients
+              .map((entry) => `${entry.name} -${entry.consumed}`)
+              .join('、')}）`,
+            'craft.unconfirmed',
+            500,
+            { before: state.before, after, ingredients },
+          )
+        }
+        return {
+          recipe_id: state.recipe_id,
+          item: state.item,
+          result: {
+            name: state.item,
+            count_per_craft: state.count_per_craft,
+            crafted_count: craftedGain,
+          },
+          ingredients: ingredients.map((entry) => ({ name: entry.name, consumed: entry.consumed })),
+          before: state.before,
+          after,
+        }
+      },
+      cleanup(bot) {
+        // 2×2 合成不打开任何窗口（用的是玩家自己的 inventory window）→ 没有额外状态要收，
+        // 只保留与其他短动作一致的移动控制位兜底（至多一次由 ActionRuntime 保证）。
+        if (bot && typeof bot.clearControlStates === 'function') bot.clearControlStates()
+      },
+    },
     follow_player: {
       // Phase 3D：动态跟随（LOW；不改世界，但属于持续自动移动 → exclusive + STOP + timeout）
       exclusive: true,
@@ -2477,6 +2844,20 @@ async function handleRequest(request, response) {
       jsonResponse(response, 200, { ok: true, ...result })
       return
     }
+    if (request.method === 'POST' && path === '/minecraft/recipe_lookup') {
+      // Phase 4F：查"当前背包能做的 2×2 配方"（SAFE 只读；同步返回语义投影）
+      const body = await readBody(request)
+      const result = await actionRuntime.execute('recipe_lookup', { item: body.item })
+      jsonResponse(response, 200, { ok: true, ...result })
+      return
+    }
+    if (request.method === 'POST' && path === '/minecraft/craft') {
+      // Phase 4F：执行一次 2×2 配方（MEDIUM）。启动即 RUNNING，结果经事件送达。
+      const body = await readBody(request)
+      const result = await actionRuntime.execute('craft', { recipe_id: body.recipe_id })
+      jsonResponse(response, 200, { ok: true, ...result })
+      return
+    }
     if (request.method === 'POST' && path === '/minecraft/container_inspect') {
       // Phase 4E：读一个 Chest / Barrel 的真实内容（SAFE 只读；内部 open → read → close）
       const body = await readBody(request)
@@ -2627,6 +3008,22 @@ module.exports = {
   },
   EQUIP_DEFAULTS: { timeoutMs: EQUIP_DEFAULT_TIMEOUT_MS },
   INVENTORY_MOVE_DEFAULTS: { timeoutMs: MOVE_DEFAULT_TIMEOUT_MS },
+  CRAFT_DEFAULTS: {
+    timeoutMs: CRAFT_DEFAULT_TIMEOUT_MS,
+    lookupTimeoutMs: LOOKUP_DEFAULT_TIMEOUT_MS,
+    maxRecipeIdChars: CRAFT_MAX_RECIPE_ID_CHARS,
+    maxEntries: RECIPE_MAX_ENTRIES,
+  },
+  recipeIdOf,
+  recipeIdsForList,
+  readableRecipeKey,
+  describeRecipe,
+  describeRecipeIngredients,
+  describeRecipeResult,
+  itemNameFromRecipeId,
+  countInventoryItem,
+  inventoryCountsFor,
+  recipeSetsFor,
   CONTAINER_DEFAULTS: {
     timeoutMs: CONTAINER_DEFAULT_TIMEOUT_MS,
     maxDistance: CONTAINER_MAX_DISTANCE,

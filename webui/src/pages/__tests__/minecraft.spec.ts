@@ -147,6 +147,8 @@ function makeHandler(
     inventoryMove?: MockReply
     containerInspect?: MockReply
     containerTransfer?: MockReply
+    recipeLookup?: MockReply
+    craft?: MockReply
   } = {},
 ) {
   return (request: MockRequest): MockReply => {
@@ -255,6 +257,45 @@ function makeHandler(
             ],
           },
         })
+      )
+    }
+    if (url.pathname === '/api/v1/minecraft/recipe_lookup' && request.method === 'POST') {
+      return (
+        overrides.recipeLookup ??
+        ok({
+          ok: true,
+          action: 'recipe_lookup',
+          action_id: 'act_recipe_ui',
+          status: 'SUCCEEDED',
+          result: {
+            ok: true,
+            item: 'stick',
+            status: 'available',
+            total: 2,
+            recipes: [
+              {
+                recipe_id: 'stick*4=oak_planks*2',
+                result: { name: 'stick', count_per_craft: 4 },
+                requires_table: false,
+                available: true,
+                ingredients: [{ name: 'oak_planks', count: 2 }],
+              },
+              {
+                recipe_id: 'stick*4=birch_planks*2',
+                result: { name: 'stick', count_per_craft: 4 },
+                requires_table: false,
+                available: false,
+                ingredients: [{ name: 'birch_planks', count: 2 }],
+              },
+            ],
+          },
+        })
+      )
+    }
+    if (url.pathname === '/api/v1/minecraft/craft' && request.method === 'POST') {
+      return (
+        overrides.craft ??
+        ok({ ok: true, action: 'craft', action_id: 'act_craft_ui', status: 'RUNNING' })
       )
     }
     if (url.pathname === '/api/v1/minecraft/container_transfer' && request.method === 'POST') {
@@ -1025,6 +1066,139 @@ describe('Minecraft 页 · Container（Phase 4E）', () => {
     await flushAll()
     expect(wrapper.get('[data-test="mc-container"]').text()).toContain('还没有 INSPECT 过容器')
     expect(wrapper.get('[data-test="mc-container-type"]').text()).toBe('—')
+  })
+})
+
+describe('Minecraft 页 · Crafting（Phase 4F）', () => {
+  async function lookupSomeRecipe(wrapper: VueWrapper, item = 'stick'): Promise<void> {
+    await wrapper.get('[data-test="mc-recipe-item"]').setValue(item)
+    await wrapper.get('[data-test="mc-recipe-lookup"]').trigger('click')
+    await flushAll()
+  }
+
+  it('LOOKUP 发送物品名并渲染配方表（recipe_id / 产物 / 材料 / available / table）', async () => {
+    const { wrapper, calls } = await mountPage(makeHandler())
+    await flushAll()
+    await lookupSomeRecipe(wrapper)
+    const call = calls.find((c) => c.url.endsWith('/minecraft/recipe_lookup'))
+    expect(call).toBeTruthy()
+    expect(call?.body).toEqual({ item: 'stick' })
+    expect(wrapper.get('[data-test="mc-recipe-status"]').text()).toBe('available')
+    expect(wrapper.get('[data-test="mc-recipe-name"]').text()).toBe('stick')
+    expect(wrapper.get('[data-test="mc-recipe-total"]').text()).toBe('2/2')
+    const row = wrapper.get('[data-test="mc-recipe-stick*4=oak_planks*2"]')
+    expect(row.text()).toContain('oak_planks×2')
+    expect(row.text()).toContain('stick × 4')
+    // 材料不够的那行也列出来，但按钮禁用（不允许点）
+    const notReady = wrapper.get('[data-test="mc-recipe-stick*4=birch_planks*2"]')
+    expect(notReady.text()).toContain('材料不够')
+    expect(
+      (wrapper.get('[data-test="mc-recipe-use-stick*4=birch_planks*2"]').element as HTMLButtonElement)
+        .disabled,
+    ).toBe(true)
+  })
+
+  it('LOOKUP 缺物品名时本地拦截（不发请求）', async () => {
+    const { wrapper, calls } = await mountPage(makeHandler())
+    await flushAll()
+    await wrapper.get('[data-test="mc-recipe-item"]').setValue('   ')
+    await wrapper.get('[data-test="mc-recipe-lookup"]').trigger('click')
+    await flushAll()
+    expect(calls.some((c) => c.url.endsWith('/minecraft/recipe_lookup'))).toBe(false)
+    expect(useToast().items.value.at(-1)?.message).toBe('缺少物品名')
+  })
+
+  it('LOOKUP 被拒绝时如实报错（不假装查到了）', async () => {
+    const { wrapper } = await mountPage(
+      makeHandler({
+        recipeLookup: fail(404, 'minecraft.recipe_not_found', '找不到这个配方'),
+      }),
+    )
+    await flushAll()
+    await lookupSomeRecipe(wrapper, 'unobtainium')
+    expect(useToast().items.value.at(-1)?.message).toBe('查配方失败')
+    expect(useToast().items.value.at(-1)?.detail).toContain('找不到这个配方')
+    expect(wrapper.get('[data-test="mc-recipe-status"]').text()).toBe('—')
+  })
+
+  it('只有工作台配方时如实提示、表格为空', async () => {
+    const { wrapper } = await mountPage(
+      makeHandler({
+        recipeLookup: ok({
+          ok: true,
+          action: 'recipe_lookup',
+          status: 'SUCCEEDED',
+          result: {
+            ok: true,
+            item: 'chest',
+            status: 'crafting_table_required',
+            total: 0,
+            recipes: [],
+          },
+        }),
+      }),
+    )
+    await flushAll()
+    await lookupSomeRecipe(wrapper, 'chest')
+    expect(wrapper.get('[data-test="mc-recipe-status"]').text()).toBe('crafting_table_required')
+    expect(wrapper.get('[data-test="mc-recipe-table"]').text()).toContain('没有可执行的 2×2 配方')
+    expect(useToast().items.value.at(-1)?.message).toBe('需要工作台')
+  })
+
+  it('点一行"用作 recipe_id" → 填入 recipe_id 并显示可读摘要', async () => {
+    const { wrapper } = await mountPage(makeHandler())
+    await flushAll()
+    await lookupSomeRecipe(wrapper)
+    await wrapper.get('[data-test="mc-recipe-use-stick*4=oak_planks*2"]').trigger('click')
+    await flushAll()
+    expect(
+      (wrapper.get('[data-test="mc-craft-recipe-id"]').element as HTMLInputElement).value,
+    ).toBe('stick*4=oak_planks*2')
+    expect(wrapper.get('[data-test="mc-craft-summary"]').text()).toContain(
+      '用 2 个 oak_planks 制作 4 个 stick',
+    )
+  })
+
+  it('CRAFT 把 recipe_id 发到 /minecraft/craft', async () => {
+    const { wrapper, calls } = await mountPage(makeHandler())
+    await flushAll()
+    await wrapper.get('[data-test="mc-craft-recipe-id"]').setValue('stick*4=oak_planks*2')
+    await wrapper.get('[data-test="mc-craft-run"]').trigger('click')
+    await flushAll()
+    const call = calls.find((c) => c.url.endsWith('/minecraft/craft'))
+    expect(call).toBeTruthy()
+    expect(call?.body).toEqual({ recipe_id: 'stick*4=oak_planks*2' })
+  })
+
+  it('CRAFT 缺 recipe_id 时本地拦截（不发请求）', async () => {
+    const { wrapper, calls } = await mountPage(makeHandler())
+    await flushAll()
+    await wrapper.get('[data-test="mc-craft-recipe-id"]').setValue('  ')
+    await wrapper.get('[data-test="mc-craft-run"]').trigger('click')
+    await flushAll()
+    expect(calls.some((c) => c.url.endsWith('/minecraft/craft'))).toBe(false)
+    expect(useToast().items.value.at(-1)?.message).toBe('缺少 recipe_id')
+  })
+
+  it('CRAFT 被确认门拒绝时如实报错（WebUI 拿不到执行权）', async () => {
+    const { wrapper } = await mountPage(
+      makeHandler({
+        craft: fail(409, 'minecraft.confirmation_required', '这个 Minecraft 动作需要用户确认'),
+      }),
+    )
+    await flushAll()
+    await wrapper.get('[data-test="mc-craft-recipe-id"]').setValue('stick*4=oak_planks*2')
+    await wrapper.get('[data-test="mc-craft-run"]').trigger('click')
+    await flushAll()
+    expect(useToast().items.value.at(-1)?.message).toBe('CRAFT 被拒绝')
+    expect(useToast().items.value.at(-1)?.detail).toContain('需要用户确认')
+  })
+
+  it('未查过配方时如实说"还没有查过配方"', async () => {
+    const { wrapper } = await mountPage(makeHandler())
+    await flushAll()
+    expect(wrapper.get('[data-test="mc-craft"]').text()).toContain('还没有查过配方')
+    expect(wrapper.get('[data-test="mc-recipe-status"]').text()).toBe('—')
   })
 })
 

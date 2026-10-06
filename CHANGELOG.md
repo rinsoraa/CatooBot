@@ -3,6 +3,27 @@
 本文件记录 CatooBot 的版本演进。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号见 `pyproject.toml`；日期取自真实提交历史（本仓库 2026-09-30 起）。
 
+## Minecraft Phase 4F — Crafting（单个配方 · 玩家 2×2）
+
+* 新增 LLM 工具 `minecraft_recipe_lookup`（SAFE 只读、**非独占**）：查"罐头自己 2×2 背包能做
+  什么"，返回稳定可读的 `recipe_id`（如 `stick*4=oak_planks*2`）+ 产物 + 材料 + 现在够不够；
+  如实区分 `available` / `insufficient_material` / `crafting_table_required` / `recipe_not_found`；
+  只给语义投影，绝不暴露 raw Recipe / 数字 id / metadata。
+* 新增 LLM 工具 `minecraft_craft`（MEDIUM）：只接受 `recipe_id`、**一次一个配方、一次执行一次**
+  （没有 count/times —— 避免"执行几次"与"产出几个"的语义混淆）；只走玩家自身 2×2
+  （`bot.craft(recipe, 1, null)`），不找/不放工作台、不自动准备材料、不做 recipe chain；
+  确认摘要展开成「用 2 个 oak_planks 制作 4 个 stick」；执行前用**当前**配方表与**当前**背包
+  重新解析（`recipe_changed` / `recipe_unavailable` / `material_insufficient`），执行后
+  **重读整个背包**核验"产物增加 + 材料减少"（否则 `craft_unconfirmed`）。
+* 顺手修掉一个真实 bug：`ToolResultProcessor` 的数据深度上限原来只有 4，会把
+  "配方 → 产物/材料"这种第 5 层结构静默打成 `null`（模型只看到 null）。现在命名成
+  `MAX_DATA_DEPTH = 6` 并加了边界回归测试。
+* 验证：Node `recipe.test.js` 54 checks + `craft.test.js` 56 checks（F–P：成功/重读复核/
+  unconfirmed/配方变化/材料不足/取消/超时/竞态/cleanup 恰好一次/独占）；Python 测试 +62；
+  flying-squid E2E 验证语义投影与全部拒绝路径；真实服务器 smoke 真机完成
+  `recipe_lookup → craft → 重读 inventory → 清夹具恢复`（`REAL SERVER: PASS`）。
+* `allow_medium` 默认仍是 `false`（现在覆盖六个 MEDIUM 动作）。
+
 ## Minecraft Phase 4E — Container Control（Chest / Barrel 读取 + 单项存取）
 
 * 新增 LLM 工具 `minecraft_container_inspect`（SAFE 只读，但**独占**）：读一个**单方块**

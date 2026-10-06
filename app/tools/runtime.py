@@ -87,6 +87,7 @@ class ToolRuntime:
             MinecraftChatTool,
             MinecraftContainerInspectTool,
             MinecraftContainerTransferTool,
+            MinecraftCraftTool,
             MinecraftDigTool,
             MinecraftEquipTool,
             MinecraftFollowPlayerTool,
@@ -95,6 +96,7 @@ class ToolRuntime:
             MinecraftLookAtTool,
             MinecraftMoveToTool,
             MinecraftPlaceTool,
+            MinecraftRecipeLookupTool,
             MinecraftStopTool,
             MinecraftWorldTool,
             QueryImageMemoryTool,
@@ -125,6 +127,9 @@ class ToolRuntime:
             # Phase 4E：单方块容器（读 Chest/Barrel 的 SAFE inspection + MEDIUM 单项存取）
             ("minecraft_container_inspect", lambda: MinecraftContainerInspectTool()),
             ("minecraft_container_transfer", lambda: MinecraftContainerTransferTool()),
+            # Phase 4F：玩家自身 2×2 背包合成（查配方 SAFE / 执行一次 MEDIUM）
+            ("minecraft_recipe_lookup", lambda: MinecraftRecipeLookupTool()),
+            ("minecraft_craft", lambda: MinecraftCraftTool()),
             ("query_image_memory", lambda: QueryImageMemoryTool()),
             (
                 "weather",

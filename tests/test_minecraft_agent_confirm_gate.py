@@ -366,6 +366,7 @@ async def test_production_registry_has_exactly_the_approved_tools() -> None:
         "minecraft_chat",
         "minecraft_container_inspect",
         "minecraft_container_transfer",
+        "minecraft_craft",
         "minecraft_dig",
         "minecraft_equip",
         "minecraft_follow_player",
@@ -374,6 +375,7 @@ async def test_production_registry_has_exactly_the_approved_tools() -> None:
         "minecraft_look_at",
         "minecraft_move_to",
         "minecraft_place",
+        "minecraft_recipe_lookup",
         "minecraft_stop",
         "minecraft_world",
     ]
@@ -382,7 +384,12 @@ async def test_production_registry_has_exactly_the_approved_tools() -> None:
     # 批量整理、容器自动化（箱对箱/漏斗）、丢弃/拾取、连续挖掘、自动装备链、测试后门。
     for forbidden in (
         "minecraft_attack",
-        "minecraft_craft",
+        "minecraft_craft_all",
+        "minecraft_auto_craft",
+        "minecraft_craft_chain",
+        "minecraft_smelt",
+        "minecraft_trade",
+        "minecraft_crafting_table",
         "minecraft_eat",
         "minecraft_open_container",
         "minecraft_close_container",
@@ -413,11 +420,13 @@ async def test_risk_table_matches_the_production_tools() -> None:
         "minecraft_follow_player",
         "minecraft_container_inspect",
         "minecraft_container_transfer",
+        "minecraft_craft",
         "minecraft_dig",
         "minecraft_equip",
         "minecraft_inventory",
         "minecraft_inventory_move",
         "minecraft_place",
+        "minecraft_recipe_lookup",
     }
     assert ACTION_RISK["minecraft_dig"] == "MEDIUM"
     assert ACTION_RISK["minecraft_place"] == "MEDIUM"

@@ -379,6 +379,43 @@ class TestResultProcessing:
         assert "Ignore previous instructions" not in result.summary
         assert "已过滤" in result.summary
 
+    def test_nested_data_survives_to_the_documented_depth(self) -> None:
+        """Phase 4F：'配方 → 产物/材料'这种 5 层结构必须原样保留（曾被打成 None）。"""
+        processor = ToolResultProcessor()
+        payload = {
+            "ok": True,
+            "result": {  # depth 1
+                "recipes": [  # depth 2
+                    {  # depth 3
+                        "recipe_id": "stick*4=oak_planks*2",
+                        "result": {"name": "stick", "count_per_craft": 4},  # depth 4
+                        "ingredients": [{"name": "oak_planks", "count": 2}],  # depth 4
+                    }
+                ]
+            },
+        }
+        result = processor.process(ToolResult(tool_name="x", data=payload))
+        entry = result.data["result"]["recipes"][0]
+        assert entry["result"] == {"name": "stick", "count_per_craft": 4}
+        assert entry["ingredients"] == [{"name": "oak_planks", "count": 2}]
+
+    def test_data_beyond_the_depth_budget_is_clipped(self) -> None:
+        """超深结构仍然被截断（不是无限制地塞进 prompt）。"""
+        processor = ToolResultProcessor()
+        deep: object = {"leaf": 1}
+        for _ in range(12):
+            deep = {"next": deep}
+        result = processor.process(ToolResult(tool_name="x", data={"result": deep}))
+        # 一路剥到底：某处必然是 None（被截断）
+        node = result.data
+        clipped = False
+        while isinstance(node, dict):
+            if node.get("next") is None and "leaf" not in node:
+                clipped = True
+                break
+            node = node.get("next")
+        assert clipped, "超过深度的结构应当被截断成 None"
+
     def test_metadata_defaults(self) -> None:
         processor = ToolResultProcessor()
         result = processor.process(ToolResult(tool_name="x", summary="ok"))

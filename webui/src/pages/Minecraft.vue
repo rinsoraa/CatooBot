@@ -18,6 +18,8 @@ import { toast } from '@/composables/toast'
 import type {
   MinecraftActionView,
   MinecraftAgentContext,
+  MinecraftRecipeEntry,
+  MinecraftRecipeLookupResult,
   MinecraftContainerDirection,
   MinecraftContainerSlot,
   MinecraftContainerSnapshot,
@@ -142,6 +144,27 @@ const placeTarget = reactive({
   face: 'up' as MinecraftPlaceFace,
   expectedItem: '',
 })
+// Phase 4F：Crafting（玩家自身 2×2：查配方 = SAFE；执行一次 = MEDIUM 必须确认）
+const recipeQuery = reactive({ item: '' })
+const recipeResult = ref<MinecraftRecipeLookupResult | null>(null)
+const craftTarget = reactive({ recipeId: '' })
+/** 把可读 recipe_id 展开成摘要（与后端确认摘要同一套读法，纯展示用）。 */
+const craftSummary = computed(() => {
+  const raw = craftTarget.recipeId.trim().replace(/^!/, '')
+  const [head, tail] = raw.split('=')
+  if (!tail || !head || !head.includes('*')) return ''
+  const [name, count] = head.split('*')
+  const parts = tail
+    .split('+')
+    .map((chunk) => {
+      const [ingredient, ingredientCount] = chunk.split('*')
+      return ingredient ? `${ingredientCount || '1'} 个 ${ingredient}` : ''
+    })
+    .filter(Boolean)
+  if (!parts.length) return `制作 ${count || '1'} 个 ${name}`
+  return `用 ${parts.join(' + ')} 制作 ${count || '1'} 个 ${name}`
+})
+
 // Phase 4E：Container（读 Chest / Barrel + 单物品存取；只支持单方块 chest/barrel）
 const containerTarget = reactive({ x: '', y: '', z: '' })
 const containerSnapshot = ref<MinecraftContainerSnapshot | null>(null)
@@ -577,6 +600,61 @@ async function loadWorld(): Promise<void> {
     /* 保留上一份数据 */
   }
   prefillInventoryTargets()
+}
+
+async function lookupRecipe(): Promise<void> {
+  const item = recipeQuery.item.trim()
+  if (!item) {
+    toast.error('缺少物品名', '先填写要查的物品（如 stick）')
+    return
+  }
+  working.value = true
+  try {
+    const payload = await minecraftApi.recipeLookup(item)
+    recipeResult.value = payload.result
+    const result = payload.result
+    if (result.status === 'recipe_not_found') {
+      toast.info('查不到配方', `${result.item} 在这个版本里没有 2×2 配方（或物品名不对）`)
+    } else if (result.status === 'crafting_table_required') {
+      toast.info('需要工作台', `${result.item} 只有工作台配方（本阶段只支持玩家 2×2）`)
+    } else {
+      const ready = result.recipes.filter((row) => row.available).length
+      toast.success(
+        `${result.item} 有 ${result.total} 个 2×2 配方`,
+        ready ? `其中 ${ready} 个材料已经够了` : '当前材料都不够（不会自动去准备）',
+      )
+    }
+  } catch (caught) {
+    toast.error('查配方失败', errorMessage(caught))
+  } finally {
+    working.value = false
+  }
+}
+
+function useRecipe(row: MinecraftRecipeEntry): void {
+  craftTarget.recipeId = row.recipe_id
+}
+
+async function craftRecipe(): Promise<void> {
+  const recipeId = craftTarget.recipeId.trim()
+  if (!recipeId) {
+    toast.error('缺少 recipe_id', '先查配方，然后点某一行的"用作 recipe_id"')
+    return
+  }
+  working.value = true
+  try {
+    const result = await minecraftApi.craft(recipeId)
+    toast.success('已开始合成', `${result.action} · ${result.status}（结果会由事件确认）`)
+    await load(true)
+  } catch (caught) {
+    // MEDIUM 动作必须用户确认：这里只会拿到 minecraft.confirmation_required
+    toast.error('CRAFT 被拒绝', errorMessage(caught))
+    if (caught instanceof ApiError && catchConfirmationId(caught)) {
+      toast.info('已挂起一条待确认', '确认只能由用户在对话里做出；这里只能 CANCEL / EXPIRE')
+    }
+  } finally {
+    working.value = false
+  }
 }
 
 function containerCoords(): [number, number, number] | null {
@@ -1309,6 +1387,137 @@ onUnmounted(stopPolling)
           </p>
         </section>
 
+        <section class="minecraft__card cb-card" data-test="mc-craft">
+          <SectionHeader
+            title="Crafting（Phase 4F）"
+            description="只支持**玩家自身 2×2 背包合成**：LOOKUP 只读查配方（SAFE），CRAFT 执行一次（MEDIUM，必须用户确认）。不会自动去找工作台、不会自动准备材料、不会做中间材料。"
+          />
+          <div class="minecraft__form" data-test="mc-recipe-form">
+            <label class="minecraft__field">
+              <span>Item</span>
+              <input
+                v-model="recipeQuery.item"
+                type="text"
+                placeholder="stick"
+                data-test="mc-recipe-item"
+              />
+            </label>
+            <button
+              type="button"
+              class="minecraft__button"
+              :disabled="working || !isOnline"
+              data-test="mc-recipe-lookup"
+              @click="lookupRecipe"
+            >
+              LOOKUP
+            </button>
+          </div>
+
+          <dl class="minecraft__facts" data-test="mc-recipe-facts">
+            <div>
+              <dt>Status</dt>
+              <dd data-test="mc-recipe-status">{{ recipeResult?.status ?? '—' }}</dd>
+            </div>
+            <div>
+              <dt>Item</dt>
+              <dd data-test="mc-recipe-name">{{ recipeResult?.item ?? '—' }}</dd>
+            </div>
+            <div>
+              <dt>Recipes</dt>
+              <dd data-test="mc-recipe-total">
+                {{ recipeResult ? `${recipeResult.recipes.length}/${recipeResult.total}` : '—' }}
+              </dd>
+            </div>
+          </dl>
+
+          <table class="minecraft__table" data-test="mc-recipe-table">
+            <thead>
+              <tr>
+                <th>Recipe ID</th>
+                <th>Result</th>
+                <th>Ingredients</th>
+                <th>Available</th>
+                <th>Table</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr
+                v-for="row in recipeResult?.recipes ?? []"
+                :key="row.recipe_id"
+                :data-test="`mc-recipe-${row.recipe_id}`"
+              >
+                <td><code>{{ row.recipe_id }}</code></td>
+                <td>{{ row.result.name }} × {{ row.result.count_per_craft }}</td>
+                <td>
+                  {{ row.ingredients.map((entry) => `${entry.name}×${entry.count}`).join('、') }}
+                </td>
+                <td>{{ row.available ? '是' : '材料不够' }}</td>
+                <td>{{ row.requires_table ? '需要' : '不需要' }}</td>
+                <td>
+                  <button
+                    type="button"
+                    class="minecraft__button"
+                    :disabled="working || !row.available"
+                    :data-test="`mc-recipe-use-${row.recipe_id}`"
+                    @click="useRecipe(row)"
+                  >
+                    用作 recipe_id
+                  </button>
+                </td>
+              </tr>
+              <tr v-if="!recipeResult">
+                <td colspan="6" class="cb-caption">还没有查过配方。</td>
+              </tr>
+              <tr v-else-if="!recipeResult.recipes.length">
+                <td colspan="6" class="cb-caption">
+                  没有可执行的 2×2 配方（{{ recipeResult.status }}）。
+                </td>
+              </tr>
+            </tbody>
+          </table>
+
+          <div class="minecraft__form" data-test="mc-craft-form">
+            <label class="minecraft__field">
+              <span>Recipe ID</span>
+              <input
+                v-model="craftTarget.recipeId"
+                type="text"
+                placeholder="stick*4=oak_planks*2"
+                data-test="mc-craft-recipe-id"
+              />
+            </label>
+            <button
+              type="button"
+              class="minecraft__button"
+              :disabled="working || !isOnline"
+              data-test="mc-craft-run"
+              @click="craftRecipe"
+            >
+              CRAFT
+            </button>
+            <button
+              type="button"
+              class="minecraft__button minecraft__button--danger"
+              :disabled="working"
+              data-test="mc-craft-stop"
+              @click="stopAction"
+            >
+              STOP
+            </button>
+          </div>
+          <p class="cb-caption" data-test="mc-craft-summary">
+            {{ craftSummary || '（recipe_id 会自动展开成可读摘要，例如「用 2 个 oak_planks 制作 4 个 stick」）' }}
+          </p>
+
+          <p class="cb-caption">
+            一次只执行**一个**配方、只执行**一次**（没有数量参数——Mineflayer 的 count 是"执行几次配方"，
+            不是"产出几个"，本阶段直接固定为 1）。材料不够会直接失败，<strong>不会</strong>自动开箱取料、
+            自动移动背包、自动挖矿，也不会先做中间材料。CRAFT 是 MEDIUM：这里的按钮只能发起确认，
+            真正的确认必须由用户在对话里做出。
+          </p>
+        </section>
+
         <section class="minecraft__card cb-card" data-test="mc-container">
           <SectionHeader
             title="Container（Phase 4E）"
@@ -1571,11 +1780,12 @@ onUnmounted(stopPolling)
           </table>
           <p class="cb-caption">
             LOW 动作（移动 / 跟随）只有在用户明确要求的对话里才会执行；模型自己想动也会被拒。
-            会改状态的 MEDIUM 动作有五个：minecraft_dig / minecraft_place（各一个方块）、
+            会改状态的 MEDIUM 动作有六个：minecraft_dig / minecraft_place（各一个方块）、
             minecraft_equip（换主手）、minecraft_inventory_move（搬一格自己的背包）、
-            minecraft_container_transfer（单方块箱子/桶里搬一格）——除了用户明确要求，
-            还必须经过确认门；minecraft_container_inspect 是 SAFE 只读（但仍然独占）。
-            连续挖矿/建造、攻击、合成、容器自动化（箱对箱/漏斗）、批量整理背包都还没有。
+            minecraft_container_transfer（单方块箱子/桶里搬一格）、minecraft_craft（做一次 2×2 配方）——
+            除了用户明确要求，还必须经过确认门；minecraft_inventory / minecraft_container_inspect /
+            minecraft_recipe_lookup 是 SAFE 只读。连续挖矿/建造、攻击、容器自动化（箱对箱/漏斗）、
+            工作台与熔炉、批量合成与批量整理背包都还没有。
           </p>
         </section>
 

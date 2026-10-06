@@ -82,6 +82,9 @@ ACTION_RISK: dict[str, str] = {
     # Phase 4E：容器（读=Chest/Barrel 只读 inspection；存取=改容器与背包 → MEDIUM）
     "minecraft_container_inspect": "SAFE",
     "minecraft_container_transfer": "MEDIUM",
+    # Phase 4F：玩家自身 2×2 背包合成（查配方=只读；执行一次配方=改背包 → MEDIUM）
+    "minecraft_recipe_lookup": "SAFE",
+    "minecraft_craft": "MEDIUM",
 }
 
 #: Tool → Action Runtime 动作名（chat 也走统一生命周期）
@@ -97,6 +100,8 @@ TOOL_ACTION: dict[str, str] = {
     "minecraft_inventory_move": "inventory_move",
     "minecraft_container_inspect": "container_inspect",
     "minecraft_container_transfer": "container_transfer",
+    "minecraft_recipe_lookup": "recipe_lookup",
+    "minecraft_craft": "craft",
 }
 
 #: 离线也能用的 Tool：minecraft_world（离线也要能回答「我不在游戏里」）
@@ -109,7 +114,14 @@ OFFLINE_TOOLS: frozenset[str] = frozenset({"minecraft_world", "minecraft_stop"})
 #: world 只读，stop 是控制面）。其余一律独占 —— **默认独占**，Phase 4B/4C 加动作
 #: 时不会漏掉「不能边挖边走」这类互斥约束。
 NON_EXCLUSIVE_TOOLS: frozenset[str] = frozenset(
-    {"minecraft_world", "minecraft_inventory", "minecraft_chat", "minecraft_stop"}
+    {
+        "minecraft_world",
+        "minecraft_inventory",
+        "minecraft_chat",
+        "minecraft_stop",
+        # Phase 4F：查配方是纯读取（不碰世界、不碰背包），可与前台动作并行
+        "minecraft_recipe_lookup",
+    }
 )
 
 #: 需要「用户明确要求」才能执行的风险等级（§十四/§十五）
@@ -169,6 +181,14 @@ RUNTIME_ERROR_CODES: dict[str, str] = {
     "container.closed": "minecraft.container_closed",
     "container.close_failed": "minecraft.container_close_failed",
     "container.transfer_unconfirmed": "minecraft.container_transfer_unconfirmed",
+    # Phase 4F：crafting（玩家 2×2）
+    "recipe.not_found": "minecraft.recipe_not_found",
+    "recipe.invalid": "minecraft.action_invalid",
+    "recipe.unavailable": "minecraft.recipe_unavailable",
+    "recipe.changed": "minecraft.recipe_changed",
+    "material.insufficient": "minecraft.material_insufficient",
+    "craft.failed": "minecraft.craft_failed",
+    "craft.unconfirmed": "minecraft.craft_unconfirmed",
 }
 
 #: 一句话活动（§二十二：SUCCEEDED → minecraft.activity）。只写事实，不写情绪。
@@ -189,6 +209,8 @@ _ACTIVITY_TEMPLATES: dict[str, Any] = {
         "withdraw": "刚从 {where} 的 {container} 取出了 {block} ×{count}",
         "deposit": "刚把 {block} ×{count} 放回 {where} 的 {container}",
     },
+    # Phase 4F：只写事实（"刚做好了 4 个 stick"），绝不写"做了很多木棍"这种估摸的话
+    "craft": "刚做好了 {count} 个 {block}",
 }
 
 #: activity 取哪个结果字段当"那个方块/物品"（dig 看挖掉的、place 看放上的、equip/move 看物品名）
@@ -198,6 +220,7 @@ _ACTIVITY_BLOCK_FIELDS: dict[str, str] = {
     "equip": "item",
     "inventory_move": "item",
     "container_transfer": "item",
+    "craft": "item",
 }
 
 #: 容器类型 → 中文/英文显示名（activity 与摘要里都用它，绝不写死"箱子"）
@@ -206,6 +229,30 @@ _CONTAINER_LABELS: dict[str, str] = {
     "chest": "Chest",
     "barrel": "Barrel",
 }
+
+
+def recipe_summary(recipe_id: str) -> str:
+    """把可读的 recipe_id 展开成确认摘要（§十三）。
+
+    recipe_id 形如 ``stick*4=oak_planks*2``（需要工作台的带 ``!`` 前缀）→
+    ``用 2 个 oak_planks 制作 4 个 stick``；解析不出来就退化成"执行配方 <id>"。
+    这样确认文本说的是"用哪种材料做这个东西"，而不是"执行 recipe abc123"。
+    """
+    text = str(recipe_id or "").strip().lstrip("!")
+    head, separator, tail = text.partition("=")
+    if not separator or "*" not in head:
+        return f"执行配方 {recipe_id}"
+    result_name, _, result_count = head.partition("*")
+    parts: list[str] = []
+    for chunk in tail.split("+"):
+        name, _, count = chunk.partition("*")
+        if not name:
+            continue
+        parts.append(f"{count or '1'} 个 {name}")
+    body = f"{result_count or '1'} 个 {result_name}"
+    if not parts:
+        return f"制作 {body}"
+    return f"用 {' + '.join(parts)} 制作 {body}"
 
 
 def _container_label(type_name: Any) -> str:
@@ -504,6 +551,8 @@ class MinecraftAgentContext:
         who = str(result.get("username") or "").strip()
         field = _ACTIVITY_BLOCK_FIELDS.get(action, "block_before")
         block = str(result.get(field) or "").strip()
+        nested = result.get("result")
+        nested = nested if isinstance(nested, Mapping) else {}
         container_type = result.get("container_type")
         container = result.get("container")
         if not container_type and isinstance(container, Mapping):
@@ -516,7 +565,10 @@ class MinecraftAgentContext:
                 source=result.get("source_slot"),
                 destination=result.get("destination_slot"),
                 container=_container_label(container_type),
-                count=result.get("count") or 1,
+                count=result.get("count")
+                or result.get("crafted_count")
+                or nested.get("crafted_count")
+                or 1,
             )
         except (KeyError, IndexError):  # pragma: no cover - 模板是常量，坏不了
             return "刚做完一个 Minecraft 动作"
@@ -974,6 +1026,10 @@ def _confirmation_summary(tool: str, risk: str, arguments: Mapping[str, Any] | N
         block = str(args.get("expected_block") or "方块")
         where = _format_position(args)
         return f"挖掉 {block}（{where}）" if where else f"挖掉 {block}"
+    if tool == "minecraft_craft":
+        # §十三：fingerprint 只绑 recipe_id（它已经唯一绑定输出/材料/形状/是否需要工作台），
+        # 摘要必须把人类可读信息展开
+        return recipe_summary(str(args.get("recipe_id") or ""))
     if tool == "minecraft_container_transfer":
         # 摘要就是用户的授权文本：位置 + 第几格 + 什么物品 × 多少 + 另一个槽位，全部写清。
         # 容器类型在**执行时**才由 runtime 验证（本阶段只可能是 Chest / Barrel），
@@ -1061,6 +1117,33 @@ def _summarize(tool: str, data: Mapping[str, Any]) -> str:
                 f"已停止正在进行的 Minecraft 行动（{', '.join(str(item) for item in cancelled)}）。"
             )
         return "当前没有正在进行的 Minecraft 行动（无需停止）。"
+    if tool == "minecraft_recipe_lookup":
+        raw_lookup: Any = data.get("result")
+        lookup: dict[str, Any] = raw_lookup if isinstance(raw_lookup, dict) else {}
+        item = str(lookup.get("item") or "")
+        status = str(lookup.get("status") or "")
+        recipes = lookup.get("recipes") or []
+        total = lookup.get("total")
+        if status == "recipe_not_found":
+            return f"查不到 {item} 的配方（这个版本里没有，或者物品名不对）。"
+        if status == "crafting_table_required":
+            return f"{item} 只有工作台配方（本阶段只支持玩家 2×2 背包合成，不会自己去找工作台）。"
+        ready = [row for row in recipes if row.get("available")]
+        if ready:
+            first = ready[0]
+            ingredients = "、".join(
+                f"{row.get('name')}×{row.get('count')}" for row in first.get("ingredients") or []
+            )
+            more = f"，另外还有 {len(ready) - 1} 个也能做" if len(ready) > 1 else ""
+            return (
+                f"{item} 现有材料能做：用 {ingredients} 得到 "
+                f"{first.get('result', {}).get('count_per_craft')} 个 {item}"
+                f"（recipe_id={first.get('recipe_id')}）{more}。"
+            )
+        return (
+            f"{item} 有 {total or len(recipes)} 个 2×2 配方，但当前材料都不够"
+            "（需要先准备材料，本阶段不会自动去做）。"
+        )
     if tool == "minecraft_container_inspect":
         raw_result: Any = data.get("result")
         snapshot: dict[str, Any] = raw_result if isinstance(raw_result, dict) else {}

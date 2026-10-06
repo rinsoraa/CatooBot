@@ -60,7 +60,7 @@ function main() {
     // 批量整理 / 容器 / 丢弃 之类的动作一个都没有）
     assert(
       Object.keys(ACTION_REGISTRY).sort().join(',') ===
-        'chat,container_inspect,container_transfer,dig,equip,follow_player,inventory_move,look_at,move_to,place,stop',
+        'chat,container_inspect,container_transfer,craft,dig,equip,follow_player,inventory_move,look_at,move_to,place,recipe_lookup,stop',
       `注册表不含额外动作（得到 ${Object.keys(ACTION_REGISTRY).sort().join(',')}）`,
     )
   }

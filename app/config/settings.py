@@ -890,6 +890,18 @@ class InventoryMoveConfig(BaseModel):
     timeout: float = Field(default=15.0, ge=5.0, le=120.0)
 
 
+class RecipeLookupConfig(BaseModel):
+    """Phase 4F：recipe_lookup（只读查配方）的超时。纯本地计算，不需要长等待。"""
+
+    timeout: float = Field(default=10.0, ge=1.0, le=60.0)
+
+
+class CraftConfig(BaseModel):
+    """Phase 4F：craft（玩家 2×2 背包合成一次）的超时。"""
+
+    timeout: float = Field(default=30.0, ge=5.0, le=120.0)
+
+
 class ContainerConfig(BaseModel):
     """Phase 4E：container（读 Chest / Barrel + 单物品存取）的安全门。
 
@@ -917,6 +929,9 @@ class MinecraftActionConfig(BaseModel):
     inventory_move: InventoryMoveConfig = Field(default_factory=InventoryMoveConfig)
     #: Phase 4E：单方块容器（读 Chest / Barrel + 单物品存取）
     container: ContainerConfig = Field(default_factory=ContainerConfig)
+    #: Phase 4F：玩家自身 2×2 背包合成（查配方 + 执行一次）
+    recipe_lookup: RecipeLookupConfig = Field(default_factory=RecipeLookupConfig)
+    craft: CraftConfig = Field(default_factory=CraftConfig)
 
 
 class MinecraftAgentToolsConfig(BaseModel):

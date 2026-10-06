@@ -15,11 +15,13 @@ from app.tools.builtins.minecraft_actions import (
 )
 from app.tools.builtins.minecraft_container import MinecraftContainerInspectTool
 from app.tools.builtins.minecraft_container_transfer import MinecraftContainerTransferTool
+from app.tools.builtins.minecraft_craft import MinecraftCraftTool
 from app.tools.builtins.minecraft_dig import MinecraftDigTool
 from app.tools.builtins.minecraft_equip import MinecraftEquipTool
 from app.tools.builtins.minecraft_inventory import MinecraftInventoryTool
 from app.tools.builtins.minecraft_inventory_move import MinecraftInventoryMoveTool
 from app.tools.builtins.minecraft_place import MinecraftPlaceTool
+from app.tools.builtins.minecraft_recipe import MinecraftRecipeLookupTool
 from app.tools.builtins.minecraft_world import MinecraftWorldTool
 from app.tools.builtins.providers import WeatherTool, WebSearchTool
 from app.tools.builtins.query_image_memory import QueryImageMemoryTool
@@ -30,6 +32,7 @@ __all__ = [
     "MinecraftChatTool",
     "MinecraftContainerInspectTool",
     "MinecraftContainerTransferTool",
+    "MinecraftCraftTool",
     "MinecraftDigTool",
     "MinecraftEquipTool",
     "MinecraftFollowPlayerTool",
@@ -38,6 +41,7 @@ __all__ = [
     "MinecraftLookAtTool",
     "MinecraftMoveToTool",
     "MinecraftPlaceTool",
+    "MinecraftRecipeLookupTool",
     "MinecraftStopTool",
     "MinecraftWorldTool",
     "QueryImageMemoryTool",

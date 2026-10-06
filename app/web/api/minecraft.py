@@ -133,6 +133,13 @@ _TOOL_STATUS: dict[str, int] = {
     "minecraft.container_closed": 409,
     "minecraft.container_close_failed": 500,
     "minecraft.container_transfer_unconfirmed": 500,
+    # Phase 4F：crafting（玩家 2×2）
+    "minecraft.recipe_not_found": 404,
+    "minecraft.recipe_unavailable": 409,
+    "minecraft.recipe_changed": 409,
+    "minecraft.material_insufficient": 409,
+    "minecraft.craft_failed": 500,
+    "minecraft.craft_unconfirmed": 500,
 }
 
 
@@ -418,6 +425,60 @@ class MinecraftApiRoutes(WebContext):
             )
         return ok(result.data, request=request)
 
+    async def _v1_minecraft_recipe_lookup(self, request: web.Request) -> web.Response:
+        """Phase 4F：查一个物品在玩家 2×2 里能做的配方（SAFE 只读，同步返回）。"""
+        try:
+            service = _service(self._bot)
+        except MinecraftBridgeError as exc:
+            raise _translate(exc) from exc
+        bridge = getattr(service, "agent", None)
+        if bridge is None:
+            raise ApiError(503, "minecraft.disabled", "Minecraft Agent 未装配")
+        body = await read_json(request)
+        arguments = {"item": body.get("item")}
+        try:
+            service.validate_recipe_lookup(arguments["item"])
+        except MinecraftBridgeError as exc:
+            raise _translate(exc) from exc
+        result = await bridge.invoke_developer(
+            "minecraft_recipe_lookup",
+            arguments,
+            lambda svc: svc.recipe_lookup(arguments["item"]),
+        )
+        if not result.success:
+            code = result.error_type or "minecraft.action_failed"
+            raise ApiError(
+                _TOOL_STATUS.get(code, 500), code, result.error or code, detail=result.data
+            )
+        return ok(result.data, request=request)
+
+    async def _v1_minecraft_craft(self, request: web.Request) -> web.Response:
+        """Phase 4F：执行一次配方（MEDIUM，开发调试入口；**拿不到**执行权）。"""
+        try:
+            service = _service(self._bot)
+        except MinecraftBridgeError as exc:
+            raise _translate(exc) from exc
+        bridge = getattr(service, "agent", None)
+        if bridge is None:
+            raise ApiError(503, "minecraft.disabled", "Minecraft Agent 未装配")
+        body = await read_json(request)
+        arguments = {"recipe_id": body.get("recipe_id")}
+        try:
+            service.validate_craft(arguments["recipe_id"])
+        except MinecraftBridgeError as exc:
+            raise _translate(exc) from exc
+        result = await bridge.invoke_developer(
+            "minecraft_craft",
+            arguments,
+            lambda svc: svc.craft(arguments["recipe_id"]),
+        )
+        if not result.success:
+            code = result.error_type or "minecraft.action_failed"
+            raise ApiError(
+                _TOOL_STATUS.get(code, 500), code, result.error or code, detail=result.data
+            )
+        return ok(result.data, request=request)
+
     async def _v1_minecraft_container_inspect(self, request: web.Request) -> web.Response:
         """Phase 4E：读一个 Chest / Barrel 的内容（SAFE，开发调试入口）。
 
@@ -680,6 +741,10 @@ class MinecraftApiRoutes(WebContext):
         app.router.add_post(f"{API_PREFIX}/minecraft/dig", wrap(self._v1_minecraft_dig))
         app.router.add_post(f"{API_PREFIX}/minecraft/place", wrap(self._v1_minecraft_place))
         app.router.add_post(f"{API_PREFIX}/minecraft/equip", wrap(self._v1_minecraft_equip))
+        app.router.add_post(
+            f"{API_PREFIX}/minecraft/recipe_lookup", wrap(self._v1_minecraft_recipe_lookup)
+        )
+        app.router.add_post(f"{API_PREFIX}/minecraft/craft", wrap(self._v1_minecraft_craft))
         app.router.add_post(
             f"{API_PREFIX}/minecraft/container_inspect",
             wrap(self._v1_minecraft_container_inspect),

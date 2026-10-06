@@ -392,11 +392,13 @@ async def test_minecraft_projection_includes_agent_block(tmp_path):
             "minecraft_stop",
             "minecraft_container_inspect",
             "minecraft_container_transfer",
+            "minecraft_craft",
             "minecraft_dig",
             "minecraft_equip",
             "minecraft_inventory",
             "minecraft_inventory_move",
             "minecraft_place",
+            "minecraft_recipe_lookup",
         }
         assert all(row["allowed"] is False for row in agent["tools"])
         assert all(row["reason"] == "minecraft.disabled" for row in agent["tools"])
@@ -1350,6 +1352,231 @@ def test_phase4e_error_codes_agree_between_service_and_api():
         (MinecraftContainerClosed(), 409),
         (MinecraftContainerCloseFailed(), 500),
         (MinecraftContainerTransferUnconfirmed(), 500),
+    ]
+    for exc, expected in pairs:
+        assert exc.status == expected, exc.code
+        assert _TOOL_STATUS[exc.code] == expected, exc.code
+
+
+# ------------------------------------------------ Phase 4F：crafting 端点
+
+
+async def test_recipe_lookup_endpoint_projects_semantics(tmp_path):
+    """§四十：WebUI 的 Recipe Lookup 走 `POST /minecraft/recipe_lookup`（SAFE 同步返回）。"""
+    from tests.test_minecraft_service import FakeRuntime
+
+    async with api_server(tmp_path) as (client, bot, server):
+        await client.login()
+        status, payload = await client.post(
+            "/api/v1/minecraft/recipe_lookup", body={"item": "stick"}
+        )
+        assert status == 503 and error_code(payload) == "minecraft.disabled"
+
+    fake = FakeRuntime()
+    await fake.start()
+    try:
+        fake.online = True
+        async with api_server(tmp_path) as (client, bot, server):
+            await client.login()
+            service = MinecraftService(
+                bot, MinecraftConfig(enabled=True, auto_start_runtime=False, runtime_port=fake.port)
+            )
+            bot.minecraft = service
+            try:
+                from app.integrations.minecraft.agent import MinecraftAgentBridge
+                from app.integrations.minecraft.events import parse_bridge_event
+
+                service.agent = MinecraftAgentBridge(service)
+                await service.status()
+                service.agent.apply_event(
+                    parse_bridge_event(
+                        {
+                            "event": "minecraft.spawned",
+                            "session_id": "s1",
+                            "timestamp": 1.0,
+                            "username": "Catodayo",
+                        }
+                    )
+                )
+
+                for bad in ({}, {"item": ""}, {"item": 7}):
+                    status, payload = await client.post("/api/v1/minecraft/recipe_lookup", body=bad)
+                    assert status == 422 and error_code(payload) == "minecraft.action_invalid", bad
+                assert fake.recipe_lookup_calls == []
+
+                status, payload = await client.post(
+                    "/api/v1/minecraft/recipe_lookup", body={"item": "stick"}
+                )
+                assert status == 200, payload
+                data = payload["data"]
+                assert data["action"] == "recipe_lookup" and data["status"] == "SUCCEEDED"
+                result = data["result"]
+                assert result["status"] == "available"
+                entry = result["recipes"][0]
+                assert entry["recipe_id"] == "stick*4=oak_planks*2"
+                assert entry["ingredients"] == [{"name": "oak_planks", "count": 2}]
+                assert "delta" not in str(result) and "inShape" not in str(result)
+                assert fake.recipe_lookup_calls == [{"item": "stick"}]
+                # 只读：不产生待确认
+                assert service.agent.confirmations.pending() == []
+
+                # runtime 侧的错误如实透传
+                fake.recipe_lookup_plan.append({"error": ("recipe.not_found", 404)})
+                status, payload = await client.post(
+                    "/api/v1/minecraft/recipe_lookup", body={"item": "unobtainium"}
+                )
+                assert status == 404 and error_code(payload) == "minecraft.recipe_not_found"
+            finally:
+                await service._cleanup()
+    finally:
+        await fake.stop()
+
+
+async def test_craft_endpoint_requires_confirmation_and_cannot_self_authorise(tmp_path):
+    """§四十：WebUI 的 Craft 先校验参数，再过确认门；它**拿不到**执行权。"""
+    from tests.test_minecraft_service import FakeRuntime
+
+    fake = FakeRuntime()
+    await fake.start()
+    try:
+        fake.online = True
+        async with api_server(tmp_path) as (client, bot, server):
+            await client.login()
+            service = MinecraftService(
+                bot,
+                MinecraftConfig(
+                    enabled=True,
+                    auto_start_runtime=False,
+                    runtime_port=fake.port,
+                    agent={"tools": {"allow_medium": True}},
+                ),
+            )
+            bot.minecraft = service
+            try:
+                from app.integrations.minecraft.agent import MinecraftAgentBridge
+                from app.integrations.minecraft.events import parse_bridge_event
+
+                service.agent = MinecraftAgentBridge(service)
+                await service.status()
+                service.agent.apply_event(
+                    parse_bridge_event(
+                        {
+                            "event": "minecraft.spawned",
+                            "session_id": "s1",
+                            "timestamp": 1.0,
+                            "username": "Catodayo",
+                        }
+                    )
+                )
+
+                good = {"recipe_id": "stick*4=oak_planks*2"}
+                bad_cases = [
+                    {},
+                    {"recipe_id": ""},
+                    {"recipe_id": "not-a-signature"},
+                    {"recipe_id": 7},
+                ]
+                for bad in bad_cases:
+                    status, payload = await client.post("/api/v1/minecraft/craft", body=bad)
+                    assert status == 422 and error_code(payload) == "minecraft.action_invalid", bad
+                assert service.agent.confirmations.pending() == [], "垃圾参数绝不挂待确认"
+                assert fake.craft_calls == []
+
+                # 多余的键会被忽略（调试入口只读 recipe_id）—— 确认指纹仍然只绑 recipe_id
+                status, _payload = await client.post(
+                    "/api/v1/minecraft/craft", body={**good, "count": 2}
+                )
+                assert status == 409
+                stored = service.agent.confirmations.pending()
+                assert len(stored) == 1 and stored[0].arguments == good
+                # 清掉这条，继续后面的流程
+                service.agent.confirmations.cancel(stored[0].confirmation_id)
+
+                status, payload = await client.post("/api/v1/minecraft/craft", body=good)
+                assert status == 409 and error_code(payload) == "minecraft.confirmation_required"
+                detail = payload.get("detail") or payload["error"]["detail"]
+                assert detail["confirmation"]["summary"] == "用 2 个 oak_planks 制作 4 个 stick"
+                assert fake.craft_calls == [], "确认前绝不合成"
+
+                # 开发者入口（SYSTEM 回合）消费不了确认
+                status, payload = await client.post("/api/v1/minecraft/craft", body=good)
+                assert status == 409
+                assert error_code(payload) == "minecraft.confirmation_not_user_turn"
+                assert fake.craft_calls == []
+                assert len(service.agent.confirmations.pending()) == 1, "来源门不消费确认"
+            finally:
+                await service._cleanup()
+    finally:
+        await fake.stop()
+
+
+async def test_craft_endpoint_respects_allow_medium(tmp_path):
+    """allow_medium=false → 403（风险开关先于确认门）。"""
+    from tests.test_minecraft_service import FakeRuntime
+
+    fake = FakeRuntime()
+    await fake.start()
+    try:
+        fake.online = True
+        async with api_server(tmp_path) as (client, bot, server):
+            await client.login()
+            service = MinecraftService(
+                bot,
+                MinecraftConfig(
+                    enabled=True,
+                    auto_start_runtime=False,
+                    runtime_port=fake.port,
+                    agent={"tools": {"allow_medium": False}},
+                ),
+            )
+            bot.minecraft = service
+            try:
+                from app.integrations.minecraft.agent import MinecraftAgentBridge
+                from app.integrations.minecraft.events import parse_bridge_event
+
+                service.agent = MinecraftAgentBridge(service)
+                await service.status()
+                service.agent.apply_event(
+                    parse_bridge_event(
+                        {
+                            "event": "minecraft.spawned",
+                            "session_id": "s1",
+                            "timestamp": 1.0,
+                            "username": "Catodayo",
+                        }
+                    )
+                )
+                status, payload = await client.post(
+                    "/api/v1/minecraft/craft", body={"recipe_id": "stick*4=oak_planks*2"}
+                )
+                assert status == 403 and error_code(payload) == "minecraft.action_not_allowed"
+                assert fake.craft_calls == []
+                assert service.agent.confirmations.pending() == []
+            finally:
+                await service._cleanup()
+    finally:
+        await fake.stop()
+
+
+def test_phase4f_error_codes_agree_between_service_and_api():
+    """两个事实源必须一致：Service 异常自带的 HTTP 语义 vs API 的错误码映射表。"""
+    from app.integrations.minecraft.service import (
+        MinecraftCraftFailed,
+        MinecraftCraftUnconfirmed,
+        MinecraftMaterialInsufficient,
+        MinecraftRecipeChanged,
+        MinecraftRecipeNotFound,
+        MinecraftRecipeUnavailable,
+    )
+    from app.web.api.minecraft import _TOOL_STATUS
+
+    pairs = [
+        (MinecraftRecipeNotFound(), 404),
+        (MinecraftRecipeUnavailable(), 409),
+        (MinecraftRecipeChanged(), 409),
+        (MinecraftMaterialInsufficient(), 409),
+        (MinecraftCraftFailed(), 500),
+        (MinecraftCraftUnconfirmed(), 500),
     ]
     for exc, expected in pairs:
         assert exc.status == expected, exc.code

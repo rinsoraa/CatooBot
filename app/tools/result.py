@@ -20,6 +20,10 @@ from app.tools.models import ToolResult
 
 MAX_SUMMARY_CHARS = 1200
 MAX_LIST_ITEMS = 8
+#: 结构化数据的最大嵌套深度（超出的部分被截成 None，属于 prompt 预算的一部分）。
+#: Phase 4F 复盘：原来的 4 太浅 —— "配方 → 产物/材料"这种正当结构正好是第 5 层，
+#: 会被静默吃掉（模型只看到 null）。放宽到 6，仍然有界。
+MAX_DATA_DEPTH = 6
 
 _CONTROL_CHARS = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
 _INJECTION_PATTERNS = re.compile(
@@ -51,7 +55,7 @@ class ToolResultProcessor:
     # ------------------------------------------------------------ internals
 
     def _sanitize_data(self, data: Any, depth: int = 0) -> Any:
-        if depth > 4:
+        if depth > MAX_DATA_DEPTH:
             return None
         if isinstance(data, str):
             return self._sanitize_text(data)

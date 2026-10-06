@@ -100,6 +100,26 @@ class FakeRuntime:
         }
         self.container_transfer_calls: list[dict[str, Any]] = []
         self.container_transfer_plan: list[dict[str, Any]] = []
+        # Phase 4F：crafting（recipe_lookup 同步 / craft 持续型）
+        self.recipe_lookup_calls: list[dict[str, Any]] = []
+        self.recipe_lookup_plan: list[dict[str, Any]] = []
+        self.recipe_lookup_result: dict[str, Any] = {
+            "ok": True,
+            "item": "stick",
+            "status": "available",
+            "total": 1,
+            "recipes": [
+                {
+                    "recipe_id": "stick*4=oak_planks*2",
+                    "result": {"name": "stick", "count_per_craft": 4},
+                    "requires_table": False,
+                    "available": True,
+                    "ingredients": [{"name": "oak_planks", "count": 2}],
+                }
+            ],
+        }
+        self.craft_calls: list[dict[str, Any]] = []
+        self.craft_plan: list[dict[str, Any]] = []
         self.inventory_move_calls: list[dict[str, Any]] = []
         self.inventory_move_plan: list[dict[str, Any]] = []
         self.pathfinder_state: dict[str, Any] = {
@@ -125,6 +145,8 @@ class FakeRuntime:
         app.router.add_get("/minecraft/inventory", self._inventory)
         app.router.add_post("/minecraft/place", self._place)
         app.router.add_get("/minecraft/inventory/slots", self._inventory_slots)
+        app.router.add_post("/minecraft/recipe_lookup", self._recipe_lookup)
+        app.router.add_post("/minecraft/craft", self._craft)
         app.router.add_post("/minecraft/container_inspect", self._container_inspect)
         app.router.add_post("/minecraft/container_transfer", self._container_transfer)
         app.router.add_post("/minecraft/equip", self._equip)
@@ -296,6 +318,51 @@ class FakeRuntime:
     async def _inventory_slots(self, request: web.Request) -> web.Response:
         self.inventory_slots_calls += 1
         return web.json_response(dict(self.inventory_slots_payload))
+
+    async def _recipe_lookup(self, request: web.Request) -> web.Response:
+        body = await request.json()
+        self.recipe_lookup_calls.append(body)
+        plan = self.recipe_lookup_plan.pop(0) if self.recipe_lookup_plan else {}
+        if "error" in plan:
+            code, status = plan["error"]
+            payload: dict[str, Any] = {
+                "ok": False,
+                "error": {"code": code, "message": f"{code}（fake runtime）"},
+            }
+            if plan.get("detail"):
+                payload["error"]["detail"] = plan["detail"]
+            return web.json_response(payload, status=status)
+        return web.json_response(
+            {
+                "ok": True,
+                "action_id": plan.get("action_id", "act_recipe_1"),
+                "action": "recipe_lookup",
+                "status": "SUCCEEDED",
+                "result": plan.get("result", self.recipe_lookup_result),
+            }
+        )
+
+    async def _craft(self, request: web.Request) -> web.Response:
+        body = await request.json()
+        self.craft_calls.append(body)
+        plan = self.craft_plan.pop(0) if self.craft_plan else {"status": "RUNNING"}
+        if "error" in plan:
+            code, status = plan["error"]
+            payload: dict[str, Any] = {
+                "ok": False,
+                "error": {"code": code, "message": f"{code}（fake runtime）"},
+            }
+            if plan.get("detail"):
+                payload["error"]["detail"] = plan["detail"]
+            return web.json_response(payload, status=status)
+        return web.json_response(
+            {
+                "ok": True,
+                "action_id": plan.get("action_id", "act_craft_1"),
+                "action": "craft",
+                "status": plan["status"],
+            }
+        )
 
     async def _container_inspect(self, request: web.Request) -> web.Response:
         body = await request.json()

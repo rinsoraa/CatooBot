@@ -4,6 +4,8 @@ import { api } from '@/api/client'
 
 import type {
   MinecraftContainerDirection,
+  MinecraftCraftResult,
+  MinecraftRecipeLookupResponse,
   MinecraftContainerInspectResponse,
   MinecraftContainerTransferResult,
   MinecraftFollowPlayerResult,
@@ -121,6 +123,14 @@ export const minecraftApi = {
       item,
       count,
     })
+  },
+  /** Phase 4F：查玩家 2×2 能做的配方（SAFE 只读，同步返回）。 */
+  recipeLookup(item: string) {
+    return api.post<MinecraftRecipeLookupResponse>('/minecraft/recipe_lookup', { item })
+  },
+  /** Phase 4F：执行一次配方（必须过 MEDIUM 确认门）。 */
+  craft(recipeId: string) {
+    return api.post<MinecraftCraftResult>('/minecraft/craft', { recipe_id: recipeId })
   },
   /** Phase 4A：确认门 Debug（只能缩小授权：造测试条 / 取消 / 置过期）。 */
   confirm(action: 'create_test' | 'cancel' | 'expire', body: Record<string, unknown> = {}) {

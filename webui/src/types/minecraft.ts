@@ -272,6 +272,55 @@ export interface MinecraftContainerTransferResult {
   [key: string]: unknown
 }
 
+// ---------------- Phase 4F · Crafting（玩家 2×2） ----------------
+
+export interface MinecraftRecipeIngredient {
+  name: string
+  count: number
+}
+
+export interface MinecraftRecipeEntry {
+  /** 稳定可读签名（例如 stick*4=oak_planks*2）；minecraft_craft 只接受它。 */
+  recipe_id: string
+  result: { name: string; count_per_craft: number }
+  requires_table: boolean
+  available: boolean
+  ingredients: MinecraftRecipeIngredient[]
+}
+
+/** 配方查询的四种状态（§九）。 */
+export type MinecraftRecipeStatus =
+  | 'available'
+  | 'insufficient_material'
+  | 'crafting_table_required'
+  | 'recipe_not_found'
+
+export interface MinecraftRecipeLookupResult {
+  ok: boolean
+  item: string
+  status: MinecraftRecipeStatus
+  total: number
+  recipes: MinecraftRecipeEntry[]
+}
+
+/** INSPECT 式的响应信封：快照在 ``result`` 里。 */
+export interface MinecraftRecipeLookupResponse {
+  ok: boolean
+  action: string
+  status: MinecraftActionStatus
+  action_id?: string
+  result: MinecraftRecipeLookupResult
+}
+
+/** craft 的启动响应（持续型：终态由事件送达）。 */
+export interface MinecraftCraftResult {
+  ok: boolean
+  action: string
+  status: MinecraftActionStatus
+  action_id?: string
+  [key: string]: unknown
+}
+
 // ---------------- Phase 3E · LLM Agent（Tool Debug + Context） ----------------
 
 export type MinecraftActionRisk = 'SAFE' | 'LOW' | 'MEDIUM' | 'HIGH' | 'DESTRUCTIVE'

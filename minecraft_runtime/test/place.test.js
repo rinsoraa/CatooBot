@@ -143,18 +143,24 @@ async function main() {
     assert(typeof PLACE.cleanup === 'function', '有 cleanup')
     assert(
       Object.keys(ACTION_REGISTRY).sort().join(',') ===
-        'chat,container_inspect,container_transfer,dig,equip,follow_player,inventory_move,look_at,move_to,place,stop',
+        'chat,container_inspect,container_transfer,craft,dig,equip,follow_player,inventory_move,look_at,move_to,place,recipe_lookup,stop',
       `注册表只有已批准动作（得到 ${Object.keys(ACTION_REGISTRY).sort().join(',')}）`,
     )
     // §二 禁止清单：连续建造/整理背包/容器类动作一个都不许有
-    // （equip / inventory_move 从 Phase 4D 起是**单个物品/单个槽位**的正式动作，故不在清单里；
-    //   批量整理 / 自动装备 / 丢弃 / 拾取 / 容器 仍然必须不存在）
+    // （equip / inventory_move 从 Phase 4D 起是单个物品/单个槽位的正式动作；
+    //   craft 从 Phase 4F 起是一次一个配方的正式动作 —— 故都不在清单里。
+    //   批量建造 / 容器自动化 / 批量合成 / 丢弃 / 拾取 仍然必须不存在）
     for (const forbidden of [
       'place_multiple',
       'build',
       'bridge',
       'schematic',
-      'craft',
+      'craft_all',
+      'auto_craft',
+      'craft_chain',
+      'crafting_table',
+      'smelt',
+      'trade',
       'container',
       'attack',
       'eat',

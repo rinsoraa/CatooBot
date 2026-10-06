@@ -1129,6 +1129,132 @@ async function main() {
         console.log('[e2e] container STOP：SKIPPED（inspect 毫秒级完成，没有可取消窗口）')
       }
 
+      // ---------------- Phase 4F：crafting（配方表在本地，拒绝路径可真实验证） ----------------
+      // 配方数据来自 minecraft-data（本地），所以"查配方"在任何服务器上都能真的跑；
+      // 但 flying-squid 没有 /give、背包永远是空的 → craft 的成功路径只能在真实服务器
+      // smoke 验证（这里只验证语义投影 + 拒绝路径 + 独占语义）。
+      if (cycle === 1) {
+        const lookupRecipe = (item) =>
+          request(runtimePort, 'POST', '/minecraft/recipe_lookup', { item })
+        const tryCraft = (recipeId) =>
+          request(runtimePort, 'POST', '/minecraft/craft', { recipe_id: recipeId })
+
+        const lookup = await lookupRecipe('stick')
+        assert(
+          lookup.status === 200 && lookup.body.status === 'SUCCEEDED',
+          `recipe_lookup 同步成功（得到 ${JSON.stringify(lookup.body).slice(0, 200)}）`,
+        )
+        const payload = lookup.body.result
+        assert(
+          payload.item === 'stick' && payload.status === 'insufficient_material',
+          `空背包 → 材料都不够（得到 ${payload.status}）`,
+        )
+        assert(
+          Array.isArray(payload.recipes) && payload.recipes.length > 0,
+          '仍然列出 2×2 配方（不是空数组）',
+        )
+        const entry = payload.recipes[0]
+        assert(
+          Object.keys(entry).sort().join(',') === 'available,ingredients,recipe_id,requires_table,result',
+          `语义投影只有约定字段（得到 ${Object.keys(entry).sort().join(',')}）`,
+        )
+        assert(
+          entry.available === false && entry.requires_table === false,
+          '空背包 → available=false / requires_table=false',
+        )
+        assert(
+          Object.keys(entry.result).sort().join(',') === 'count_per_craft,name',
+          '产物只有 name / count_per_craft',
+        )
+        const rawLookup = JSON.stringify(payload)
+        for (const forbidden of ['inShape', 'delta', 'metadata', 'requiresTable']) {
+          assert(!rawLookup.includes(forbidden), `不泄露 raw Recipe 字段 ${forbidden}`)
+        }
+        console.log(`[e2e] recipe_lookup ✓ 语义投影（${payload.total} 个 2×2 配方，样例 ${entry.recipe_id}）`)
+
+        const again = await lookupRecipe('stick')
+        assert(
+          again.body.result.recipes[0].recipe_id === entry.recipe_id,
+          'recipe_id 稳定（重复查询一致）',
+        )
+        const chestLookup = await lookupRecipe('chest')
+        assert(
+          chestLookup.body.result.status === 'crafting_table_required',
+          `工作台配方如实回报（得到 ${chestLookup.body.result.status}）`,
+        )
+        const missingLookup = await lookupRecipe('not_a_real_item')
+        assert(
+          missingLookup.body.result.status === 'recipe_not_found',
+          `未知物品 → recipe_not_found（得到 ${missingLookup.body.result.status}）`,
+        )
+        console.log('[e2e] recipe_lookup ✓ crafting_table_required / recipe_not_found')
+
+        // craft：材料不够 / 非法参数 / 未知物品，全部如实拒绝
+        const noMaterial = await tryCraft(entry.recipe_id)
+        assert(
+          noMaterial.status === 409 && noMaterial.body.error.code === 'material.insufficient',
+          `空背包 craft → material.insufficient（得到 ${JSON.stringify(noMaterial.body)}）`,
+        )
+        // 形状校验在更上游（工具 schema / Service）；runtime 只看到形状合法的 id。
+        // 这里验证 runtime 自己的两道：反解不出物品名 → not_found；形状对但签名变了 → changed
+        const badShape = await tryCraft('not-a-signature')
+        assert(
+          badShape.status === 404 && badShape.body.error.code === 'recipe.not_found',
+          `形状不对的 id → recipe.not_found（得到 ${JSON.stringify(badShape.body)}）`,
+        )
+        const changedId = await tryCraft('stick*4=oak_planks*3')
+        assert(
+          changedId.status === 409 && changedId.body.error.code === 'recipe.changed',
+          `签名变了的 id → recipe.changed（得到 ${JSON.stringify(changedId.body)}）`,
+        )
+        const unknownId = await tryCraft('not_a_real_item*1=x*1')
+        assert(
+          unknownId.status === 404 && unknownId.body.error.code === 'recipe.not_found',
+          `未知物品的 id → recipe.not_found（得到 ${JSON.stringify(unknownId.body)}）`,
+        )
+        console.log('[e2e] craft ✓ 材料不够 / 非法 id / 未知 id 都如实拒绝（不伪造成功）')
+
+        // 独占（craft 与前台动作互斥）＋ 非独占（查配方可以并行）
+        const hereCraft = (await request(runtimePort, 'GET', '/minecraft/status')).body.position
+        const busyMove = await request(runtimePort, 'POST', '/minecraft/move_to', {
+          x: hereCraft.x + 6,
+          y: hereCraft.y,
+          z: hereCraft.z,
+        })
+        if (busyMove.status === 200 && busyMove.body.status === 'RUNNING') {
+          const busyCraft = await tryCraft(entry.recipe_id)
+          assert(
+            busyCraft.status === 409 && busyCraft.body.error.code === 'action.busy',
+            `move_to 跑着时 craft → action.busy（得到 ${JSON.stringify(busyCraft.body)}）`,
+          )
+          const during = await lookupRecipe('stick')
+          assert(
+            during.status === 200 && during.body.status === 'SUCCEEDED',
+            'move_to 跑着时查配方仍然可用（SAFE 非独占）',
+          )
+          await request(runtimePort, 'POST', '/minecraft/stop', {})
+          await waitFor(
+            () =>
+              events.some(
+                (e) =>
+                  e.event === 'minecraft.action.cancelled' &&
+                  e.action_id === busyMove.body.action_id,
+              ),
+            'move_to cancelled（4F 独占段收尾）',
+            10000,
+          )
+          console.log('[e2e] craft ✓ 独占（忙时 action.busy）；recipe_lookup ✓ 非独占')
+        } else {
+          console.log('[e2e] craft 独占检查：move_to 没进入 RUNNING，跳过')
+        }
+
+        console.log(
+          '[e2e] craft 成功路径：SKIPPED（flying-squid 没有 /give、背包永远是空的；'
+            + '成功路径由假配方单测 + 真实服务器 smoke 覆盖）',
+        )
+        console.log('[e2e] craft STOP：SKIPPED（合成毫秒级完成，没有可取消窗口）')
+      }
+
       // ---------------- Phase 3D：follow_player（Test A 跟随 / B STOP / C 丢失 / D 太远 / E 超时） ----------------
       if (cycle === 1) {
         const botPosNow = async () =>

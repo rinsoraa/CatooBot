@@ -219,6 +219,48 @@ class FakeMinecraftService:
             raise outcome
         return {"action_id": "act_move_item_1", "action": "inventory_move", **outcome}
 
+    async def recipe_lookup(self, item: Any) -> dict[str, Any]:
+        self._record("recipe_lookup", item=item)
+        canonical = str(item or "").strip().lower().replace("minecraft:", "")
+        outcome = self._next(
+            "recipe_lookup",
+            {
+                "status": "SUCCEEDED",
+                "result": {
+                    "ok": True,
+                    "item": canonical,
+                    "status": "available",
+                    "total": 2,
+                    "recipes": [
+                        {
+                            "recipe_id": "stick*4=oak_planks*2",
+                            "result": {"name": "stick", "count_per_craft": 4},
+                            "requires_table": False,
+                            "available": True,
+                            "ingredients": [{"name": "oak_planks", "count": 2}],
+                        },
+                        {
+                            "recipe_id": "stick*4=birch_planks*2",
+                            "result": {"name": "stick", "count_per_craft": 4},
+                            "requires_table": False,
+                            "available": False,
+                            "ingredients": [{"name": "birch_planks", "count": 2}],
+                        },
+                    ],
+                },
+            },
+        )
+        if isinstance(outcome, Exception):
+            raise outcome
+        return {"action_id": "act_recipe_1", "action": "recipe_lookup", **outcome}
+
+    async def craft(self, recipe_id: Any) -> dict[str, Any]:
+        self._record("craft", recipe_id=recipe_id)
+        outcome = self._next("craft", {"status": "RUNNING", "action_id": "act_craft_1"})
+        if isinstance(outcome, Exception):
+            raise outcome
+        return {"action_id": "act_craft_1", "action": "craft", **outcome}
+
     async def container_inspect(self, x: Any, y: Any, z: Any) -> dict[str, Any]:
         self._record("container_inspect", x=x, y=y, z=z)
         outcome = self._next(
@@ -408,6 +450,7 @@ async def test_all_tools_share_one_risk_table() -> None:
         "minecraft_chat",
         "minecraft_container_inspect",
         "minecraft_container_transfer",
+        "minecraft_craft",
         "minecraft_dig",
         "minecraft_equip",
         "minecraft_follow_player",
@@ -416,6 +459,7 @@ async def test_all_tools_share_one_risk_table() -> None:
         "minecraft_look_at",
         "minecraft_move_to",
         "minecraft_place",
+        "minecraft_recipe_lookup",
         "minecraft_stop",
         "minecraft_world",
         "query_image_memory",
@@ -511,7 +555,7 @@ def test_busy_foreground_action_is_rejected() -> None:
 
 def test_unknown_tool_is_rejected() -> None:
     # attack/craft/eat 这类还没有实现的动作：风险表里没有名字 → 拒绝
-    for unknown in ("minecraft_attack", "minecraft_craft", "minecraft_eat"):
+    for unknown in ("minecraft_attack", "minecraft_craft_all", "minecraft_eat", "minecraft_smelt"):
         decision = policy().check(unknown, {}, online_facts())
         assert not decision.allowed and decision.code == "minecraft.action_invalid", unknown
 
@@ -534,6 +578,8 @@ def test_risk_flags_gate_every_level() -> None:
     assert table.risk_of("minecraft_inventory_move") == "MEDIUM"
     assert table.risk_of("minecraft_container_inspect") == "SAFE"
     assert table.risk_of("minecraft_container_transfer") == "MEDIUM"
+    assert table.risk_of("minecraft_recipe_lookup") == "SAFE"
+    assert table.risk_of("minecraft_craft") == "MEDIUM"
     assert table.risk_of("minecraft_inventory") == "SAFE"
     assert table.allowed_by_config("minecraft_dig") is False
     assert table.allowed_by_config("minecraft_place") is False

@@ -153,14 +153,14 @@ async def test_test_c_stop_cancels_the_running_follow() -> None:
 # ----------------------------------------------------------- 安全边界
 
 
-async def test_model_cannot_attack_craft_or_eat() -> None:
-    """§五十/§六十八：这些 Tool 压根不存在——模型调用只会得到「未知工具」。
+async def test_model_cannot_use_unimplemented_actions() -> None:
+    """§五十/§六十八：还没实现的破坏/生存类动作压根没有 Tool——只会得到「未知工具」。
 
-    （minecraft_dig 从 Phase 4B、minecraft_place 从 Phase 4C 起是**真实**的 MEDIUM 工具，
-    由确认门保护；这里只验证尚未实现的破坏/生存类动作。）
+    （dig/place/equip/inventory_move/container_*/craft 都是**真实**的 MEDIUM 工具，
+    由风险开关 + 确认门保护；这里验证尚未实现的名字。）
     """
     service = FakeMinecraftService()
-    for forbidden in ("minecraft_attack", "minecraft_craft", "minecraft_eat"):
+    for forbidden in ("minecraft_attack", "minecraft_smelt", "minecraft_eat", "minecraft_trade"):
         runtime, engine, _provider, _bridge, context = await make_stack(
             script=[decide(forbidden, x=1, y=2, z=3), "我不会做那个。"],
             service=service,
@@ -171,6 +171,24 @@ async def test_model_cannot_attack_craft_or_eat() -> None:
         assert results and results[0].success is False
         assert results[0].error_type == "unknown_tool"
     assert service.calls == [], "被禁止的工具不该产生任何 Minecraft 调用"
+
+
+async def test_craft_is_gated_by_medium_flag_end_to_end() -> None:
+    """Phase 4F：模型就算主动调 craft，也会在风险开关这一层被拦下（allow_medium 默认 false）。"""
+    service = FakeMinecraftService()
+    runtime, engine, _provider, _bridge, context = await make_stack(
+        script=[decide("minecraft_craft", recipe_id="stick*4=oak_planks*2"), "我不会自己合成。"],
+        service=service,
+    )
+    try:
+        assert runtime.registry.maybe_get("minecraft_craft") is not None, "craft 是真的工具"
+        _text, results = await say(runtime, engine, context, "做点木棍")
+        assert results and results[0].success is False
+        assert results[0].error_type == "minecraft.action_not_allowed"
+    finally:
+        await runtime.close()
+    assert service.calls == [], "风险开关拦下时绝不碰 runtime"
+    assert service.action_calls("craft") == []
 
 
 async def test_low_action_is_rejected_in_an_autonomous_turn() -> None:

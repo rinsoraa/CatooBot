@@ -414,6 +414,62 @@ class MinecraftContainerTransferUnconfirmed(MinecraftBridgeError):
         )
 
 
+class MinecraftRecipeNotFound(MinecraftBridgeError):
+    """找不到这个配方（物品没有配方 / recipe_id 对不上任何配方）。"""
+
+    status = 404
+
+    def __init__(self, message: str = "找不到这个配方") -> None:
+        super().__init__(message, code="minecraft.recipe_not_found")
+
+
+class MinecraftRecipeUnavailable(MinecraftBridgeError):
+    """配方存在但现在做不了（例如需要工作台——本阶段只支持玩家 2×2）。"""
+
+    status = 409
+
+    def __init__(self, message: str = "这个配方现在做不了") -> None:
+        super().__init__(message, code="minecraft.recipe_unavailable")
+
+
+class MinecraftMaterialInsufficient(MinecraftBridgeError):
+    """材料不够（本阶段绝不自动准备材料）。"""
+
+    status = 409
+
+    def __init__(self, message: str = "材料不够", *, detail: dict[str, Any] | None = None) -> None:
+        super().__init__(message, code="minecraft.material_insufficient", detail=detail or {})
+
+
+class MinecraftRecipeChanged(MinecraftBridgeError):
+    """确认时的配方与现在的对不上（材料/形状变了）。"""
+
+    status = 409
+
+    def __init__(self, message: str = "这个配方已经变了") -> None:
+        super().__init__(message, code="minecraft.recipe_changed")
+
+
+class MinecraftCraftFailed(MinecraftBridgeError):
+    """底层 bot.craft 失败。"""
+
+    status = 500
+
+    def __init__(self, message: str = "合成失败") -> None:
+        super().__init__(message, code="minecraft.craft_failed")
+
+
+class MinecraftCraftUnconfirmed(MinecraftBridgeError):
+    """craft resolve 了但重读 inventory 对不上（产物没增加 / 材料没减少）。"""
+
+    status = 500
+
+    def __init__(
+        self, message: str = "未能确认合成结果", *, detail: dict[str, Any] | None = None
+    ) -> None:
+        super().__init__(message, code="minecraft.craft_unconfirmed", detail=detail or {})
+
+
 class MinecraftBlockPlaceUnconfirmed(MinecraftBridgeError):
     """placeBlock resolve 了但世界里没出现预期方块：客户端/服务器不同步，不能报成功。"""
 
@@ -534,6 +590,21 @@ def _translate(exc: MinecraftRuntimeError) -> MinecraftBridgeError:
         return MinecraftContainerCloseFailed(str(exc), detail=dict(exc.detail))
     if exc.code == "container.transfer_unconfirmed":
         return MinecraftContainerTransferUnconfirmed(str(exc), detail=dict(exc.detail))
+    # Phase 4F：crafting（玩家 2×2）
+    if exc.code == "recipe.not_found":
+        return MinecraftRecipeNotFound(str(exc))
+    if exc.code == "recipe.invalid":
+        return MinecraftActionInvalid(str(exc))
+    if exc.code == "recipe.unavailable":
+        return MinecraftRecipeUnavailable(str(exc))
+    if exc.code == "recipe.changed":
+        return MinecraftRecipeChanged(str(exc))
+    if exc.code == "material.insufficient":
+        return MinecraftMaterialInsufficient(str(exc), detail=dict(exc.detail))
+    if exc.code == "craft.failed":
+        return MinecraftCraftFailed(str(exc))
+    if exc.code == "craft.unconfirmed":
+        return MinecraftCraftUnconfirmed(str(exc), detail=dict(exc.detail))
     if exc.code == "player.not_found":
         return MinecraftPlayerNotFound(str(exc))
     # player.lost / follow.target_too_far 发生在持续动作的后台阶段，正常经事件上报；
@@ -590,6 +661,9 @@ DIG_MAX_BLOCK_CHARS = 64
 #: Phase 4D：mineflayer 玩家窗口可操作的槽位范围（主背包 9-35 + 快捷栏 36-44）
 PLAYER_SLOT_MIN = 9
 PLAYER_SLOT_MAX = 44
+
+#: Phase 4F：recipe_id 的长度上限（可读规范签名）
+CRAFT_MAX_RECIPE_ID_CHARS = 200
 
 #: Phase 4E：容器动作的槽位 / 方向词表（与 runtime 同一份语义）
 CONTAINER_DIRECTIONS: tuple[str, ...] = ("withdraw", "deposit")
@@ -856,6 +930,11 @@ class MinecraftService:
         # Phase 4C：place 的安全门
         env["MC_PLACE_TIMEOUT_MS"] = str(int(self.config.action.place.timeout * 1000))
         env["MC_PLACE_MAX_DISTANCE"] = str(self.config.action.place.max_distance)
+        # Phase 4F：crafting（玩家 2×2）的超时
+        env["MC_CRAFT_TIMEOUT_MS"] = str(int(self.config.action.craft.timeout * 1000))
+        env["MC_RECIPE_LOOKUP_TIMEOUT_MS"] = str(
+            int(self.config.action.recipe_lookup.timeout * 1000)
+        )
         # Phase 4E：container 的安全门（超时/距离）
         env["MC_CONTAINER_TIMEOUT_MS"] = str(int(self.config.action.container.timeout * 1000))
         env["MC_CONTAINER_MAX_DISTANCE"] = str(self.config.action.container.max_distance)
@@ -1215,6 +1294,72 @@ class MinecraftService:
         try:
             await self._ensure_runtime()
             return await self._client.inventory_move(source, destination, clean_item, clean_count)
+        except MinecraftRuntimeError as exc:
+            if exc.unreachable:
+                self._mark_runtime_down(str(exc))
+            raise _translate(exc) from exc
+
+    @staticmethod
+    def validate_recipe_lookup(item: Any) -> str:
+        """recipe_lookup 的参数校验（纯函数）：物品名非空、长度受限、无控制字符。"""
+        if not isinstance(item, str) or not item.strip():
+            raise MinecraftActionInvalid("item 不能为空（要查什么物品的配方）")
+        if len(item) > PLACE_MAX_ITEM_CHARS:
+            raise MinecraftActionInvalid(f"item 最长 {PLACE_MAX_ITEM_CHARS} 个字符")
+        if any(ord(ch) < 32 or ord(ch) == 127 for ch in item):
+            raise MinecraftActionInvalid("item 不能包含控制字符")
+        return item.strip()
+
+    @staticmethod
+    def validate_craft(recipe_id: Any) -> str:
+        """craft 的参数校验（纯函数）：只接受 recipe_lookup 给出的稳定 recipe_id。
+
+        recipe_id 是可读的规范签名（``stick*4=oak_planks*2``，需要工作台的带 ``!`` 前缀），
+        所以这里只做形状校验；**是否存在 / 现在能不能做**由 runtime 用当前配方表与当前背包判定。
+        """
+        if not isinstance(recipe_id, str) or not recipe_id.strip():
+            raise MinecraftActionInvalid(
+                "recipe_id 不能为空（先用 minecraft_recipe_lookup 拿到它）"
+            )
+        clean = recipe_id.strip()
+        if len(clean) > CRAFT_MAX_RECIPE_ID_CHARS:
+            raise MinecraftActionInvalid(f"recipe_id 最长 {CRAFT_MAX_RECIPE_ID_CHARS} 个字符")
+        if "*" not in clean or "=" not in clean:
+            raise MinecraftActionInvalid(
+                "recipe_id 形状不对（应当是 minecraft_recipe_lookup 返回的那个 id）"
+            )
+        if any(ord(ch) < 32 or ord(ch) == 127 for ch in clean):
+            raise MinecraftActionInvalid("recipe_id 不能包含控制字符")
+        return clean
+
+    async def recipe_lookup(self, item: Any) -> dict[str, Any]:
+        """查一个目标物品在**玩家自身 2×2** 里能做的配方（Phase 4F · SAFE 只读）。
+
+        同步动作：直接返回语义投影（`recipe_id` / `result` / `requires_table` /
+        `available` / `ingredients`）；只有工作台配方时返回
+        ``status="crafting_table_required"``（**绝不自动去找工作台**）。
+        """
+        self._require_enabled()
+        clean = self.validate_recipe_lookup(item)
+        try:
+            await self._ensure_runtime()
+            return await self._client.recipe_lookup(clean)
+        except MinecraftRuntimeError as exc:
+            if exc.unreachable:
+                self._mark_runtime_down(str(exc))
+            raise _translate(exc) from exc
+
+    async def craft(self, recipe_id: Any) -> dict[str, Any]:
+        """执行**一次** 2×2 配方（Phase 4F · MEDIUM · 需要用户确认）。
+
+        一次一个 recipe：不批量、不做 recipe chain、不自动准备材料、不碰工作台。
+        返回启动即 ``RUNNING``；终态经事件送达（成功带 ``result`` 的 before/after）。
+        """
+        self._require_enabled()
+        clean = self.validate_craft(recipe_id)
+        try:
+            await self._ensure_runtime()
+            return await self._client.craft(clean)
         except MinecraftRuntimeError as exc:
             if exc.unreachable:
                 self._mark_runtime_down(str(exc))
