@@ -5,6 +5,7 @@ import { api } from '@/api/client'
 import type {
   MinecraftContainerDirection,
   MinecraftDigCapabilityResponse,
+  MinecraftFindBlocksResponse,
   MinecraftDroppedItemsResponse,
   MinecraftPickupItemResult,
   MinecraftCraftingTable,
@@ -146,6 +147,17 @@ export const minecraftApi = {
     })
   },
   /** Phase 4H：看附近地上的掉落物实体（SAFE 只读，同步返回）。 */
+  /**
+   * Phase 4K：找附近的指定方块（SAFE 只读；同步返回）。
+   *
+   * 只定位：不移动、不装备、不挖、不拾取。
+   */
+  findBlocks(blockNames: string[], maxDistance?: number, maxResults?: number) {
+    const body: Record<string, unknown> = { block_names: blockNames }
+    if (maxDistance !== undefined) body.max_distance = maxDistance
+    if (maxResults !== undefined) body.max_results = maxResults
+    return api.post<MinecraftFindBlocksResponse>('/minecraft/find_blocks', body)
+  },
   /** Phase 4J：只读查「这个方块现在能不能挖、大概多久」（SAFE，同步返回）。 */
   digCapability(x: number, y: number, z: number) {
     return api.post<MinecraftDigCapabilityResponse>('/minecraft/dig_capability', { x, y, z })

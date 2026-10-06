@@ -212,6 +212,20 @@ class MinecraftRuntimeClient:
             body["expected_tool"] = expected_tool
         return await self._request("POST", "/minecraft/dig", body=body)
 
+    async def find_blocks(
+        self, block_names: list[str], max_distance: int, max_results: int
+    ) -> dict[str, Any]:
+        """找附近的指定方块（Phase 4K：只读；同步返回语义投影）。"""
+        return await self._request(
+            "POST",
+            "/minecraft/find_blocks",
+            body={
+                "block_names": list(block_names),
+                "max_distance": max_distance,
+                "max_results": max_results,
+            },
+        )
+
     async def dig_capability(self, x: int, y: int, z: int) -> dict[str, Any]:
         """只读查「这个方块现在能不能挖、大概多久」（Phase 4J；同步返回语义投影）。"""
         return await self._request(

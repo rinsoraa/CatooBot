@@ -90,6 +90,8 @@ ACTION_RISK: dict[str, str] = {
     "minecraft_pickup_item": "MEDIUM",
     # Phase 4J：挖掘能力只读查询（不改世界、不改背包、不移动、不装备）
     "minecraft_dig_capability": "SAFE",
+    # Phase 4K：找方块只读（只定位，不移动/不装备/不挖/不拾取）
+    "minecraft_find_blocks": "SAFE",
 }
 
 #: Tool → Action Runtime 动作名（chat 也走统一生命周期）
@@ -109,6 +111,7 @@ TOOL_ACTION: dict[str, str] = {
     "minecraft_craft": "craft",
     "minecraft_dropped_items": "dropped_items",
     "minecraft_dig_capability": "dig_capability",
+    "minecraft_find_blocks": "find_blocks",
     "minecraft_pickup_item": "pickup_item",
 }
 
@@ -133,6 +136,8 @@ NON_EXCLUSIVE_TOOLS: frozenset[str] = frozenset(
         "minecraft_dropped_items",
         # Phase 4J：挖掘能力查询是纯读取（只回答「现在能不能挖、多久」）
         "minecraft_dig_capability",
+        # Phase 4K：找方块是纯读取（只回答「目标在哪里」）
+        "minecraft_find_blocks",
     }
 )
 
@@ -177,6 +182,9 @@ RUNTIME_ERROR_CODES: dict[str, str] = {
     "target.occupied": "minecraft.target_occupied",
     "reference.missing": "minecraft.reference_block_missing",
     "block.unavailable": "minecraft.block_unavailable",
+    # Phase 4K：找方块（名字不认识 / 运行时给不出查询能力）
+    "block.name_unknown": "minecraft.block_name_unknown",
+    "block.query_unavailable": "minecraft.block_query_unavailable",
     "block.place_unconfirmed": "minecraft.block_place_unconfirmed",
     "face.invalid": "minecraft.action_invalid",
     "item.invalid": "minecraft.action_invalid",
@@ -1199,6 +1207,21 @@ def _summarize(tool: str, data: Mapping[str, Any]) -> str:
         more = f"，另有 {drop_total - 5} 个未列出" if drop_total > 5 else ""
         truncated = "（超过上限，只列了前 32 个）" if dropped.get("truncated") else ""
         return f"附近有 {drop_total} 个掉落物：{listed}{more}{truncated}。"
+    if tool == "minecraft_find_blocks":
+        raw_find: Any = data.get("result")
+        found: dict[str, Any] = raw_find if isinstance(raw_find, dict) else {}
+        raw_matches: Any = found.get("matches")
+        matches: list[Any] = raw_matches if isinstance(raw_matches, list) else []
+        if not matches:
+            return "附近没有找到这些方块。"
+        listed = "、".join(
+            f"{((row.get('block') or {}) if isinstance(row, Mapping) else {}).get('name')}"
+            f"（{_format_position(row.get('position'))}）"
+            for row in matches[:5]
+        )
+        more = "……" if len(matches) > 5 else ""
+        truncated = "（还有更多，先列最近的几条）" if found.get("truncated") else ""
+        return f"附近找到 {len(matches)} 个：{listed}{more}{truncated}。"
     if tool == "minecraft_dig_capability":
         raw_capability: Any = data.get("result")
         capability: dict[str, Any] = raw_capability if isinstance(raw_capability, dict) else {}

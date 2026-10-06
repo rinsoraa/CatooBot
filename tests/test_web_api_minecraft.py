@@ -397,6 +397,7 @@ async def test_minecraft_projection_includes_agent_block(tmp_path):
             "minecraft_dig_capability",
             "minecraft_dropped_items",
             "minecraft_equip",
+            "minecraft_find_blocks",
             "minecraft_inventory",
             "minecraft_inventory_move",
             "minecraft_pickup_item",

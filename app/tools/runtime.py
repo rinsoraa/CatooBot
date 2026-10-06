@@ -92,6 +92,7 @@ class ToolRuntime:
             MinecraftDigTool,
             MinecraftDroppedItemsTool,
             MinecraftEquipTool,
+            MinecraftFindBlocksTool,
             MinecraftFollowPlayerTool,
             MinecraftInventoryMoveTool,
             MinecraftInventoryTool,
@@ -136,6 +137,8 @@ class ToolRuntime:
             ("minecraft_dropped_items", lambda: MinecraftDroppedItemsTool()),
             # Phase 4J：挖掘能力只读查询（SAFE；只回答「现在能不能挖、多久」）
             ("minecraft_dig_capability", lambda: MinecraftDigCapabilityTool()),
+            # Phase 4K：找方块（SAFE 只读；只定位，不移动/不装备/不挖/不拾取）
+            ("minecraft_find_blocks", lambda: MinecraftFindBlocksTool()),
             ("minecraft_pickup_item", lambda: MinecraftPickupItemTool()),
             ("minecraft_craft", lambda: MinecraftCraftTool()),
             ("query_image_memory", lambda: QueryImageMemoryTool()),

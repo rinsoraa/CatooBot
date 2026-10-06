@@ -372,6 +372,46 @@ class FakeMinecraftService:
             raise outcome
         return {"action_id": "act_dig_1", "action": "dig", **outcome}
 
+    async def find_blocks(
+        self, block_names: Any, max_distance: Any = None, max_results: Any = None
+    ) -> dict[str, Any]:
+        self._record(
+            "find_blocks",
+            block_names=list(block_names or []),
+            max_distance=max_distance,
+            max_results=max_results,
+        )
+        outcome = self._next(
+            "find_blocks",
+            {
+                "status": "SUCCEEDED",
+                "result": {
+                    "ok": True,
+                    "query": {
+                        "block_names": list(block_names or []),
+                        "max_distance": max_distance,
+                        "max_results": max_results,
+                    },
+                    "matches": [
+                        {
+                            "block": {"name": "oak_log"},
+                            "position": {"x": 103, "y": 64, "z": 141},
+                            "distance": {"goal_near": 5, "raw": 5.42},
+                        },
+                        {
+                            "block": {"name": "oak_log"},
+                            "position": {"x": 100, "y": 66, "z": 139},
+                            "distance": {"goal_near": 3, "raw": 3.1},
+                        },
+                    ],
+                    "truncated": False,
+                },
+            },
+        )
+        if isinstance(outcome, Exception):
+            raise outcome
+        return {"action_id": "act_find_blocks_1", "action": "find_blocks", **outcome}
+
     async def dig_capability(self, x: Any, y: Any, z: Any) -> dict[str, Any]:
         self._record("dig_capability", x=x, y=y, z=z)
         outcome = self._next(
@@ -527,6 +567,7 @@ async def test_all_tools_share_one_risk_table() -> None:
         "minecraft_dig_capability",
         "minecraft_dropped_items",
         "minecraft_equip",
+        "minecraft_find_blocks",
         "minecraft_follow_player",
         "minecraft_inventory",
         "minecraft_inventory_move",

@@ -137,6 +137,21 @@ class FakeRuntime:
             ],
         }
         self.dropped_items_plan: list[dict[str, Any]] = []
+        # Phase 4K：find_blocks（同步只读）
+        self.find_blocks_calls: list[dict[str, Any]] = []
+        self.find_blocks_result: dict[str, Any] = {
+            "ok": True,
+            "query": {"block_names": ["oak_log"], "max_distance": 16, "max_results": 8},
+            "matches": [
+                {
+                    "block": {"name": "oak_log"},
+                    "position": {"x": 103, "y": 64, "z": 141},
+                    "distance": {"goal_near": 5, "raw": 5.42},
+                }
+            ],
+            "truncated": False,
+        }
+        self.find_blocks_plan: list[dict[str, Any]] = []
         self.pickup_calls: list[dict[str, Any]] = []
         self.pickup_plan: list[dict[str, Any]] = []
         self.inventory_move_calls: list[dict[str, Any]] = []
@@ -164,6 +179,7 @@ class FakeRuntime:
         app.router.add_get("/minecraft/inventory", self._inventory)
         app.router.add_post("/minecraft/place", self._place)
         app.router.add_get("/minecraft/inventory/slots", self._inventory_slots)
+        app.router.add_post("/minecraft/find_blocks", self._find_blocks)
         app.router.add_post("/minecraft/dropped_items", self._dropped_items)
         app.router.add_post("/minecraft/pickup_item", self._pickup_item)
         app.router.add_post("/minecraft/recipe_lookup", self._recipe_lookup)
@@ -339,6 +355,29 @@ class FakeRuntime:
     async def _inventory_slots(self, request: web.Request) -> web.Response:
         self.inventory_slots_calls += 1
         return web.json_response(dict(self.inventory_slots_payload))
+
+    async def _find_blocks(self, request: web.Request) -> web.Response:
+        body = await request.json()
+        self.find_blocks_calls.append(dict(body))
+        if self.find_blocks_plan:
+            planned = self.find_blocks_plan.pop(0)
+            if "error" in planned:
+                code, status = planned["error"]
+                return web.json_response(
+                    {"ok": False, "error": {"code": code, "message": "计划好的失败", "detail": {}}},
+                    status=status,
+                )
+            return web.json_response(
+                {"ok": True, "action": "find_blocks", "status": "SUCCEEDED", **planned}
+            )
+        return web.json_response(
+            {
+                "ok": True,
+                "action": "find_blocks",
+                "status": "SUCCEEDED",
+                "result": self.find_blocks_result,
+            }
+        )
 
     async def _dropped_items(self, request: web.Request) -> web.Response:
         await request.read()

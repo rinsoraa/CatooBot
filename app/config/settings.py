@@ -937,6 +937,19 @@ class ContainerConfig(BaseModel):
     max_distance: float = Field(default=5.0, gt=0, le=6.0)
 
 
+class FindBlocksConfig(BaseModel):
+    """Phase 4K：找方块（只读查询）的默认值与安全上限。
+
+    只回答「附近有哪些指定方块」，不移动/不装备/不挖/不拾取：
+    范围与条数都有硬上限，绝不允许"扫全世界"（LLM 传 1000 会被拒）。
+    """
+
+    #: 默认搜索半径（格）；调用方没给 max_distance 时用它
+    max_distance: int = Field(default=16, ge=1, le=32)
+    #: 默认最多返回多少条；调用方没给 max_results 时用它
+    max_results: int = Field(default=8, ge=1, le=16)
+
+
 class MinecraftActionConfig(BaseModel):
     """Action Runtime 的动作级配置（Phase 3C 起）。"""
 
@@ -956,6 +969,8 @@ class MinecraftActionConfig(BaseModel):
     craft: CraftConfig = Field(default_factory=CraftConfig)
     #: Phase 4H：捡起一个明确的掉落物实体（有限导航 + 有限距离）
     pickup: PickupConfig = Field(default_factory=PickupConfig)
+    #: Phase 4K：找方块（只读；默认半径/条数，硬上限在 runtime 侧）
+    find_blocks: FindBlocksConfig = Field(default_factory=FindBlocksConfig)
 
 
 class MinecraftAgentToolsConfig(BaseModel):

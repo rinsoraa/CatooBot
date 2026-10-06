@@ -109,7 +109,7 @@ async function main() {
     // Phase 4B 起注册表多了 dig（MEDIUM，单方块）——仍是白名单，破坏类动作只有它一个
     assert(
       Object.keys(ACTION_REGISTRY).sort().join(',') ===
-        'chat,container_inspect,container_transfer,craft,dig,dig_capability,dropped_items,equip,follow_player,inventory_move,look_at,move_to,pickup_item,place,recipe_lookup,stop',
+        'chat,container_inspect,container_transfer,craft,dig,dig_capability,dropped_items,equip,find_blocks,follow_player,inventory_move,look_at,move_to,pickup_item,place,recipe_lookup,stop',
       `注册表 = chat/look_at/move_to/follow_player/stop/dig（得到 ${Object.keys(ACTION_REGISTRY).sort().join(',')}）`,
     )
     assert(def.exclusive === true, 'test_follow_player_exclusive：exclusive = true')

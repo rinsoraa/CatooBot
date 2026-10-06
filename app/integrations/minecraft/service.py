@@ -256,6 +256,30 @@ class MinecraftReferenceBlockMissing(MinecraftBridgeError):
         super().__init__(message, code="minecraft.reference_block_missing")
 
 
+class MinecraftBlockNameUnknown(MinecraftBridgeError):
+    """Phase 4K：方块名在当前 Minecraft registry 里解析不出来（422，不是"附近没有"）。"""
+
+    status = 422
+
+    def __init__(
+        self, message: str = "不认识的方块名", *, unknown: list[str] | None = None
+    ) -> None:
+        super().__init__(
+            message,
+            code="minecraft.block_name_unknown",
+            detail={"unknown": unknown or []},
+        )
+
+
+class MinecraftBlockQueryUnavailable(MinecraftBridgeError):
+    """Phase 4K：运行时给不出方块查询能力（绝不假装"附近没有"）。"""
+
+    status = 500
+
+    def __init__(self, message: str = "当前运行时无法查询方块位置") -> None:
+        super().__init__(message, code="minecraft.block_query_unavailable")
+
+
 class MinecraftBlockUnavailable(MinecraftBridgeError):
     """目标区域没有加载（blockAt 返回 null）——不猜、不放置。"""
 
@@ -626,6 +650,16 @@ class MinecraftBlockBreakUnconfirmed(MinecraftBridgeError):
         super().__init__(message, code="minecraft.block_break_unconfirmed")
 
 
+def canonical_block_name(name: str) -> str:
+    """把方块名规范成裸名（Phase 4K §四）。
+
+    ``iron_ore`` / ``minecraft:iron_ore`` / ``IRON_ORE`` 是同一个方块；runtime 的语义投影
+    一贯用裸名（``block_before: "stone"``），所以这里也统一成裸名（去命名空间 + 小写）。
+    只做规范化，不猜、不做近似匹配。
+    """
+    return str(name or "").strip().lower().replace("minecraft:", "", 1)
+
+
 def canonical_item_name(name: str) -> str:
     """把物品名规范成 ``minecraft:xxx``（Phase 4I §六）。
 
@@ -689,6 +723,12 @@ def _translate(exc: MinecraftRuntimeError) -> MinecraftBridgeError:
         return MinecraftReferenceBlockMissing(str(exc))
     if exc.code == "block.unavailable":
         return MinecraftBlockUnavailable(str(exc))
+    if exc.code == "block.name_unknown":
+        raw_unknown = exc.detail.get("unknown")
+        unknown = [str(item) for item in raw_unknown] if isinstance(raw_unknown, list) else []
+        return MinecraftBlockNameUnknown(str(exc), unknown=unknown)
+    if exc.code == "block.query_unavailable":
+        return MinecraftBlockQueryUnavailable(str(exc))
     if exc.code == "block.place_unconfirmed":
         return MinecraftBlockPlaceUnconfirmed(
             str(exc),
@@ -830,6 +870,11 @@ FOLLOW_DEFAULT_DISTANCE = 2.5
 FOLLOW_MIN_DISTANCE = 1.5
 FOLLOW_MAX_DISTANCE = 6.0
 FOLLOW_MAX_USERNAME_CHARS = 16
+
+#: Phase 4K：find_blocks 的硬上限（与 runtime 常量一致；LLM 传得再大也越不过它）
+FIND_BLOCKS_MAX_NAMES = 8
+FIND_BLOCKS_HARD_MAX_DISTANCE = 32
+FIND_BLOCKS_HARD_MAX_RESULTS = 16
 
 #: dig 的 expected_block 长度上限（minecraft:xxx 之类）
 DIG_MAX_BLOCK_CHARS = 64
@@ -1121,7 +1166,10 @@ class MinecraftService:
         # Phase 4E：container 的安全门（超时/距离）
         env["MC_CONTAINER_TIMEOUT_MS"] = str(int(self.config.action.container.timeout * 1000))
         env["MC_CONTAINER_MAX_DISTANCE"] = str(self.config.action.container.max_distance)
-        # Phase 4D：背包写操作的超时
+        # Phase 4K：找方块的默认范围/条数（硬上限仍是 runtime 常量）
+        env["MC_FIND_BLOCKS_MAX_DISTANCE"] = str(self.config.action.find_blocks.max_distance)
+        env["MC_FIND_BLOCKS_MAX_RESULTS"] = str(self.config.action.find_blocks.max_results)
+        # Phase 4D：背包写操作的写超时
         env["MC_EQUIP_TIMEOUT_MS"] = str(int(self.config.action.equip.timeout * 1000))
         env["MC_INVENTORY_MOVE_TIMEOUT_MS"] = str(
             int(self.config.action.inventory_move.timeout * 1000)
@@ -1620,6 +1668,82 @@ class MinecraftService:
         try:
             await self._ensure_runtime()
             return await self._client.dig_capability(coords["x"], coords["y"], coords["z"])
+        except MinecraftRuntimeError as exc:
+            if exc.unreachable:
+                self._mark_runtime_down(str(exc))
+            raise _translate(exc) from exc
+
+    @staticmethod
+    def validate_find_blocks(
+        block_names: Any, max_distance: Any = None, max_results: Any = None
+    ) -> tuple[list[str], int, int]:
+        """find_blocks 的参数校验 + 规范化（纯函数，抛 :class:`MinecraftActionInvalid`）。
+
+        §四：``block_names`` 是 1~8 个方块名（逐个规范化成裸名，去重，保持顺序）；
+        ``max_distance`` / ``max_results`` 可选，越界直接拒绝（不允许"扫全世界"）。
+        返回 ``(names, max_distance_or_0, max_results_or_0)``，0 表示"用配置默认值"。
+        """
+        if isinstance(block_names, str) or not isinstance(block_names, (list, tuple)):
+            raise MinecraftActionInvalid("block_names 必须是方块名数组（不是单个字符串）")
+        if not block_names:
+            raise MinecraftActionInvalid("block_names 不能为空（至少要一个方块名）")
+        if len(block_names) > FIND_BLOCKS_MAX_NAMES:
+            raise MinecraftActionInvalid(
+                f"block_names 最多 {FIND_BLOCKS_MAX_NAMES} 个（本阶段不做批量扫描）"
+            )
+        names: list[str] = []
+        for raw in block_names:
+            if not isinstance(raw, str) or not raw.strip():
+                raise MinecraftActionInvalid("block_names 里每一项都必须是非空字符串")
+            if len(raw) > 64:
+                raise MinecraftActionInvalid("方块名最长 64 个字符")
+            if any(ord(ch) < 32 or ord(ch) == 127 for ch in raw):
+                raise MinecraftActionInvalid("方块名不能包含控制字符")
+            clean = canonical_block_name(raw)
+            if clean and clean not in names:
+                names.append(clean)
+        if not names:
+            raise MinecraftActionInvalid("block_names 不能为空（至少要一个方块名）")
+
+        distance = 0
+        if max_distance is not None and max_distance != "":
+            if isinstance(max_distance, bool) or not isinstance(max_distance, int):
+                raise MinecraftActionInvalid("max_distance 必须是整数")
+            if not 1 <= max_distance <= FIND_BLOCKS_HARD_MAX_DISTANCE:
+                raise MinecraftActionInvalid(
+                    f"max_distance 必须在 1~{FIND_BLOCKS_HARD_MAX_DISTANCE} 之间"
+                    "（不允许大范围全局扫描）"
+                )
+            distance = int(max_distance)
+
+        results = 0
+        if max_results is not None and max_results != "":
+            if isinstance(max_results, bool) or not isinstance(max_results, int):
+                raise MinecraftActionInvalid("max_results 必须是整数")
+            if not 1 <= max_results <= FIND_BLOCKS_HARD_MAX_RESULTS:
+                raise MinecraftActionInvalid(
+                    f"max_results 必须在 1~{FIND_BLOCKS_HARD_MAX_RESULTS} 之间"
+                )
+            results = int(max_results)
+        return names, distance, results
+
+    async def find_blocks(
+        self, block_names: Any, max_distance: Any = None, max_results: Any = None
+    ) -> dict[str, Any]:
+        """在当前**已加载**的世界里找指定方块的位置（Phase 4K · SAFE 只读 · 非独占）。
+
+        只回答"在哪里"：不移动、不装备、不挖、不拾取，也不给任何"推荐/最佳"。
+        找不到就是正常空结果；方块名不认识 → ``minecraft.block_name_unknown``（§二十二）。
+        """
+        self._require_enabled()
+        names, distance, results = self.validate_find_blocks(block_names, max_distance, max_results)
+        if distance == 0:
+            distance = int(self.config.action.find_blocks.max_distance)
+        if results == 0:
+            results = int(self.config.action.find_blocks.max_results)
+        try:
+            await self._ensure_runtime()
+            return await self._client.find_blocks(names, distance, results)
         except MinecraftRuntimeError as exc:
             if exc.unreachable:
                 self._mark_runtime_down(str(exc))

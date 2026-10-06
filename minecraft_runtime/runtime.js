@@ -759,6 +759,31 @@ function recipeSetsFor(bot, itemName, craftingTable = null) {
 
 // ------------------------------------------------- Phase 4H: dropped items
 
+// Phase 4K：找方块是纯查询（遍历已加载的 section），5s 足够
+const FIND_BLOCKS_TIMEOUT_MS = Number.parseInt(
+  process.env.MC_FIND_BLOCKS_TIMEOUT_MS || '5000',
+  10,
+)
+
+// Phase 4K：找方块（只读；范围与条数都有硬上限，绝不允许"扫全世界"）
+const FIND_BLOCKS_DEFAULT_DISTANCE = Number.parseInt(
+  process.env.MC_FIND_BLOCKS_MAX_DISTANCE || '16',
+  10,
+)
+const FIND_BLOCKS_DEFAULT_RESULTS = Number.parseInt(
+  process.env.MC_FIND_BLOCKS_MAX_RESULTS || '8',
+  10,
+)
+const FIND_BLOCKS_MAX_DISTANCE = Number.parseInt(
+  process.env.MC_FIND_BLOCKS_HARD_MAX_DISTANCE || '32',
+  10,
+)
+const FIND_BLOCKS_MAX_RESULTS = Number.parseInt(
+  process.env.MC_FIND_BLOCKS_HARD_MAX_RESULTS || '16',
+  10,
+)
+const FIND_BLOCKS_MAX_NAMES = 8
+
 // Phase 4J：能力查询是纯计算（一次 blockAt + canDigBlock + digTime），5s 足够
 const DIG_CAPABILITY_TIMEOUT_MS = Number.parseInt(
   process.env.MC_DIG_CAPABILITY_TIMEOUT_MS || '5000',
@@ -1001,6 +1026,89 @@ function releaseMoveGoal(bot) {
   }
 }
 
+/**
+ * 方块距离的两个口径（Phase 4J 建立，Phase 4K 起由 find_blocks 共用 —— §十：只有这一套算法）：
+ *   * ``goal_near`` —— 罐头**占的方块格** → 目标方块格（GoalNear 口径）
+ *   * ``raw`` —— 眼睛 → 方块中心的浮点距离（**与 minecraft_dig 的距离门禁同一个量**）
+ */
+function blockDistanceView(bot, position) {
+  const self = bot && bot.entity && bot.entity.position ? bot.entity.position : null
+  const center = position.offset(0.5, 0.5, 0.5)
+  const eyes = self ? self.offset(0, 1.65, 0) : null
+  return {
+    goal_near: self ? round2(self.floored().distanceTo(position)) : null,
+    raw: eyes ? round2(eyes.distanceTo(center)) : null,
+  }
+}
+
+/**
+ * Phase 4K：在当前已加载的世界里找**指定方块**的位置（只读；§十五：只回答"在哪里"，
+ * 绝不回答"哪一个最适合挖" —— 不返回 recommended/best/optimal）。
+ *
+ * 事实来源是 Mineflayer 的 ``bot.findBlocks``（默认以罐头当前位置为起点，按距离排序）；
+ * 绝不自己遍历 x±N / y±N / z±N，也绝不因为找不到就自动 move / equip / dig。
+ */
+function findBlocksView(bot, params) {
+  if (typeof bot.findBlocks !== 'function') {
+    // §二十一：运行时给不出这个查询能力时如实说（结构化错误，不假装空结果）
+    throw new ActionError('当前运行时无法查询方块位置', 'block.query_unavailable', 500)
+  }
+  const registry = bot.registry || {}
+  const blocksByName = registry.blocksByName || {}
+  // §二十二：名字解析不出来必须**报错**，不能返回空结果（否则模型分不清"不存在"和"附近没有"）
+  const unknown = params.block_names.filter((name) => !blocksByName[name])
+  if (unknown.length > 0) {
+    throw new ActionError(
+      `不认识的方块名：${unknown.join('、')}`,
+      'block.name_unknown',
+      422,
+      { unknown },
+    )
+  }
+  const ids = params.block_names.map((name) => blocksByName[name].id)
+  const maxDistance = params.max_distance
+  const maxResults = params.max_results
+  const point = bot.entity.position.floored()
+  // 多要一个：用来判断"是不是被数量上限截断了"（findBlocks 自己会 slice 到 count）
+  const found = bot.findBlocks({
+    point,
+    matching: ids,
+    maxDistance,
+    count: maxResults + 1,
+  })
+  const truncated = found.length > maxResults
+  const positions = found.slice(0, maxResults)
+  const matches = positions.map((position) => {
+    const block = bot.blockAt(position)
+    return {
+      block: { name: block ? blockNameOf(block) : 'unknown' },
+      position: { x: position.x, y: position.y, z: position.z },
+      distance: blockDistanceView(bot, position),
+    }
+  })
+  // §十一：稳定排序（goal_near → raw → x → y → z），绝不按 JS 对象枚举顺序
+  matches.sort(
+    (a, b) =>
+      (a.distance.goal_near === null ? Infinity : a.distance.goal_near) -
+        (b.distance.goal_near === null ? Infinity : b.distance.goal_near) ||
+      (a.distance.raw === null ? Infinity : a.distance.raw) -
+        (b.distance.raw === null ? Infinity : b.distance.raw) ||
+      a.position.x - b.position.x ||
+      a.position.y - b.position.y ||
+      a.position.z - b.position.z,
+  )
+  return {
+    ok: true,
+    query: {
+      block_names: [...params.block_names],
+      max_distance: maxDistance,
+      max_results: maxResults,
+    },
+    matches,
+    truncated,
+  }
+}
+
 // Phase 4J：capability 的 reason 只有这几个有限取值（§十六：绝不推测"工具等级不够"）
 const DIG_CAPABILITY_REASONS = Object.freeze(['air', 'too_far', 'not_diggable'])
 
@@ -1029,17 +1137,14 @@ function digCapabilityView(bot, params) {
   const blockName = blockNameOf(block) || 'unknown'
   const held = bot.heldItem && bot.heldItem.name ? bot.heldItem : null
   const heldItem = held ? { name: normalizeItemName(held.name), count: held.count } : null
-  const self = bot.entity && bot.entity.position ? bot.entity.position : null
-  const center = position.offset(0.5, 0.5, 0.5)
-  const eyes = self ? self.offset(0, 1.65, 0) : null
-  const raw = eyes ? round2(eyes.distanceTo(center)) : null
-  const goalNear = self ? round2(self.floored().distanceTo(position)) : null
+  const distance = blockDistanceView(bot, position)
+  const raw = distance.raw
   const view = {
     ok: true,
     position: { x: params.x, y: params.y, z: params.z },
     block: { name: blockName },
     held_item: heldItem,
-    distance: { goal_near: goalNear, raw },
+    distance,
     can_dig: false,
     dig_time_ms: null,
     reason: null,
@@ -2915,6 +3020,74 @@ const ACTION_REGISTRY = {
         return digCapabilityView(bot, params)
       },
     },
+    find_blocks: {
+      // Phase 4K：找"附近有哪些指定方块"（SAFE 只读；**非独占**）。只回答位置：
+      // 不移动、不装备、不挖、不拾取，也不给任何"推荐/最佳"（那要另问 capability）。
+      exclusive: false,
+      timeout_ms: FIND_BLOCKS_TIMEOUT_MS,
+      risk: 'SAFE',
+      validate(params) {
+        const names = params.block_names
+        if (!Array.isArray(names) || names.length === 0) {
+          throw new ActionError('block_names 不能为空（要一个方块名数组）', 'action.invalid', 400)
+        }
+        if (names.length > FIND_BLOCKS_MAX_NAMES) {
+          throw new ActionError(
+            `block_names 最多 ${FIND_BLOCKS_MAX_NAMES} 个（本阶段不做批量扫描）`,
+            'action.invalid',
+            400,
+          )
+        }
+        const cleaned = []
+        for (const raw of names) {
+          if (typeof raw !== 'string' || !raw.trim()) {
+            throw new ActionError('block_names 里每一项都必须是非空字符串', 'action.invalid', 400)
+          }
+          const name = normalizeBlockName(raw)
+          if (!name) {
+            throw new ActionError('block_names 里每一项都必须是非空字符串', 'action.invalid', 400)
+          }
+          if (!cleaned.includes(name)) cleaned.push(name)
+        }
+        const rawDistance = params.max_distance
+        let maxDistance = FIND_BLOCKS_DEFAULT_DISTANCE
+        if (rawDistance !== undefined && rawDistance !== null && rawDistance !== '') {
+          if (typeof rawDistance !== 'number' || !Number.isInteger(rawDistance)) {
+            throw new ActionError('max_distance 必须是整数', 'action.invalid', 400)
+          }
+          if (rawDistance < 1 || rawDistance > FIND_BLOCKS_MAX_DISTANCE) {
+            throw new ActionError(
+              `max_distance 必须在 1~${FIND_BLOCKS_MAX_DISTANCE} 之间（不允许大范围全局扫描）`,
+              'action.invalid',
+              400,
+            )
+          }
+          maxDistance = rawDistance
+        }
+        const rawResults = params.max_results
+        let maxResults = FIND_BLOCKS_DEFAULT_RESULTS
+        if (rawResults !== undefined && rawResults !== null && rawResults !== '') {
+          if (typeof rawResults !== 'number' || !Number.isInteger(rawResults)) {
+            throw new ActionError('max_results 必须是整数', 'action.invalid', 400)
+          }
+          if (rawResults < 1 || rawResults > FIND_BLOCKS_MAX_RESULTS) {
+            throw new ActionError(
+              `max_results 必须在 1~${FIND_BLOCKS_MAX_RESULTS} 之间`,
+              'action.invalid',
+              400,
+            )
+          }
+          maxResults = rawResults
+        }
+        return { block_names: cleaned, max_distance: maxDistance, max_results: maxResults }
+      },
+      async run(bot, params) {
+        if (bot === null || bot === undefined || bot.entity === null) {
+          throw new ActionError('罐头还没有进入世界', 'action.not_online', 400)
+        }
+        return findBlocksView(bot, params)
+      },
+    },
     pickup_item: {
       // Phase 4H：拾取**一个明确指定**的掉落物实体（MEDIUM：改背包 + bot 会主动移动）。
       // 内部自己管 pathfinding + 目标实体 + 收集等待，绝不嵌套 move_to（那会 action.busy）。
@@ -3753,6 +3926,17 @@ async function handleRequest(request, response) {
       jsonResponse(response, 200, { ok: true, ...result })
       return
     }
+    if (request.method === 'POST' && path === '/minecraft/find_blocks') {
+      // Phase 4K：找附近的指定方块（SAFE 只读；同步返回语义投影）
+      const body = await readBody(request)
+      const result = await actionRuntime.execute('find_blocks', {
+        block_names: body.block_names,
+        max_distance: body.max_distance,
+        max_results: body.max_results,
+      })
+      jsonResponse(response, 200, { ok: true, ...result })
+      return
+    }
     if (request.method === 'POST' && path === '/minecraft/dig_capability') {
       // Phase 4J：读"这个方块现在能不能挖、大概多久"（SAFE 只读；同步返回语义投影）
       const body = await readBody(request)
@@ -3955,6 +4139,16 @@ module.exports = {
     inventoryGraceMs: PICKUP_INVENTORY_GRACE_MS,
     droppedItemsTimeoutMs: DROPPED_ITEMS_TIMEOUT_MS,
   },
+  FIND_BLOCKS_DEFAULTS: {
+    timeoutMs: FIND_BLOCKS_TIMEOUT_MS,
+    maxDistance: FIND_BLOCKS_DEFAULT_DISTANCE,
+    maxResults: FIND_BLOCKS_DEFAULT_RESULTS,
+    hardMaxDistance: FIND_BLOCKS_MAX_DISTANCE,
+    hardMaxResults: FIND_BLOCKS_MAX_RESULTS,
+    maxNames: FIND_BLOCKS_MAX_NAMES,
+  },
+  findBlocksView,
+  blockDistanceView,
   DIG_CAPABILITY_DEFAULTS: {
     timeoutMs: DIG_CAPABILITY_TIMEOUT_MS,
     reasons: [...DIG_CAPABILITY_REASONS],

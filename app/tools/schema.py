@@ -2,6 +2,7 @@
 
 Only the subset our tools actually use is implemented — object/array/string/
 number/integer/boolean, ``required``, ``enum``, ``minLength``/``maxLength``,
+``minItems``/``maxItems``,
 ``minimum``/``maximum``, ``pattern`` and ``additionalProperties``. Unknown
 keywords are ignored rather than rejected, so schemas stay forward-compatible.
 """
@@ -90,6 +91,8 @@ def _validate_value(spec: dict[str, Any], value: Any, path: str) -> list[str]:
         if isinstance(item_spec, dict):
             for index, item in enumerate(value):
                 errors.extend(_validate_value(item_spec, item, f"{path}[{index}]"))
+        if (min_items := spec.get("minItems")) is not None and len(value) < min_items:
+            errors.append(f"{path} has fewer than {min_items} items")
         if (max_items := spec.get("maxItems")) is not None and len(value) > max_items:
             errors.append(f"{path} has more than {max_items} items")
 

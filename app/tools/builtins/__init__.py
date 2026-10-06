@@ -20,6 +20,7 @@ from app.tools.builtins.minecraft_dig import MinecraftDigTool
 from app.tools.builtins.minecraft_dig_capability import MinecraftDigCapabilityTool
 from app.tools.builtins.minecraft_dropped_items import MinecraftDroppedItemsTool
 from app.tools.builtins.minecraft_equip import MinecraftEquipTool
+from app.tools.builtins.minecraft_find_blocks import MinecraftFindBlocksTool
 from app.tools.builtins.minecraft_inventory import MinecraftInventoryTool
 from app.tools.builtins.minecraft_inventory_move import MinecraftInventoryMoveTool
 from app.tools.builtins.minecraft_pickup_item import MinecraftPickupItemTool
@@ -37,6 +38,7 @@ __all__ = [
     "MinecraftContainerTransferTool",
     "MinecraftCraftTool",
     "MinecraftDigCapabilityTool",
+    "MinecraftFindBlocksTool",
     "MinecraftDroppedItemsTool",
     "MinecraftDigTool",
     "MinecraftEquipTool",

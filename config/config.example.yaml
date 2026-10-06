@@ -590,6 +590,9 @@ minecraft:
       timeout: 30                # 单次合成（玩家自身 2×2 或指定工作台的 3×3）最长秒数（5~120）
       crafting_table:
         max_distance: 5          # 指定工作台时的最大交互距离（格，眼睛→方块中心）；超出的直接拒绝
+    find_blocks:
+      max_distance: 16           # 找方块的默认搜索半径（格，1~32）；硬上限 32，不允许"扫全世界"
+      max_results: 8             # 找方块默认最多返回几条（1~16）；硬上限 16
     pickup:
       max_distance: 16           # 掉落物最远多少格就去捡（1~64）；先太远直接拒绝，追的过程中被拉远也停
       timeout: 30                # 单次拾取（一个明确实体）最长秒数（5~120）；到点 TIMEOUT + 收掉导航
@@ -609,7 +612,7 @@ minecraft:
   agent:
     tools:
       enabled: true          # 关掉 = 模型完全碰不到 Minecraft（WebUI 连接页不受影响）
-      allow_safe: true       # minecraft_world / chat / look_at / stop / inventory / dropped_items / dig_capability
+      allow_safe: true       # minecraft_world / chat / look_at / stop / inventory / dropped_items / dig_capability / find_blocks
       allow_low: true        # minecraft_move_to / follow_player（非破坏性导航）
       allow_medium: false    # dig / place / equip / inventory_move / container_transfer / craft / pickup_item 默认关闭；启用后仍需确认
       allow_high: false      # 还没有 HIGH 级动作；保持关闭

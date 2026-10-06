@@ -152,6 +152,7 @@ function makeHandler(
     droppedItems?: MockReply
     pickupItem?: MockReply
     digCapability?: MockReply
+    findBlocks?: MockReply
   } = {},
 ) {
   return (request: MockRequest): MockReply => {
@@ -191,6 +192,34 @@ function makeHandler(
     }
     if (url.pathname === '/api/v1/minecraft/agent/confirm' && request.method === 'POST') {
       return ok({ created: true, confirmation_id: 'cfm_test_1', status: 'CANCELLED' })
+    }
+    if (url.pathname === '/api/v1/minecraft/find_blocks' && request.method === 'POST') {
+      return (
+        overrides.findBlocks ??
+        ok({
+          ok: true,
+          action: 'find_blocks',
+          status: 'SUCCEEDED',
+          action_id: 'act_find_ui',
+          result: {
+            ok: true,
+            query: { block_names: ['oak_log'], max_distance: 16, max_results: 8 },
+            matches: [
+              {
+                block: { name: 'oak_log' },
+                position: { x: 103, y: 64, z: 141 },
+                distance: { goal_near: 5, raw: 5.42 },
+              },
+              {
+                block: { name: 'oak_log' },
+                position: { x: 100, y: 66, z: 139 },
+                distance: { goal_near: 7, raw: 7.9 },
+              },
+            ],
+            truncated: false,
+          },
+        })
+      )
     }
     if (url.pathname === '/api/v1/minecraft/dig_capability' && request.method === 'POST') {
       return (
@@ -835,6 +864,123 @@ describe('Minecraft 页 · Dig Test 工具感知（Phase 4I）', () => {
     await flushAll()
     const call = calls.find((c) => c.url.endsWith('/minecraft/dig'))
     expect(call?.body).toEqual({ x: 120, y: 64, z: -230, expected_block: 'minecraft:stone' })
+  })
+})
+
+describe('Minecraft 页 · Find Blocks（Phase 4K · SAFE 只读）', () => {
+  it('初始不显示结论', async () => {
+    const { wrapper } = await mountPage(makeHandler())
+    await flushAll()
+    expect(wrapper.get('[data-test="mc-find-table"]').text()).toContain('还没有查询过')
+    expect(wrapper.get('[data-test="mc-find-summary"]').text()).toContain('只读定位')
+  })
+
+  it('FIND 把方块名与上限发给 /minecraft/find_blocks 并列出候选', async () => {
+    const { wrapper, calls } = await mountPage(makeHandler())
+    await flushAll()
+    await wrapper.get('[data-test="mc-find-names"]').setValue('minecraft:oak_log')
+    await wrapper.get('[data-test="mc-find-distance"]').setValue('16')
+    await wrapper.get('[data-test="mc-find-results"]').setValue('8')
+    await wrapper.get('[data-test="mc-find-run"]').trigger('click')
+    await flushAll()
+    const call = calls.find((c) => c.url.endsWith('/minecraft/find_blocks'))
+    expect(call?.body).toEqual({
+      block_names: ['minecraft:oak_log'],
+      max_distance: 16,
+      max_results: 8,
+    })
+    const table = wrapper.get('[data-test="mc-find-table"]').text()
+    expect(table).toContain('oak_log')
+    expect(table).toContain('103, 64, 141')
+    expect(table).toContain('5 格')
+    expect(table).toContain('5.42 格')
+  })
+
+  it('多个方块名用逗号/空格分隔', async () => {
+    const { wrapper, calls } = await mountPage(makeHandler())
+    await flushAll()
+    await wrapper.get('[data-test="mc-find-names"]').setValue(' oak_log , stone  iron_ore ')
+    await wrapper.get('[data-test="mc-find-run"]').trigger('click')
+    await flushAll()
+    const call = calls.find((c) => c.url.endsWith('/minecraft/find_blocks'))
+    expect(call?.body).toEqual({
+      block_names: ['oak_log', 'stone', 'iron_ore'],
+      max_distance: 16,
+      max_results: 8,
+    })
+  })
+
+  it('USE AS TARGET 只把坐标填进后续表单（不发任何动作请求）', async () => {
+    const { wrapper, calls } = await mountPage(makeHandler())
+    await flushAll()
+    await wrapper.get('[data-test="mc-find-names"]').setValue('oak_log')
+    await wrapper.get('[data-test="mc-find-run"]').trigger('click')
+    await flushAll()
+    const before = calls.length
+    await wrapper.get('[data-test="mc-find-use-103-64-141"]').trigger('click')
+    await flushAll()
+    expect((wrapper.get('[data-test="mc-dig-x"]').element as HTMLInputElement).value).toBe('103')
+    expect((wrapper.get('[data-test="mc-dig-y"]').element as HTMLInputElement).value).toBe('64')
+    expect((wrapper.get('[data-test="mc-dig-z"]').element as HTMLInputElement).value).toBe('141')
+    expect((wrapper.get('[data-test="mc-dig-block"]').element as HTMLInputElement).value).toBe(
+      'oak_log',
+    )
+    expect((wrapper.get('[data-test="mc-capability-x"]').element as HTMLInputElement).value).toBe(
+      '103',
+    )
+    // 只填表单：没有再发任何 move / equip / dig / pickup 请求
+    const after = calls.slice(before)
+    for (const forbidden of ['/minecraft/move_to', '/minecraft/equip', '/minecraft/dig', '/minecraft/pickup_item']) {
+      expect(after.some((c) => c.url.endsWith(forbidden))).toBe(false)
+    }
+  })
+
+  it('没有结果时如实显示（不是错误）', async () => {
+    const { wrapper } = await mountPage(
+      makeHandler({
+        findBlocks: ok({
+          ok: true,
+          action: 'find_blocks',
+          status: 'SUCCEEDED',
+          result: {
+            ok: true,
+            query: { block_names: ['oak_log'], max_distance: 16, max_results: 8 },
+            matches: [],
+            truncated: false,
+          },
+        }),
+      }),
+    )
+    await flushAll()
+    await wrapper.get('[data-test="mc-find-names"]').setValue('oak_log')
+    await wrapper.get('[data-test="mc-find-run"]').trigger('click')
+    await flushAll()
+    expect(wrapper.get('[data-test="mc-find-table"]').text()).toContain('没有找到')
+    expect(wrapper.find('[data-test="mc-find-error"]').exists()).toBe(false)
+  })
+
+  it('未知方块名如实报错（不假装附近没有）', async () => {
+    const { wrapper } = await mountPage(
+      makeHandler({
+        findBlocks: fail(422, 'minecraft.block_name_unknown', '不认识的方块名：banana_ore'),
+      }),
+    )
+    await flushAll()
+    await wrapper.get('[data-test="mc-find-names"]').setValue('banana_ore')
+    await wrapper.get('[data-test="mc-find-run"]').trigger('click')
+    await flushAll()
+    expect(wrapper.get('[data-test="mc-find-error"]').text()).toContain('不认识的方块名')
+  })
+
+  it('缺少方块名本地拦截', async () => {
+    const { wrapper, calls } = await mountPage(makeHandler())
+    await flushAll()
+    await wrapper.get('[data-test="mc-find-names"]').setValue('   ')
+    await wrapper.get('[data-test="mc-find-run"]').trigger('click')
+    await flushAll()
+    expect(calls.some((c) => c.url.endsWith('/minecraft/find_blocks'))).toBe(false)
+    // 也没有 AUTO GATHER 这类按钮（§四十五）
+    expect(wrapper.find('[data-test="mc-find-auto-gather"]').exists()).toBe(false)
   })
 })
 

@@ -379,6 +379,28 @@ export interface MinecraftDigCapabilityView {
   reason: string | null
 }
 
+export interface MinecraftBlockMatch {
+  block: { name: string }
+  position: MinecraftPosition
+  distance: { goal_near: number | null; raw: number | null }
+}
+
+export interface MinecraftFindBlocksView {
+  ok: boolean
+  query: { block_names: string[]; max_distance: number; max_results: number }
+  matches: MinecraftBlockMatch[]
+  /** 命中条数被上限截断（不是失败）。 */
+  truncated: boolean
+}
+
+export interface MinecraftFindBlocksResponse {
+  ok: boolean
+  action: string
+  status: MinecraftActionStatus
+  action_id?: string
+  result: MinecraftFindBlocksView
+}
+
 export interface MinecraftDigCapabilityResponse {
   ok: boolean
   action: string

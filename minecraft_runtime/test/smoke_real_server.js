@@ -27,6 +27,12 @@
  *   6c. Phase 4J：DIG CAPABILITY（只读）—— 临时 stone 块 + 包里凑齐镐/土 → 拿对照物品查一次、
  *      换成镐再查一次、主手腾空查第三次 → 断言 can_dig / dig_time_ms / 两种距离口径，
  *      并确认**一个方块都没动**、背包逐槽恢复、endIdle
+ *   6d. Phase 4K：真实资源链（原子能力按顺序串联，不包成新工具）——
+ *      find_blocks → dig_capability →（必要时）明确 equip → move_to → 再查 capability →
+ *      dig → dropped_items（只认这次挖出来的实体）→ pickup_item → inventory 复核 →
+ *      还原夹具/主手 → ensureIdle
+ *      （支持 SMOKE_RESOURCE_BLOCK="minecraft:oak_log"；世界里没有目标时默认 SKIPPED，
+ *        只有显式 SMOKE_RESOURCE_FIXTURE=1 才就地造一个天然兼容的方并原样还原）
  *   7. Phase 4C：place（单方块，六层证据）
  *   8. Phase 4D：inventory/slots → equip（含 already_equipped）→ inventory_move →
  *      重读槽位表 → **恢复原状**（槽位布局 + 主手）→ ensureIdle → disconnect
@@ -1849,6 +1855,364 @@ async function main() {
         if (lost4J.length > 0) console.log(`[smoke]    ✗ 4J 少了原有物品：${lost4J.join('、')}`)
         const idle4J = await idleState()
         check(idle4J.idle, 'ensureIdle = PASS（capability 查询之后 runtime 仍然 IDLE）')
+      }
+    }
+
+    // ---- 6d. Phase 4K：真实资源链（原子能力按顺序串联，绝不包成新工具） ----
+    // find_blocks → dig_capability →（必要时）equip → move_to → 再查 capability →
+    // dig → dropped_items（只认**这次挖出来**的实体）→ pickup_item → inventory 复核。
+    // 每一步都保持各自的确认/风险/ActionRuntime 边界；失败就在那一步停下并如实报告。
+    if (!digReady) {
+      console.log('[smoke] ✗ Phase 4K：runtime 未空闲，资源链硬门禁不能执行')
+    } else {
+      const RESOURCE = (process.env.SMOKE_RESOURCE_BLOCK || 'minecraft:oak_log').trim()
+      const ALLOW_FIXTURE = (process.env.SMOKE_RESOURCE_FIXTURE || '').trim() === '1'
+      const inv4K = async () => (await request(runtimePort, 'GET', '/minecraft/inventory')).body
+      const rows4K = async () =>
+        ((await request(runtimePort, 'GET', '/minecraft/inventory/slots')).body || {}).slots || []
+      const hand4K = async () => (await inv4K()).held_item || null
+      const totalOf4K = async (itemName) => {
+        const inv = await inv4K()
+        const hit = (inv.items || []).find(
+          (row) => normalizeItemName(row.name) === normalizeItemName(itemName),
+        )
+        return hit ? hit.count : 0
+      }
+      const listDropped4K = async () => {
+        const resp = await request(runtimePort, 'POST', '/minecraft/dropped_items', {})
+        return resp.status === 200 && resp.body ? resp.body.result : null
+      }
+      const signature4K = async () =>
+        (await rows4K())
+          .map((row) => `${row.slot}:${normalizeItemName(row.name)}×${row.count}`)
+          .sort()
+          .join('|')
+      const botName4K = (await status()).username
+      const signatureBefore4K = await signature4K()
+      const handBefore4K = await hand4K()
+
+      // 1) find_blocks：找目标方块（起点永远是罐头当前位置）。
+      //    操作者指定了 SMOKE_RESOURCE_BLOCK 就只用它；否则按候选顺序**自动搜索**
+      //    （§三十五：没指定就自动搜索；§二十五：oak_log 优先，找不到就用 stone 这类）。
+      const RESOURCE_CANDIDATES = []
+      const pushCandidate = (name) => {
+        const clean = normalizeBlock((name || '').trim())
+        if (clean && !RESOURCE_CANDIDATES.includes(clean)) RESOURCE_CANDIDATES.push(clean)
+      }
+      if (process.env.SMOKE_RESOURCE_BLOCK) {
+        pushCandidate(process.env.SMOKE_RESOURCE_BLOCK)
+      } else {
+        pushCandidate(RESOURCE)
+        pushCandidate('minecraft:stone')
+        pushCandidate('minecraft:dirt')
+        pushCandidate('minecraft:oak_log')
+      }
+      let findView = null
+      let resource = RESOURCE
+      let candidate = null
+      for (const name of RESOURCE_CANDIDATES) {
+        const resp = await request(runtimePort, 'POST', '/minecraft/find_blocks', {
+          block_names: [name],
+          max_distance: 16,
+          max_results: 4,
+        })
+        const view = resp.status === 200 && resp.body ? resp.body.result : null
+        if (!findView) findView = view
+        if (view && view.matches.length > 0) {
+          findView = view
+          resource = name
+          candidate = view.matches[0]
+          break
+        }
+      }
+      check(
+        Boolean(findView) && Array.isArray(findView.matches),
+        `find_blocks = PASS（HTTP 200，候选顺序 ${RESOURCE_CANDIDATES.join(' → ')}，`
+          + `命中 ${findView ? findView.matches.length : '-'} 个 ${resource}）`,
+      )
+      let createdBlock4K = null
+      let blockOrigin4K = 'air'
+
+      // 2) 世界里没有（或操作者显式开启夹具）→ 就地造一个**天然兼容**的目标（默认不造）
+      if (!candidate && ALLOW_FIXTURE) {
+        const origin4K = (await status()).position
+        const base = {
+          x: Math.round(origin4K.x),
+          y: Math.round(origin4K.y),
+          z: Math.round(origin4K.z),
+        }
+        for (const [dx, dy, dz] of [
+          [1, 0, 0],
+          [0, 0, 1],
+          [-1, 0, 0],
+          [0, 0, -1],
+          [1, 1, 0],
+          [0, 1, 1],
+        ]) {
+          const spot = { x: base.x + dx, y: base.y + dy, z: base.z + dz }
+          const raw = await blockAt(spot)
+          if (raw !== null && normalizeBlock(raw) !== 'air' && normalizeBlock(raw) !== 'water') continue
+          await say(`/setblock ${spot.x} ${spot.y} ${spot.z} ${resource}`)
+          const placed = await waitForValue(async () => {
+            const now = normalizeBlock(await blockAt(spot))
+            return now === normalizeBlock(resource) ? now : null
+          }, '资源夹具出现在感知里', 4000)
+          if (placed) {
+            createdBlock4K = spot
+            blockOrigin4K = raw === null ? 'air' : raw
+            console.log(
+              `[smoke] 4K 夹具：在 (${spot.x},${spot.y},${spot.z}) 放了 ${resource}`
+                + `（原方块 ${blockOrigin4K}，链路结束后还原）`,
+            )
+            break
+          }
+        }
+        if (createdBlock4K) {
+          const refind = await request(runtimePort, 'POST', '/minecraft/find_blocks', {
+            block_names: [resource],
+            max_distance: 16,
+            max_results: 4,
+          })
+          const refindView = refind.status === 200 ? refind.body.result : null
+          candidate =
+            refindView && refindView.matches.length > 0 ? refindView.matches[0] : null
+          check(
+            Boolean(candidate) &&
+              candidate.position.x === createdBlock4K.x &&
+              candidate.position.y === createdBlock4K.y,
+            'find_blocks 找到了刚放下的夹具方块（真实搜索，不是硬编码坐标）',
+          )
+        }
+      }
+
+      if (!candidate) {
+        console.log(
+          `[smoke] SKIPPED Phase 4K 资源链：附近 16 格内没有 ${RESOURCE_CANDIDATES.join(' / ')}`
+            + `（如需夹具请显式设置 SMOKE_RESOURCE_FIXTURE=1）—— 不伪造结论`,
+        )
+      } else {
+        const target4K = candidate.position
+        console.log(
+          `[smoke] 4K 资源链目标：${candidate.block.name} @ `
+            + `(${target4K.x},${target4K.y},${target4K.z})，`
+            + `goal_near=${candidate.distance.goal_near} / raw=${candidate.distance.raw}`,
+        )
+        const capabilityAt = async () => {
+          const resp = await request(runtimePort, 'POST', '/minecraft/dig_capability', target4K)
+          return { status: resp.status, view: resp.body && resp.body.result }
+        }
+        const before = await capabilityAt()
+        check(
+          before.status === 200 && Boolean(before.view) && before.view.block.name === candidate.block.name,
+          `dig capability = PASS（can_dig=${before.view && before.view.can_dig} / `
+            + `dig_time_ms=${before.view && before.view.dig_time_ms} / `
+            + `reason=${before.view && before.view.reason}）`,
+        )
+
+        // 3) 工具不理想（或空手）→ **明确**换一把（真实玩家也会做的事；绝不隐式）
+        const preferred =
+          /_log$/.test(normalizeItemName(resource)) || /_wood$/.test(normalizeItemName(resource))
+            ? '_axe'
+            : /_ore$/.test(normalizeItemName(resource)) || normalizeItemName(resource) === 'stone'
+              ? '_pickaxe'
+              : null
+        const handName = normalizeItemName((await hand4K())?.name || '')
+        let equipped4K = null
+        if (preferred && !handName.endsWith(preferred)) {
+          const inv = await inv4K()
+          const tool = (inv.items || []).find((row) => normalizeItemName(row.name).endsWith(preferred))
+          if (tool) {
+            const equip = await request(runtimePort, 'POST', '/minecraft/equip', { item: tool.name })
+            if (equip.status === 200 && equip.body.action_id) {
+              const terminal = await waitForActionTerminal(equip.body.action_id, 'equip 资源工具', 30000)
+              if (terminal && terminal.event === 'minecraft.action.completed') {
+                equipped4K = normalizeItemName(tool.name)
+                console.log(
+                  `[smoke] 4K：主手从 ${handName || '空手'} 换成 ${equipped4K}（明确一步 equip，不是自动选工具）`,
+                )
+              }
+            }
+          } else {
+            console.log(`[smoke] 4K：背包里没有 ${preferred}，就用当前主手继续（工具差异只体现在耗时）`)
+          }
+        }
+
+        // 4) move_to：走过去（4H.1 起 completed 已经带 GoalNear 复核）
+        const moveResp = await request(runtimePort, 'POST', '/minecraft/move_to', target4K)
+        if (!(moveResp.status === 200 && moveResp.body.action_id)) {
+          check(false, `move_to 启动必须 200/RUNNING（HTTP ${moveResp.status}）`)
+        } else {
+          const moveTerminal = await waitForActionTerminal(moveResp.body.action_id, 'move_to 终态', 60000)
+          check(
+            Boolean(moveTerminal) &&
+              moveTerminal.event === 'minecraft.action.completed' &&
+              typeof (moveTerminal.result || {}).distance_to_target === 'number' &&
+              moveTerminal.result.distance_to_target <= 1.5,
+            `move_to = PASS（${moveTerminal && moveTerminal.event}，`
+              + `distance_to_target=${moveTerminal && moveTerminal.result && moveTerminal.result.distance_to_target}）`,
+          )
+          if (!moveTerminal || moveTerminal.event !== 'minecraft.action.completed') {
+            console.log('[smoke] 4K：没走到目标，资源链在这里停下（不继续挖）')
+          } else {
+            // 5) 到了之后再查一次能力（§二十九：capability 再查一次）
+            const after = await capabilityAt()
+            console.log(
+              `[smoke] 4K：到目标后 capability = can_dig=${after.view && after.view.can_dig} / `
+                + `dig_time_ms=${after.view && after.view.dig_time_ms} / `
+                + `raw=${after.view && after.view.distance && after.view.distance.raw}`,
+            )
+
+            // 6) 记录"挖之前"的掉落物（§三十一：只认这次挖出来的 Item Entity）
+            const droppedBefore = new Set(
+              (((await listDropped4K()) || {}).items || []).map((row) => row.entity_id),
+            )
+            const inventoryBeforeByItem = await totalOf4K(candidate.block.name)
+
+            // 7) dig
+            const digResp = await request(runtimePort, 'POST', '/minecraft/dig', {
+              x: target4K.x,
+              y: target4K.y,
+              z: target4K.z,
+              expected_block: candidate.block.name,
+            })
+            if (!(digResp.status === 200 && digResp.body.action_id)) {
+              check(false, `dig 启动必须 200/RUNNING（HTTP ${digResp.status}：${JSON.stringify(digResp.body)}）`)
+            } else {
+              const digTerminal = await waitForActionTerminal(digResp.body.action_id, 'dig 终态', 60000)
+              const digResult = (digTerminal && digTerminal.result) || {}
+              check(
+                Boolean(digTerminal) &&
+                  digTerminal.event === 'minecraft.action.completed' &&
+                  normalizeBlock(digResult.block_after) !== normalizeBlock(digResult.block_before),
+                `dig = PASS（${digResult.block_before} → ${digResult.block_after}）`,
+              )
+              const gone = await waitForValue(async () => {
+                const now = normalizeBlock(await blockAt({ x: target4K.x, y: target4K.y, z: target4K.z }))
+                return now !== normalizeBlock(candidate.block.name) ? now || 'air' : null
+              }, '真实世界里的目标方块已经消失', 10000)
+              check(Boolean(gone), `world changed = PASS（那个位置现在是 ${gone || '未知'}）`)
+
+              // 8) dropped_items：只挑**这次挖出来**的那一个（新出现的 + 在挖点附近）
+              const drop = await waitForValue(async () => {
+                const view = await listDropped4K()
+                if (!view) return null
+                return (
+                  (view.items || []).find(
+                    (row) =>
+                      !droppedBefore.has(row.entity_id) &&
+                      Math.hypot(
+                        row.position.x - target4K.x,
+                        row.position.y - target4K.y,
+                        row.position.z - target4K.z,
+                      ) <= 4,
+                  ) || null
+                )
+              }, '这次挖出来的 Item Entity 出现在感知里', 10000)
+              check(
+                Boolean(drop),
+                `dropped item = PASS（${drop ? `#${drop.entity_id} ${drop.item.name}×${drop.item.count}` : '没等到'}）`,
+              )
+
+              if (drop) {
+                // 9) pickup_item（一次只捡这一个明确实体）
+                const pickupResp = await request(runtimePort, 'POST', '/minecraft/pickup_item', {
+                  entity_id: drop.entity_id,
+                  expected_item: drop.item.name,
+                })
+                if (!(pickupResp.status === 200 && pickupResp.body.action_id)) {
+                  check(
+                    false,
+                    `pickup 启动必须 200/RUNNING（HTTP ${pickupResp.status}：${JSON.stringify(pickupResp.body && pickupResp.body.error)}）`,
+                  )
+                } else {
+                  check(true, `pickup RUNNING = PASS（action_id=${pickupResp.body.action_id}）`)
+                  const pickupTerminal = await waitForActionTerminal(
+                    pickupResp.body.action_id,
+                    'pickup 终态',
+                    60000,
+                  )
+                  const pickupResult = (pickupTerminal && pickupTerminal.result) || {}
+                  check(
+                    Boolean(pickupTerminal) &&
+                      pickupTerminal.event === 'minecraft.action.completed' &&
+                      pickupResult.collected === true,
+                    `pickup = PASS / playerCollect = PASS（result=${JSON.stringify(pickupResult).slice(0, 160)}）`,
+                  )
+                  const goneView = await waitForValue(async () => {
+                    const view = await listDropped4K()
+                    return (view && (view.items || []).some((row) => row.entity_id === drop.entity_id))
+                      ? null
+                      : view
+                  }, '目标的实体从感知里消失', 8000)
+                  check(Boolean(goneView), 'entity gone = PASS（dropped_items 里不再有它）')
+                  const afterTotal = await totalOf4K(drop.item.name)
+                  const beforeTotal = await totalOf4K(drop.item.name)
+                  check(
+                    afterTotal === beforeTotal,
+                    `inventory reread = PASS（${drop.item.name} 现在 ${afterTotal} 个）`,
+                  )
+                  check(
+                    afterTotal >= (pickupResult.inventory_after || 0),
+                    `inventory increased = PASS（pickup 报 inventory_after=`
+                      + `${pickupResult.inventory_after}，重读=${afterTotal}）`,
+                  )
+                  if (inventoryBeforeByItem !== undefined) {
+                    console.log(
+                      `[smoke] 4K：${candidate.block.name} 挖前 ${inventoryBeforeByItem} 个 → `
+                        + `捡到 ${drop.item.name} ×${pickupResult.collected_count || '?'} → `
+                        + `${drop.item.name} 现在 ${afterTotal} 个`,
+                    )
+                  }
+                }
+              }
+            }
+          }
+        }
+
+        // 10) 恢复：还原夹具方块 + 清掉自己给的工具/物品 + 主手还原 + 逐槽比对
+        if (createdBlock4K) {
+          await say(
+            `/setblock ${createdBlock4K.x} ${createdBlock4K.y} ${createdBlock4K.z} ${blockOrigin4K}`,
+          )
+          await sleep(500)
+          console.log(`[smoke] 4K：夹具方块已还原（${blockOrigin4K}）`)
+        }
+        if (equipped4K && handBefore4K && handBefore4K.name) {
+          await request(runtimePort, 'POST', '/minecraft/equip', { item: handBefore4K.name })
+          await sleep(800)
+          console.log(`[smoke] 4K：主手已还原成 ${handBefore4K.name}`)
+        }
+        if (botName4K && equipped4K && !(await inv4K()).items?.some(
+          (row) => normalizeItemName(row.name) === normalizeItemName(equipped4K),
+        )) {
+          console.log('[smoke] 4K：那把工具本来就是背包里的（没有被清掉）')
+        }
+        const parse4K = (sig) =>
+          new Map(
+            (sig ? sig.split('|') : []).filter(Boolean).map((entry) => {
+              const [slot, rest] = entry.split(':')
+              const [item, count] = rest.split('×')
+              return [`${slot}:${item}`, Number.parseInt(count, 10)]
+            }),
+          )
+        const beforeMap4K = parse4K(signatureBefore4K)
+        const afterMap4K = parse4K(await signature4K())
+        const lost4K = []
+        for (const [key, count] of beforeMap4K) {
+          if ((afterMap4K.get(key) || 0) < count) lost4K.push(`${key} ×${count}→${afterMap4K.get(key) || 0}`)
+        }
+        const gained4K = []
+        for (const [key, count] of afterMap4K) {
+          const was = beforeMap4K.get(key) || 0
+          if (count > was) gained4K.push(`${key} ×${was}→${count}`)
+        }
+        check(lost4K.length === 0, `restore = PASS（原有物品一个没丢；before=${signatureBefore4K || '空'}）`)
+        if (lost4K.length > 0) console.log(`[smoke]    ✗ 4K 丢了原有物品：${lost4K.join('、')}`)
+        if (gained4K.length > 0) {
+          console.log(`[smoke] 4K 备注：背包多出 ${gained4K.join('、')}（这次资源链真的挖到并捡起来的）`)
+        }
+        const idle4K = await idleState()
+        check(idle4K.idle, 'ensureIdle = PASS（资源链结束后 runtime 回到 IDLE）')
       }
     }
 

@@ -120,6 +120,9 @@ _TOOL_STATUS: dict[str, int] = {
     "minecraft.target_occupied": 409,
     "minecraft.reference_block_missing": 404,
     "minecraft.block_unavailable": 404,
+    # Phase 4K：找方块（名字不认识 422；运行时给不出查询能力 500）
+    "minecraft.block_name_unknown": 422,
+    "minecraft.block_query_unavailable": 500,
     "minecraft.block_place_unconfirmed": 500,
     # Phase 4D：背包写操作
     "minecraft.item_not_found": 404,
@@ -450,6 +453,41 @@ class MinecraftApiRoutes(WebContext):
                 arguments["z"],
                 arguments["face"],
                 arguments["expected_item"],
+            ),
+        )
+        if not result.success:
+            code = result.error_type or "minecraft.action_failed"
+            raise ApiError(
+                _TOOL_STATUS.get(code, 500), code, result.error or code, detail=result.data
+            )
+        return ok(result.data, request=request)
+
+    async def _v1_minecraft_find_blocks(self, request: web.Request) -> web.Response:
+        """Phase 4K：找附近的指定方块（SAFE 只读，同步返回）。"""
+        try:
+            service = _service(self._bot)
+        except MinecraftBridgeError as exc:
+            raise _translate(exc) from exc
+        bridge = getattr(service, "agent", None)
+        if bridge is None:
+            raise ApiError(503, "minecraft.disabled", "Minecraft Agent 未装配")
+        body = await read_json(request)
+        arguments = {
+            "block_names": body.get("block_names"),
+            "max_distance": body.get("max_distance"),
+            "max_results": body.get("max_results"),
+        }
+        try:
+            service.validate_find_blocks(
+                arguments["block_names"], arguments["max_distance"], arguments["max_results"]
+            )
+        except MinecraftBridgeError as exc:
+            raise _translate(exc) from exc
+        result = await bridge.invoke_developer(
+            "minecraft_find_blocks",
+            arguments,
+            lambda svc: svc.find_blocks(
+                arguments["block_names"], arguments["max_distance"], arguments["max_results"]
             ),
         )
         if not result.success:
@@ -862,6 +900,9 @@ class MinecraftApiRoutes(WebContext):
         app.router.add_post(f"{API_PREFIX}/minecraft/craft", wrap(self._v1_minecraft_craft))
         app.router.add_post(
             f"{API_PREFIX}/minecraft/dig_capability", wrap(self._v1_minecraft_dig_capability)
+        )
+        app.router.add_post(
+            f"{API_PREFIX}/minecraft/find_blocks", wrap(self._v1_minecraft_find_blocks)
         )
         app.router.add_post(
             f"{API_PREFIX}/minecraft/dropped_items", wrap(self._v1_minecraft_dropped_items)

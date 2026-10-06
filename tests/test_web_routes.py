@@ -191,6 +191,7 @@ ROUTES = [
     "POST /api/v1/minecraft/dropped_items",
     "POST /api/v1/minecraft/equip",
     "POST /api/v1/minecraft/events",
+    "POST /api/v1/minecraft/find_blocks",
     "POST /api/v1/minecraft/follow_player",
     "POST /api/v1/minecraft/inventory_move",
     "POST /api/v1/minecraft/join",

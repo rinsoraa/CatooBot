@@ -3,6 +3,37 @@
 本文件记录 CatooBot 的版本演进。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号见 `pyproject.toml`；日期取自真实提交历史（本仓库 2026-09-30 起）。
 
+## Minecraft Phase 4K — Resource Targeting + 单资源真实闭环
+
+* 新增 LLM 工具 `minecraft_find_blocks`（**SAFE 只读、非独占、不新增 ActionRuntime 复合动作**）：
+  在罐头**当前所在位置**附近（默认 16 格，最大 32）找指定名称的方块，最多返回 8 条（最大 16），
+  每条给出 `block{name}` / `position{x,y,z}` / `distance{goal_near, raw}`（与
+  `minecraft_dig_capability` **共用同一套距离口径**），按 `goal_near → raw → x → y → z` 稳定排序。
+* 事实来源是 Mineflayer 的 `bot.findBlocks({point, matching: [blockId…], maxDistance, count})`：
+  优先按 **block id 数组**匹配，绝不自己遍历世界；起点永远是罐头当前位置（不接受坐标起点）。
+  只接受明确的方块名（`iron_ore` / `minecraft:iron_ore` 都会规范成裸名并去重），**不支持 block tag**。
+  名字不认识 → `minecraft.block_name_unknown`（422，点出哪个名字）而不是空结果；
+  范围内没有 → 正常空结果（不是 404）；被条数上限截断 → `truncated: true`（不是失败）。
+* **只定位，不移动、不装备、不挖、不拾取**，也不返回任何"推荐/最佳"（最近 ≠ 最适合挖）；
+  不写 WorldPerception 缓存（on-demand query）；任何回合都能调用，不需要确认。
+* 配置只加两个键：`minecraft.action.find_blocks.max_distance`（16）与 `.max_results`（8），
+  硬上限 32 / 16 在 Service 与 runtime 两侧都拦（不允许"扫全世界"）。
+* **真实资源链**（由 smoke 编排，**没有**包成 gather_resource 黑盒）：
+  `find_blocks → dig_capability →（必要时）明确 equip → move_to → 再查 capability → dig →
+  dropped_items（只认这次挖出来的实体）→ pickup_item → inventory 复核`。
+  真机实测：天然橡木在 11 格外（此时 `can_dig=false / reason=too_far`）→ move_to completed
+  （`distance_to_target=1.41`）→ 到地方再查 `can_dig=true / dig_time_ms=3000 / raw=1.82` →
+  `dig`（oak_log → air）→ 新出现的 Item Entity `#105357 oak_log×1` → pickup
+  （`inventory_before=0 → inventory_after=1`、playerCollect、实体消失）→ 重读背包 oak_log 0 → 1
+  → 逐槽恢复 → `REAL SERVER: PASS`。
+* 验证：Node `find_blocks.test.js` **41 checks**（A–J）；Python 新增
+  `tests/test_minecraft_find_blocks_tool.py`（15 个用例 A–K，含"省略上限时用配置默认值"走真实 Service）；
+  WebUI 新增 Find Blocks 面板（FIND + 候选表 + **USE AS TARGET 只填坐标**，没有 AUTO GATHER，
+  vitest +7）；flying-squid E2E 在真实假服务器上命中 8 个 grass_block 并覆盖拒绝路径；
+  真机 smoke 资源链全绿。
+* 顺带：`app/tools/schema.py` 的依赖无关校验器补上了 `minItems`（`block_names` 的空数组
+  现在在 schema 层就被拒）。
+
 ## Minecraft Phase 4J — Tool Capability Knowledge（挖掘能力只读模型）
 
 * 新增 LLM 工具 `minecraft_dig_capability`（**SAFE 只读、非独占、不新增 ActionRuntime 动作**）：

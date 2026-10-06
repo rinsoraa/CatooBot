@@ -223,7 +223,7 @@ function main() {
     // 批量整理 / 容器 / 丢弃 之类的动作一个都没有）
     assert(
       Object.keys(ACTION_REGISTRY).sort().join(',') ===
-        'chat,container_inspect,container_transfer,craft,dig,dig_capability,dropped_items,equip,follow_player,inventory_move,look_at,move_to,pickup_item,place,recipe_lookup,stop',
+        'chat,container_inspect,container_transfer,craft,dig,dig_capability,dropped_items,equip,find_blocks,follow_player,inventory_move,look_at,move_to,pickup_item,place,recipe_lookup,stop',
       `注册表不含额外动作（得到 ${Object.keys(ACTION_REGISTRY).sort().join(',')}）`,
     )
     // Phase 4H.1：绝不能再走 mineflayer-pathfinder 的 goto()（2.4.5 会在空路径上静默 resolve）。

@@ -125,6 +125,7 @@ v0.4 行为引擎（回复延迟/分段/作息，规格不在 docs/specs/）标 
 | [MINECRAFT_PHASE4H1.md](MINECRAFT_PHASE4H1.md) | Minecraft 导航可靠性加固（Phase 4H.1）：move_to 不再相信 `pathfinder.goto()` 的 resolve（2.4.5 空路径静默成功），自己挂生命周期 + 用实际位置硬校验到达；新增 `path.not_reached`；真机 false-success guard | 已实现（真实服务器假成功守卫 PASS） |
 | [MINECRAFT_PHASE4I.md](MINECRAFT_PHASE4I.md) | Minecraft 工具感知（Phase 4I）：`minecraft_dig` 增加**可选** `expected_tool`（只校验执行瞬间的主手，**绝不自动装备**；指纹含工具；结果带 `tool_expected/tool_actual`） | 已实现（真实服务器工具感知 dig PASS） |
 | [MINECRAFT_PHASE4J.md](MINECRAFT_PHASE4J.md) | Minecraft 挖掘能力只读模型（Phase 4J）：`minecraft_dig_capability`（SAFE 只读，非独占；用运行时的 `canDigBlock`/`digTime` 回答「现在能不能挖、多久」；两种距离口径；不推荐工具） | 已实现（真实服务器三种状态 PASS） |
+| [MINECRAFT_PHASE4K.md](MINECRAFT_PHASE4K.md) | Minecraft 资源定位 + 单资源真实闭环（Phase 4K）：`minecraft_find_blocks`（SAFE 只读，非独占；`findBlocks` 按 block id 搜索、双距离口径、不推荐）；并用原子能力真机跑通 find → capability → equip → move → dig → dropped_items → pickup → inventory | 已实现（真实服务器天然橡木闭环 PASS） |
 | bible_source_罐头.txt | 内置角色的人物档案源文件（Bible 编译器输入） | **本地内容资产**：按「Character Bible 不得上传」约束，已移至 `config/bible_source_罐头.txt`（`config/` 不在发布镜像内） |
 
 ## 运维速查

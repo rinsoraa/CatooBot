@@ -20,6 +20,8 @@ import type {
   MinecraftAgentContext,
   MinecraftDroppedItem,
   MinecraftDigCapabilityView,
+  MinecraftBlockMatch,
+  MinecraftFindBlocksView,
   MinecraftDroppedItemsView,
   MinecraftCraftingTable,
   MinecraftRecipeEntry,
@@ -143,6 +145,10 @@ const digTarget = reactive({ x: '', y: '', z: '', expectedBlock: '', expectedToo
 const capabilityTarget = reactive({ x: '', y: '', z: '' })
 const capability = ref<MinecraftDigCapabilityView | null>(null)
 const capabilityError = ref('')
+// Phase 4K：Find Blocks（只读定位；绝不自动 move/equip/dig/pickup）
+const findTarget = reactive({ names: '', maxDistance: '16', maxResults: '8' })
+const findResult = ref<MinecraftFindBlocksView | null>(null)
+const findError = ref('')
 // Phase 4C：Place Test（对称于 dig；六个 face + 主手物品约束）
 const PLACE_FACES: MinecraftPlaceFace[] = ['up', 'down', 'north', 'south', 'east', 'west']
 const placeTarget = reactive({
@@ -482,6 +488,57 @@ async function placeBlock(): Promise<void> {
   } finally {
     working.value = false
   }
+}
+
+async function findBlocks(): Promise<void> {
+  const names = findTarget.names
+    .split(/[,\s]+/)
+    .map((value) => value.trim())
+    .filter(Boolean)
+  if (!names.length) {
+    toast.error('缺少方块名', '至少填一个方块名（英文逗号或空格分开）')
+    return
+  }
+  const distance = findTarget.maxDistance.trim() === '' ? undefined : Number(findTarget.maxDistance)
+  const results = findTarget.maxResults.trim() === '' ? undefined : Number(findTarget.maxResults)
+  for (const [label, value] of [
+    ['Max Distance', distance],
+    ['Max Results', results],
+  ] as const) {
+    if (value !== undefined && (!Number.isInteger(value) || value < 1)) {
+      toast.error(`${label} 不合法`, '必须是正整数（可以留空用默认值）')
+      return
+    }
+  }
+  working.value = true
+  findError.value = ''
+  try {
+    const payload = await minecraftApi.findBlocks(names, distance, results)
+    findResult.value = payload.result
+  } catch (caught) {
+    findResult.value = null
+    findError.value = errorMessage(caught)
+    toast.error('FIND 失败', errorMessage(caught))
+  } finally {
+    working.value = false
+  }
+}
+
+/** 把某个候选坐标填到后续调试表单（**只填坐标**，绝不触发任何动作）。 */
+function useAsTarget(row: MinecraftBlockMatch): void {
+  digTarget.x = String(row.position.x)
+  digTarget.y = String(row.position.y)
+  digTarget.z = String(row.position.z)
+  digTarget.expectedBlock = row.block.name
+  capabilityTarget.x = String(row.position.x)
+  capabilityTarget.y = String(row.position.y)
+  capabilityTarget.z = String(row.position.z)
+  toast.info('已填入坐标', `dig / capability 表单已填好 (${row.position.x},${row.position.y},${row.position.z})`)
+}
+
+function findDistance(row: MinecraftBlockMatch, key: 'goal_near' | 'raw'): string {
+  const value = row.distance?.[key]
+  return typeof value === 'number' ? `${value} 格` : '-'
 }
 
 async function checkDigCapability(): Promise<void> {
@@ -1318,6 +1375,101 @@ onUnmounted(stopPolling)
             方块和用 minecraft_world 看到的不一致时会拒绝（block_changed）。
             Expected Tool 只校验**当前主手**：不一致会拒绝（held_item_changed），
             **绝不会自动装备** —— 要换工具请用上面的 Equip Test（那是另一条要确认的动作）。
+          </p>
+        </section>
+
+        <section class="minecraft__card cb-card" data-test="mc-find-blocks">
+          <SectionHeader
+            title="Find Blocks（Phase 4K · SAFE 只读）"
+            description="在当前已加载的范围里找指定方块的位置：只定位，不移动、不装备、不挖、不拾取，也不判断哪一个最适合挖。"
+          />
+          <div class="minecraft__form" data-test="mc-find-form">
+            <label class="minecraft__field">
+              <span>Block Names</span>
+              <input
+                v-model="findTarget.names"
+                type="text"
+                placeholder="minecraft:oak_log, minecraft:stone"
+                data-test="mc-find-names"
+              />
+            </label>
+            <label class="minecraft__field">
+              <span>Max Distance</span>
+              <input
+                v-model="findTarget.maxDistance"
+                type="text"
+                inputmode="numeric"
+                data-test="mc-find-distance"
+              />
+            </label>
+            <label class="minecraft__field">
+              <span>Max Results</span>
+              <input
+                v-model="findTarget.maxResults"
+                type="text"
+                inputmode="numeric"
+                data-test="mc-find-results"
+              />
+            </label>
+            <button
+              type="button"
+              class="minecraft__button"
+              :disabled="working || !isOnline"
+              data-test="mc-find-run"
+              @click="findBlocks"
+            >
+              FIND
+            </button>
+          </div>
+          <table class="minecraft__table" data-test="mc-find-table">
+            <thead>
+              <tr>
+                <th>Block</th>
+                <th>Position</th>
+                <th>GoalNear Distance</th>
+                <th>Raw Distance</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-for="row in findResult?.matches ?? []" :key="`${row.block.name}-${row.position.x},${row.position.y},${row.position.z}`">
+                <td>{{ row.block.name }}</td>
+                <td>{{ row.position.x }}, {{ row.position.y }}, {{ row.position.z }}</td>
+                <td>{{ findDistance(row, 'goal_near') }}</td>
+                <td>{{ findDistance(row, 'raw') }}</td>
+                <td>
+                  <button
+                    type="button"
+                    class="minecraft__button minecraft__button--small"
+                    :data-test="`mc-find-use-${row.position.x}-${row.position.y}-${row.position.z}`"
+                    @click="useAsTarget(row)"
+                  >
+                    USE AS TARGET
+                  </button>
+                </td>
+              </tr>
+              <tr v-if="!findResult">
+                <td colspan="5">还没有查询过</td>
+              </tr>
+              <tr v-else-if="!findResult.matches.length">
+                <td colspan="5">
+                  {{ findResult.query.block_names.join('、') }} 在
+                  {{ findResult.query.max_distance }} 格内没有找到。
+                </td>
+              </tr>
+            </tbody>
+          </table>
+          <p class="cb-caption" data-test="mc-find-summary">
+            {{
+              findResult
+                ? `命中 ${findResult.matches.length} 条${findResult.truncated ? '（被条数上限截断）' : ''}`
+                : '只读定位：不会移动、不会装备、不会挖、不会拾取'
+            }}
+          </p>
+          <p v-if="findError" class="cb-caption" data-test="mc-find-error">{{ findError }}</p>
+          <p class="cb-caption">
+            USE AS TARGET 只是把坐标填到下面的 Dig / Capability 表单 —— 不会自动走过去、不会换工具、不会挖。
+            下一步要不要挖、要不要先换工具，由你决定（Dig Capability 会告诉你现在挖不挖得动）。
           </p>
         </section>
 

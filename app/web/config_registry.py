@@ -849,7 +849,7 @@ _NOTES: dict[str, str] = {
     "minecraft.agent.trusted_players": "可信 Minecraft 玩家名（LOW 及以上动作只对这些人执行）",
     "minecraft.agent.tools.enabled": "LLM 能不能用 Minecraft 工具（关掉 = 模型完全碰不到游戏）",
     "minecraft.agent.tools.allow_safe": (
-        "允许 SAFE 动作：查世界 / 说话 / 朝向 / 停止 / 看背包 / 看掉落物 / 查挖掘能力"
+        "允许 SAFE 动作：查世界 / 说话 / 朝向 / 停止 / 看背包 / 看掉落物 / 查挖掘能力 / 找方块"
     ),
     "minecraft.agent.tools.allow_low": "允许 LOW 动作：非破坏性移动与跟随（仍需用户明确要求）",
     "minecraft.agent.tools.allow_medium": (
@@ -869,6 +869,12 @@ _NOTES: dict[str, str] = {
     "minecraft.action.inventory_move.timeout": "单次背包搬运（单物品单槽位）最长多少秒",
     "minecraft.action.container.timeout": "单次容器动作（读 Chest/Barrel 或搬一格）最长多少秒",
     "minecraft.action.container.max_distance": "最大容器交互距离（格）；超出的直接拒绝",
+    "minecraft.action.find_blocks.max_distance": (
+        "找方块的默认搜索半径（格）；硬上限 32 —— 不允许让模型做「扫全世界」的大范围扫描"
+    ),
+    "minecraft.action.find_blocks.max_results": (
+        "找方块默认最多返回几条；硬上限 16（超出会标 truncated）"
+    ),
     "minecraft.action.pickup.timeout": "拾取一个掉落物最长多少秒（到点按 TIMEOUT 收尾并收掉导航）",
     "minecraft.action.pickup.max_distance": (
         "掉落物最远多少格就去捡；启动时太远直接拒绝，追的过程中被拉远也会停下"
@@ -980,6 +986,7 @@ _SECTION_LABELS: dict[str, str] = {
     "minecraft.action.equip": "Minecraft 换主手（equip · 单个物品）",
     "minecraft.action.inventory_move": "Minecraft 背包搬运（inventory_move · 单槽位）",
     "minecraft.action.container": "Minecraft 容器（Chest / Barrel · 单方块）",
+    "minecraft.action.find_blocks": "Minecraft 找方块（find_blocks · 只读定位）",
     "minecraft.action.pickup": "Minecraft 拾取掉落物（pickup · 一次一个明确实体）",
     "minecraft.action.recipe_lookup": "Minecraft 查配方（玩家 2×2）",
     "minecraft.action.craft": "Minecraft 合成（一次一个配方）",

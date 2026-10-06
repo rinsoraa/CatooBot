@@ -106,6 +106,11 @@ async function waitFor(predicate, label, timeoutMs = 30000) {
 
 // ------------------------------------------------------------------ main
 
+/** 把小数组转成可比对的字符串集合（Phase 4K 的 e2e 用它检查投影字段）。 */
+function setOf(values) {
+  return [...values].sort().join(',')
+}
+
 async function main() {
   // 全局看门狗：E2E 绝不允许无限期挂起（CI 也不欢迎）。
   setTimeout(() => {
@@ -1464,6 +1469,127 @@ async function main() {
           '[e2e] 3×3 craft 成功路径：SKIPPED（flying-squid 没有 /give，箱子里凑不出 8 块木板；'
             + '真实服务器 smoke 覆盖）',
         )
+      }
+
+      // ---------------- Phase 4K：find_blocks（只读定位） ----------------
+      if (cycle === 1) {
+        const find = (body) =>
+          request(runtimePort, 'POST', '/minecraft/find_blocks', body)
+        const here = (await request(runtimePort, 'GET', '/minecraft/status')).body.position
+        const grassNear = await find({
+          block_names: ['minecraft:grass_block'],
+          max_distance: 16,
+          max_results: 8,
+        })
+        assert(
+          grassNear.status === 200 &&
+            grassNear.body.result &&
+            grassNear.body.result.ok === true &&
+            Array.isArray(grassNear.body.result.matches) &&
+            typeof grassNear.body.result.truncated === 'boolean',
+          `find_blocks 语义投影形状（HTTP ${grassNear.status}）`,
+        )
+        const shape = JSON.stringify(grassNear.body.result)
+        for (const forbidden of ['metadata', 'stateId', 'chunk', 'diggable', 'hardness']) {
+          assert(!shape.includes(forbidden), `不泄露 ${forbidden}`)
+        }
+        assert(
+          !shape.includes('recommended') && !shape.includes('best') && !shape.includes('optimal'),
+          '不返回推荐/最佳（§十五）',
+        )
+        assert(
+          grassNear.body.result.query.max_distance === 16 &&
+            grassNear.body.result.query.max_results === 8,
+          'query 块如实回显搜索条件',
+        )
+        for (const row of grassNear.body.result.matches) {
+          assert(
+            setOf(Object.keys(row)) === 'block,distance,position',
+            `每条匹配只有 block/position/distance（得到 ${JSON.stringify(Object.keys(row))}）`,
+          )
+          assert(
+            setOf(Object.keys(row.distance)) === 'goal_near,raw',
+            '每条匹配带两种距离口径',
+          )
+        }
+        console.log(
+          `[e2e] find_blocks ✓ 语义投影（假服务器上 ${grassNear.body.result.matches.length} 个 grass_block）`,
+        )
+
+        // 未知方块名 → 422 的稳定错误码（不是空结果）
+        const unknown = await find({ block_names: ['minecraft:banana_ore'] })
+        assert(
+          unknown.status === 422 && unknown.body.error.code === 'block.name_unknown',
+          `未知方块名 → block.name_unknown 422（得到 ${JSON.stringify(unknown.body)}）`,
+        )
+        assert(
+          Array.isArray(unknown.body.error.detail.unknown) &&
+            unknown.body.error.detail.unknown.includes('banana_ore'),
+          '错误里点出是哪个名字不认识',
+        )
+
+        // 范围内没有 → 正常空结果（不是 404）
+        const none = await find({
+          block_names: ['minecraft:beacon'],
+          max_distance: 4,
+          max_results: 4,
+        })
+        assert(
+          none.status === 200 &&
+            none.body.result.matches.length === 0 &&
+            none.body.result.truncated === false,
+          `范围内没有 → 正常空结果（得到 ${JSON.stringify(none.body.result.matches)}）`,
+        )
+
+        // 上限校验：越界直接拒（不允许"扫全世界"）
+        const tooFar = await find({ block_names: ['minecraft:stone'], max_distance: 1000 })
+        assert(
+          tooFar.status === 400 && tooFar.body.error.code === 'action.invalid',
+          `max_distance 越界 → action.invalid（得到 ${JSON.stringify(tooFar.body)}）`,
+        )
+        const manyNames = await find({
+          block_names: Array.from({ length: 9 }, (_, i) => `block_${i}`),
+        })
+        assert(
+          manyNames.status === 400 && manyNames.body.error.code === 'action.invalid',
+          `9 个名字 → action.invalid（得到 ${JSON.stringify(manyNames.body)}）`,
+        )
+        const one = await find({ block_names: ['minecraft:grass_block'], max_results: 1 })
+        assert(
+          one.status === 200 && one.body.result.matches.length <= 1,
+          `max_results=1 时最多一条（得到 ${one.body.result.matches.length}）`,
+        )
+
+        // 非独占：前台动作跑着时只读查询照样能执行
+        const busyFind = await request(runtimePort, 'POST', '/minecraft/move_to', {
+          x: here.x + 12,
+          y: here.y,
+          z: here.z,
+        })
+        const duringMove = await find({ block_names: ['minecraft:grass_block'] })
+        assert(
+          duringMove.status === 200 && duringMove.body.result.ok === true,
+          `move_to 跑着时 find_blocks 照样能执行（得到 HTTP ${duringMove.status}）`,
+        )
+        const busyDig = await request(runtimePort, 'POST', '/minecraft/dig', {
+          x: Math.round(here.x),
+          y: Math.round(here.y) - 1,
+          z: Math.round(here.z),
+          expected_block: 'stone',
+        })
+        const exclusiveCode = busyDig.body && busyDig.body.error && busyDig.body.error.code
+        assert(
+          exclusiveCode === 'action.busy' || exclusiveCode === 'block.not_found',
+          `前台动作在跑时独占动作仍然被拒（得到 ${exclusiveCode}）`,
+        )
+        await request(runtimePort, 'POST', '/minecraft/stop', {})
+        if (busyFind.body && busyFind.body.action_id) {
+          await waitFor(
+            () => events.some((e) => e.action_id === busyFind.body.action_id && e.event.startsWith('minecraft.action.')),
+            'find_blocks 段收尾',
+          )
+        }
+        console.log('[e2e] find_blocks ✓ 未知名字 / 空结果 / 上限 / 非独占')
       }
 
       // ---------------- Phase 4H：掉落物感知 + 单实体拾取 ----------------
