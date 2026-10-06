@@ -18,6 +18,9 @@ from app.integrations.minecraft.confirmation import CODE_MISMATCH, CODE_NOT_TRUS
 from app.integrations.minecraft.service import (
     MinecraftActionInvalid,
     MinecraftCraftFailed,
+    MinecraftCraftingTableInvalid,
+    MinecraftCraftingTableMissing,
+    MinecraftCraftingTableTooFar,
     MinecraftCraftUnconfirmed,
     MinecraftMaterialInsufficient,
     MinecraftRecipeChanged,
@@ -50,11 +53,17 @@ async def test_tool_registered_with_strict_schema() -> None:
         tool = runtime.registry.maybe_get("minecraft_craft")
         assert tool is not None and isinstance(tool, MinecraftCraftTool)
         schema = tool.metadata.input_schema
-        assert set(schema["properties"]) == {"recipe_id"}
-        assert schema["required"] == ["recipe_id"]
+        # Phase 4G：crafting_table 是**可选**坐标（不给 = 玩家 2×2）
+        assert set(schema["properties"]) == {"recipe_id", "crafting_table"}
+        assert schema["required"] == ["recipe_id"], "crafting_table 必须保持可选（4F 向后兼容）"
+        table_spec = schema["properties"]["crafting_table"]
+        assert set(table_spec["properties"]) == {"x", "y", "z"}
+        assert table_spec["required"] == ["x", "y", "z"]
+        assert table_spec["additionalProperties"] is False
         assert schema["additionalProperties"] is False
         # §十一：第一版**没有** count / times / batch_size —— 彻底避免"执行几次"的误解
-        for forbidden in ("count", "times", "amount", "batch_size", "crafting_table", "item"):
+        # Phase 4G：crafting_table 是合法的**可选**上下文；批量参数仍然一个都不许有
+        for forbidden in ("count", "times", "amount", "batch_size", "item", "table"):
             assert forbidden not in schema["properties"], forbidden
     finally:
         await runtime.close()
@@ -190,7 +199,9 @@ async def test_first_call_requires_confirmation_then_executes() -> None:
         second = await call(gate, CRAFT_ARGS, context)
         assert second.success is True, second.error
         assert second.data["status"] == "RUNNING" and second.data["action_id"] == "act_craft_1"
-        assert gate.service.action_calls("craft") == [{"recipe_id": STICK_ID}]
+        assert gate.service.action_calls("craft") == [
+            {"recipe_id": STICK_ID, "crafting_table": None}
+        ]
         assert gate.bridge.confirmations.pending() == [], "一次性：已 CONSUMED"
 
         third = await call(gate, CRAFT_ARGS, context)
@@ -211,7 +222,9 @@ async def test_changing_recipe_id_creates_a_new_confirmation() -> None:
         assert repending[0].summary == "用 2 个 birch_planks 制作 4 个 stick"
         done = await call(gate, {"recipe_id": BIRCH_ID}, context)
         assert done.success is True
-        assert gate.service.action_calls("craft") == [{"recipe_id": BIRCH_ID}]
+        assert gate.service.action_calls("craft") == [
+            {"recipe_id": BIRCH_ID, "crafting_table": None}
+        ]
 
 
 async def test_confirmation_is_bound_to_session_and_user() -> None:
@@ -373,14 +386,161 @@ async def test_orchestrator_flow_requires_then_consumes() -> None:
                 query="确认",
             )
             assert second == "好，我做好了。"
-            assert gate.service.action_calls("craft") == [{"recipe_id": STICK_ID}]
+            assert gate.service.action_calls("craft") == [
+                {"recipe_id": STICK_ID, "crafting_table": None}
+            ]
         finally:
             await runtime.close()
 
 
+# ------------------------------------------------- Phase 4G：3×3 工作台合成
+
+TABLE = {"x": 100, "y": 64, "z": 100}
+CHEST_ID = "!chest*1=oak_planks*8"
+
+
+async def test_crafting_table_is_optional_and_passed_through() -> None:
+    """J/O：crafting_table 可选；给了就原样传给 Service（4F 调用方式不变）。"""
+    async with Gate() as gate:
+        omitted = await call(gate, {"recipe_id": STICK_ID}, gate.context())
+        assert omitted.error_type == CODE_REQUIRED
+        assert gate.service.action_calls("craft") == []
+
+        async with Gate() as gate2:
+            context = gate2.context()
+            first = await call(gate2, {"recipe_id": CHEST_ID, "crafting_table": TABLE}, context)
+            assert first.error_type == CODE_REQUIRED
+            assert (
+                first.data["confirmation"]["summary"]
+                == "用 8 个 oak_planks 在 (100, 64, 100) 的 Crafting Table 制作 1 个 chest"
+            )
+            done = await call(gate2, {"recipe_id": CHEST_ID, "crafting_table": TABLE}, context)
+            assert done.success is True, done.error
+            assert done.data["status"] == "RUNNING"
+            assert gate2.service.action_calls("craft") == [
+                {"recipe_id": CHEST_ID, "crafting_table": TABLE}
+            ]
+
+
+async def test_fingerprint_covers_the_table_coordinates() -> None:
+    """§十五/K：指纹包含工作台坐标 —— 同一配方、不同工作台是两次不同的授权。"""
+    async with Gate() as gate:
+        context = gate.context()
+        await call(gate, {"recipe_id": CHEST_ID, "crafting_table": TABLE}, context)
+        first = gate.bridge.confirmations.pending()
+        assert len(first) == 1 and first[0].arguments == {
+            "recipe_id": CHEST_ID,
+            "crafting_table": TABLE,
+        }
+        hash_with_table = first[0].arguments_hash
+        gate.bridge.confirmations.cancel(first[0].confirmation_id)
+
+        await call(gate, {"recipe_id": CHEST_ID}, context)
+        second = gate.bridge.confirmations.pending()
+        assert second[0].arguments == {"recipe_id": CHEST_ID}, "没给工作台就只绑 recipe_id"
+        assert second[0].arguments_hash != hash_with_table, "坐标不同 → 指纹必须不同"
+
+
+async def test_changing_table_coordinates_creates_a_new_confirmation() -> None:
+    """L：坐标变了 → mismatch + 按新坐标重挂一条（摘要也更新）。"""
+    async with Gate() as gate:
+        context = gate.context()
+        await call(gate, {"recipe_id": CHEST_ID, "crafting_table": TABLE}, context)
+        moved = {"x": 101, "y": 64, "z": 100}
+        mismatched = await call(gate, {"recipe_id": CHEST_ID, "crafting_table": moved}, context)
+        assert mismatched.error_type == CODE_MISMATCH
+        assert gate.service.action_calls("craft") == [], "换个工作台就是不授权"
+        repending = gate.bridge.confirmations.pending()
+        assert len(repending) == 1 and repending[0].arguments["crafting_table"] == moved
+        assert (
+            repending[0].summary
+            == "用 8 个 oak_planks 在 (101, 64, 100) 的 Crafting Table 制作 1 个 chest"
+        )
+
+
+async def test_table_vanishing_after_confirmation_is_reported() -> None:
+    """M/N：确认后工作台被挖掉 / 被换掉 → 两个稳定错误码，绝不继续。"""
+    cases = [
+        (
+            MinecraftCraftingTableMissing("那里没有工作台（100,64,100）"),
+            "minecraft.crafting_table_missing",
+        ),
+        (
+            MinecraftCraftingTableInvalid("那个位置不是工作台（chest）", detail={"block": "chest"}),
+            "minecraft.crafting_table_invalid",
+        ),
+        (
+            MinecraftCraftingTableTooFar("工作台距离 26.0 格", detail={"distance": 26.0}),
+            "minecraft.crafting_table_too_far",
+        ),
+    ]
+    for exc, expected_code in cases:
+        async with Gate() as gate:
+            context = gate.context()
+            gate.service.enqueue("craft", exc)
+            await call(gate, {"recipe_id": CHEST_ID, "crafting_table": TABLE}, context)
+            result = await call(gate, {"recipe_id": CHEST_ID, "crafting_table": TABLE}, context)
+            assert result.error_type == expected_code, (exc, result.error_type)
+            assert "Traceback" not in str(result.data)
+
+
+async def test_3x3_craft_is_exclusive_like_2x2() -> None:
+    """Q：带上工作台的合成同样是 exclusive（与 equip / inventory_move / container 互斥）。"""
+    from app.integrations.minecraft.events import parse_bridge_event
+
+    for busy_action in ("equip", "inventory_move", "container_transfer", "dig", "place", "move_to"):
+        async with Gate() as gate:
+            gate.bridge.context.apply_event(
+                parse_bridge_event(
+                    {
+                        "event": "minecraft.action.started",
+                        "session_id": "s1",
+                        "timestamp": 1.0,
+                        "action": busy_action,
+                        "action_id": "act_busy",
+                    }
+                )
+            )
+            blocked = await call(gate, {"recipe_id": CHEST_ID, "crafting_table": TABLE})
+            assert blocked.error_type == "minecraft.action_busy", busy_action
+
+
+async def test_3x3_activity_and_verification_payload_are_honest() -> None:
+    """O/P：完成事件带工作台坐标与 before/after（事实全部来自重读）。"""
+    from app.integrations.minecraft.events import parse_bridge_event
+
+    async with Gate() as gate:
+        gate.bridge.context.apply_event(
+            parse_bridge_event(
+                {
+                    "event": "minecraft.action.completed",
+                    "session_id": "s1",
+                    "timestamp": 2.0,
+                    "action": "craft",
+                    "action_id": "act_craft_1",
+                    "status": "SUCCEEDED",
+                    "result": {
+                        "recipe_id": CHEST_ID,
+                        "crafting_table": TABLE,
+                        "item": "chest",
+                        "result": {"name": "chest", "count_per_craft": 1, "crafted_count": 1},
+                        "ingredients": [{"name": "oak_planks", "consumed": 8}],
+                        "before": {"result_count": 0, "ingredient_counts": {"oak_planks": 8}},
+                        "after": {"result_count": 1, "ingredient_counts": {"oak_planks": 0}},
+                    },
+                }
+            )
+        )
+        assert gate.bridge.context.activity == "刚做好了 1 个 chest"
+        assert (gate.bridge.context.last_action or {})["action"] == "craft"
+
+
 def test_validate_craft_pure_function() -> None:
-    assert MinecraftService.validate_craft(f" {STICK_ID} ") == STICK_ID
-    assert MinecraftService.validate_craft("!chest*1=oak_planks*8") == "!chest*1=oak_planks*8"
+    assert MinecraftService.validate_craft(f" {STICK_ID} ") == (STICK_ID, None)
+    assert MinecraftService.validate_craft("!chest*1=oak_planks*8") == (
+        "!chest*1=oak_planks*8",
+        None,
+    )
     for bad in ("", "   ", "abc", "abc=def", 7, None, "x" * 220, "bad\x01=1"):
         try:
             MinecraftService.validate_craft(bad)

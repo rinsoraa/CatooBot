@@ -14,6 +14,8 @@
  */
 'use strict'
 
+const { Vec3 } = require('vec3')
+
 const registry = require('prismarine-registry')('1.21.1')
 const { Recipe } = require('prismarine-recipe')(registry)
 
@@ -98,13 +100,28 @@ function makeInventory(initial = {}) {
   return inv
 }
 
+/** 假方块（有 name 与 position —— §三十：不能拿 {} 当真实 block）。 */
+function blockAt(name, x, y, z) {
+  return { name, position: new Vec3(x, y, z) }
+}
+
 /** 忠实的 recipesFor 替身（照抄 mineflayer 的 requirementsMetForRecipe 语义）。 */
-function makeBot({ inventory = makeInventory(), entity = { position: null } } = {}) {
+function makeBot({
+  inventory = makeInventory(),
+  // 4G：工作台距离检查要读眼睛位置 → 默认给一个真实 position（(100,64,100) 附近）
+  entity = { position: new Vec3(100, 64, 100) },
+  blocks = {},
+} = {}) {
   const bot = {
     registry,
     inventory,
     entity,
+    blocks,
     recipesForCalls: [],
+    blockAt(position) {
+      const key = `${position.x},${position.y},${position.z}`
+      return Object.prototype.hasOwnProperty.call(blocks, key) ? blocks[key] : null
+    },
     recipesFor(itemType, metadata, minResultCount, craftingTable) {
       bot.recipesForCalls.push({ itemType, metadata, minResultCount, craftingTable })
       minResultCount = minResultCount ?? 1
@@ -137,6 +154,20 @@ function makeHarness(extra = {}) {
 
 function lookupResult(response) {
   return response && response.result
+}
+
+async function expectCodeRe(promise, code, label) {
+  try {
+    await promise
+  } catch (error) {
+    assert(
+      error && error.code === code,
+      `${label} → ${code}（得到 ${error && (error.code || error.message)}）`,
+    )
+    return error
+  }
+  assert(false, `${label} → 期望 ${code}，但成功返回了`)
+  return null
 }
 
 async function main() {
@@ -312,6 +343,175 @@ async function main() {
         readableRecipeKey(sets.all[0], registry).startsWith('!'),
       `工作台配方的 id 带 ! 前缀（${readableRecipeKey(sets.all[0], registry)}）`,
     )
+  }
+
+  console.log('[recipe-test] 4G-A~D. 指定工作台：验证方块 / 3×3 配方')
+  {
+    const table = blockAt('crafting_table', 100, 64, 100)
+    const tableParam = { x: 100, y: 64, z: 100 }
+    const blocks = { '100,64,100': table }
+
+    // A. 带工作台 + 材料齐 → chest（requires_table = true）可选，坐标进语义结果
+    const bot = makeBot({ inventory: makeInventory({ oak_planks: 8 }), blocks })
+    const { runtime, state } = makeHarness()
+    state.bot = bot
+    const payload = lookupResult(
+      await runtime.execute('recipe_lookup', { item: 'chest', crafting_table: tableParam }),
+    )
+    assert(
+      payload.item === 'chest' && payload.status === 'available',
+      `3×3 lookup available（得到 ${payload.status}）`,
+    )
+    assert(
+      JSON.stringify(payload.crafting_table) === JSON.stringify(tableParam),
+      `§十一 坐标进语义结果（得到 ${JSON.stringify(payload.crafting_table)}）`,
+    )
+    const entry = payload.recipes.find((row) => row.requires_table)
+    assert(Boolean(entry) && entry.available === true, '3×3 配方被选中且可用')
+    assert(
+      entry.recipe_id === '!chest*1=oak_planks*8' && entry.result.count_per_craft === 1,
+      `recipe_id 仍是可读签名（得到 ${entry.recipe_id}）`,
+    )
+    assert(
+      entry.ingredients.length === 1 &&
+        entry.ingredients[0].name === 'oak_planks' &&
+        entry.ingredients[0].count === 8,
+      `材料语义（得到 ${JSON.stringify(entry.ingredients)}）`,
+    )
+    // §三十：传给 mineflayer 的是**真实 block**，name/position 都对
+    const call = bot.recipesForCalls[bot.recipesForCalls.length - 1]
+    assert(
+      Boolean(call.craftingTable) && call.craftingTable.name === 'crafting_table',
+      `recipesFor 收到真实工作台 block（得到 ${JSON.stringify(call.craftingTable)}）`,
+    )
+    assert(
+      call.craftingTable.position.x === 100 &&
+        call.craftingTable.position.y === 64 &&
+        call.craftingTable.position.z === 100,
+      '工作台坐标原样传给 recipesFor',
+    )
+
+    // B. 那里没有方块 → table.missing
+    const harnessB = makeHarness()
+    harnessB.state.bot = makeBot({ inventory: makeInventory({ oak_planks: 8 }) })
+    await expectCodeRe(
+      harnessB.runtime.execute('recipe_lookup', { item: 'chest', crafting_table: tableParam }),
+      'table.missing',
+      'B. 工作台不存在',
+    )
+
+    // C. 那个位置不是工作台 → table.invalid
+    const harnessC = makeHarness()
+    harnessC.state.bot = makeBot({
+      inventory: makeInventory({ oak_planks: 8 }),
+      blocks: { '100,64,100': blockAt('chest', 100, 64, 100) },
+    })
+    const invalid = await expectCodeRe(
+      harnessC.runtime.execute('recipe_lookup', { item: 'chest', crafting_table: tableParam }),
+      'table.invalid',
+      'C. 那里是箱子',
+    )
+    assert(
+      Boolean(invalid && invalid.detail) && invalid.detail.block === 'chest',
+      'C. 如实带上是哪个方块',
+    )
+
+    // D. 太远 → table.too_far（绝不自己走过去）
+    const harnessD = makeHarness()
+    harnessD.state.bot = makeBot({
+      inventory: makeInventory({ oak_planks: 8 }),
+      blocks: { '120,64,100': blockAt('crafting_table', 120, 64, 100) },
+    })
+    await expectCodeRe(
+      harnessD.runtime.execute('recipe_lookup', {
+        item: 'chest',
+        crafting_table: { x: 120, y: 64, z: 100 },
+      }),
+      'table.too_far',
+      'D. 工作台太远',
+    )
+
+    // F. 2×2 配方带工作台照样能用（工作台不改变 2×2 语义）
+    const harnessF = makeHarness()
+    harnessF.state.bot = makeBot({ inventory: makeInventory({ oak_planks: 2 }), blocks })
+    const stickPayload = lookupResult(
+      await harnessF.runtime.execute('recipe_lookup', {
+        item: 'stick',
+        crafting_table: tableParam,
+      }),
+    )
+    assert(
+      stickPayload.status === 'available' &&
+        stickPayload.recipes.some(
+          (row) => row.recipe_id === 'stick*4=oak_planks*2' && row.available,
+        ),
+      `F. 带工作台时 2×2 配方仍然可用（得到 ${stickPayload.status}）`,
+    )
+  }
+
+  console.log('[recipe-test] 4G-§三十七. 2×2 与 3×3 是两个上下文（架构回归）')
+  {
+    const inventory = makeInventory({ oak_planks: 8 })
+    const tableParam = { x: 100, y: 64, z: 100 }
+    const harness1 = makeHarness()
+    harness1.state.bot = makeBot({ inventory })
+    const noTable = lookupResult(await harness1.runtime.execute('recipe_lookup', { item: 'chest' }))
+    assert(
+      noTable.status === 'crafting_table_required' && noTable.recipes.length === 0,
+      `没有工作台 → crafting_table_required（得到 ${noTable.status}）`,
+    )
+    assert(noTable.crafting_table === undefined, '没指定工作台时结果里不带坐标')
+
+    const harness2 = makeHarness()
+    harness2.state.bot = makeBot({
+      inventory,
+      blocks: { '100,64,100': blockAt('crafting_table', 100, 64, 100) },
+    })
+    const yesTable = lookupResult(
+      await harness2.runtime.execute('recipe_lookup', { item: 'chest', crafting_table: tableParam }),
+    )
+    assert(
+      yesTable.status === 'available' && yesTable.recipes.some((row) => row.available),
+      `给了工作台 → available（得到 ${yesTable.status}）`,
+    )
+  }
+
+  console.log('[recipe-test] 工作台参数校验（绝不允许 nearest / auto 这类隐式目标）')
+  {
+    const { runtime, state } = makeHarness()
+    state.bot = makeBot({ inventory: makeInventory({ oak_planks: 8 }) })
+    const badCases = [
+      'nearest',
+      'auto',
+      'any',
+      7,
+      [],
+      { x: 100, y: 64 },
+      { x: 100.5, y: 64, z: 100 },
+      { x: '100', y: 64, z: 100 },
+    ]
+    for (const bad of badCases) {
+      let code = null
+      try {
+        await runtime.execute('recipe_lookup', { item: 'chest', crafting_table: bad })
+      } catch (error) {
+        code = error.code
+      }
+      assert(code === 'table.invalid', `${JSON.stringify(bad)} → table.invalid（得到 ${code}）`)
+    }
+    // 多余的键在 runtime 层被忽略（严格性由工具 schema 的 additionalProperties: false 保证）
+    const { runtime: extraRuntime, state: extraState } = makeHarness()
+    extraState.bot = makeBot({
+      inventory: makeInventory({ oak_planks: 8 }),
+      blocks: { '100,64,100': blockAt('crafting_table', 100, 64, 100) },
+    })
+    const extraPayload = lookupResult(
+      await extraRuntime.execute('recipe_lookup', {
+        item: 'chest',
+        crafting_table: { x: 100, y: 64, z: 100, extra: 1 },
+      }),
+    )
+    assert(extraPayload.status === 'available', '多余键被忽略（严格性在 schema 层）')
   }
 
   console.log('[recipe-test] 未知物品 / 参数校验 / 在线要求')

@@ -660,17 +660,101 @@ function describeRecipe(recipe, registry, available) {
 }
 
 /** 当前物品的配方拆分：全部 / 2×2 可执行 / 现在材料就够的。 */
-function recipeSetsFor(bot, itemName) {
+//: Phase 4G：工作台的最大交互距离（与 dig/place/container 同口径：眼睛 → 方块中心）。
+//: 给 → crafting_table_too_far，绝不自己走过去。
+const CRAFTING_TABLE_MAX_DISTANCE = Number.parseFloat(
+  process.env.MC_CRAFTING_TABLE_MAX_DISTANCE || '5',
+)
+//: 本阶段**只**认这一种工作台（stonecutter / smithing_table / cartography 等一律 invalid）
+const CRAFTING_TABLE_BLOCK = 'crafting_table'
+
+function craftingTableMaxDistance() {
+  const raw = Number.parseFloat(process.env.MC_CRAFTING_TABLE_MAX_DISTANCE || '')
+  return Number.isFinite(raw) && raw > 0 ? raw : CRAFTING_TABLE_MAX_DISTANCE
+}
+
+/**
+ * crafting_table 参数校验（§五）：要么没有，要么**明确的整数方块坐标**。
+ * 绝不接受 ``"nearest"`` / ``"auto"`` / ``"any"`` 这种隐式目标 ——
+ * 用户确认的必须是一个明确的世界交互对象。
+ */
+function validateCraftingTableParam(value) {
+  if (value === undefined || value === null) return null
+  if (typeof value !== 'object' || Array.isArray(value)) {
+    throw new ActionError(
+      'crafting_table 必须是 {x, y, z} 这样的方块坐标（不接受 nearest / auto）',
+      'table.invalid',
+      400,
+    )
+  }
+  const coords = {}
+  for (const name of ['x', 'y', 'z']) {
+    const raw = value[name]
+    if (typeof raw !== 'number' || !Number.isFinite(raw) || !Number.isInteger(raw)) {
+      throw new ActionError(`crafting_table.${name} 必须是整数`, 'table.invalid', 400)
+    }
+    coords[name] = raw
+  }
+  if (Math.abs(coords.x) > 3.0e7 || Math.abs(coords.z) > 3.0e7 || coords.y < -512 || coords.y > 2048) {
+    throw new ActionError('crafting_table 坐标超出 Minecraft 世界边界', 'table.invalid', 400)
+  }
+  return coords
+}
+
+/**
+ * §七/§十八：实时验证工作台方块（lookup 与 craft 都要跑，绝不用旧对象）。
+ * 没有（区块未加载 / 被挖掉 → air）→ table.missing；不是工作台 → table.invalid；
+ * 太远 → table.too_far。三种都绝不继续。
+ */
+function requireCraftingTableBlock(bot, coords) {
+  if (!coords) return null
+  const block = bot.blockAt(new Vec3(coords.x, coords.y, coords.z))
+  if (!block || isAir(block.name)) {
+    throw new ActionError(
+      `那里没有工作台（${coords.x},${coords.y},${coords.z}）`,
+      'table.missing',
+      404,
+      { crafting_table: coords },
+    )
+  }
+  const blockName = normalizeBlockName(block.name)
+  if (blockName !== CRAFTING_TABLE_BLOCK) {
+    throw new ActionError(
+      `那个位置不是工作台（${block.name}）——本阶段只认 crafting_table`,
+      'table.invalid',
+      422,
+      { block: block.name, crafting_table: coords },
+    )
+  }
+  const maxDistance = craftingTableMaxDistance()
+  const center = block.position.offset(0.5, 0.5, 0.5)
+  const eyes = bot.entity.position.offset(0, 1.65, 0)
+  const distance = eyes.distanceTo(center)
+  if (distance > maxDistance) {
+    throw new ActionError(
+      `工作台距离 ${distance.toFixed(1)} 格，超过上限 ${maxDistance} 格（本阶段不会自己走过去）`,
+      'table.too_far',
+      422,
+      { distance: round2(distance), crafting_table: coords },
+    )
+  }
+  return block
+}
+
+function recipeSetsFor(bot, itemName, craftingTable = null) {
   const registry = bot.registry
   const entry = registry && registry.itemsByName ? registry.itemsByName[normalizeItemName(itemName)] : null
   if (!entry) return null
   const Recipe = recipeClassFor(bot)
   const all = Recipe.find(entry.id, null)
-  const twoByTwo = all.filter((recipe) => !recipe.requiresTable)
+  // 没有工作台 → 只有 2×2 能在玩家背包里做；给了工作台 → 2×2 与 3×3 都能做
+  const executable = craftingTable
+    ? all
+    : all.filter((recipe) => !recipe.requiresTable)
   const craftable =
-    typeof bot.recipesFor === 'function' ? bot.recipesFor(entry.id, null, 1, null) : []
+    typeof bot.recipesFor === 'function' ? bot.recipesFor(entry.id, null, 1, craftingTable || null) : []
   const craftableIds = new Set(recipeIdsForList(craftable, registry))
-  return { entry, all, twoByTwo, craftableIds }
+  return { entry, all, twoByTwo: executable, craftableIds, craftingTable }
 }
 
 // Phase 3D：follow_player（动态跟随）
@@ -2057,20 +2141,22 @@ const ACTION_REGISTRY = {
         if (item.length > MAX_PLACE_ITEM_CHARS) {
           throw new ActionError('item 过长', 'item.invalid', 400)
         }
-        return { item: normalizeItemName(item) }
+        return { item: normalizeItemName(item), crafting_table: validateCraftingTableParam(params.crafting_table) }
       },
       async run(bot, params) {
         if (bot === null || bot === undefined || bot.registry === undefined) {
           throw new ActionError('罐头还没有进入世界', 'action.not_online', 400)
         }
         const registry = bot.registry
-        const sets = recipeSetsFor(bot, params.item)
+        // §六/§七：给了工作台就**实时**验证方块（缺失/非工作台/太远都不继续）
+        const tableBlock = requireCraftingTableBlock(bot, params.crafting_table)
+        const sets = recipeSetsFor(bot, params.item, tableBlock)
         if (!sets || sets.all.length === 0) {
           // 物品不存在 / 这个版本里没有它的配方：如实回答"没有配方"，不猜
           return { ok: true, item: params.item, status: 'recipe_not_found', total: 0, recipes: [] }
         }
         if (sets.twoByTwo.length === 0) {
-          // 只有工作台配方 —— 绝不自动去找工作台
+          // 只有工作台配方（而且这次没给工作台坐标）—— 绝不自动去找工作台
           return {
             ok: true,
             item: params.item,
@@ -2094,6 +2180,8 @@ const ACTION_REGISTRY = {
         return {
           ok: true,
           item: params.item,
+          // §十一：指定了工作台就把坐标带回给模型（没指定则不带这个字段）
+          ...(params.crafting_table ? { crafting_table: params.crafting_table } : {}),
           status: available > 0 ? 'available' : 'insufficient_material',
           total: entries.length,
           recipes: entries.slice(0, RECIPE_MAX_ENTRIES),
@@ -2115,16 +2203,21 @@ const ACTION_REGISTRY = {
         if (recipeId.length > CRAFT_MAX_RECIPE_ID_CHARS) {
           throw new ActionError('recipe_id 过长', 'recipe.invalid', 400)
         }
-        return { recipe_id: recipeId.trim() }
+        return {
+          recipe_id: recipeId.trim(),
+          crafting_table: validateCraftingTableParam(params.crafting_table),
+        }
       },
       async start(bot, params) {
-        // §十四/§十五：确认只是授权 —— 执行前必须用**当前**配方表与**当前**背包重新解析
+        // §十四/§十五/§十七：确认只是授权 —— 执行前必须用**当前**配方表、**当前**工作台
+        // 与**当前**背包重新解析（绝不用旧 Recipe 对象）
         if (bot === null || bot.entity === null) {
           throw new ActionError('罐头还没有进入世界', 'action.not_online', 400)
         }
         const registry = bot.registry
+        const tableBlock = requireCraftingTableBlock(bot, params.crafting_table)
         const itemName = itemNameFromRecipeId(params.recipe_id)
-        const sets = itemName ? recipeSetsFor(bot, itemName) : null
+        const sets = itemName ? recipeSetsFor(bot, itemName, tableBlock) : null
         if (!sets || sets.all.length === 0) {
           throw new ActionError(`找不到这个配方（${params.recipe_id}）`, 'recipe.not_found', 404)
         }
@@ -2134,15 +2227,17 @@ const ACTION_REGISTRY = {
           throw new ActionError('这个配方已经变了（材料或形状不一致）', 'recipe.changed', 409)
         }
         const recipe = sets.all[index]
-        if (recipe.requiresTable) {
+        if (recipe.requiresTable && !tableBlock) {
           throw new ActionError(
-            '这个配方需要工作台（本阶段只支持玩家 2×2 背包合成）',
+            '这个配方需要工作台（把工作台坐标给我，或者换一个 2×2 能做的配方）',
             'recipe.unavailable',
             409,
           )
         }
         const craftable =
-          typeof bot.recipesFor === 'function' ? bot.recipesFor(sets.entry.id, null, 1, null) : []
+          typeof bot.recipesFor === 'function'
+            ? bot.recipesFor(sets.entry.id, null, 1, tableBlock || null)
+            : []
         const craftableIds = new Set(recipeIdsForList(craftable, registry))
         if (!craftableIds.has(params.recipe_id)) {
           // §十六/§十七：绝不自动开箱/移动/挖矿/先做中间材料 —— 直接如实失败
@@ -2170,6 +2265,8 @@ const ACTION_REGISTRY = {
         return {
           // 内部状态（只给 wait 用，绝不进事件）：全部是语义快照，不存 live Item
           recipe,
+          table: tableBlock,
+          crafting_table: params.crafting_table || null,
           recipe_id: params.recipe_id,
           item: result.name,
           count_per_craft: result.count_per_craft,
@@ -2182,14 +2279,15 @@ const ACTION_REGISTRY = {
       },
       async wait(bot, params, token, state) {
         try {
-          // §十八：只支持 craftingTable = null（玩家自身 2×2）；一次只执行一次配方
-          await bot.craft(state.recipe, 1, null)
+          // §十九：给了工作台就传给 bot.craft（3×3）；没给就是玩家自身 2×2。
+          // 一次只执行一次配方（count 固定为 1）。
+          await bot.craft(state.recipe, 1, state.table || null)
         } catch (error) {
           if (token && token.cancelled) throw new ActionCancelled(token.reason)
           const message = String(error && error.message ? error.message : error)
           if (/craftingTable/i.test(message)) {
             throw new ActionError(
-              '这个配方需要工作台（本阶段只支持玩家 2×2 背包合成）',
+              '这个配方需要工作台（把工作台坐标给我，或者换一个 2×2 能做的配方）',
               'recipe.unavailable',
               409,
             )
@@ -2227,6 +2325,8 @@ const ACTION_REGISTRY = {
         }
         return {
           recipe_id: state.recipe_id,
+          // 用了工作台就如实带回坐标（2×2 时是 null）
+          crafting_table: state.crafting_table || null,
           item: state.item,
           result: {
             name: state.item,
@@ -2845,16 +2945,22 @@ async function handleRequest(request, response) {
       return
     }
     if (request.method === 'POST' && path === '/minecraft/recipe_lookup') {
-      // Phase 4F：查"当前背包能做的 2×2 配方"（SAFE 只读；同步返回语义投影）
+      // Phase 4F/4G：查配方（不带工作台 = 玩家 2×2；带坐标 = 那张工作台的 3×3）
       const body = await readBody(request)
-      const result = await actionRuntime.execute('recipe_lookup', { item: body.item })
+      const result = await actionRuntime.execute('recipe_lookup', {
+        item: body.item,
+        crafting_table: body.crafting_table,
+      })
       jsonResponse(response, 200, { ok: true, ...result })
       return
     }
     if (request.method === 'POST' && path === '/minecraft/craft') {
-      // Phase 4F：执行一次 2×2 配方（MEDIUM）。启动即 RUNNING，结果经事件送达。
+      // Phase 4F/4G：执行一次配方（MEDIUM）。启动即 RUNNING，结果经事件送达。
       const body = await readBody(request)
-      const result = await actionRuntime.execute('craft', { recipe_id: body.recipe_id })
+      const result = await actionRuntime.execute('craft', {
+        recipe_id: body.recipe_id,
+        crafting_table: body.crafting_table,
+      })
       jsonResponse(response, 200, { ok: true, ...result })
       return
     }
@@ -3013,7 +3119,11 @@ module.exports = {
     lookupTimeoutMs: LOOKUP_DEFAULT_TIMEOUT_MS,
     maxRecipeIdChars: CRAFT_MAX_RECIPE_ID_CHARS,
     maxEntries: RECIPE_MAX_ENTRIES,
+    craftingTableMaxDistance: CRAFTING_TABLE_MAX_DISTANCE,
+    craftingTableBlock: CRAFTING_TABLE_BLOCK,
   },
+  validateCraftingTableParam,
+  requireCraftingTableBlock,
   recipeIdOf,
   recipeIdsForList,
   readableRecipeKey,

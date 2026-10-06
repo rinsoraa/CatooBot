@@ -1488,7 +1488,8 @@ async def test_craft_endpoint_requires_confirmation_and_cannot_self_authorise(tm
                 )
                 assert status == 409
                 stored = service.agent.confirmations.pending()
-                assert len(stored) == 1 and stored[0].arguments == good
+                assert len(stored) == 1
+                assert stored[0].arguments == {**good, "crafting_table": None}
                 # 清掉这条，继续后面的流程
                 service.agent.confirmations.cancel(stored[0].confirmation_id)
 
@@ -1577,6 +1578,193 @@ def test_phase4f_error_codes_agree_between_service_and_api():
         (MinecraftMaterialInsufficient(), 409),
         (MinecraftCraftFailed(), 500),
         (MinecraftCraftUnconfirmed(), 500),
+    ]
+    for exc, expected in pairs:
+        assert exc.status == expected, exc.code
+        assert _TOOL_STATUS[exc.code] == expected, exc.code
+
+
+# ------------------------------------------------ Phase 4G：工作台（3×3）端点
+
+
+async def test_recipe_lookup_endpoint_accepts_an_explicit_crafting_table(tmp_path):
+    """§三十八：WebUI 的 3×3 查询要给出**明确的工作台坐标**（nearest/auto 一律拒绝）。"""
+    from tests.test_minecraft_service import FakeRuntime
+
+    fake = FakeRuntime()
+    await fake.start()
+    try:
+        fake.online = True
+        async with api_server(tmp_path) as (client, bot, server):
+            await client.login()
+            service = MinecraftService(
+                bot, MinecraftConfig(enabled=True, auto_start_runtime=False, runtime_port=fake.port)
+            )
+            bot.minecraft = service
+            try:
+                from app.integrations.minecraft.agent import MinecraftAgentBridge
+                from app.integrations.minecraft.events import parse_bridge_event
+
+                service.agent = MinecraftAgentBridge(service)
+                await service.status()
+                service.agent.apply_event(
+                    parse_bridge_event(
+                        {
+                            "event": "minecraft.spawned",
+                            "session_id": "s1",
+                            "timestamp": 1.0,
+                            "username": "Catodayo",
+                        }
+                    )
+                )
+
+                for bad in ("nearest", "auto", "any", {"x": 100, "y": 64}):
+                    status, payload = await client.post(
+                        "/api/v1/minecraft/recipe_lookup",
+                        body={"item": "chest", "crafting_table": bad},
+                    )
+                    assert status == 422 and error_code(payload) == "minecraft.action_invalid", bad
+                assert fake.recipe_lookup_calls == []
+
+                table = {"x": 100, "y": 64, "z": 100}
+                fake.recipe_lookup_result = {
+                    "ok": True,
+                    "item": "chest",
+                    "crafting_table": table,
+                    "status": "available",
+                    "total": 1,
+                    "recipes": [
+                        {
+                            "recipe_id": "!chest*1=oak_planks*8",
+                            "result": {"name": "chest", "count_per_craft": 1},
+                            "requires_table": True,
+                            "available": True,
+                            "ingredients": [{"name": "oak_planks", "count": 8}],
+                        }
+                    ],
+                }
+                status, payload = await client.post(
+                    "/api/v1/minecraft/recipe_lookup",
+                    body={"item": "chest", "crafting_table": table},
+                )
+                assert status == 200, payload
+                result = payload["data"]["result"]
+                assert result["crafting_table"] == table
+                assert result["recipes"][0]["requires_table"] is True
+                assert fake.recipe_lookup_calls == [{"item": "chest", "crafting_table": table}]
+
+                # 工作台侧的三种拒绝如实透传
+                fake.recipe_lookup_plan.append({"error": ("table.missing", 404)})
+                status, payload = await client.post(
+                    "/api/v1/minecraft/recipe_lookup",
+                    body={"item": "chest", "crafting_table": table},
+                )
+                assert status == 404 and error_code(payload) == "minecraft.crafting_table_missing"
+                fake.recipe_lookup_plan.append(
+                    {"error": ("table.invalid", 422), "detail": {"block": "chest"}}
+                )
+                status, payload = await client.post(
+                    "/api/v1/minecraft/recipe_lookup",
+                    body={"item": "chest", "crafting_table": table},
+                )
+                assert status == 422 and error_code(payload) == "minecraft.crafting_table_invalid"
+                fake.recipe_lookup_plan.append({"error": ("table.too_far", 422)})
+                status, payload = await client.post(
+                    "/api/v1/minecraft/recipe_lookup",
+                    body={"item": "chest", "crafting_table": table},
+                )
+                assert status == 422 and error_code(payload) == "minecraft.crafting_table_too_far"
+            finally:
+                await service._cleanup()
+    finally:
+        await fake.stop()
+
+
+async def test_craft_endpoint_with_table_requires_confirmation(tmp_path):
+    """§三十八/§三十九：3×3 的确认摘要要写出工作台坐标；开发者入口仍然拿不到执行权。"""
+    from tests.test_minecraft_service import FakeRuntime
+
+    fake = FakeRuntime()
+    await fake.start()
+    try:
+        fake.online = True
+        async with api_server(tmp_path) as (client, bot, server):
+            await client.login()
+            service = MinecraftService(
+                bot,
+                MinecraftConfig(
+                    enabled=True,
+                    auto_start_runtime=False,
+                    runtime_port=fake.port,
+                    agent={"tools": {"allow_medium": True}},
+                ),
+            )
+            bot.minecraft = service
+            try:
+                from app.integrations.minecraft.agent import MinecraftAgentBridge
+                from app.integrations.minecraft.events import parse_bridge_event
+
+                service.agent = MinecraftAgentBridge(service)
+                await service.status()
+                service.agent.apply_event(
+                    parse_bridge_event(
+                        {
+                            "event": "minecraft.spawned",
+                            "session_id": "s1",
+                            "timestamp": 1.0,
+                            "username": "Catodayo",
+                        }
+                    )
+                )
+
+                table = {"x": 100, "y": 64, "z": 100}
+                good = {"recipe_id": "!chest*1=oak_planks*8", "crafting_table": table}
+                status, payload = await client.post("/api/v1/minecraft/craft", body=good)
+                assert status == 409 and error_code(payload) == "minecraft.confirmation_required"
+                detail = payload.get("detail") or payload["error"]["detail"]
+                assert detail["confirmation"]["summary"] == (
+                    "用 8 个 oak_planks 在 (100, 64, 100) 的 Crafting Table 制作 1 个 chest"
+                )
+                stored = service.agent.confirmations.pending()
+                assert len(stored) == 1 and stored[0].arguments == good, "指纹包含工作台坐标"
+                assert fake.craft_calls == []
+
+                # WebUI（SYSTEM 回合）不能消费确认
+                status, payload = await client.post("/api/v1/minecraft/craft", body=good)
+                assert status == 409
+                assert error_code(payload) == "minecraft.confirmation_not_user_turn"
+                assert fake.craft_calls == []
+
+                # 换个工作台坐标 → 必须是另一条授权（mismatch）
+                moved = {
+                    "recipe_id": "!chest*1=oak_planks*8",
+                    "crafting_table": {"x": 101, "y": 64, "z": 100},
+                }
+                status, payload = await client.post("/api/v1/minecraft/craft", body=moved)
+                assert status == 409
+                assert error_code(payload) == "minecraft.confirmation_not_user_turn", (
+                    "来源门先于参数指纹（不泄露「参数是否匹配」）"
+                )
+                assert fake.craft_calls == []
+            finally:
+                await service._cleanup()
+    finally:
+        await fake.stop()
+
+
+def test_phase4g_error_codes_agree_between_service_and_api():
+    """两个事实源必须一致：Service 异常自带的 HTTP 语义 vs API 的错误码映射表。"""
+    from app.integrations.minecraft.service import (
+        MinecraftCraftingTableInvalid,
+        MinecraftCraftingTableMissing,
+        MinecraftCraftingTableTooFar,
+    )
+    from app.web.api.minecraft import _TOOL_STATUS
+
+    pairs = [
+        (MinecraftCraftingTableMissing(), 404),
+        (MinecraftCraftingTableInvalid(), 422),
+        (MinecraftCraftingTableTooFar(), 422),
     ]
     for exc, expected in pairs:
         assert exc.status == expected, exc.code

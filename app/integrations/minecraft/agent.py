@@ -187,6 +187,10 @@ RUNTIME_ERROR_CODES: dict[str, str] = {
     "recipe.unavailable": "minecraft.recipe_unavailable",
     "recipe.changed": "minecraft.recipe_changed",
     "material.insufficient": "minecraft.material_insufficient",
+    # Phase 4G：指定工作台（3×3）
+    "table.missing": "minecraft.crafting_table_missing",
+    "table.invalid": "minecraft.crafting_table_invalid",
+    "table.too_far": "minecraft.crafting_table_too_far",
     "craft.failed": "minecraft.craft_failed",
     "craft.unconfirmed": "minecraft.craft_unconfirmed",
 }
@@ -231,14 +235,22 @@ _CONTAINER_LABELS: dict[str, str] = {
 }
 
 
-def recipe_summary(recipe_id: str) -> str:
-    """把可读的 recipe_id 展开成确认摘要（§十三）。
+def recipe_summary(
+    recipe_id: str, crafting_table: Any = None, *, table_label: str = "Crafting Table"
+) -> str:
+    """把可读的 recipe_id 展开成确认摘要（§十三/§十六）。
 
-    recipe_id 形如 ``stick*4=oak_planks*2``（需要工作台的带 ``!`` 前缀）→
-    ``用 2 个 oak_planks 制作 4 个 stick``；解析不出来就退化成"执行配方 <id>"。
-    这样确认文本说的是"用哪种材料做这个东西"，而不是"执行 recipe abc123"。
+    * 2×2：``stick*4=oak_planks*2`` → ``用 2 个 oak_planks 制作 4 个 stick``；
+    * 3×3（给了坐标）→ ``用 8 个 oak_planks 在 (100, 64, 100) 的 Crafting Table 制作 1 个 chest``。
+
+    解析不出来就退化成"执行配方 <id>"。这样确认文本说的是"用哪种材料、在哪张工作台上做"，
+    而不是"执行 recipe abc123"——**坐标也进入确认文本**，因为换个工作台就是另一个世界操作。
     """
     text = str(recipe_id or "").strip().lstrip("!")
+    where = ""
+    if isinstance(crafting_table, Mapping):
+        where = _format_position(crafting_table)
+    suffix = f"在 {where} 的 {table_label} " if where else ""
     head, separator, tail = text.partition("=")
     if not separator or "*" not in head:
         return f"执行配方 {recipe_id}"
@@ -251,8 +263,8 @@ def recipe_summary(recipe_id: str) -> str:
         parts.append(f"{count or '1'} 个 {name}")
     body = f"{result_count or '1'} 个 {result_name}"
     if not parts:
-        return f"制作 {body}"
-    return f"用 {' + '.join(parts)} 制作 {body}"
+        return f"{suffix}制作 {body}" if suffix else f"制作 {body}"
+    return f"用 {' + '.join(parts)} {suffix}制作 {body}"
 
 
 def _container_label(type_name: Any) -> str:
@@ -1027,9 +1039,12 @@ def _confirmation_summary(tool: str, risk: str, arguments: Mapping[str, Any] | N
         where = _format_position(args)
         return f"挖掉 {block}（{where}）" if where else f"挖掉 {block}"
     if tool == "minecraft_craft":
-        # §十三：fingerprint 只绑 recipe_id（它已经唯一绑定输出/材料/形状/是否需要工作台），
-        # 摘要必须把人类可读信息展开
-        return recipe_summary(str(args.get("recipe_id") or ""))
+        # §十三/§十五：fingerprint 绑 recipe_id（+ 工作台坐标，见 arguments 本身），
+        # 摘要必须把人类可读信息展开 —— 坐标也要写进去（换张工作台就是另一个操作）
+        table = args.get("crafting_table")
+        return recipe_summary(
+            str(args.get("recipe_id") or ""), table if isinstance(table, Mapping) else None
+        )
     if tool == "minecraft_container_transfer":
         # 摘要就是用户的授权文本：位置 + 第几格 + 什么物品 × 多少 + 另一个槽位，全部写清。
         # 容器类型在**执行时**才由 runtime 验证（本阶段只可能是 Chest / Barrel），
@@ -1124,10 +1139,16 @@ def _summarize(tool: str, data: Mapping[str, Any]) -> str:
         status = str(lookup.get("status") or "")
         recipes = lookup.get("recipes") or []
         total = lookup.get("total")
+        # Phase 4G：指定了工作台就把位置写进摘要（模型要能说清在哪张工作台上查的）
+        where = _format_position(lookup.get("crafting_table"))
+        at = f"在工作台 {where} 上" if where else ""
         if status == "recipe_not_found":
             return f"查不到 {item} 的配方（这个版本里没有，或者物品名不对）。"
         if status == "crafting_table_required":
-            return f"{item} 只有工作台配方（本阶段只支持玩家 2×2 背包合成，不会自己去找工作台）。"
+            return (
+                f"{item} 只有工作台配方（本阶段只支持玩家 2×2，或者给我一张明确的工作台坐标；"
+                "不会自己去找工作台）。"
+            )
         ready = [row for row in recipes if row.get("available")]
         if ready:
             first = ready[0]
@@ -1136,12 +1157,12 @@ def _summarize(tool: str, data: Mapping[str, Any]) -> str:
             )
             more = f"，另外还有 {len(ready) - 1} 个也能做" if len(ready) > 1 else ""
             return (
-                f"{item} 现有材料能做：用 {ingredients} 得到 "
+                f"{item} {at}现有材料能做：用 {ingredients} 得到 "
                 f"{first.get('result', {}).get('count_per_craft')} 个 {item}"
                 f"（recipe_id={first.get('recipe_id')}）{more}。"
             )
         return (
-            f"{item} 有 {total or len(recipes)} 个 2×2 配方，但当前材料都不够"
+            f"{item} {at}有 {total or len(recipes)} 个配方，但当前材料都不够"
             "（需要先准备材料，本阶段不会自动去做）。"
         )
     if tool == "minecraft_container_inspect":

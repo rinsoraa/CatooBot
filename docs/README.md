@@ -120,6 +120,7 @@ v0.4 行为引擎（回复延迟/分段/作息，规格不在 docs/specs/）标 
 | [MINECRAFT_PHASE4D.md](MINECRAFT_PHASE4D.md) | Minecraft 背包控制（Phase 4D）：minecraft_equip（换主手）/ minecraft_inventory_move（单物品单槽位搬运，目标被占用即拒绝，绝不隐式交换）+ 调试槽位表 | 已实现（真实服务器 equip + move PASS） |
 | [MINECRAFT_PHASE4E.md](MINECRAFT_PHASE4E.md) | Minecraft 容器控制（Phase 4E）：minecraft_container_inspect（单方块 Chest/Barrel 只读，SAFE 但独占）/ minecraft_container_transfer（单物品单槽位存取，MEDIUM + 确认，绝不交换）+ 窗口生命周期与 cleanup | 已实现（真实服务器 inspect + withdraw + deposit PASS） |
 | [MINECRAFT_PHASE4F.md](MINECRAFT_PHASE4F.md) | Minecraft 合成（Phase 4F）：minecraft_recipe_lookup（2×2 配方只读查询，SAFE 非独占）/ minecraft_craft（一次一个配方，MEDIUM + 确认，稳定可读 recipe_id，材料不够直接失败） | 已实现（真实服务器 craft PASS） |
+| [MINECRAFT_PHASE4G.md](MINECRAFT_PHASE4G.md) | Minecraft 工作台 3×3（Phase 4G）：同一对工具增加**可选** crafting_table 坐标（2×2 保持兼容）、实时验证工作台、确认指纹含坐标、不自动寻找/放置工作台 | 已实现（真实服务器 3×3 craft PASS） |
 | bible_source_罐头.txt | 内置角色的人物档案源文件（Bible 编译器输入） | **本地内容资产**：按「Character Bible 不得上传」约束，已移至 `config/bible_source_罐头.txt`（`config/` 不在发布镜像内） |
 
 ## 运维速查

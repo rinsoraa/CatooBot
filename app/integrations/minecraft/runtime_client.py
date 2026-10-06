@@ -111,17 +111,27 @@ class MinecraftRuntimeClient:
             },
         )
 
-    async def recipe_lookup(self, item: str) -> dict[str, Any]:
-        """查一个目标物品在**玩家自身 2×2** 里能做的配方（Phase 4F：同步只读）。
+    async def recipe_lookup(
+        self, item: str, crafting_table: dict[str, int] | None = None
+    ) -> dict[str, Any]:
+        """查配方（Phase 4F/4G：同步只读；带坐标 = 那张工作台的 3×3）。
 
         返回语义投影（recipe_id / result / requires_table / available / ingredients），
         绝不返回 raw Recipe。
         """
-        return await self._request("POST", "/minecraft/recipe_lookup", body={"item": item})
+        body: dict[str, Any] = {"item": item}
+        if crafting_table is not None:
+            body["crafting_table"] = crafting_table
+        return await self._request("POST", "/minecraft/recipe_lookup", body=body)
 
-    async def craft(self, recipe_id: str) -> dict[str, Any]:
-        """执行一次 2×2 配方（Phase 4F：启动即 RUNNING，结果经事件送达）。"""
-        return await self._request("POST", "/minecraft/craft", body={"recipe_id": recipe_id})
+    async def craft(
+        self, recipe_id: str, crafting_table: dict[str, int] | None = None
+    ) -> dict[str, Any]:
+        """执行一次配方（Phase 4F/4G：启动即 RUNNING，结果经事件送达）。"""
+        body: dict[str, Any] = {"recipe_id": recipe_id}
+        if crafting_table is not None:
+            body["crafting_table"] = crafting_table
+        return await self._request("POST", "/minecraft/craft", body=body)
 
     async def container_inspect(self, x: int, y: int, z: int) -> dict[str, Any]:
         """读一个 Chest / Barrel 的内容（Phase 4E：同步动作，结果直接返回）。

@@ -18,6 +18,7 @@ import { toast } from '@/composables/toast'
 import type {
   MinecraftActionView,
   MinecraftAgentContext,
+  MinecraftCraftingTable,
   MinecraftRecipeEntry,
   MinecraftRecipeLookupResult,
   MinecraftContainerDirection,
@@ -146,6 +147,12 @@ const placeTarget = reactive({
 })
 // Phase 4F：Crafting（玩家自身 2×2：查配方 = SAFE；执行一次 = MEDIUM 必须确认）
 const recipeQuery = reactive({ item: '' })
+// Phase 4G：2×2（玩家自身）还是 3×3（必须给明确的工作台坐标）
+const CRAFT_CONTEXTS = [
+  { value: 'player', label: 'Player 2×2（玩家自身背包）' },
+  { value: 'table', label: 'Crafting Table 3×3（指定工作台）' },
+] as const
+const craftContext = reactive({ mode: 'player' as 'player' | 'table', x: '', y: '', z: '' })
 const recipeResult = ref<MinecraftRecipeLookupResult | null>(null)
 const craftTarget = reactive({ recipeId: '' })
 /** 把可读 recipe_id 展开成摘要（与后端确认摘要同一套读法，纯展示用）。 */
@@ -602,15 +609,33 @@ async function loadWorld(): Promise<void> {
   prefillInventoryTargets()
 }
 
+/** 3×3 上下文必须给出明确的整数坐标（绝不接受 nearest/auto）。 */
+function craftingTableParam(): MinecraftCraftingTable | undefined {
+  if (craftContext.mode !== 'table') return undefined
+  const raw = [craftContext.x, craftContext.y, craftContext.z]
+  if (raw.some((value) => String(value).trim() === '')) {
+    toast.error('缺少工作台坐标', '3×3 必须在 X / Y / Z 里给出工作台方块坐标')
+    return undefined
+  }
+  const coords = raw.map(Number)
+  if (!coords.every((value) => Number.isInteger(value))) {
+    toast.error('工作台坐标不合法', '方块坐标必须是整数（没有小数）')
+    return undefined
+  }
+  return { x: coords[0]!, y: coords[1]!, z: coords[2]! }
+}
+
 async function lookupRecipe(): Promise<void> {
   const item = recipeQuery.item.trim()
   if (!item) {
     toast.error('缺少物品名', '先填写要查的物品（如 stick）')
     return
   }
+  const table = craftingTableParam()
+  if (craftContext.mode === 'table' && !table) return
   working.value = true
   try {
-    const payload = await minecraftApi.recipeLookup(item)
+    const payload = await minecraftApi.recipeLookup(item, table)
     recipeResult.value = payload.result
     const result = payload.result
     if (result.status === 'recipe_not_found') {
@@ -641,9 +666,11 @@ async function craftRecipe(): Promise<void> {
     toast.error('缺少 recipe_id', '先查配方，然后点某一行的"用作 recipe_id"')
     return
   }
+  const table = craftingTableParam()
+  if (craftContext.mode === 'table' && !table) return
   working.value = true
   try {
-    const result = await minecraftApi.craft(recipeId)
+    const result = await minecraftApi.craft(recipeId, table)
     toast.success('已开始合成', `${result.action} · ${result.status}（结果会由事件确认）`)
     await load(true)
   } catch (caught) {
@@ -1392,6 +1419,46 @@ onUnmounted(stopPolling)
             title="Crafting（Phase 4F）"
             description="只支持**玩家自身 2×2 背包合成**：LOOKUP 只读查配方（SAFE），CRAFT 执行一次（MEDIUM，必须用户确认）。不会自动去找工作台、不会自动准备材料、不会做中间材料。"
           />
+          <div class="minecraft__form" data-test="mc-craft-context">
+            <label class="minecraft__field">
+              <span>Crafting Context</span>
+              <select v-model="craftContext.mode" data-test="mc-craft-context-mode">
+                <option v-for="row in CRAFT_CONTEXTS" :key="row.value" :value="row.value">
+                  {{ row.label }}
+                </option>
+              </select>
+            </label>
+            <template v-if="craftContext.mode === 'table'">
+              <label class="minecraft__field">
+                <span>Table X</span>
+                <input
+                  v-model="craftContext.x"
+                  type="text"
+                  inputmode="numeric"
+                  data-test="mc-craft-table-x"
+                />
+              </label>
+              <label class="minecraft__field">
+                <span>Table Y</span>
+                <input
+                  v-model="craftContext.y"
+                  type="text"
+                  inputmode="numeric"
+                  data-test="mc-craft-table-y"
+                />
+              </label>
+              <label class="minecraft__field">
+                <span>Table Z</span>
+                <input
+                  v-model="craftContext.z"
+                  type="text"
+                  inputmode="numeric"
+                  data-test="mc-craft-table-z"
+                />
+              </label>
+            </template>
+          </div>
+
           <div class="minecraft__form" data-test="mc-recipe-form">
             <label class="minecraft__field">
               <span>Item</span>
@@ -1426,6 +1493,16 @@ onUnmounted(stopPolling)
               <dt>Recipes</dt>
               <dd data-test="mc-recipe-total">
                 {{ recipeResult ? `${recipeResult.recipes.length}/${recipeResult.total}` : '—' }}
+              </dd>
+            </div>
+            <div>
+              <dt>Crafting Table</dt>
+              <dd data-test="mc-recipe-table-at">
+                {{
+                  recipeResult?.crafting_table
+                    ? `${recipeResult.crafting_table.x}, ${recipeResult.crafting_table.y}, ${recipeResult.crafting_table.z}`
+                    : '—（玩家 2×2）'
+                }}
               </dd>
             </div>
           </dl>
@@ -1512,9 +1589,11 @@ onUnmounted(stopPolling)
 
           <p class="cb-caption">
             一次只执行**一个**配方、只执行**一次**（没有数量参数——Mineflayer 的 count 是"执行几次配方"，
-            不是"产出几个"，本阶段直接固定为 1）。材料不够会直接失败，<strong>不会</strong>自动开箱取料、
-            自动移动背包、自动挖矿，也不会先做中间材料。CRAFT 是 MEDIUM：这里的按钮只能发起确认，
-            真正的确认必须由用户在对话里做出。
+            不是"产出几个"，本阶段直接固定为 1）。<strong>Player 2×2</strong> 用罐头自己的背包；
+            <strong>Crafting Table 3×3</strong> 必须给出工作台的明确坐标（不接受 nearest/auto，
+            也不会自己去找/走过去/放一个工作台）。材料不够或工作台不在都会直接失败，
+            不会自动开箱取料、自动移动背包、自动挖矿，也不会先做中间材料。
+            CRAFT 是 MEDIUM：这里的按钮只能发起确认，真正的确认必须由用户在对话里做出。
           </p>
         </section>
 

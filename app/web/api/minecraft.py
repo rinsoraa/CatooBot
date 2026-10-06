@@ -140,6 +140,10 @@ _TOOL_STATUS: dict[str, int] = {
     "minecraft.material_insufficient": 409,
     "minecraft.craft_failed": 500,
     "minecraft.craft_unconfirmed": 500,
+    # Phase 4G：指定工作台（3×3）
+    "minecraft.crafting_table_missing": 404,
+    "minecraft.crafting_table_invalid": 422,
+    "minecraft.crafting_table_too_far": 422,
 }
 
 
@@ -435,15 +439,15 @@ class MinecraftApiRoutes(WebContext):
         if bridge is None:
             raise ApiError(503, "minecraft.disabled", "Minecraft Agent 未装配")
         body = await read_json(request)
-        arguments = {"item": body.get("item")}
+        arguments = {"item": body.get("item"), "crafting_table": body.get("crafting_table")}
         try:
-            service.validate_recipe_lookup(arguments["item"])
+            service.validate_recipe_lookup(arguments["item"], arguments["crafting_table"])
         except MinecraftBridgeError as exc:
             raise _translate(exc) from exc
         result = await bridge.invoke_developer(
             "minecraft_recipe_lookup",
             arguments,
-            lambda svc: svc.recipe_lookup(arguments["item"]),
+            lambda svc: svc.recipe_lookup(arguments["item"], arguments["crafting_table"]),
         )
         if not result.success:
             code = result.error_type or "minecraft.action_failed"
@@ -462,15 +466,18 @@ class MinecraftApiRoutes(WebContext):
         if bridge is None:
             raise ApiError(503, "minecraft.disabled", "Minecraft Agent 未装配")
         body = await read_json(request)
-        arguments = {"recipe_id": body.get("recipe_id")}
+        arguments = {
+            "recipe_id": body.get("recipe_id"),
+            "crafting_table": body.get("crafting_table"),
+        }
         try:
-            service.validate_craft(arguments["recipe_id"])
+            service.validate_craft(arguments["recipe_id"], arguments["crafting_table"])
         except MinecraftBridgeError as exc:
             raise _translate(exc) from exc
         result = await bridge.invoke_developer(
             "minecraft_craft",
             arguments,
-            lambda svc: svc.craft(arguments["recipe_id"]),
+            lambda svc: svc.craft(arguments["recipe_id"], arguments["crafting_table"]),
         )
         if not result.success:
             code = result.error_type or "minecraft.action_failed"

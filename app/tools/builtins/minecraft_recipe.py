@@ -24,8 +24,9 @@ RECIPE_LOOKUP_METADATA = ToolMetadata(
     name="minecraft_recipe_lookup",
     display_name="Minecraft Recipe Lookup",
     description=(
-        "查一个目标物品在**罐头自己 2×2 背包**里能做的配方：每个配方给出 recipe_id、"
-        "产物数量、材料清单，以及材料现在够不够。只支持玩家 2×2 合成（不需要工作台的配方）；"
+        "查一个目标物品能做的配方：每个配方给出 recipe_id、产物数量、材料清单，"
+        "以及材料现在够不够。不给 crafting_table 就只查**罐头自己 2×2 背包**能做的；"
+        "给出明确的工作台坐标就查那张工作台的 **3×3**（不会自己去找工作台）。"
         "只读，不消耗任何东西。"
     ),
     version="0.1.0",
@@ -47,11 +48,13 @@ RECIPE_LOOKUP_METADATA = ToolMetadata(
     ),
     when_not_to_use=(
         "要真正合成用 minecraft_craft（一次一个配方）；要看背包里有什么用 minecraft_inventory；"
-        "工作台配方、熔炉、酿造、村民交易本阶段都不支持。"
+        "切石机/锻造台/织布机/制图台这类「工作台」本阶段都不支持（只认 crafting_table）；"
+        "熔炉、酿造、村民交易也不支持。"
     ),
     limitations=(
-        "只支持玩家自身 2×2 背包合成；只回报配方与材料是否够，不会自动准备材料、"
-        "不会做中间材料（recipe chain）、不会去找工作台；一次只查一个物品。"
+        "2×2 = 玩家自身背包；3×3 = 必须由调用方给出**明确的工作台坐标**；"
+        "只回报配方与材料是否够，不会自动准备材料、不会做中间材料（recipe chain）、"
+        "不会去找/走过去/放一个工作台；一次只查一个物品。"
     ),
     input_schema={
         "type": "object",
@@ -60,7 +63,22 @@ RECIPE_LOOKUP_METADATA = ToolMetadata(
                 "type": "string",
                 "minLength": 1,
                 "description": "目标物品名（如 stick；也接受 minecraft:stick）",
-            }
+            },
+            "crafting_table": {
+                "type": "object",
+                "description": (
+                    "工作台方块的整数坐标；**不给** = 用罐头自己的 2×2 背包合成，"
+                    "**给了** = 用你明确指定的这一张工作台的 3×3（不接受 nearest/auto，"
+                    "也不会自己去找/走过去/放一个工作台）"
+                ),
+                "properties": {
+                    "x": {"type": "integer", "description": "工作台的整数 X 坐标"},
+                    "y": {"type": "integer", "description": "工作台的整数 Y 坐标"},
+                    "z": {"type": "integer", "description": "工作台的整数 Z 坐标"},
+                },
+                "required": ["x", "y", "z"],
+                "additionalProperties": False,
+            },
         },
         "required": ["item"],
         "additionalProperties": False,
@@ -77,4 +95,4 @@ class MinecraftRecipeLookupTool(ActionTool):
     metadata = RECIPE_LOOKUP_METADATA
 
     async def _call(self, service: MinecraftService, arguments: dict[str, Any]) -> dict[str, Any]:
-        return await service.recipe_lookup(arguments.get("item"))
+        return await service.recipe_lookup(arguments.get("item"), arguments.get("crafting_table"))

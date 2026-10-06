@@ -1194,6 +1194,106 @@ describe('Minecraft 页 · Crafting（Phase 4F）', () => {
     expect(useToast().items.value.at(-1)?.detail).toContain('需要用户确认')
   })
 
+  it('切到 Crafting Table 3×3 后：LOOKUP 带上工作台坐标', async () => {
+    const { wrapper, calls } = await mountPage(makeHandler())
+    await flushAll()
+    await wrapper.get('[data-test="mc-craft-context-mode"]').setValue('table')
+    await wrapper.get('[data-test="mc-craft-table-x"]').setValue('100')
+    await wrapper.get('[data-test="mc-craft-table-y"]').setValue('64')
+    await wrapper.get('[data-test="mc-craft-table-z"]').setValue('100')
+    await lookupSomeRecipe(wrapper, 'chest')
+    const call = calls.find((c) => c.url.endsWith('/minecraft/recipe_lookup'))
+    expect(call).toBeTruthy()
+    expect(call?.body).toEqual({
+      item: 'chest',
+      crafting_table: { x: 100, y: 64, z: 100 },
+    })
+    // 结果里如实显示"在哪张工作台上"（fixture 默认没有 crafting_table → 显示 2×2）
+    expect(wrapper.get('[data-test="mc-recipe-table-at"]').text()).toContain('玩家 2×2')
+  })
+
+  it('3×3 缺少坐标时本地拦截（不发请求）', async () => {
+    const { wrapper, calls } = await mountPage(makeHandler())
+    await flushAll()
+    await wrapper.get('[data-test="mc-craft-context-mode"]').setValue('table')
+    await wrapper.get('[data-test="mc-craft-table-x"]').setValue('100')
+    await wrapper.get('[data-test="mc-craft-table-y"]').setValue('64')
+    // z 留空
+    await lookupSomeRecipe(wrapper, 'chest')
+    expect(calls.some((c) => c.url.endsWith('/minecraft/recipe_lookup'))).toBe(false)
+    expect(useToast().items.value.at(-1)?.message).toBe('缺少工作台坐标')
+  })
+
+  it('3×3 坐标不是整数时本地拦截（不发请求）', async () => {
+    const { wrapper, calls } = await mountPage(makeHandler())
+    await flushAll()
+    await wrapper.get('[data-test="mc-craft-context-mode"]').setValue('table')
+    await wrapper.get('[data-test="mc-craft-table-x"]').setValue('100.5')
+    await wrapper.get('[data-test="mc-craft-table-y"]').setValue('64')
+    await wrapper.get('[data-test="mc-craft-table-z"]').setValue('100')
+    await lookupSomeRecipe(wrapper, 'chest')
+    expect(calls.some((c) => c.url.endsWith('/minecraft/recipe_lookup'))).toBe(false)
+    expect(useToast().items.value.at(-1)?.message).toBe('工作台坐标不合法')
+  })
+
+  it('3×3 时 CRAFT 也带上工作台坐标', async () => {
+    const { wrapper, calls } = await mountPage(makeHandler())
+    await flushAll()
+    await wrapper.get('[data-test="mc-craft-context-mode"]').setValue('table')
+    await wrapper.get('[data-test="mc-craft-table-x"]').setValue('100')
+    await wrapper.get('[data-test="mc-craft-table-y"]').setValue('64')
+    await wrapper.get('[data-test="mc-craft-table-z"]').setValue('100')
+    await wrapper.get('[data-test="mc-craft-recipe-id"]').setValue('!chest*1=oak_planks*8')
+    await wrapper.get('[data-test="mc-craft-run"]').trigger('click')
+    await flushAll()
+    const call = calls.find((c) => c.url.endsWith('/minecraft/craft'))
+    expect(call).toBeTruthy()
+    expect(call?.body).toEqual({
+      recipe_id: '!chest*1=oak_planks*8',
+      crafting_table: { x: 100, y: 64, z: 100 },
+    })
+  })
+
+  it('2×2 上下文不带 crafting_table 字段（4F 兼容）', async () => {
+    const { wrapper, calls } = await mountPage(makeHandler())
+    await flushAll()
+    await lookupSomeRecipe(wrapper, 'stick')
+    const call = calls.find((c) => c.url.endsWith('/minecraft/recipe_lookup'))
+    expect(call?.body).toEqual({ item: 'stick' })
+  })
+
+  it('3×3 结果里显示工作台坐标', async () => {
+    const { wrapper } = await mountPage(
+      makeHandler({
+        recipeLookup: ok({
+          ok: true,
+          action: 'recipe_lookup',
+          status: 'SUCCEEDED',
+          result: {
+            ok: true,
+            item: 'chest',
+            crafting_table: { x: 100, y: 64, z: 100 },
+            status: 'available',
+            total: 1,
+            recipes: [
+              {
+                recipe_id: '!chest*1=oak_planks*8',
+                result: { name: 'chest', count_per_craft: 1 },
+                requires_table: true,
+                available: true,
+                ingredients: [{ name: 'oak_planks', count: 8 }],
+              },
+            ],
+          },
+        }),
+      }),
+    )
+    await flushAll()
+    await lookupSomeRecipe(wrapper, 'chest')
+    expect(wrapper.get('[data-test="mc-recipe-table-at"]').text()).toBe('100, 64, 100')
+    expect(wrapper.get('[data-test="mc-recipe-!chest*1=oak_planks*8"]').text()).toContain('需要')
+  })
+
   it('未查过配方时如实说"还没有查过配方"', async () => {
     const { wrapper } = await mountPage(makeHandler())
     await flushAll()

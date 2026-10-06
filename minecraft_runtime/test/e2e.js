@@ -1255,6 +1255,155 @@ async function main() {
         console.log('[e2e] craft STOP：SKIPPED（合成毫秒级完成，没有可取消窗口）')
       }
 
+      // ---------------- Phase 4G：3×3 工作台（真实 setblock 出来的工作台 + 拒绝路径） ----------------
+      // 配方表在本地，所以"用某张工作台能做什么"能真跑；3×3 的成功路径需要材料
+      // （flying-squid 没有 /give）→ 只在真实服务器 smoke 验证。
+      if (cycle === 1) {
+        const setBlock = (x, y, z, id) =>
+          observer.chat(`/setblock ${Math.round(x)} ${Math.round(y)} ${Math.round(z)} ${id}`)
+        const lookupAt = (item, craftingTable) =>
+          request(runtimePort, 'POST', '/minecraft/recipe_lookup', {
+            item,
+            crafting_table: craftingTable,
+          })
+        const hereTable = (await request(runtimePort, 'GET', '/minecraft/status')).body.position
+        const bx = Math.round(hereTable.x) + 1
+        const by = Math.round(hereTable.y) + 1
+        const bz = Math.round(hereTable.z)
+        const tablePos = { x: bx, y: by, z: bz }
+        // 只是要越过 max_distance(5)：放 +8 就够了 —— 别用 +24 去逼服务器加载远处区块
+        const farPos = { x: bx + 8, y: by, z: bz }
+        const stonePos = { x: bx, y: by, z: bz + 1 }
+
+        // schema：不给坐标 → 4F 语义（chest 需要工作台）；坐标不合规 → 400
+        const noTable = await request(runtimePort, 'POST', '/minecraft/recipe_lookup', {
+          item: 'chest',
+        })
+        assert(
+          noTable.body.result.status === 'crafting_table_required',
+          `不给工作台 → crafting_table_required（得到 ${noTable.body.result.status}）`,
+        )
+        const badShape = await lookupAt('chest', 'nearest')
+        assert(
+          badShape.status === 400 && badShape.body.error.code === 'table.invalid',
+          `crafting_table="nearest" → table.invalid（得到 ${JSON.stringify(badShape.body)}）`,
+        )
+        console.log('[e2e] 3×3 lookup ✓ schema（nearest 这类隐式目标一律拒绝）')
+
+        // 真放一张工作台 + 一个石头（用来验证"不是工作台"）
+        setBlock(tablePos.x, tablePos.y, tablePos.z, 'minecraft:crafting_table')
+        setBlock(stonePos.x, stonePos.y, stonePos.z, 'minecraft:stone')
+        await sleep(900)
+
+        const lookup = await lookupAt('chest', tablePos)
+        assert(
+          lookup.status === 200 && lookup.body.status === 'SUCCEEDED',
+          `3×3 lookup 成功（得到 ${JSON.stringify(lookup.body).slice(0, 200)}）`,
+        )
+        const payload = lookup.body.result
+        assert(
+          payload.status === 'insufficient_material',
+          `空背包 → 材料不够（得到 ${payload.status}）`,
+        )
+        assert(
+          JSON.stringify(payload.crafting_table) === JSON.stringify(tablePos),
+          `坐标进语义结果（得到 ${JSON.stringify(payload.crafting_table)}）`,
+        )
+        const tableEntry = (payload.recipes || []).find((row) => row.requires_table)
+        assert(
+          Boolean(tableEntry) && tableEntry.available === false,
+          '3×3 配方被列出来（requires_table=true，但材料不够）',
+        )
+        assert(
+          (tableEntry.ingredients || []).every((row) => row.count > 0),
+          `材料语义完整（得到 ${JSON.stringify(tableEntry.ingredients)}）`,
+        )
+        assert(
+          !JSON.stringify(payload).includes('inShape'),
+          '不泄露 raw Recipe',
+        )
+        console.log('[e2e] 3×3 lookup ✓ 真实工作台 + 语义投影（requires_table / 材料）')
+
+        // 工作台缺失 / 不是工作台 / 太远
+        const missing = await lookupAt('chest', { x: bx, y: by + 8, z: bz })
+        assert(
+          missing.status === 404 && missing.body.error.code === 'table.missing',
+          `空位置 → table.missing（得到 ${JSON.stringify(missing.body)}）`,
+        )
+        const invalid = await lookupAt('chest', stonePos)
+        assert(
+          invalid.status === 422 && invalid.body.error.code === 'table.invalid',
+          `石头位置 → table.invalid（得到 ${JSON.stringify(invalid.body)}）`,
+        )
+        setBlock(farPos.x, farPos.y, farPos.z, 'minecraft:crafting_table')
+        await sleep(800)
+        const tooFar = await lookupAt('chest', farPos)
+        assert(
+          tooFar.status === 422 && tooFar.body.error.code === 'table.too_far',
+          `8 格外 → table.too_far（得到 ${JSON.stringify(tooFar.body)}）`,
+        )
+        console.log('[e2e] 3×3 lookup ✓ table.missing / table.invalid / table.too_far（绝不自己走过去）')
+
+        // craft：材料不够 / 工作台不在 → 如实拒绝
+        const noMaterial = await request(runtimePort, 'POST', '/minecraft/craft', {
+          recipe_id: tableEntry.recipe_id,
+          crafting_table: tablePos,
+        })
+        assert(
+          noMaterial.status === 409 &&
+            noMaterial.body.error.code === 'material.insufficient',
+          `空背包 craft 3×3 → material.insufficient（得到 ${JSON.stringify(noMaterial.body)}）`,
+        )
+        const tableGone = await request(runtimePort, 'POST', '/minecraft/craft', {
+          recipe_id: tableEntry.recipe_id,
+          crafting_table: { x: bx, y: by + 8, z: bz },
+        })
+        assert(
+          tableGone.status === 404 && tableGone.body.error.code === 'table.missing',
+          `工作台不在 → table.missing（得到 ${JSON.stringify(tableGone.body)}）`,
+        )
+        console.log('[e2e] 3×3 craft ✓ 材料不够 / 工作台不在都如实拒绝')
+
+        // 独占：move_to 跑着的时候 3×3 craft 一样被拒
+        const busyMove = await request(runtimePort, 'POST', '/minecraft/move_to', {
+          x: hereTable.x + 6,
+          y: hereTable.y,
+          z: hereTable.z,
+        })
+        if (busyMove.status === 200 && busyMove.body.status === 'RUNNING') {
+          const busyCraft = await request(runtimePort, 'POST', '/minecraft/craft', {
+            recipe_id: tableEntry.recipe_id,
+            crafting_table: tablePos,
+          })
+          assert(
+            busyCraft.status === 409 && busyCraft.body.error.code === 'action.busy',
+            `move_to 跑着时 3×3 craft → action.busy（得到 ${JSON.stringify(busyCraft.body)}）`,
+          )
+          await request(runtimePort, 'POST', '/minecraft/stop', {})
+          await waitFor(
+            () =>
+              events.some(
+                (e) =>
+                  e.event === 'minecraft.action.cancelled' &&
+                  e.action_id === busyMove.body.action_id,
+              ),
+            'move_to cancelled（4G 独占段收尾）',
+            10000,
+          )
+        } else {
+          console.log('[e2e] 3×3 craft 独占检查：move_to 没进入 RUNNING，跳过')
+        }
+
+        setBlock(tablePos.x, tablePos.y, tablePos.z, 'air')
+        setBlock(stonePos.x, stonePos.y, stonePos.z, 'air')
+        setBlock(farPos.x, farPos.y, farPos.z, 'air')
+        await sleep(400)
+        console.log(
+          '[e2e] 3×3 craft 成功路径：SKIPPED（flying-squid 没有 /give，箱子里凑不出 8 块木板；'
+            + '真实服务器 smoke 覆盖）',
+        )
+      }
+
       // ---------------- Phase 3D：follow_player（Test A 跟随 / B STOP / C 丢失 / D 太远 / E 超时） ----------------
       if (cycle === 1) {
         const botPosNow = async () =>
@@ -1273,7 +1422,9 @@ async function main() {
           await waitFor(async () => {
             const snap = await request(runtimePort, 'GET', '/minecraft/world/snapshot?layers=near')
             return (snap.body.players || []).some((p) => p.username === 'Followee')
-          }, 'runtime 看见 Followee', 10000)
+            // 机器繁忙时实体包可能来得慢（尤其前面几段刚做过 setblock/搬运）→ 给足 20s；
+            // 断言本身没变（必须真的看见）。
+          }, 'runtime 看见 Followee', 20000)
 
           const followStart = await request(runtimePort, 'POST', '/minecraft/follow_player', {
             username: 'Followee',

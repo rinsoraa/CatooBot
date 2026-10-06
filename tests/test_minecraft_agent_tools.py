@@ -219,8 +219,8 @@ class FakeMinecraftService:
             raise outcome
         return {"action_id": "act_move_item_1", "action": "inventory_move", **outcome}
 
-    async def recipe_lookup(self, item: Any) -> dict[str, Any]:
-        self._record("recipe_lookup", item=item)
+    async def recipe_lookup(self, item: Any, crafting_table: Any = None) -> dict[str, Any]:
+        self._record("recipe_lookup", item=item, crafting_table=crafting_table)
         canonical = str(item or "").strip().lower().replace("minecraft:", "")
         outcome = self._next(
             "recipe_lookup",
@@ -254,8 +254,8 @@ class FakeMinecraftService:
             raise outcome
         return {"action_id": "act_recipe_1", "action": "recipe_lookup", **outcome}
 
-    async def craft(self, recipe_id: Any) -> dict[str, Any]:
-        self._record("craft", recipe_id=recipe_id)
+    async def craft(self, recipe_id: Any, crafting_table: Any = None) -> dict[str, Any]:
+        self._record("craft", recipe_id=recipe_id, crafting_table=crafting_table)
         outcome = self._next("craft", {"status": "RUNNING", "action_id": "act_craft_1"})
         if isinstance(outcome, Exception):
             raise outcome

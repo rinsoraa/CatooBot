@@ -18,7 +18,7 @@ import os
 import secrets
 import time
 from collections import deque
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -450,6 +450,37 @@ class MinecraftRecipeChanged(MinecraftBridgeError):
         super().__init__(message, code="minecraft.recipe_changed")
 
 
+class MinecraftCraftingTableMissing(MinecraftBridgeError):
+    """指定的那个位置没有工作台（区块没加载，或者被挖掉了）。"""
+
+    status = 404
+
+    def __init__(self, message: str = "那里没有工作台") -> None:
+        super().__init__(message, code="minecraft.crafting_table_missing")
+
+
+class MinecraftCraftingTableInvalid(MinecraftBridgeError):
+    """那个位置不是 crafting_table（本阶段只认这一种工作台）。"""
+
+    status = 422
+
+    def __init__(
+        self, message: str = "那个位置不是工作台", *, detail: dict[str, Any] | None = None
+    ) -> None:
+        super().__init__(message, code="minecraft.crafting_table_invalid", detail=detail or {})
+
+
+class MinecraftCraftingTableTooFar(MinecraftBridgeError):
+    """工作台离得太远（本阶段绝不自动走过去）。"""
+
+    status = 422
+
+    def __init__(
+        self, message: str = "工作台太远", *, detail: dict[str, Any] | None = None
+    ) -> None:
+        super().__init__(message, code="minecraft.crafting_table_too_far", detail=detail or {})
+
+
 class MinecraftCraftFailed(MinecraftBridgeError):
     """底层 bot.craft 失败。"""
 
@@ -593,6 +624,12 @@ def _translate(exc: MinecraftRuntimeError) -> MinecraftBridgeError:
     # Phase 4F：crafting（玩家 2×2）
     if exc.code == "recipe.not_found":
         return MinecraftRecipeNotFound(str(exc))
+    if exc.code == "table.missing":
+        return MinecraftCraftingTableMissing(str(exc))
+    if exc.code == "table.invalid":
+        return MinecraftCraftingTableInvalid(str(exc), detail=dict(exc.detail))
+    if exc.code == "table.too_far":
+        return MinecraftCraftingTableTooFar(str(exc), detail=dict(exc.detail))
     if exc.code == "recipe.invalid":
         return MinecraftActionInvalid(str(exc))
     if exc.code == "recipe.unavailable":
@@ -930,6 +967,10 @@ class MinecraftService:
         # Phase 4C：place 的安全门
         env["MC_PLACE_TIMEOUT_MS"] = str(int(self.config.action.place.timeout * 1000))
         env["MC_PLACE_MAX_DISTANCE"] = str(self.config.action.place.max_distance)
+        # Phase 4G：工作台的最大交互距离（眼睛 → 方块中心）
+        env["MC_CRAFTING_TABLE_MAX_DISTANCE"] = str(
+            self.config.action.craft.crafting_table.max_distance
+        )
         # Phase 4F：crafting（玩家 2×2）的超时
         env["MC_CRAFT_TIMEOUT_MS"] = str(int(self.config.action.craft.timeout * 1000))
         env["MC_RECIPE_LOOKUP_TIMEOUT_MS"] = str(
@@ -1300,22 +1341,51 @@ class MinecraftService:
             raise _translate(exc) from exc
 
     @staticmethod
-    def validate_recipe_lookup(item: Any) -> str:
-        """recipe_lookup 的参数校验（纯函数）：物品名非空、长度受限、无控制字符。"""
+    def validate_crafting_table(crafting_table: Any) -> dict[str, int] | None:
+        """crafting_table 参数校验（纯函数，§五）。
+
+        要么没有（= 玩家自身 2×2），要么是**明确的整数方块坐标**；绝不接受
+        ``"nearest"`` / ``"auto"`` / ``"any"`` 这类执行时才决定的隐式目标。
+        是否存在工作台、是不是工作台、距离够不够，由 runtime 用**实时**方块状态判定。
+        """
+        if crafting_table is None:
+            return None
+        if not isinstance(crafting_table, Mapping):
+            raise MinecraftActionInvalid(
+                "crafting_table 必须是 {x, y, z} 这样的方块坐标（不接受 nearest / auto）"
+            )
+        coords: dict[str, int] = {}
+        for name in ("x", "y", "z"):
+            value = crafting_table.get(name)
+            if isinstance(value, bool) or not isinstance(value, int):
+                raise MinecraftActionInvalid(f"crafting_table.{name} 必须是整数")
+            coords[name] = int(value)
+        if abs(coords["x"]) > 3.0e7 or abs(coords["z"]) > 3.0e7 or not -512 <= coords["y"] <= 2048:
+            raise MinecraftActionInvalid("crafting_table 坐标超出 Minecraft 世界边界")
+        return coords
+
+    @staticmethod
+    def validate_recipe_lookup(
+        item: Any, crafting_table: Any = None
+    ) -> tuple[str, dict[str, int] | None]:
+        """recipe_lookup 的参数校验（纯函数）：物品名 + 可选的工作台坐标。"""
         if not isinstance(item, str) or not item.strip():
             raise MinecraftActionInvalid("item 不能为空（要查什么物品的配方）")
         if len(item) > PLACE_MAX_ITEM_CHARS:
             raise MinecraftActionInvalid(f"item 最长 {PLACE_MAX_ITEM_CHARS} 个字符")
         if any(ord(ch) < 32 or ord(ch) == 127 for ch in item):
             raise MinecraftActionInvalid("item 不能包含控制字符")
-        return item.strip()
+        return item.strip(), MinecraftService.validate_crafting_table(crafting_table)
 
     @staticmethod
-    def validate_craft(recipe_id: Any) -> str:
-        """craft 的参数校验（纯函数）：只接受 recipe_lookup 给出的稳定 recipe_id。
+    def validate_craft(
+        recipe_id: Any, crafting_table: Any = None
+    ) -> tuple[str, dict[str, int] | None]:
+        """craft 的参数校验（纯函数）：recipe_id + 可选的工作台坐标。
 
         recipe_id 是可读的规范签名（``stick*4=oak_planks*2``，需要工作台的带 ``!`` 前缀），
-        所以这里只做形状校验；**是否存在 / 现在能不能做**由 runtime 用当前配方表与当前背包判定。
+        所以这里只做形状校验；**是否存在 / 现在能不能做 / 工作台还在不在**由 runtime
+        用当前配方表、当前方块状态与当前背包判定。
         """
         if not isinstance(recipe_id, str) or not recipe_id.strip():
             raise MinecraftActionInvalid(
@@ -1330,36 +1400,43 @@ class MinecraftService:
             )
         if any(ord(ch) < 32 or ord(ch) == 127 for ch in clean):
             raise MinecraftActionInvalid("recipe_id 不能包含控制字符")
-        return clean
+        return clean, MinecraftService.validate_crafting_table(crafting_table)
 
-    async def recipe_lookup(self, item: Any) -> dict[str, Any]:
-        """查一个目标物品在**玩家自身 2×2** 里能做的配方（Phase 4F · SAFE 只读）。
+    async def recipe_lookup(self, item: Any, crafting_table: Any = None) -> dict[str, Any]:
+        """查一个目标物品能做的配方（Phase 4F/4G · SAFE 只读）。
+
+        * 不给 ``crafting_table`` → 只查**玩家自身 2×2**（4F 行为不变）；
+        * 给了明确的 ``{x,y,z}`` → 查**那张工作台**的 3×3（坐标不合规 → 422；工作台不在 /
+          不是工作台 / 太远 → 404/422，**绝不自动去找工作台**）。
 
         同步动作：直接返回语义投影（`recipe_id` / `result` / `requires_table` /
-        `available` / `ingredients`）；只有工作台配方时返回
-        ``status="crafting_table_required"``（**绝不自动去找工作台**）。
+        `available` / `ingredients`，带工作台时额外带回坐标）。
         """
         self._require_enabled()
-        clean = self.validate_recipe_lookup(item)
+        clean, table = self.validate_recipe_lookup(item, crafting_table)
         try:
             await self._ensure_runtime()
-            return await self._client.recipe_lookup(clean)
+            return await self._client.recipe_lookup(clean, table)
         except MinecraftRuntimeError as exc:
             if exc.unreachable:
                 self._mark_runtime_down(str(exc))
             raise _translate(exc) from exc
 
-    async def craft(self, recipe_id: Any) -> dict[str, Any]:
-        """执行**一次** 2×2 配方（Phase 4F · MEDIUM · 需要用户确认）。
+    async def craft(self, recipe_id: Any, crafting_table: Any = None) -> dict[str, Any]:
+        """执行**一次**配方（Phase 4F/4G · MEDIUM · 需要用户确认）。
 
-        一次一个 recipe：不批量、不做 recipe chain、不自动准备材料、不碰工作台。
+        * 不给 ``crafting_table`` → 玩家自身 2×2（4F 行为不变）；
+        * 给了明确坐标 → 用**那张工作台**的 3×3（执行前会重新验证方块还在、还是工作台、
+          距离够；被挖掉 → ``crafting_table_missing``，被换掉 → ``crafting_table_invalid``）。
+
+        一次一个 recipe：不批量、不做 recipe chain、不自动准备材料、不自动放置工作台。
         返回启动即 ``RUNNING``；终态经事件送达（成功带 ``result`` 的 before/after）。
         """
         self._require_enabled()
-        clean = self.validate_craft(recipe_id)
+        clean, table = self.validate_craft(recipe_id, crafting_table)
         try:
             await self._ensure_runtime()
-            return await self._client.craft(clean)
+            return await self._client.craft(clean, table)
         except MinecraftRuntimeError as exc:
             if exc.unreachable:
                 self._mark_runtime_down(str(exc))

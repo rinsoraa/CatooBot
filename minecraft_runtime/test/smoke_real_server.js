@@ -26,7 +26,10 @@
  *      （支持 SMOKE_CONTAINER_TARGET="x,y,z" 用操作者自己的箱子；否则就地造临时箱子）
  *  10. Phase 4F：crafting（玩家 2×2）—— /give 木板 → recipe_lookup 拿到 recipe_id（不硬编码）
  *      → craft（RUNNING → completed）→ 重读 inventory 验证产物增加 / 材料减少 → /clear 恢复
- *  11. disconnect
+ *  11. Phase 4G：3×3 工作台 —— 就地在 bot 旁边放一张临时工作台（记录原方块，最后还原）
+ *      → recipe_lookup(chest, table) 拿到 recipe_id → craft(recipe_id, table) → 重读 inventory
+ *      → /clear 产物与材料 → 逐槽比对恢复（支持 SMOKE_CRAFTING_TABLE_TARGET="x,y,z"）
+ *  12. disconnect
  *
  * 认证：默认用 minecraft_runtime/auth.json（本地文件，绝不进 Git）。
  * 服务器没开 / 连不上 → 打印 NOT AVAILABLE 并以 0 退出（文档记录用）；
@@ -1699,6 +1702,235 @@ async function main() {
       console.log(
         '[smoke] SKIPPED craft STOP：合成毫秒级完成，真实服务器上没有可取消窗口'
           + '（Node 单测覆盖 cancel/timeout/race/cleanup 恰好一次）',
+      )
+    }
+
+    // ---- 9. Phase 4G：3×3 工作台（8 木板 → 1 箱子）----
+    if (!digReady) {
+      console.log('[smoke] ✗ Phase 4G：runtime 未空闲，3×3 craft 不能执行')
+    } else {
+      const name = (value) => normalizeItemName(value || '')
+      const PLANKS = 'minecraft:oak_planks'
+      const PLANKS_COUNT = 8
+      const readSlots = async () => {
+        const resp = await request(runtimePort, 'GET', '/minecraft/inventory/slots')
+        return resp.status === 200 && resp.body ? resp.body.slots || [] : []
+      }
+      const signature = (rows) =>
+        rows
+          .map((row) => `${row.slot}:${name(row.name)}×${row.count}`)
+          .sort((a, b) => Number.parseInt(a, 10) - Number.parseInt(b, 10))
+          .join('|')
+      const inventorySlice = async () => (await request(runtimePort, 'GET', '/minecraft/inventory')).body
+      const say = (message) => request(runtimePort, 'POST', '/minecraft/chat', { message })
+      const totalOf = (body, itemName) => {
+        const hit = ((body && body.items) || []).find((row) => name(row.name) === name(itemName))
+        return hit ? hit.count : 0
+      }
+
+      const signatureBefore = signature(await readSlots())
+      const sliceBefore = await inventorySlice()
+      const chestsBefore = totalOf(sliceBefore, 'chest')
+      console.log(
+        `[smoke] 3×3 前：chest=${chestsBefore}（背包 ${signatureBefore || '空'}）`,
+      )
+
+      // (a) 找一张工作台：优先 SMOKE_CRAFTING_TABLE_TARGET；否则就地放一张临时工作台
+      let tablePos = null
+      let tableOrigin = 'air'
+      let createdTable = false
+      const override = (process.env.SMOKE_CRAFTING_TABLE_TARGET || '').trim()
+      if (override) {
+        const [x, y, z] = override.split(',').map((value) => Number.parseInt(value, 10))
+        if (Number.isFinite(x) && Number.isFinite(y) && Number.isFinite(z)) {
+          tablePos = { x, y, z }
+          console.log(`[smoke] 3×3：用操作者指定的工作台 (${x},${y},${z})`)
+        } else {
+          console.log(`[smoke] SMOKE_CRAFTING_TABLE_TARGET 格式不对（应为 "x,y,z"）：${override}`)
+        }
+      } else {
+        const origin = (await status()).position
+        const base = { x: Math.round(origin.x), y: Math.round(origin.y), z: Math.round(origin.z) }
+        const offsets = [
+          [1, 1, 0],
+          [0, 1, 1],
+          [1, 1, 1],
+          [-1, 1, 0],
+          [0, 1, -1],
+          [0, 2, 0],
+          [0, 3, 0],
+          [1, 0, 0],
+          [0, 0, 1],
+          [-1, 0, 0],
+          [0, 0, -1],
+        ]
+        for (const [dx, dy, dz] of offsets) {
+          const spot = { x: base.x + dx, y: base.y + dy, z: base.z + dz }
+          const raw = await blockAt(spot)
+          const original = !raw || raw === 'air' || raw === 'water' ? raw || 'air' : null
+          if (original === null) continue
+          await say(`/setblock ${spot.x} ${spot.y} ${spot.z} minecraft:crafting_table`)
+          const usable = await waitForValue(async () => {
+            const probe = await request(runtimePort, 'POST', '/minecraft/recipe_lookup', {
+              item: 'chest',
+              crafting_table: spot,
+            })
+            return probe.status === 200 ? probe.body.result : null
+          }, `临时工作台 (${spot.x},${spot.y},${spot.z}) 可用`, 6000)
+          if (usable) {
+            tablePos = spot
+            tableOrigin = original
+            createdTable = true
+            console.log(
+              `[smoke] 3×3：在 (${spot.x},${spot.y},${spot.z}) 放了临时工作台`
+                + `（原方块 ${original}，结束后原样还原）`,
+            )
+            break
+          }
+          await say(`/setblock ${spot.x} ${spot.y} ${spot.z} ${original}`)
+        }
+        if (!tablePos) {
+          console.log(
+            '[smoke] SKIPPED 3×3：附近放不出可用的临时工作台，也没有 SMOKE_CRAFTING_TABLE_TARGET'
+              + '（不伪造结论）',
+          )
+        }
+      }
+
+      // (b) 材料夹具：/give 8 块木板
+      const botName = (await status()).username
+      let materialsReady = false
+      if (tablePos && botName) {
+        await say(`/give ${botName} ${PLANKS} ${PLANKS_COUNT}`)
+        const granted = await waitForValue(async () => {
+          const body = await inventorySlice()
+          return totalOf(body, PLANKS) >= PLANKS_COUNT ? body : null
+        }, '夹具木板进入背包', 10000)
+        materialsReady = Boolean(granted)
+        if (!materialsReady) {
+          console.log('[smoke] SKIPPED 3×3：/give 不可用（凑不出 8 块木板，不伪造结论）')
+        }
+      } else if (tablePos) {
+        console.log('[smoke] SKIPPED 3×3：拿不到 bot 用户名，无法 /give 材料')
+      }
+
+      if (tablePos && materialsReady) {
+        // (c) table lookup：动态找"需要工作台"的 chest 配方（绝不硬编码 recipe_id）
+        const lookup = await request(runtimePort, 'POST', '/minecraft/recipe_lookup', {
+          item: 'chest',
+          crafting_table: tablePos,
+        })
+        const payload = lookup.body && lookup.body.result
+        check(
+          lookup.status === 200 && lookup.body.status === 'SUCCEEDED' && Boolean(payload),
+          `table lookup = PASS（HTTP ${lookup.status}）`,
+        )
+        check(
+          JSON.stringify(payload && payload.crafting_table) === JSON.stringify(tablePos),
+          `table 坐标进语义结果（${JSON.stringify(payload && payload.crafting_table)}）`,
+        )
+        const target = ((payload && payload.recipes) || []).find(
+          (row) => row.available && row.requires_table === true,
+        )
+        check(
+          Boolean(target),
+          `recipe requires table = true（${target ? target.recipe_id : '没找到需要工作台的可用配方'}）`,
+        )
+        check(
+          Boolean(target) && target.available === true,
+          `recipe available = true（每刀 ${target && target.result.count_per_craft} 个 ${target && target.result.name}）`,
+        )
+        console.log(
+          '[smoke] table type = minecraft:crafting_table / table distance = PASS'
+            + `（lookup 成功即通过距离与类型门；坐标 ${tablePos.x},${tablePos.y},${tablePos.z}）`,
+        )
+
+        if (!target) {
+          console.log('[smoke] ✗ Phase 4G：这个版本里没有"需要工作台"的箱子配方，无法继续')
+        } else {
+          // (d) craft：RUNNING → completed
+          const craft = await request(runtimePort, 'POST', '/minecraft/craft', {
+            recipe_id: target.recipe_id,
+            crafting_table: tablePos,
+          })
+          const started =
+            craft.status === 200 && craft.body.status === 'RUNNING' && Boolean(craft.body.action_id)
+          check(started, `craft RUNNING + action_id（HTTP ${craft.status}）`)
+          if (!started) {
+            console.log(`[smoke]    craft 启动失败：${JSON.stringify(craft)}`)
+          } else {
+            const terminal = await waitForActionTerminal(
+              craft.body.action_id,
+              'craft 终态事件',
+              30000,
+            )
+            if (!terminal || terminal.event !== 'minecraft.action.completed') {
+              check(
+                false,
+                `craft 终态是 ${terminal && terminal.event}`
+                  + `（${(terminal && (terminal.error || terminal.reason)) || '-'}）`,
+              )
+            } else {
+              const result = terminal.result || {}
+              check(
+                JSON.stringify(result.crafting_table) === JSON.stringify(tablePos),
+                `craft completed 带回工作台坐标（${JSON.stringify(result.crafting_table)}）`,
+              )
+              const crafted = (result.result && result.result.crafted_count) || 0
+              check(crafted >= 1, `output increased（产物 count=${crafted}）`)
+              const consumed = (result.ingredients || [])[0]
+              check(
+                Boolean(consumed) && consumed.consumed >= PLANKS_COUNT,
+                `ingredients decreased（${consumed && consumed.name} -${consumed && consumed.consumed}）`,
+              )
+              // (e) 重读 inventory：箱子 +N、木板 −8（不抄事件里的数字）
+              const reread = await waitForValue(async () => {
+                const body = await inventorySlice()
+                const chests = totalOf(body, 'chest')
+                const planks = totalOf(body, PLANKS)
+                return chests >= chestsBefore + crafted && planks <= 0
+                  ? { chests, planks }
+                  : null
+              }, '重读 inventory（箱子增加 + 木板消耗）', 15000)
+              check(
+                Boolean(reread),
+                'inventory reread agrees = PASS'
+                  + `（chest ${chestsBefore} → ${reread && reread.chests}，`
+                  + `${name(PLANKS)} → ${reread && reread.planks}）`,
+              )
+            }
+          }
+        }
+      }
+
+      // (f) 清理夹具：产物 + 材料 + 临时工作台；最后逐槽比对
+      if (tablePos) {
+        if (botName) {
+          await say(`/clear ${botName} minecraft:chest`)
+          await say(`/clear ${botName} ${PLANKS}`)
+        }
+        if (createdTable) {
+          await say(`/setblock ${tablePos.x} ${tablePos.y} ${tablePos.z} ${tableOrigin}`)
+        }
+        const restored = await waitForValue(async () => {
+          const rows = await readSlots()
+          return signature(rows) === signatureBefore ? rows : null
+        }, '夹具已清、背包回到测试前', 15000)
+        check(Boolean(restored), `inventory restored / fixture restored = PASS（${signatureBefore || '空'}）`)
+        if (createdTable) {
+          const gone = await waitForValue(async () => {
+            const probe = await request(runtimePort, 'POST', '/minecraft/recipe_lookup', {
+              item: 'chest',
+              crafting_table: tablePos,
+            })
+            return probe.status !== 200 ? true : null
+          }, '临时工作台已还原', 8000)
+          check(Boolean(gone), `table restored = PASS（还原成 ${tableOrigin}）`)
+        }
+      }
+
+      console.log(
+        '[smoke] SKIPPED 3×3 craft STOP：合成毫秒级完成，真实服务器上没有可取消窗口',
       )
     }
 

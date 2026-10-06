@@ -3,6 +3,27 @@
 本文件记录 CatooBot 的版本演进。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号见 `pyproject.toml`；日期取自真实提交历史（本仓库 2026-09-30 起）。
 
+## Minecraft Phase 4G — Crafting Table（3×3 · 明确指定工作台）
+
+* `minecraft_recipe_lookup` 与 `minecraft_craft` 增加**可选** `crafting_table: {x,y,z}`：
+  不给 = 玩家自身 2×2（Phase 4F 行为完全兼容），给了 = **那一张工作台**的 3×3。
+  **不新增工具**（没有 workbench_lookup/workbench_craft），只有一条 craft 语义。
+* 只接受明确的整数坐标：`nearest` / `auto` / `any` 这类隐式目标一律拒绝（§五）。
+  工作台实时验证：没有/被挖掉 → `crafting_table_missing`，不是 crafting_table
+  （切石机、锻造台…一律不算）→ `crafting_table_invalid`，超过 `craft.crafting_table.max_distance`
+  → `crafting_table_too_far`；**绝不自动去找/走过去/放一张工作台**。
+* 确认指纹在有工作台时**额外绑定坐标**（同一配方换张工作台就是另一次授权），
+  摘要写成「用 8 个 oak_planks 在 (100, 64, 100) 的 Crafting Table 制作 1 个 chest」。
+* 执行前用**当前**配方表 + **当前**工作台方块 + **当前**背包重新解析（确认后工作台被挖掉/被换掉
+  都不会继续），执行后仍然重读整个 inventory 复核（产物增加 + 材料减少）。
+* `recipe_id` 规则不变（`!` 前缀已区分"需要工作台"，2×2 与 3×3 配方不会碰撞）；
+  `MAX_DATA_DEPTH = 6` 保持不变（新字段只在第 3 层，没有再加深度）。
+* 验证：Node `recipe.test.js` 78 checks / `craft.test.js` 83 checks（含 2×2↔3×3 架构回归、
+  确认后工作台消失/被换/太远、3×3 的取消·超时·竞态）；Python 测试 +15；WebUI 新增
+  Crafting Context 选择器（Player 2×2 / Crafting Table 3×3 + 坐标）；flying-squid E2E 用
+  **真实 setblock 出来的工作台**验证 3×3 lookup 与全部拒绝路径；真实服务器 smoke 真机完成
+  `8 木板 → 1 箱子`（table lookup / craft / 重读 / 还原工作台 / 逐槽恢复）→ `REAL SERVER: PASS`。
+
 ## Minecraft Phase 4F — Crafting（单个配方 · 玩家 2×2）
 
 * 新增 LLM 工具 `minecraft_recipe_lookup`（SAFE 只读、**非独占**）：查"罐头自己 2×2 背包能做

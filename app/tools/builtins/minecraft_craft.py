@@ -23,8 +23,9 @@ CRAFT_METADATA = ToolMetadata(
     display_name="Minecraft Craft",
     description=(
         "执行**一次**某个配方（用 recipe_id 指定，来自 minecraft_recipe_lookup）："
-        "只支持玩家自己 2×2 背包合成，一次只做一个配方、只执行一次。"
-        "材料不够会直接失败（不会自动去找材料）。MEDIUM 风险，需要用户确认。"
+        "不给 crafting_table 就用罐头自己的 2×2，给出明确坐标就用那张工作台的 3×3；"
+        "一次只做一个配方、只执行一次。材料不够 / 工作台不在都会直接失败"
+        "（不会自动去找材料或工作台）。MEDIUM 风险，需要用户确认。"
     ),
     version="0.1.0",
     category="system",
@@ -49,8 +50,8 @@ CRAFT_METADATA = ToolMetadata(
         "需要材料就去自己想办法（本工具不会自动开箱、挖矿、或先做中间材料）。"
     ),
     limitations=(
-        "只支持 2×2 玩家背包合成（不需要工作台的配方）；一次调用只执行一次配方，"
-        "不做批量、不做 recipe chain、不自动准备材料、不全自动生产；"
+        "2×2（玩家自身）或 3×3（必须给出明确工作台坐标）；一次调用只执行一次配方，"
+        "不做批量、不做 recipe chain、不自动准备材料、不自动放置或寻找工作台；"
         f"recipe_id 最长 {CRAFT_MAX_RECIPE_ID_CHARS} 个字符。"
     ),
     input_schema={
@@ -63,7 +64,22 @@ CRAFT_METADATA = ToolMetadata(
                 # 形状：`[!]结果名*每刀产出=材料*数量[+材料*数量…]`（recipe_lookup 给的 id）
                 "pattern": r"^!?[a-z0-9_]+\*[0-9]+=",
                 "description": "minecraft_recipe_lookup 返回的 recipe_id（见该工具的输出）",
-            }
+            },
+            "crafting_table": {
+                "type": "object",
+                "description": (
+                    "工作台方块的整数坐标；**不给** = 用罐头自己的 2×2 背包合成，"
+                    "**给了** = 用你明确指定的这一张工作台的 3×3（不接受 nearest/auto，"
+                    "也不会自己去找/走过去/放一个工作台）"
+                ),
+                "properties": {
+                    "x": {"type": "integer", "description": "工作台的整数 X 坐标"},
+                    "y": {"type": "integer", "description": "工作台的整数 Y 坐标"},
+                    "z": {"type": "integer", "description": "工作台的整数 Z 坐标"},
+                },
+                "required": ["x", "y", "z"],
+                "additionalProperties": False,
+            },
         },
         "required": ["recipe_id"],
         "additionalProperties": False,
@@ -80,4 +96,4 @@ class MinecraftCraftTool(ActionTool):
     metadata = CRAFT_METADATA
 
     async def _call(self, service: MinecraftService, arguments: dict[str, Any]) -> dict[str, Any]:
-        return await service.craft(arguments.get("recipe_id"))
+        return await service.craft(arguments.get("recipe_id"), arguments.get("crafting_table"))

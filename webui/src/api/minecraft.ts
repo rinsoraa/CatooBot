@@ -4,6 +4,7 @@ import { api } from '@/api/client'
 
 import type {
   MinecraftContainerDirection,
+  MinecraftCraftingTable,
   MinecraftCraftResult,
   MinecraftRecipeLookupResponse,
   MinecraftContainerInspectResponse,
@@ -124,13 +125,19 @@ export const minecraftApi = {
       count,
     })
   },
-  /** Phase 4F：查玩家 2×2 能做的配方（SAFE 只读，同步返回）。 */
-  recipeLookup(item: string) {
-    return api.post<MinecraftRecipeLookupResponse>('/minecraft/recipe_lookup', { item })
+  /** Phase 4F/4G：查配方（不带 craftingTable = 玩家 2×2；带坐标 = 那张工作台的 3×3）。 */
+  recipeLookup(item: string, craftingTable?: MinecraftCraftingTable | null) {
+    return api.post<MinecraftRecipeLookupResponse>('/minecraft/recipe_lookup', {
+      item,
+      ...(craftingTable ? { crafting_table: craftingTable } : {}),
+    })
   },
-  /** Phase 4F：执行一次配方（必须过 MEDIUM 确认门）。 */
-  craft(recipeId: string) {
-    return api.post<MinecraftCraftResult>('/minecraft/craft', { recipe_id: recipeId })
+  /** Phase 4F/4G：执行一次配方（必须过 MEDIUM 确认门）。 */
+  craft(recipeId: string, craftingTable?: MinecraftCraftingTable | null) {
+    return api.post<MinecraftCraftResult>('/minecraft/craft', {
+      recipe_id: recipeId,
+      ...(craftingTable ? { crafting_table: craftingTable } : {}),
+    })
   },
   /** Phase 4A：确认门 Debug（只能缩小授权：造测试条 / 取消 / 置过期）。 */
   confirm(action: 'create_test' | 'cancel' | 'expire', body: Record<string, unknown> = {}) {

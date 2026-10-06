@@ -587,7 +587,9 @@ minecraft:
     recipe_lookup:
       timeout: 10                # 查 2×2 配方（纯本地计算：配方表 + 当前背包）最长秒数（1~60）
     craft:
-      timeout: 30                # 单次合成（玩家自身 2×2）最长秒数（5~120）
+      timeout: 30                # 单次合成（玩家自身 2×2 或指定工作台的 3×3）最长秒数（5~120）
+      crafting_table:
+        max_distance: 5          # 指定工作台时的最大交互距离（格，眼睛→方块中心）；超出的直接拒绝
     move_to:
       max_distance: 64           # 单次 move_to 的最大距离（格）；不允许数千米长距离
     follow_player:
@@ -597,7 +599,8 @@ minecraft:
   # 风险分级：SAFE（只读/说话/朝向/停止/看背包）、LOW（非破坏性移动与跟随，还需用户明确要求）、
   # MEDIUM（会改状态：minecraft_dig 破坏单方块、minecraft_place 放单方块、minecraft_equip 换主手、
   # minecraft_inventory_move 搬一格背包、minecraft_container_transfer 搬一格箱子/桶、
-  # minecraft_craft 做一次 2×2 配方 —— 都必须用户确认），而且一次只操作一个明确物品/槽位/配方。
+  # minecraft_craft 做一次配方（2×2，或给出明确坐标的工作台 3×3）—— 都必须用户确认），
+  # 而且一次只操作一个明确物品/槽位/配方。
   # 风险开关是"功能允许"这一层，不代替确认门：打开 allow_medium 后这六个动作仍要用户确认。
   agent:
     tools:

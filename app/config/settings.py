@@ -896,10 +896,19 @@ class RecipeLookupConfig(BaseModel):
     timeout: float = Field(default=10.0, ge=1.0, le=60.0)
 
 
+class CraftingTableConfig(BaseModel):
+    """Phase 4G：指定工作台（3×3）时的安全门。只加一个距离，不做一堆细碎开关。"""
+
+    #: 最大交互距离（格，眼睛 → 工作台方块中心，与 dig/place/container 同口径）
+    max_distance: float = Field(default=5.0, gt=0, le=6.0)
+
+
 class CraftConfig(BaseModel):
-    """Phase 4F：craft（玩家 2×2 背包合成一次）的超时。"""
+    """Phase 4F/4G：craft（一次一个配方；2×2 或指定工作台的 3×3）的超时与安全门。"""
 
     timeout: float = Field(default=30.0, ge=5.0, le=120.0)
+    #: Phase 4G：指定工作台时的距离上限（不指定工作台时用不到）
+    crafting_table: CraftingTableConfig = Field(default_factory=CraftingTableConfig)
 
 
 class ContainerConfig(BaseModel):

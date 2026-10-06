@@ -295,12 +295,21 @@ export type MinecraftRecipeStatus =
   | 'crafting_table_required'
   | 'recipe_not_found'
 
+/** 工作台的方块坐标（Phase 4G：3×3 必须由调用方明确指定，绝不接受 nearest/auto）。 */
+export interface MinecraftCraftingTable {
+  x: number
+  y: number
+  z: number
+}
+
 export interface MinecraftRecipeLookupResult {
   ok: boolean
   item: string
   status: MinecraftRecipeStatus
   total: number
   recipes: MinecraftRecipeEntry[]
+  /** 只在指定了工作台时出现（2×2 查询不带这个字段）。 */
+  crafting_table?: MinecraftCraftingTable
 }
 
 /** INSPECT 式的响应信封：快照在 ``result`` 里。 */

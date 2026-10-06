@@ -15,6 +15,8 @@
  */
 'use strict'
 
+const { Vec3 } = require('vec3')
+
 const registry = require('prismarine-registry')('1.21.1')
 const { Recipe } = require('prismarine-recipe')(registry)
 
@@ -43,6 +45,11 @@ const CRAFT = ACTION_REGISTRY.craft
 const OAK_PLANKS = 'oak_planks'
 const STICK = 'stick'
 const STICK_OAK_ID = 'stick*4=oak_planks*2'
+
+/** 假方块（有 name 与 position —— §三十：不能拿 {} 当真实 block）。 */
+function blockAt(name, x, y, z) {
+  return { name, position: new Vec3(x, y, z) }
+}
 
 function deferred() {
   let resolve
@@ -124,13 +131,24 @@ function applyRecipe(bot, recipe) {
   bot.inventory.add(result.name, result.count_per_craft)
 }
 
-function makeBot({ inventory = makeInventory(), craftImpl = null, entity = { position: null } } = {}) {
+function makeBot({
+  inventory = makeInventory(),
+  craftImpl = null,
+  // 4G：工作台距离检查要读眼睛位置 → 默认给一个真实 position
+  entity = { position: new Vec3(100, 64, 100) },
+  blocks = {},
+} = {}) {
   const bot = {
     registry,
     inventory,
     entity,
+    blocks,
     craftCalls: [],
     cleanedStates: 0,
+    blockAt(position) {
+      const key = `${position.x},${position.y},${position.z}`
+      return Object.prototype.hasOwnProperty.call(blocks, key) ? blocks[key] : null
+    },
     recipesFor(itemType, metadata, minResultCount, craftingTable) {
       minResultCount = minResultCount ?? 1
       return Recipe.find(itemType, metadata).filter((recipe) => {
@@ -405,6 +423,237 @@ async function main() {
       'K. 绝不自动把原木做成木板（inventory 一个都没动）',
     )
     assert(Boolean(stickError), 'K. 如实返回 material_insufficient')
+  }
+
+  console.log('[craft-test] 4G-G~I. 3×3：craft(recipe, 1, table) + 事后重读复核')
+  {
+    const bot = makeBot({
+      inventory: makeInventory({ oak_planks: 8 }),
+      blocks: { '100,64,100': blockAt('crafting_table', 100, 64, 100) },
+    })
+    const { runtime, events, state } = makeHarness()
+    state.bot = bot
+    const started = await runtime.execute('craft', {
+      recipe_id: '!chest*1=oak_planks*8',
+      crafting_table: { x: 100, y: 64, z: 100 },
+    })
+    assert(
+      started.status === STATES.RUNNING && Boolean(started.action_id),
+      `G. 3×3 craft 启动即 RUNNING（得到 ${JSON.stringify(started)}）`,
+    )
+    const terminal = await settle(harnessOf(events), started.action_id)
+    const result = completedResult(events, started.action_id)
+    assert(
+      terminal && terminal.event === 'minecraft.action.completed',
+      `G. 终态 completed（得到 ${terminal && terminal.event}）`,
+    )
+    assert(
+      result && result.item === 'chest' && result.result.crafted_count === 1,
+      `G. 产物语义（得到 ${JSON.stringify(result && result.result)}）`,
+    )
+    assert(
+      JSON.stringify(result.crafting_table) === JSON.stringify({ x: 100, y: 64, z: 100 }),
+      `G. 结果如实带回工作台坐标（得到 ${JSON.stringify(result.crafting_table)}）`,
+    )
+    const call = bot.craftCalls[bot.craftCalls.length - 1]
+    assert(call.count === 1, 'G. count 仍然是 1（不做批量）')
+    assert(
+      Boolean(call.craftingTable) && call.craftingTable.name === 'crafting_table',
+      `G. bot.craft 收到真实工作台 block（得到 ${JSON.stringify(call.craftingTable)}）`,
+    )
+    assert(
+      call.craftingTable.position.x === 100 &&
+        call.craftingTable.position.y === 64 &&
+        call.craftingTable.position.z === 100,
+      'G. 工作台坐标原样传给 bot.craft',
+    )
+    // H. 重读 inventory：产物 +1、材料 −8（来自真实（假）inventory）
+    assert(
+      result.before.result_count === 0 && result.after.result_count === 1,
+      `H. 产物 before/after（得到 ${result.before.result_count} → ${result.after.result_count}）`,
+    )
+    assert(
+      result.ingredients.length === 1 &&
+        result.ingredients[0].name === 'oak_planks' &&
+        result.ingredients[0].consumed === 8,
+      `H. 材料消耗（得到 ${JSON.stringify(result.ingredients)}）`,
+    )
+    assert(
+      bot.inventory.total('chest') === 1 && bot.inventory.total('oak_planks') === 0,
+      'H. 底层 inventory 真的变了（chest +1 / planks −8）',
+    )
+
+    // I. 签名对不上（带工作台也一样）→ recipe.changed
+    const harness2 = makeHarness()
+    harness2.state.bot = makeBot({
+      inventory: makeInventory({ oak_planks: 8 }),
+      blocks: { '100,64,100': blockAt('crafting_table', 100, 64, 100) },
+    })
+    await expectCode(
+      harness2.runtime.execute('craft', {
+        recipe_id: '!chest*1=oak_planks*7',
+        crafting_table: { x: 100, y: 64, z: 100 },
+      }),
+      'recipe.changed',
+      'I. 签名变了（带工作台）',
+    )
+    assert(harness2.state.bot.craftCalls.length === 0, 'I. 被拒时绝不调用 bot.craft')
+  }
+
+  console.log('[craft-test] 4G-§十八. 确认后重新验证工作台（挖掉 / 换掉 / 太远）')
+  {
+    // 工作台被挖掉 → table.missing
+    const missing = makeHarness()
+    missing.state.bot = makeBot({ inventory: makeInventory({ oak_planks: 8 }) })
+    await expectCode(
+      missing.runtime.execute('craft', {
+        recipe_id: '!chest*1=oak_planks*8',
+        crafting_table: { x: 100, y: 64, z: 100 },
+      }),
+      'table.missing',
+      '§十八 工作台被挖掉',
+    )
+    assert(missing.state.bot.craftCalls.length === 0, '挖掉后绝不合成')
+
+    // 被替换成箱子 → table.invalid
+    const replaced = makeHarness()
+    replaced.state.bot = makeBot({
+      inventory: makeInventory({ oak_planks: 8 }),
+      blocks: { '100,64,100': blockAt('chest', 100, 64, 100) },
+    })
+    await expectCode(
+      replaced.runtime.execute('craft', {
+        recipe_id: '!chest*1=oak_planks*8',
+        crafting_table: { x: 100, y: 64, z: 100 },
+      }),
+      'table.invalid',
+      '§十八 工作台被换成箱子',
+    )
+    assert(replaced.state.bot.craftCalls.length === 0, '换掉后绝不合成')
+
+    // 太远 → table.too_far
+    const far = makeHarness()
+    far.state.bot = makeBot({
+      inventory: makeInventory({ oak_planks: 8 }),
+      blocks: { '130,64,100': blockAt('crafting_table', 130, 64, 100) },
+    })
+    await expectCode(
+      far.runtime.execute('craft', {
+        recipe_id: '!chest*1=oak_planks*8',
+        crafting_table: { x: 130, y: 64, z: 100 },
+      }),
+      'table.too_far',
+      '§十八 工作台太远',
+    )
+    assert(far.state.bot.craftCalls.length === 0, '太远时绝不合成（更不会自己走过去）')
+
+    // 没有工作台却给 3×3 配方 → recipe.unavailable（4F 语义保持）
+    const noTable = makeHarness()
+    noTable.state.bot = makeBot({ inventory: makeInventory({ oak_planks: 8 }) })
+    await expectCode(
+      noTable.runtime.execute('craft', { recipe_id: '!chest*1=oak_planks*8' }),
+      'recipe.unavailable',
+      '没有工作台 → recipe.unavailable',
+    )
+
+    // 2×2 配方 + 工作台：仍然走 2×2 语境（表递给 bot.craft，mineflayer 会用 3×3 界面）
+    const both = makeHarness()
+    both.state.bot = makeBot({
+      inventory: makeInventory({ oak_planks: 2 }),
+      blocks: { '100,64,100': blockAt('crafting_table', 100, 64, 100) },
+    })
+    const stickStarted = await both.runtime.execute('craft', {
+      recipe_id: 'stick*4=oak_planks*2',
+      crafting_table: { x: 100, y: 64, z: 100 },
+    })
+    const stickTerminal = await settle(both, stickStarted.action_id)
+    assert(
+      stickTerminal && stickTerminal.event === 'minecraft.action.completed',
+      `带工作台也能做 2×2 配方（得到 ${stickTerminal && stickTerminal.event}）`,
+    )
+  }
+
+  console.log('[craft-test] 4G-J~M. 3×3 的取消 / 超时 / 竞态 / 终态恰好一次')
+  {
+    const table = { x: 100, y: 64, z: 100 }
+    const blocks = { '100,64,100': blockAt('crafting_table', 100, 64, 100) }
+
+    // L. 取消（crafting 挂住 → STOP）
+    const hang = deferred()
+    const bot = makeBot({
+      inventory: makeInventory({ oak_planks: 8 }),
+      blocks,
+      craftImpl: () => hang.promise,
+    })
+    const counted = withCleanupCounter()
+    const harness = makeHarness({ craft: counted.definition })
+    harness.state.bot = bot
+    const started = await harness.runtime.execute('craft', {
+      recipe_id: '!chest*1=oak_planks*8',
+      crafting_table: table,
+    })
+    await sleep(30)
+    harness.runtime.stop()
+    assert(
+      terminals(harness.events, started.action_id).length === 1 &&
+        terminals(harness.events, started.action_id)[0].event === 'minecraft.action.cancelled',
+      'L. 3×3 取消 → CANCELLED',
+    )
+    assert(counted.counter.calls === 1, `L. cleanup 恰好一次（得到 ${counted.counter.calls}）`)
+    hang.resolve(null)
+    await sleep(60)
+    assert(
+      terminals(harness.events, started.action_id).length === 1,
+      'M. 底层完成后仍只有一个终态',
+    )
+
+    // K. 超时
+    const hang2 = deferred()
+    const bot2 = makeBot({
+      inventory: makeInventory({ oak_planks: 8 }),
+      blocks,
+      craftImpl: () => hang2.promise,
+    })
+    const counted2 = withCleanupCounter({ ...CRAFT, timeout_ms: 120 })
+    const harness2 = makeHarness({ craft: counted2.definition })
+    harness2.state.bot = bot2
+    const started2 = await harness2.runtime.execute('craft', {
+      recipe_id: '!chest*1=oak_planks*8',
+      crafting_table: table,
+    })
+    const terminal2 = await settle(harness2, started2.action_id, 2000)
+    assert(
+      terminal2 && terminal2.event === 'minecraft.action.timeout',
+      `K. 3×3 超时 → TIMEOUT（得到 ${terminal2 && terminal2.event}）`,
+    )
+
+    // J. race：底层完成与 STOP 同时到达
+    const gate = deferred()
+    const bot3 = makeBot({
+      inventory: makeInventory({ oak_planks: 8 }),
+      blocks,
+      craftImpl: async (innerBot, recipe) => {
+        applyRecipe(innerBot, recipe)
+        await gate.promise
+      },
+    })
+    const harness3 = makeHarness()
+    harness3.state.bot = bot3
+    const started3 = await harness3.runtime.execute('craft', {
+      recipe_id: '!chest*1=oak_planks*8',
+      crafting_table: table,
+    })
+    await sleep(20)
+    harness3.runtime.stop()
+    gate.resolve(null)
+    await sleep(80)
+    const rows = terminals(harness3.events, started3.action_id)
+    assert(rows.length === 1, `J. race 后终态恰好一个（得到 ${rows.length}）`)
+    assert(rows[0].event === 'minecraft.action.cancelled', `J. 只能是 CANCELLED（得到 ${rows[0].event}）`)
+    assert(
+      bot3.inventory.total('chest') === 1,
+      'J. 底层确实做出来了（如实暴露；但不报 SUCCEEDED）',
+    )
   }
 
   console.log('[craft-test] L/M/N. 取消 / 超时 / 竞态：只允许一个终态')
