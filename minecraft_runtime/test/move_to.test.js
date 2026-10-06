@@ -96,16 +96,33 @@ function makeEmitter() {
 
 const MOVE = ACTION_REGISTRY.move_to
 
-/** 假 bot：真正的 Pathfinder 事件面（on/removeListener/emit + setGoal 会发 goal_updated）。 */
+/**
+ * 假 bot：真正的 Pathfinder 事件面 —— setGoal / goal / isMoving / goal_updated /
+ * path_update / goal_reached / path_stop 全都在（§二十六：绝不再 fake 成
+ * ``goto = Promise.resolve()``，否则根本测不到本阶段的问题）。
+ */
 function makeBot(position = new Vec3(0, 64, 0)) {
   const emitter = makeEmitter()
+  const moving = { value: false }
   const bot = {
     entity: { position },
     pathfinder: {
       setGoalCalls: [],
       setGoal(goal) {
         bot.pathfinder.setGoalCalls.push(goal)
+        // 与 mineflayer-pathfinder 一致：setGoal 会发 goal_updated（null 也是）
         emitter.emit('goal_updated', goal)
+      },
+      get goal() {
+        const calls = bot.pathfinder.setGoalCalls
+        return calls.length > 0 ? calls[calls.length - 1] : null
+      },
+      isMoving() {
+        return moving.value
+      },
+      // 让测试可以像真 Pathfinder 那样"开始/停止移动"
+      setMoving(value) {
+        moving.value = Boolean(value)
       },
     },
     clearedStates: 0,
@@ -307,6 +324,7 @@ async function behaviour() {
       '成功也自己清 Goal（SUCCEEDED 不触发 cleanup —— 4H 的教训）',
     )
     assert(bot.listenerCount() === 0, '成功后监听器摘干净')
+    assert(bot.pathfinder.goal === null, 'isMoving/goal 投影也反映"已经收工"（goal=null）')
 
     // A2：Pathfinder 说"到了"，但实际位置在 28 格外 → 绝不 SUCCEEDED
     const liar = makeHarness()
