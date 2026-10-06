@@ -505,14 +505,18 @@ async function main() {
           const stopped = (await request(runtimePort, 'GET', '/minecraft/status')).body
           assert(stopped.pathfinder.goal === null, 'Test B：goal == null')
           assert(stopped.pathfinder.moving === false, 'Test B：isMoving == false')
+          // 硬证据是 goal == null + isMoving == false（上面两条）。位置检查改成
+          // "**停稳之后**再测一段"：STOP 瞬间可能还在空中（下落/惯性收尾），
+          // 直接拿 400ms 内的位移当"还在走"会误报（本地 0.35~0.8，CI 上出现过 1.11）。
           await sleep(400)
-          const later = (await request(runtimePort, 'GET', '/minecraft/status')).body
+          const settledA = (await request(runtimePort, 'GET', '/minecraft/status')).body
+          await sleep(400)
+          const settledB = (await request(runtimePort, 'GET', '/minecraft/status')).body
           const drift = Math.hypot(
-            later.position.x - stopped.position.x,
-            later.position.z - stopped.position.z,
+            settledB.position.x - settledA.position.x,
+            settledB.position.z - settledA.position.z,
           )
-          // 半格余量：停止瞬间的惯性/下落收尾不算"还在走"（goal/isMoving 才是硬证据）
-          assert(drift <= 0.6, `Test B：停止后位置不再漂移（${drift.toFixed(2)} 格）`)
+          assert(drift <= 0.2, `Test B：停稳后位置不再漂移（${drift.toFixed(2)} 格）`)
           stopVerified = true
           break
         }
@@ -1225,13 +1229,16 @@ async function main() {
           const stoppedFollow = (await request(runtimePort, 'GET', '/minecraft/status')).body
           assert(stoppedFollow.pathfinder.goal === null, 'Test B：goal == null')
           assert(stoppedFollow.pathfinder.moving === false, 'Test B：isMoving == false')
+          // 与 move_to 的 Test B 同理：停稳之后再测一段（下落/惯性收尾不算"还在走"）
           await sleep(400)
-          const laterFollow = (await request(runtimePort, 'GET', '/minecraft/status')).body
+          const followA = (await request(runtimePort, 'GET', '/minecraft/status')).body
+          await sleep(400)
+          const followB = (await request(runtimePort, 'GET', '/minecraft/status')).body
           const followDrift = Math.hypot(
-            laterFollow.position.x - stoppedFollow.position.x,
-            laterFollow.position.z - stoppedFollow.position.z,
+            followB.position.x - followA.position.x,
+            followB.position.z - followA.position.z,
           )
-          assert(followDrift <= 0.6, `Test B：停止后位置不再漂移（${followDrift.toFixed(2)} 格）`)
+          assert(followDrift <= 0.2, `Test B：停稳后位置不再漂移（${followDrift.toFixed(2)} 格）`)
           console.log('[e2e] follow STOP ✓ goal=null moving=false 位置已停')
         } finally {
           followee.close()

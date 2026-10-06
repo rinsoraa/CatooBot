@@ -430,9 +430,14 @@ async function main() {
       check(stoppedFollow.pathfinder.moving === false, '跟随 STOP 后 isMoving == false')
       await sleep(600)
       const laterFollow = await status()
+      // 停稳之后再测一段（下落/惯性收尾不算"还在走"；goal/isMoving 才是硬证据）
+      await sleep(400)
+      const followSettledA = (await status()).position
+      await sleep(400)
+      const followSettledB = (await status()).position
       check(
-        distance2d(laterFollow.position, stoppedFollow.position) <= 0.6,
-        '跟随 STOP 后位置不再漂移',
+        distance2d(followSettledB, followSettledA) <= 0.2,
+        '跟随 STOP 后停稳不再漂移',
       )
       try {
         targetBot.quit()
