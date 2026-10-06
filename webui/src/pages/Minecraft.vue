@@ -137,7 +137,7 @@ function playerLabel(player: { name: string; distance: number | null }): string 
 const moveTarget = reactive({ x: '', y: '', z: '' })
 const followTarget = reactive({ username: '', distance: '2.5' })
 // Phase 4B：Dig Test（第一个世界修改动作；必须过 MEDIUM 确认门）
-const digTarget = reactive({ x: '', y: '', z: '', expectedBlock: '' })
+const digTarget = reactive({ x: '', y: '', z: '', expectedBlock: '', expectedTool: '' })
 // Phase 4C：Place Test（对称于 dig；六个 face + 主手物品约束）
 const PLACE_FACES: MinecraftPlaceFace[] = ['up', 'down', 'north', 'south', 'east', 'west']
 const placeTarget = reactive({
@@ -254,6 +254,16 @@ const hotbarStart = computed(() => inventorySlots.value?.hotbar_start ?? 36)
 const inventoryStart = computed(() => inventorySlots.value?.inventory_start ?? 9)
 const slotRows = computed<MinecraftInventorySlot[]>(() => inventorySlots.value?.slots ?? [])
 const heldItem = computed(() => inventory.value?.held_item ?? null)
+/**
+ * Phase 4I：Dig Test 的 Expected Tool 与当前主手是否一致。
+ * 只用来**提示**（不一致时 DIG 会被 runtime 拒绝）——绝不自动去装备/切槽。
+ */
+const digToolMismatch = computed(() => {
+  const expected = digTarget.expectedTool.trim().replace(/^minecraft:/, '')
+  if (!expected) return false
+  const held = (heldItem.value?.name ?? '').replace(/^minecraft:/, '')
+  return expected !== held
+})
 /** 不是主手物品的第一个背包物品（Equip Test 的默认值：真的能换出东西来）。 */
 const equipSuggestion = computed(() => {
   const held = heldItem.value?.name ?? ''
@@ -475,9 +485,11 @@ async function digBlock(): Promise<void> {
     toast.error('缺少方块名', 'expected_block 必填（先看清目标方块再用它的名字）')
     return
   }
+  // Phase 4I：expected_tool 可选 —— 只把它原样交给后端校验主手，这里**不做任何换工具动作**
+  const expectedTool = digTarget.expectedTool.trim()
   working.value = true
   try {
-    const result = await minecraftApi.dig(x, y, z, expected)
+    const result = await minecraftApi.dig(x, y, z, expected, expectedTool)
     toast.success('已开始挖掘', `${result.action} · ${result.status}（结果会由事件确认）`)
     await load(true)
   } catch (caught) {
@@ -1161,9 +1173,35 @@ onUnmounted(stopPolling)
 
         <section class="minecraft__card cb-card" data-test="mc-dig">
           <SectionHeader
-            title="Dig Test（Phase 4B · MEDIUM）"
-            description="破坏一个指定方块：真实修改世界，必须用户确认。WebUI 只能发起（拿到 confirmation_required），真正的确认由用户在对话里做出。"
+            title="Dig Test（Phase 4B / 4I · MEDIUM）"
+            description="破坏一个指定方块：真实修改世界，必须用户确认。WebUI 只能发起（拿到 confirmation_required），真正的确认由用户在对话里做出。Expected Tool 是可选的主手硬约束（只校验，不会自动装备）。"
           />
+          <dl class="minecraft__facts" data-test="mc-dig-facts">
+            <div>
+              <dt>当前主手</dt>
+              <dd data-test="mc-dig-held">
+                {{
+                  heldItem
+                    ? `${heldItem.name} × ${heldItem.count}`
+                    : inventory?.online
+                      ? '空手'
+                      : '不在世界里'
+                }}
+              </dd>
+            </div>
+            <div>
+              <dt>工具身份</dt>
+              <dd data-test="mc-dig-tool-state">
+                {{
+                  !digTarget.expectedTool.trim()
+                    ? '未指定工具（不校验主手）'
+                    : digToolMismatch
+                      ? 'Held item mismatch（主手不是它，DIG 会被拒绝；不会自动换工具）'
+                      : '主手匹配（挖的时候会实时再核对一次）'
+                }}
+              </dd>
+            </div>
+          </dl>
           <div class="minecraft__form" data-test="mc-dig-form">
             <label class="minecraft__field">
               <span>X</span>
@@ -1184,6 +1222,15 @@ onUnmounted(stopPolling)
                 type="text"
                 placeholder="minecraft:stone"
                 data-test="mc-dig-block"
+              />
+            </label>
+            <label class="minecraft__field">
+              <span>Expected Tool</span>
+              <input
+                v-model="digTarget.expectedTool"
+                type="text"
+                placeholder="（可选）minecraft:stone_pickaxe"
+                data-test="mc-dig-tool"
               />
             </label>
             <button
@@ -1208,6 +1255,8 @@ onUnmounted(stopPolling)
           <p class="cb-caption">
             只会挖掉指定的那一个方块：不找矿、不换目标、不连续挖、不导航、不换工具、不捡掉落物。
             方块和用 minecraft_world 看到的不一致时会拒绝（block_changed）。
+            Expected Tool 只校验**当前主手**：不一致会拒绝（held_item_changed），
+            **绝不会自动装备** —— 要换工具请用上面的 Equip Test（那是另一条要确认的动作）。
           </p>
         </section>
 

@@ -61,14 +61,17 @@ export const minecraftApi = {
   stop() {
     return api.post<MinecraftStopResult>('/minecraft/stop', {})
   },
-  /** Phase 4B：破坏一个指定方块（开发者调试入口；**必须**过 MEDIUM 确认门）。 */
-  dig(x: number, y: number, z: number, expectedBlock: string) {
-    return api.post<Record<string, unknown>>('/minecraft/dig', {
-      x,
-      y,
-      z,
-      expected_block: expectedBlock,
-    })
+  /**
+   * Phase 4B：破坏一个指定方块（开发者调试入口；**必须**过 MEDIUM 确认门）。
+   *
+   * Phase 4I：`expectedTool` 可选 —— 给了就要求**执行瞬间**主手拿着它
+   * （只校验，绝不自动装备）。留空时不带这个字段（旧请求形状完全不变）。
+   */
+  dig(x: number, y: number, z: number, expectedBlock: string, expectedTool = '') {
+    const body: Record<string, unknown> = { x, y, z, expected_block: expectedBlock }
+    const tool = expectedTool.trim()
+    if (tool) body.expected_tool = tool
+    return api.post<Record<string, unknown>>('/minecraft/dig', body)
   },
   /** Phase 4C：只读背包切片（选中的槽 / 手持物品 / 聚合物品清单）。 */
   inventory() {

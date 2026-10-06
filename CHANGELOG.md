@@ -3,6 +3,36 @@
 本文件记录 CatooBot 的版本演进。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号见 `pyproject.toml`；日期取自真实提交历史（本仓库 2026-09-30 起）。
 
+## Minecraft Phase 4I — Tool Awareness（工具感知与单方块挖掘联动）
+
+* `minecraft_dig` 增加**可选** `expected_tool`：给了就要求"**执行瞬间**主手确实拿着它"
+  （运行前**重新读** `bot.heldItem`，绝不缓存 `minecraft_inventory` 几秒前的结论）；
+  主手是别的物品 → 409 `minecraft.held_item_changed`（detail 带 expected/actual）、
+  空手 → 400 `minecraft.held_item_missing`，两种情况都**不挖**。
+  **不给 = Phase 4B 行为一个字节都不变**（schema 里 `expected_tool` 不是必填）。
+* **绝不自动装备**（本阶段的红线）：`expected_tool` 只校验主手，不会从背包里拿工具、
+  不会切 hotbar、不会调用 equip —— 换工具走独立的 MEDIUM 动作 `minecraft_equip`（有自己的确认）。
+  Node 单测与真机 smoke 都专门验证了"背包里有石镐也拒绝"。
+* 规范化（§六）：`stone_pickaxe` == `minecraft:stone_pickaxe`（大小写也一致），
+  且在**进确认门之前**统一 —— 确认指纹（`tool+x+y+z+expected_block+expected_tool`）因此稳定，
+  换工具/删工具都是另一个动作（mismatch → 旧确认作废 + 按新参数重挂）。摘要写成
+  「使用 minecraft:stone_pickaxe 挖掘 minecraft:iron_ore（120, 64, -230）」，工具/方块/位置都在。
+* 结果新增 `tool_expected` / `tool_actual` / `tool_actual_after`（语义快照，绝不出 raw Item object；
+  没要求工具时前两项是 null）；**成功硬门不变**：`block_after != block_before`
+  —— 工具耐久/NBT 不参与判定，也不做自动修理/换下一把/补工具。
+* 不判断"哪种工具更合适"（第一版**没有** tool tier 知识）：能不能破坏仍然由 `bot.canDigBlock(block)`
+  说了算（挖不动 → 沿用 4B 的 `minecraft.block_not_diggable`）。
+* 边界：不新增工具（没有 select_best_tool/choose_tool）、不改 place/pickup/craft、
+  `minecraft_inventory` 仍只有五项、**没有新增任何用户配置**、dig 不调用 move_to 也不重新引入
+  `pathfinder.goto()`。
+* 验证：Node `dig.test.js` **59 → 95 checks**（K–T：缺省/匹配/mismatch/空手/身份变了/canDigBlock
+  仍是硬门/**不自动装备**/终态恰好一次/取消 cleanup 不变）；Python 新增
+  `tests/test_minecraft_dig_tool.py`（A–J）；WebUI Dig Test 加 Expected Tool + 当前主手 +
+  Held item mismatch 提示（vitest 466）；真机 smoke 新增工具感知段（显式 equip → 重读 →
+  `dig(expected_tool)` → 真实世界复核 → 不带工具再挖一次）→ `REAL SERVER: PASS`。
+* 顺带修好 smoke 的环境问题（如实打印，不是放宽）：开局主手卫生（place 需要主手拿着能放的方块）、
+  place 的参考方块必须是实心表面、4I 夹具只清自己给的工具并把主手还原、夹具上/还原改有界等待。
+
 ## Minecraft Phase 4H.1 — Move_to Reliability Hardening（消除 Pathfinder 假成功）
 
 * **生产 bug 修复（不是新能力）**：`minecraft_move_to` 的 `SUCCEEDED` 以前由

@@ -752,6 +752,70 @@ describe('Minecraft 页 · Dig Test（Phase 4B）', () => {
   })
 })
 
+describe('Minecraft 页 · Dig Test 工具感知（Phase 4I）', () => {
+  it('显示当前主手与"未指定工具"状态', async () => {
+    const { wrapper } = await mountPage(makeHandler())
+    await flushAll()
+    expect(wrapper.get('[data-test="mc-dig-held"]').text()).toContain('dirt × 12')
+    expect(wrapper.get('[data-test="mc-dig-tool-state"]').text()).toContain('未指定工具')
+  })
+
+  it('Expected Tool 与主手不一致时明确提示 Held item mismatch（不自动装备）', async () => {
+    const { wrapper, calls } = await mountPage(makeHandler())
+    await flushAll()
+    await wrapper.get('[data-test="mc-dig-tool"]').setValue('minecraft:stone_pickaxe')
+    await flushAll()
+    expect(wrapper.get('[data-test="mc-dig-tool-state"]').text()).toContain('Held item mismatch')
+    // 提示归提示：页面不会自己去调用 equip / 切槽
+    expect(calls.some((c) => c.url.endsWith('/minecraft/equip'))).toBe(false)
+  })
+
+  it('Expected Tool 与主手一致时显示匹配（minecraft: 前缀不影响判断）', async () => {
+    const { wrapper } = await mountPage(makeHandler())
+    await flushAll()
+    await wrapper.get('[data-test="mc-dig-tool"]').setValue('dirt')
+    await flushAll()
+    expect(wrapper.get('[data-test="mc-dig-tool-state"]').text()).toContain('主手匹配')
+    await wrapper.get('[data-test="mc-dig-tool"]').setValue('minecraft:dirt')
+    await flushAll()
+    expect(wrapper.get('[data-test="mc-dig-tool-state"]').text()).toContain('主手匹配')
+  })
+
+  it('DIG 填了 Expected Tool 就把它带进请求体', async () => {
+    const { wrapper, calls } = await mountPage(makeHandler())
+    await flushAll()
+    await wrapper.get('[data-test="mc-dig-x"]').setValue('120')
+    await wrapper.get('[data-test="mc-dig-y"]').setValue('64')
+    await wrapper.get('[data-test="mc-dig-z"]').setValue('-230')
+    await wrapper.get('[data-test="mc-dig-block"]').setValue('minecraft:stone')
+    await wrapper.get('[data-test="mc-dig-tool"]').setValue('minecraft:stone_pickaxe')
+    await wrapper.get('[data-test="mc-dig-run"]').trigger('click')
+    await flushAll()
+    const call = calls.find((c) => c.url.endsWith('/minecraft/dig'))
+    expect(call?.body).toEqual({
+      x: 120,
+      y: 64,
+      z: -230,
+      expected_block: 'minecraft:stone',
+      expected_tool: 'minecraft:stone_pickaxe',
+    })
+  })
+
+  it('Expected Tool 留空时不带这个字段（4B 的请求形状不变）', async () => {
+    const { wrapper, calls } = await mountPage(makeHandler())
+    await flushAll()
+    await wrapper.get('[data-test="mc-dig-x"]').setValue('120')
+    await wrapper.get('[data-test="mc-dig-y"]').setValue('64')
+    await wrapper.get('[data-test="mc-dig-z"]').setValue('-230')
+    await wrapper.get('[data-test="mc-dig-block"]').setValue('minecraft:stone')
+    await wrapper.get('[data-test="mc-dig-tool"]').setValue('   ')
+    await wrapper.get('[data-test="mc-dig-run"]').trigger('click')
+    await flushAll()
+    const call = calls.find((c) => c.url.endsWith('/minecraft/dig'))
+    expect(call?.body).toEqual({ x: 120, y: 64, z: -230, expected_block: 'minecraft:stone' })
+  })
+})
+
 describe('Minecraft 页 · Place Test（Phase 4C）', () => {
   it('显示主手物品 / 槽位 / 背包摘要', async () => {
     const { wrapper } = await mountPage(makeHandler())

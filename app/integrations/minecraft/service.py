@@ -626,6 +626,25 @@ class MinecraftBlockBreakUnconfirmed(MinecraftBridgeError):
         super().__init__(message, code="minecraft.block_break_unconfirmed")
 
 
+def canonical_item_name(name: str) -> str:
+    """把物品名规范成 ``minecraft:xxx``（Phase 4I §六）。
+
+    ``stone_pickaxe`` 与 ``minecraft:stone_pickaxe`` 是**同一把工具**：确认指纹绑的是参数本身，
+    所以必须在**进确认门之前**就统一，否则模型换个写法就会把已挂起的确认变成 mismatch。
+    只做命名空间规范化 —— 不猜、不做近似匹配。
+    """
+    # Minecraft 的物品 id 永远是小写：整体小写化让 "STONE_PICKAXE" 也是同一把工具
+    clean = str(name or "").strip().lower()
+    if not clean:
+        return ""
+    if ":" not in clean:
+        return f"minecraft:{clean}"
+    namespace, _, path = clean.partition(":")
+    if not namespace.strip() or not path.strip():
+        return clean
+    return f"{namespace.strip().lower()}:{path.strip()}"
+
+
 def _translate(exc: MinecraftRuntimeError) -> MinecraftBridgeError:
     if exc.unreachable:
         return MinecraftRuntimeDown(str(exc))
@@ -1332,10 +1351,14 @@ class MinecraftService:
             raise _translate(exc) from exc
 
     @staticmethod
-    def validate_dig(x: Any, y: Any, z: Any, expected_block: Any) -> tuple[dict[str, float], str]:
+    def validate_dig(
+        x: Any, y: Any, z: Any, expected_block: Any, expected_tool: Any = None
+    ) -> tuple[dict[str, float], str, str | None]:
         """dig 的参数校验（纯函数，抛 :class:`MinecraftActionInvalid`）。
 
         调用方（WebUI 调试端点）先校验再进确认门：垃圾参数不该挂出一条待确认。
+        Phase 4I：``expected_tool`` 可选 —— 给了就是"执行瞬间主手必须拿着它"的身份硬约束
+        （**不是**"帮我去找一把"），并在这里统一规范化成 canonical item name。
         """
         coords: dict[str, float] = {}
         for name, value in (("x", x), ("y", y), ("z", z)):
@@ -1354,7 +1377,31 @@ class MinecraftService:
         # 带换行/制表的方块名一定是模型拼错了，宁可让它重来
         if any(ord(ch) < 32 or ord(ch) == 127 for ch in expected_block):
             raise MinecraftActionInvalid("expected_block 不能包含控制字符")
-        return coords, expected_block.strip()
+        tool = MinecraftService.validate_expected_tool(expected_tool)
+        return coords, expected_block.strip(), tool
+
+    @staticmethod
+    def validate_expected_tool(expected_tool: Any) -> str | None:
+        """Phase 4I（§六/§十二）：``expected_tool`` 的可选校验 + canonical 化。
+
+        * 缺省（None/空字符串）→ ``None``（Phase 4B 原行为：不对主手加额外约束）；
+        * 给了 → 必须是非空字符串、长度受限、无控制字符，并规范成 ``minecraft:xxx``
+          （``stone_pickaxe`` 与 ``minecraft:stone_pickaxe`` 是同一把工具）。
+
+        只做**身份**校验：哪种工具"更适合"挖什么不由 CatooBot 判断（那是
+        runtime 侧 ``bot.canDigBlock`` 的事，§十三/§十四）。
+        """
+        if expected_tool is None:
+            return None
+        if not isinstance(expected_tool, str):
+            raise MinecraftActionInvalid("expected_tool 必须是字符串")
+        if not expected_tool.strip():
+            return None  # 空字符串等同"没要求"（旧调用方传空值不该变成硬约束）
+        if len(expected_tool) > PLACE_MAX_ITEM_CHARS:
+            raise MinecraftActionInvalid(f"expected_tool 最长 {PLACE_MAX_ITEM_CHARS} 个字符")
+        if any(ord(ch) < 32 or ord(ch) == 127 for ch in expected_tool):
+            raise MinecraftActionInvalid("expected_tool 不能包含控制字符")
+        return canonical_item_name(expected_tool)
 
     async def inventory(self) -> dict[str, Any]:
         """只读背包切片（Phase 4C）：选中的 hotbar 槽 / 手持物品 / 按名字聚合的物品。
@@ -1782,19 +1829,24 @@ class MinecraftService:
                 self._mark_runtime_down(str(exc))
             raise _translate(exc) from exc
 
-    async def dig(self, x: Any, y: Any, z: Any, expected_block: Any) -> dict[str, Any]:
+    async def dig(
+        self, x: Any, y: Any, z: Any, expected_block: Any, expected_tool: Any = None
+    ) -> dict[str, Any]:
         """破坏**一个**明确指定的方块（Phase 4B · MEDIUM · 需要用户确认）。
 
         只做类型/格式校验与 runtime 调用；世界层面的校验（方块存在 / 与 expected_block 一致 /
         可挖 / 距离上限）由 runtime 在真正执行前用**实时状态**判定——确认是授权，不代替校验。
-        返回 ``{action_id, action, status:"RUNNING"}``，终态经 action 事件送达
-        （成功带 ``result{position, block_before, block_after}``）。
+        Phase 4I：``expected_tool`` 可选，给了就要求**执行瞬间**主手拿着它
+        （runtime 重新读 heldItem；不匹配 → ``minecraft.held_item_changed`` /
+        ``minecraft.held_item_missing``；
+        **绝不自动换工具**）。返回 ``{action_id, action, status:"RUNNING"}``，终态经 action
+        事件送达（成功额外带 ``result.tool_expected`` / ``tool_actual``）。
         """
         self._require_enabled()
-        coords, expected = self.validate_dig(x, y, z, expected_block)
+        coords, expected, tool = self.validate_dig(x, y, z, expected_block, expected_tool)
         try:
             await self._ensure_runtime()
-            return await self._client.dig(coords["x"], coords["y"], coords["z"], expected)
+            return await self._client.dig(coords["x"], coords["y"], coords["z"], expected, tool)
         except MinecraftRuntimeError as exc:
             if exc.unreachable:
                 self._mark_runtime_down(str(exc))

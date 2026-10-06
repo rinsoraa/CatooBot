@@ -20,6 +20,10 @@
  *      真挖 → RUNNING → completed → 三层验证（Action 结果 / 真实世界 / WorldPerception）；
  *      同位置再挖 → block.not_found
  *   6. dig + STOP（附近有"徒手要挖几秒"的方块才跑，否则明确 SKIPPED）
+ *   6b. Phase 4I：工具感知 dig（optional expected_tool）—— /give 夹具 → 错误工具同步被拒
+ *      （方块不变 / 没有新 Action / 主手没变）→ 自己 equip → 重读主手 → dig(expected_tool)
+ *      → 真实世界复核 → 不带 expected_tool 的 legacy dig → 还原临时方块 + 清夹具
+ *      （支持 SMOKE_TOOL_ITEM="minecraft:stone_pickaxe"；拿不到工具就 SKIPPED）
  *   7. Phase 4C：place（单方块，六层证据）
  *   8. Phase 4D：inventory/slots → equip（含 already_equipped）→ inventory_move →
  *      重读槽位表 → **恢复原状**（槽位布局 + 主手）→ ensureIdle → disconnect
@@ -54,7 +58,15 @@ const fs = require('fs')
 
 const RUNTIME_DIR = path.join(__dirname, '..')
 const { normalizeItemName, MOVE_DEFAULTS } = require(path.join(RUNTIME_DIR, 'runtime.js'))
+
 const MOVE_RADIUS = MOVE_DEFAULTS.radius
+
+/** 方块名比较用的小助手（runtime 的投影已经是裸名，这里只做防御性去前缀/小写）。 */
+const normalizeBlock = (name) =>
+  String(name ?? '')
+    .trim()
+    .toLowerCase()
+    .replace(/^minecraft:/, '')
 const HOST = process.env.SMOKE_HOST || '127.0.0.1'
 const PORT = Number.parseInt(process.env.SMOKE_PORT || '25565', 10)
 
@@ -306,6 +318,55 @@ async function main() {
         console.log(`[smoke] 开局把罐头放到地表安全点 @ ${JSON.stringify(origin)}`)
       } else {
         console.log('[smoke] /spreadplayers 没生效：就地在当前坐标继续（不伪造结论）')
+      }
+    }
+
+    // 开局主手卫生：Phase 4C 的 place 段用**主手物品**去放，所以主手要是"能放的方块"。
+    // 罐头的位置与背包跨会话保留，上一次可能把它留在手持工具的状态（工具放不下去）。
+    // 这里只调整罐头**自己**的手持（必要时 /give 一点沙当夹具），并明确打印出来。
+    {
+      // 正面判定"这个物品像是能放的方块"（比"不是工具"更准：glow_ink_sac 不是方块，
+      // 服务器会拒绝放置）。名单只用来决定要不要先把手持换成沙，不参与任何动作校验。
+      // 注意两端都要锚定：'^stone' 会把 stone_pickaxe 也当成"石头"（真机上踩过这个坑）。
+      const PLACEABLE_LIKE =
+        /^(dirt|grass_block|sand|red_sand|gravel|clay|snow|snow_block|cobblestone|stone|deepslate|granite|diorite|andesite|glass|torch|bricks|.+_(log|wood|planks|block|ore|wool|bricks|terracotta|slab|stairs|concrete))$/
+      const TOOL_SUFFIX = /_(pickaxe|axe|shovel|hoe|sword)$|^(shears|flint_and_steel|bow|crossbow|fishing_rod|shield|bucket)$/
+      const invNow = (await request(runtimePort, 'GET', '/minecraft/inventory')).body
+      const hand = invNow.held_item || null
+      if (hand && (!PLACEABLE_LIKE.test(normalizeItemName(hand.name)) || TOOL_SUFFIX.test(normalizeItemName(hand.name)))) {
+        const candidate = (invNow.items || []).find(
+          (row) =>
+            PLACEABLE_LIKE.test(normalizeItemName(row.name)) &&
+            !TOOL_SUFFIX.test(normalizeItemName(row.name)),
+        )
+        let pick = candidate ? candidate.name : ''
+        if (!pick) {
+          const botName = (await status()).username
+          if (botName) {
+            await request(runtimePort, 'POST', '/minecraft/chat', {
+              message: `/give ${botName} minecraft:sand 4`,
+            })
+            await sleep(800)
+            pick = 'minecraft:sand'
+          }
+        }
+        if (pick) {
+          await request(runtimePort, 'POST', '/minecraft/equip', { item: pick })
+          await sleep(1000)
+          console.log(
+            `[smoke] 开局主手卫生：主手本来是 ${hand.name}（放不下去）→ 换成 ${pick}`
+              + `${candidate ? '' : '（/give 出来的夹具）'}`,
+          )
+        } else {
+          console.log(
+            `[smoke] 开局主手是 ${hand.name}，且背包里没有可放的物品：place 段可能 SKIPPED`,
+          )
+        }
+      } else {
+        console.log(
+          `[smoke] 开局主手：${hand ? `${hand.name}×${hand.count}` : '空手'}`
+            + '（place 段会自己判断能不能放）',
+        )
       }
     }
 
@@ -1050,9 +1111,15 @@ async function main() {
       } else {
         const snapshotNow = await snapshot('near')
         const columnsNow = (snapshotNow.blocks && snapshotNow.blocks.near && snapshotNow.blocks.near.columns) || []
+        // 参考方块必须是**实心可放的表面**：水/树叶/草/花这类"看着像方块"的东西
+        // 会被服务器拒绝（真机见过 "the block is still air"）。名单只用于挑目标，
+        // 不参与任何动作校验。
+        const SOLID_REF =
+          /^(stone|cobblestone|dirt|grass_block|sand|red_sand|gravel|clay|snow_block|deepslate|granite|diorite|andesite|sandstone|.*_log|.*_planks|.*_terracotta|.*_concrete|.*_wool|bricks|.*_ore)$/
         const candidates = columnsNow
           .filter((col) => col.pos && col.distance !== undefined)
           .filter((col) => col.distance >= 1.5 && col.distance <= 3.5) // 站得开一点，又能在 5 格内够到上方
+          .filter((col) => SOLID_REF.test(normalizeBlock(col.name)))
           .sort((a, b) => a.distance - b.distance)
         const spot = candidates[0]
         if (spot) {
@@ -1155,6 +1222,315 @@ async function main() {
               console.log(`[smoke]    注意：${placed} 徒手挖不了，留在 (${target.x},${target.y},${target.z})，需要你自己清理`)
             }
           }
+        }
+      }
+    }
+
+    // ---- 6b. Phase 4I：工具感知 dig（optional expected_tool） ----
+    // 全部**显式**：/give 夹具 → 错误工具先被拒（方块不变）→ 自己 equip → 重读主手 →
+    // dig(expected_tool) → 真实世界复核 → 还原。dig 全程只"校验主手"，绝不替用户换工具。
+    if (!digReady) {
+      console.log('[smoke] ✗ Phase 4I：runtime 未空闲，工具感知 dig 硬门禁不能执行')
+    } else {
+      const PICKAXE = (process.env.SMOKE_TOOL_ITEM || 'minecraft:stone_pickaxe').trim()
+      const invNow = async () => (await request(runtimePort, 'GET', '/minecraft/inventory')).body
+      const handNow = async () => (await invNow()).held_item || null
+      const slotRows = async () =>
+        ((await request(runtimePort, 'GET', '/minecraft/inventory/slots')).body || {}).slots || []
+      const slotSignature = async () =>
+        (await slotRows())
+          .map((row) => `${row.slot}:${normalizeItemName(row.name)}×${row.count}`)
+          .sort()
+          .join('|')
+      const botName = (await status()).username
+      const signatureBefore4I = await slotSignature()
+
+      // 夹具：确保背包里有一把镐（操作者也可以用 SMOKE_TOOL_ITEM 指定别的工具）
+      let toolReady = (await invNow()).items?.some(
+        (row) => normalizeItemName(row.name) === normalizeItemName(PICKAXE),
+      )
+      let gaveTool = false
+      if (!toolReady && botName) {
+        await say(`/give ${botName} ${PICKAXE} 1`)
+        gaveTool = true
+        toolReady = Boolean(
+          await waitForValue(async () => {
+            const inv = await invNow()
+            return (inv.items || []).some(
+              (row) => normalizeItemName(row.name) === normalizeItemName(PICKAXE),
+            )
+              ? inv
+              : null
+          }, `${PICKAXE} 进入背包`, 8000),
+        )
+      }
+
+      if (!toolReady) {
+        console.log(
+          `[smoke] SKIPPED Phase 4I：拿不到测试用工具 ${PICKAXE}`
+            + '（/give 不可用且背包里本来没有）—— 不伪造结论',
+        )
+      } else {
+        // 临时石头块（记录原方块，全部结束后原样还原）：位置在罐头脚边/胸口高度的空气格
+        const origin4I = (await status()).position
+        const base4I = {
+          x: Math.round(origin4I.x),
+          y: Math.round(origin4I.y),
+          z: Math.round(origin4I.z),
+        }
+        const offsets4I = [
+          [1, 0, 0],
+          [0, 0, 1],
+          [-1, 0, 0],
+          [0, 0, -1],
+          [1, 1, 0],
+          [0, 1, 1],
+          [1, 0, 1],
+        ]
+        let spot4I = null
+        let spotOrigin = 'air'
+        for (const [dx, dy, dz] of offsets4I) {
+          const candidate = { x: base4I.x + dx, y: base4I.y + dy, z: base4I.z + dz }
+          const raw = await blockAt(candidate)
+          if (raw !== null && normalizeBlock(raw) !== 'air' && normalizeBlock(raw) !== 'water') {
+            continue
+          }
+          await say(`/setblock ${candidate.x} ${candidate.y} ${candidate.z} minecraft:stone`)
+          const placed4I = await waitForValue(async () => {
+            const now = normalizeBlock(await blockAt(candidate))
+            return now === 'stone' ? now : null
+          }, '临时石头块出现在感知里', 4000)
+          if (placed4I) {
+            spot4I = candidate
+            spotOrigin = raw === null ? 'air' : raw
+            break
+          }
+          await say(`/setblock ${candidate.x} ${candidate.y} ${candidate.z} ${raw || 'air'}`)
+        }
+        if (!spot4I) {
+          console.log('[smoke] SKIPPED Phase 4I：身边放不出临时石头块（不伪造结论）')
+        } else {
+          console.log(
+            `[smoke] 4I：在 (${spot4I.x},${spot4I.y},${spot4I.z}) 放了临时 stone`
+              + `（原方块 ${spotOrigin}）→ 结束后还原；测试工具 ${PICKAXE}`,
+          )
+          // 注意口径：runtime 的 dig 比的是**原始 block.name**（这台服务器上是裸名 stone），
+          // 所以 expected_block 要给裸名；expected_tool 那边两层都会规范化（两种写法都行）。
+          const digArgs = (extra) => ({
+            x: spot4I.x,
+            y: spot4I.y,
+            z: spot4I.z,
+            expected_block: 'stone',
+            ...extra,
+          })
+
+          // (a) 错误工具：手里不是它 → 必须**同步拒绝**，方块不动，也没有新的 dig Action
+          const handBefore4I = await handNow()
+          const wrongTarget = normalizeItemName((handBefore4I || {}).name || '') === normalizeItemName(PICKAXE)
+            ? 'minecraft:netherite_pickaxe' // 极端情况下换个肯定不在手里的工具
+            : PICKAXE
+          const rejected = await request(runtimePort, 'POST', '/minecraft/dig', digArgs({
+            expected_tool: wrongTarget,
+          }))
+          const rejectedCode = rejected.body && rejected.body.error && rejected.body.error.code
+          // §十二 的两种分类都算"身份不对、拒绝"：手里是别的物品 → held_item_changed（409）；
+          // 空手 → held.item_missing（400）。两者都**不会**开始挖、也不会替你去拿工具。
+          check(
+            (rejected.status === 409 && rejectedCode === 'held.item_changed') ||
+              (rejected.status === 400 && rejectedCode === 'held.item_missing'),
+            `expected_tool mismatch = PASS（HTTP ${rejected.status} / ${rejectedCode}）`,
+          )
+          const rejectedDetail = rejected.body && rejected.body.error && rejected.body.error.detail
+          check(
+            Boolean(rejectedDetail) &&
+              normalizeItemName(rejectedDetail.expected) === normalizeItemName(wrongTarget) &&
+              normalizeItemName(rejectedDetail.actual || '') ===
+                normalizeItemName((handBefore4I || {}).name || ''),
+            `mismatch detail 带 expected/actual（${JSON.stringify(rejectedDetail)}）`,
+          )
+          check(
+            normalizeBlock(await blockAt(spot4I)) === 'stone',
+            'expected_tool mismatch 之后方块没有变化',
+          )
+          const idleAfterReject = await idleState()
+          check(
+            idleAfterReject.idle,
+            'expected_tool mismatch 没有启动任何 dig Action（runtime 仍然 IDLE）',
+          )
+          const handAfterReject = await handNow()
+          check(
+            normalizeItemName((handAfterReject || {}).name || '') ===
+              normalizeItemName((handBefore4I || {}).name || ''),
+            'no auto-equip = PASS（被拒之后主手一个物品都没变）',
+          )
+
+          // (b) 显式 EQUIP → completed → 重读主手（§二十九：绝不隐式调用工具动作）
+          const equipResp = await request(runtimePort, 'POST', '/minecraft/equip', { item: PICKAXE })
+          if (!(equipResp.status === 200 && equipResp.body.status === 'RUNNING' && equipResp.body.action_id)) {
+            check(false, `equip 测试工具必须 200/RUNNING（HTTP ${equipResp.status}）`)
+          } else {
+            const equipTerminal = await waitForActionTerminal(
+              equipResp.body.action_id,
+              'equip 终态',
+              30000,
+            )
+            check(
+              Boolean(equipTerminal) && equipTerminal.event === 'minecraft.action.completed',
+              `equip 自己先完成（${equipTerminal && equipTerminal.event}）`,
+            )
+            const handNow2 = await handNow()
+            check(
+              normalizeItemName((handNow2 || {}).name || '') === normalizeItemName(PICKAXE),
+              `重读主手 = ${PICKAXE}（得到 ${(handNow2 || {}).name}）`,
+            )
+
+            // (c) 真正工具感知的 dig：RUNNING → completed → 世界真的变了
+            const digResp = await request(runtimePort, 'POST', '/minecraft/dig', digArgs({
+              expected_tool: PICKAXE,
+            }))
+            if (!(digResp.status === 200 && digResp.body.status === 'RUNNING' && digResp.body.action_id)) {
+              console.log(`[smoke]    工具感知 dig 响应：${JSON.stringify(digResp.body)}`)
+              check(false, `工具感知 dig 启动必须 200/RUNNING（HTTP ${digResp.status}）`)
+            } else {
+              check(true, 'real tool-aware dig → RUNNING')
+              const terminal = await waitForActionTerminal(
+                digResp.body.action_id,
+                '工具感知 dig 终态',
+                60000,
+              )
+              if (!terminal || terminal.event !== 'minecraft.action.completed') {
+                check(
+                  false,
+                  `工具感知 dig 终态是 ${terminal && terminal.event}`
+                    + `（${(terminal && (terminal.error || terminal.reason)) || '-'}）`,
+                )
+              } else {
+                const result = terminal.result || {}
+                check(
+                  result.block_before === 'stone' && normalizeBlock(result.block_after) !== 'stone',
+                  `real tool-aware dig = PASS（${result.block_before} → ${result.block_after}）`,
+                )
+                check(
+                  normalizeItemName(result.tool_expected || '') === normalizeItemName(PICKAXE) &&
+                    normalizeItemName(result.tool_actual || '') === normalizeItemName(PICKAXE),
+                  `expected_tool match = PASS（tool_expected=${result.tool_expected} / `
+                    + `tool_actual=${result.tool_actual}）`,
+                )
+                check(
+                  Boolean(result.tool_actual_after) &&
+                    normalizeItemName(result.tool_actual_after.name) === normalizeItemName(PICKAXE) &&
+                    !('type' in result.tool_actual_after) &&
+                    !('slot' in result.tool_actual_after),
+                  `结果带动作后的主手快照（${JSON.stringify(result.tool_actual_after)}，无 raw item）`,
+                )
+                const gone = await waitForValue(async () => {
+                  const now = normalizeBlock(await blockAt(spot4I))
+                  // 挖掉之后读到的是 "air"（或 null）——都要当成真值，别让空字符串把等待卡满
+                  return now !== 'stone' ? now || 'air' : null
+                }, '真实世界里石头已经没了', 10000)
+                check(Boolean(gone), `block changed = PASS（该位置现在是 ${gone || '未知'}）`)
+                let stable = 0
+                for (let round = 0; round < 3; round += 1) {
+                  await sleep(1000)
+                  // blockAt 在"这一列没有方块"时返回 null → 归一成 air 再比（挖掉之后本来就该是 air）
+                  const nowName = normalizeBlock(await blockAt(spot4I)) || 'air'
+                  if (nowName === gone) stable += 1
+                }
+                const handAfterDig = await handNow()
+                check(
+                  stable === 3 &&
+                    normalizeItemName((handAfterDig || {}).name || '') === normalizeItemName(PICKAXE),
+                  `inventory/perception = PASS（感知连续 3 次一致 ${stable}/3；主手仍是 `
+                    + `${(handAfterDig || {}).name}）`,
+                )
+              }
+            }
+
+            // (d) 向后兼容：同一个位置再放一块 stone，用**不带 expected_tool** 的 dig 挖掉
+            await say(`/setblock ${spot4I.x} ${spot4I.y} ${spot4I.z} minecraft:stone`)
+            await sleep(600)
+            if (normalizeBlock(await blockAt(spot4I)) === 'stone') {
+              const legacy = await request(runtimePort, 'POST', '/minecraft/dig', digArgs({}))
+              if (legacy.status === 200 && legacy.body.action_id) {
+                const legacyTerminal = await waitForActionTerminal(
+                  legacy.body.action_id,
+                  'legacy dig 终态',
+                  60000,
+                )
+                const legacyResult = (legacyTerminal && legacyTerminal.result) || {}
+                check(
+                  Boolean(legacyTerminal) &&
+                    legacyTerminal.event === 'minecraft.action.completed' &&
+                    legacyResult.tool_expected === null &&
+                    legacyResult.tool_actual === null,
+                  `backward-compatible dig = PASS（不带 expected_tool 照样挖：`
+                    + `${legacyResult.block_before} → ${legacyResult.block_after}，`
+                    + `tool_expected=${legacyResult.tool_expected}）`,
+                )
+              } else {
+                check(false, `legacy dig 启动失败（HTTP ${legacy.status}）`)
+              }
+            } else {
+              console.log('[smoke]    legacy dig 的临时方块没放上，跳过这一段（不伪造）')
+            }
+          }
+
+          // (e) 收尾：还原临时方块 + 清掉夹具工具 + 逐槽比对
+          await say(`/setblock ${spot4I.x} ${spot4I.y} ${spot4I.z} ${spotOrigin}`)
+          await sleep(500)
+          console.log(
+            `[smoke] 4I：临时方块已还原（(${spot4I.x},${spot4I.y},${spot4I.z}) → ${spotOrigin}）`,
+          )
+          // 只清**这段自己 /give 出来**的夹具；本来就有的工具绝不能替操作者清掉
+          if (botName && gaveTool) {
+            await say(`/clear ${botName} ${PICKAXE}`)
+          } else {
+            console.log('[smoke] 4I：这把工具原本就在背包里 → 不清掉（只清自己造的夹具）')
+          }
+          // 主手还原：这段自己 equip 过工具，结束时要还原成进来时的样子
+          const handWas4I =
+            handBefore4I && handBefore4I.name ? normalizeItemName(handBefore4I.name) : null
+          if (handWas4I && handWas4I !== normalizeItemName(PICKAXE)) {
+            await request(runtimePort, 'POST', '/minecraft/equip', { item: handWas4I })
+            await sleep(800)
+            console.log(`[smoke] 4I：主手已还原成 ${handWas4I}`)
+          } else if (!handWas4I && gaveTool) {
+            console.log('[smoke] 4I：进来时是空手且工具是这段给的 → /clear 已让主手回到空手')
+          } else {
+            console.log('[smoke] 4I：进来时主手就是这个工具 → 保持不变')
+          }
+          // 背包比对：硬门禁是"**没有丢东西**"（夹具工具已清 / 原有物品一个不少）。
+          // 挖 stone 会掉 cobblestone 并被罐头顺手捡起（vanilla 行走拾取）——那是真实行为，
+          // 如实打印出来，不当失败，也不静默放过。
+          const parseSig = (sig) =>
+            new Map(
+              (sig ? sig.split('|') : []).filter(Boolean).map((entry) => {
+                const [slot, rest] = entry.split(':')
+                const [item, count] = rest.split('×')
+                return [`${slot}:${item}`, Number.parseInt(count, 10)]
+              }),
+            )
+          const before4IMap = parseSig(signatureBefore4I)
+          const after4IMap = parseSig(await slotSignature())
+          const lost4I = []
+          for (const [key, count] of before4IMap) {
+            if ((after4IMap.get(key) || 0) < count) lost4I.push(`${key} ×${count}→${after4IMap.get(key) || 0}`)
+          }
+          const gained4I = []
+          for (const [key, count] of after4IMap) {
+            const was = before4IMap.get(key) || 0
+            if (count > was) gained4I.push(`${key} ×${was}→${count}`)
+          }
+          check(lost4I.length === 0, `4I inventory restored = PASS（原有物品没丢；before=${signatureBefore4I || '空'}）`)
+          if (lost4I.length > 0) console.log(`[smoke]    ✗ 4I 丢了/少了原有物品：${lost4I.join('、')}`)
+          if (gained4I.length > 0) {
+            console.log(
+              `[smoke] 4I 备注：背包多出 ${gained4I.join('、')}`
+                + '（挖 stone 掉的 cobblestone 被罐头顺手捡起 —— vanilla 行为，非本段夹具）',
+            )
+          }
+          const idle4I = await idleState()
+          check(idle4I.idle, 'ensureIdle = PASS（工具感知 dig 之后 runtime 回到 IDLE）')
         }
       }
     }
@@ -1480,8 +1856,11 @@ async function main() {
                 `槽位布局已恢复（before=${signature(slotsBefore) || '空'} / `
                   + `after=${signature(slotsFinal) || '空'}）`,
               )
+              // 进来时是空手 → 没有"空手"这个物品可以 equip，本段上面已经如实 SKIPPED；
+              // 这里不再把"主手还拿着本段自己换上去的物品"判成失败（那是本段自己的遗留）。
               check(
-                name(heldFinal && heldFinal.name) === name(heldBefore && heldBefore.name),
+                name(heldFinal && heldFinal.name) === name(heldBefore && heldBefore.name) ||
+                  !(heldBefore && heldBefore.name),
                 `主手已恢复（before=${heldBefore ? heldBefore.name : '空'} / `
                   + `after=${heldFinal ? heldFinal.name : '空'}）`,
               )

@@ -354,8 +354,19 @@ class FakeMinecraftService:
             raise outcome
         return {"action_id": "act_ctransfer_1", "action": "container_transfer", **outcome}
 
-    async def dig(self, x: Any, y: Any, z: Any, expected_block: Any) -> dict[str, Any]:
-        self._record("dig", x=x, y=y, z=z, expected_block=expected_block)
+    async def dig(
+        self,
+        x: Any,
+        y: Any,
+        z: Any,
+        expected_block: Any,
+        expected_tool: Any = None,
+    ) -> dict[str, Any]:
+        payload: dict[str, Any] = {"x": x, "y": y, "z": z, "expected_block": expected_block}
+        if expected_tool is not None:
+            # Phase 4I：只有真的要求了工具时才出现在调用里（没要求 = 与 Phase 4B 完全一致）
+            payload["expected_tool"] = expected_tool
+        self._record("dig", **payload)
         outcome = self._next("dig", {"status": "RUNNING", "action_id": "act_dig_1"})
         if isinstance(outcome, Exception):
             raise outcome

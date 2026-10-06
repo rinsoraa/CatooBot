@@ -1823,7 +1823,26 @@ const ACTION_REGISTRY = {
         if (expected.length > 64) {
           throw new ActionError('expected_block 过长', 'block.invalid', 400)
         }
-        return { ...coords, expected_block: expected.trim() }
+        // Phase 4I（§四/§五）：**可选** expected_tool —— 给了就是"执行瞬间主手必须拿着它"的
+        // 身份硬约束（不是"帮我去找一把石镐"）。不给 = Phase 4B 原行为，一个字节都不变。
+        const rawTool = params.expected_tool
+        if (rawTool === undefined || rawTool === null || rawTool === '') {
+          return { ...coords, expected_block: expected.trim(), expected_tool: null }
+        }
+        if (typeof rawTool !== 'string') {
+          throw new ActionError('expected_tool 必须是字符串', 'item.invalid', 400)
+        }
+        if (!rawTool.trim()) {
+          throw new ActionError('expected_tool 不能只有空白', 'item.invalid', 400)
+        }
+        if (rawTool.length > MAX_PLACE_ITEM_CHARS) {
+          throw new ActionError('expected_tool 过长', 'item.invalid', 400)
+        }
+        return {
+          ...coords,
+          expected_block: expected.trim(),
+          expected_tool: rawTool.trim(),
+        }
       },
       async start(bot, params) {
         // §十三-§十七：真正的执行前校验（同步反馈）——确认是授权，不代替校验。
@@ -1849,6 +1868,41 @@ const ACTION_REGISTRY = {
             { expected: params.expected_block, actual: block.name },
           )
         }
+        // Phase 4I（§十/§十一/§十二/§二十七）：给了 expected_tool 就要求**此刻**主手确实拿着它。
+        // 每次都在 start 里**重新读** bot.heldItem（绝不缓存上一轮 inventory 的结论），
+        // 而且**绝不自动换工具 / 切 hotbar / 从背包里找一把** —— 身份不对就如实失败。
+        let toolActual = null
+        const toolExpected =
+          params.expected_tool === undefined || params.expected_tool === null
+            ? null
+            : normalizeItemName(params.expected_tool)
+        if (toolExpected !== null) {
+          const heldTool = bot.heldItem
+          if (!heldTool || !heldTool.name) {
+            throw new ActionError(
+              '主手没有拿任何物品（不会自动换工具）',
+              'held.item_missing',
+              400,
+              { expected: toolExpected, actual: null },
+            )
+          }
+          toolActual = normalizeItemName(heldTool.name)
+          if (toolActual !== toolExpected) {
+            throw new ActionError(
+              `主手拿的是 ${toolActual}，不是你要求的 ${toolExpected}（不会自动换工具）`,
+              'held.item_changed',
+              409,
+              { expected: toolExpected, actual: toolActual },
+            )
+          }
+          if (!(heldTool.count > 0)) {
+            throw new ActionError('主手物品数量为 0', 'held.item_missing', 400, {
+              expected: toolExpected,
+              actual: toolActual,
+            })
+          }
+        }
+
         const center = position.offset(0.5, 0.5, 0.5)
         const eyes = bot.entity.position.offset(0, 1.65, 0)
         const distance = eyes.distanceTo(center)
@@ -1864,7 +1918,14 @@ const ACTION_REGISTRY = {
           // 挖不动（工具不对/被保护）：不换工具、不找角度、不走近——如实失败
           throw new ActionError('当前状态下挖不动这个方块', 'block.not_diggable', 400)
         }
-        return { block, position, blockName: block.name }
+        return {
+          block,
+          position,
+          blockName: block.name,
+          // Phase 4I：执行前那一刻的工具身份（expected 是用户的要求，actual 是实际主手）
+          toolExpected,
+          toolActual,
+        }
       },
       async wait(bot, params, token, state) {
         try {
@@ -1890,10 +1951,19 @@ const ACTION_REGISTRY = {
         if (after && after.name === state.blockName) {
           throw new ActionError('方块仍在原位，未能确认破坏结果', 'block.break_unconfirmed', 500)
         }
+        // Phase 4I §十九：动作结束后再读一次主手（**不做成功硬门** —— 硬门永远是
+        // block_after != block_before；工具数量变化只是事实记录，例如镐子挖坏了）
+        const heldAfter = bot.heldItem
         return {
           position: { x: params.x, y: params.y, z: params.z },
           block_before: state.blockName,
           block_after: afterName,
+          tool_expected: state.toolExpected === undefined ? null : state.toolExpected,
+          tool_actual: state.toolActual === undefined ? null : state.toolActual,
+          tool_actual_after:
+            heldAfter && heldAfter.name
+              ? { name: normalizeItemName(heldAfter.name), count: heldAfter.count }
+              : null,
         }
       },
       cleanup(bot) {
@@ -3650,6 +3720,8 @@ async function handleRequest(request, response) {
         y: body.y,
         z: body.z,
         expected_block: body.expected_block,
+        // Phase 4I：可选 —— 给了就在 start 里实时校验主手（缺省/空 = Phase 4B 行为）
+        expected_tool: body.expected_tool,
       })
       jsonResponse(response, 200, { ok: true, ...result })
       return

@@ -21,6 +21,7 @@ from app.integrations.minecraft.service import (
     MinecraftBridgeError,
     MinecraftDisabled,
     MinecraftService,
+    canonical_item_name,
 )
 from app.web.api.common import (
     API_PREFIX,
@@ -362,16 +363,30 @@ class MinecraftApiRoutes(WebContext):
         if bridge is None:
             raise ApiError(503, "minecraft.disabled", "Minecraft Agent 未装配")
         body = await read_json(request)
-        arguments = {
+        # Phase 4I：可选 expected_tool —— 先规范化再进确认门（指纹绑参数本身，
+        # "stone_pickaxe" 与 "minecraft:stone_pickaxe" 必须是同一个动作）
+        raw_tool = body.get("expected_tool")
+        tool = (
+            canonical_item_name(raw_tool)
+            if isinstance(raw_tool, str) and raw_tool.strip()
+            else None
+        )
+        arguments: dict[str, Any] = {
             "x": body.get("x"),
             "y": body.get("y"),
             "z": body.get("z"),
             "expected_block": body.get("expected_block"),
         }
+        if tool is not None:
+            arguments["expected_tool"] = tool
         # 先做参数校验（垃圾参数不该挂出一条待确认），再进确认门
         try:
             service.validate_dig(
-                arguments["x"], arguments["y"], arguments["z"], arguments["expected_block"]
+                arguments["x"],
+                arguments["y"],
+                arguments["z"],
+                arguments["expected_block"],
+                tool,
             )
         except MinecraftBridgeError as exc:
             raise _translate(exc) from exc
@@ -379,7 +394,11 @@ class MinecraftApiRoutes(WebContext):
             "minecraft_dig",
             arguments,
             lambda svc: svc.dig(
-                arguments["x"], arguments["y"], arguments["z"], arguments["expected_block"]
+                arguments["x"],
+                arguments["y"],
+                arguments["z"],
+                arguments["expected_block"],
+                tool,
             ),
         )
         if not result.success:

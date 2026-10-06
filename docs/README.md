@@ -123,6 +123,7 @@ v0.4 行为引擎（回复延迟/分段/作息，规格不在 docs/specs/）标 
 | [MINECRAFT_PHASE4G.md](MINECRAFT_PHASE4G.md) | Minecraft 工作台 3×3（Phase 4G）：同一对工具增加**可选** crafting_table 坐标（2×2 保持兼容）、实时验证工作台、确认指纹含坐标、不自动寻找/放置工作台 | 已实现（真实服务器 3×3 craft PASS） |
 | [MINECRAFT_PHASE4H.md](MINECRAFT_PHASE4H.md) | Minecraft 掉落物感知 + 单实体拾取（Phase 4H）：minecraft_dropped_items（Item 实体语义投影，SAFE 非独占）/ minecraft_pickup_item（一次一个明确实体，MEDIUM + 确认 + 真 STOP + 成功要求「实体被收走且背包增加」） | 已实现（真实服务器把 Item Entity 捡进背包 PASS） |
 | [MINECRAFT_PHASE4H1.md](MINECRAFT_PHASE4H1.md) | Minecraft 导航可靠性加固（Phase 4H.1）：move_to 不再相信 `pathfinder.goto()` 的 resolve（2.4.5 空路径静默成功），自己挂生命周期 + 用实际位置硬校验到达；新增 `path.not_reached`；真机 false-success guard | 已实现（真实服务器假成功守卫 PASS） |
+| [MINECRAFT_PHASE4I.md](MINECRAFT_PHASE4I.md) | Minecraft 工具感知（Phase 4I）：`minecraft_dig` 增加**可选** `expected_tool`（只校验执行瞬间的主手，**绝不自动装备**；指纹含工具；结果带 `tool_expected/tool_actual`） | 已实现（真实服务器工具感知 dig PASS） |
 | bible_source_罐头.txt | 内置角色的人物档案源文件（Bible 编译器输入） | **本地内容资产**：按「Character Bible 不得上传」约束，已移至 `config/bible_source_罐头.txt`（`config/` 不在发布镜像内） |
 
 ## 运维速查

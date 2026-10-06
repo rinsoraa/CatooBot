@@ -1,4 +1,9 @@
-"""Builtin tool: minecraft_dig —— 破坏**一个**明确指定的方块（Phase 4B）。
+"""Builtin tool: minecraft_dig —— 破坏**一个**明确指定的方块（Phase 4B / 4I）。
+
+Phase 4I 增加了**可选**的 ``expected_tool``：给了就要求"执行瞬间主手确实拿着这把工具"，
+否则 ``minecraft.held_item_changed`` / ``minecraft.held_item_missing``。
+它**只验证主手，绝不自动装备**（换工具是独立的 MEDIUM 动作 ``minecraft_equip``，
+有自己的确认；dig 绝不会偷偷替你 equip）。不给 = Phase 4B 行为，完全不变。
 
 第一个真正修改 Minecraft 世界的动作，因此比其它工具多两道门：
 
@@ -14,9 +19,22 @@ from __future__ import annotations
 
 from typing import Any
 
-from app.integrations.minecraft.service import MinecraftService
+from app.integrations.minecraft.service import MinecraftService, canonical_item_name
 from app.tools.builtins.minecraft_actions import ACTION_TOOL_TIMEOUT, ActionTool
 from app.tools.models import ToolMetadata
+
+
+def _canonical_dig_arguments(arguments: dict[str, Any]) -> dict[str, Any]:
+    """把 dig 的 ``expected_tool`` 规范成 canonical item name（缺省不动）。
+
+    只动这一个字段：坐标 / expected_block 保持用户原样（那是"这个位置的这个方块"的身份）。
+    """
+    canonical = dict(arguments)
+    tool = canonical.get("expected_tool")
+    if isinstance(tool, str) and tool.strip():
+        canonical["expected_tool"] = canonical_item_name(tool)
+    return canonical
+
 
 DIG_METADATA = ToolMetadata(
     name="minecraft_dig",
@@ -37,12 +55,14 @@ DIG_METADATA = ToolMetadata(
     ),
     when_not_to_use=(
         "用户只是问「这里有什么」时（那是 minecraft_world）；"
-        "要移动位置用 minecraft_move_to；要连续挖矿/自动找矿——本阶段没有这种能力。"
+        "要移动位置用 minecraft_move_to；要连续挖矿/自动找矿——本阶段没有这种能力；"
+        "要**换工具**用 minecraft_equip（本工具只验证主手，不会替你换）。"
     ),
     limitations=(
         "一次只破坏一个方块；不会自动寻找其他方块、不会连续挖掘、不会导航过去、"
         "不会自动换工具或捡掉落物；只能用**当前手持**的工具（挖不动就失败）；"
-        "目标必须在身边几格内；破坏结果以真实回执为准（未确认破坏会报 block_break_unconfirmed）。"
+        "目标必须在身边几格内；破坏结果以真实回执为准（未确认破坏会报 block_break_unconfirmed）；"
+        "expected_tool 只校验当前主手是不是它，不判断「哪种工具更适合」（那是游戏规则）。"
     ),
     input_schema={
         "type": "object",
@@ -55,6 +75,20 @@ DIG_METADATA = ToolMetadata(
                 "minLength": 1,
                 "description": (
                     "目标方块名（必须与 minecraft_world 里看到的一致，如 minecraft:stone）"
+                ),
+            },
+            "expected_tool": {
+                "type": "string",
+                "minLength": 1,
+                # 空/纯空白/超长的工具名在**进确认门之前**就被 schema 拒掉
+                # （垃圾参数不该挂出一条待确认）
+                "pattern": "\\S",
+                "maxLength": 64,
+                "description": (
+                    "（可选）要求挖的时候主手必须拿着这把工具（如 minecraft:stone_pickaxe）。"
+                    "只做身份校验：主手不是它就直接失败，**不会自动换工具** —— "
+                    "要换工具请先单独调用 minecraft_equip 并让用户确认。"
+                    "不传 = 不对手持工具提额外要求。"
                 ),
             },
         },
@@ -72,10 +106,25 @@ class MinecraftDigTool(ActionTool):
 
     metadata = DIG_METADATA
 
+    async def execute(self, arguments: dict[str, Any], context: Any) -> Any:
+        """§六：``expected_tool`` 在**进确认门之前**规范化。
+
+        ``stone_pickaxe`` 与 ``minecraft:stone_pickaxe`` 是同一把工具。
+
+        指纹绑的是参数本身，同一个工具的两种写法必须是同一个动作 —— 否则模型换个写法
+        就会把用户已经确认过的那条授权变成 mismatch。
+        """
+        return await super().execute(_canonical_dig_arguments(arguments), context)
+
     async def _call(self, service: MinecraftService, arguments: dict[str, Any]) -> dict[str, Any]:
-        return await service.dig(
+        call_args: list[Any] = [
             arguments.get("x"),
             arguments.get("y"),
             arguments.get("z"),
             arguments.get("expected_block"),
-        )
+        ]
+        tool = arguments.get("expected_tool")
+        if tool is not None:
+            # 只有真的要求了工具才多传一个参数 —— 没要求时与 Phase 4B 的调用完全一致
+            call_args.append(tool)
+        return await service.dig(*call_args)

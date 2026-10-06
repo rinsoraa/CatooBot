@@ -588,6 +588,13 @@ class MinecraftAgentContext:
             # 4H：pickup 的 result.item 是 {name, count_before} 这种语义快照，取名字即可
             block_raw = block_raw.get("name")
         block = str(block_raw or "").strip()
+        if action == "dig":
+            # §三十四：用了工具就只陈述这个事实
+            # （"用 minecraft:stone_pickaxe 挖掉了 minecraft:iron_ore"），
+            # 没要求工具就照旧（"挖掉了 minecraft:stone"）。绝不写"高效地""轻松"这种评价。
+            tool_used = str(result.get("tool_actual") or "").strip()
+            if tool_used:
+                return f"刚用 {tool_used} 挖掉了 {block or '一个方块'}"
         nested = result.get("result")
         nested = nested if isinstance(nested, Mapping) else {}
         container_type = result.get("container_type")
@@ -1063,7 +1070,14 @@ def _confirmation_summary(tool: str, risk: str, arguments: Mapping[str, Any] | N
     if tool == "minecraft_dig":
         block = str(args.get("expected_block") or "方块")
         where = _format_position(args)
-        return f"挖掉 {block}（{where}）" if where else f"挖掉 {block}"
+        tool_name = str(args.get("expected_tool") or "").strip()
+        if tool_name:
+            # §八：工具 / 方块 / 位置三样都要讲清楚（"用石镐挖铁矿"和"空手挖铁矿"
+            # 是两次不同的操作，用户确认的必须是其中一次）
+            head = f"使用 {tool_name} 挖掘 {block}"
+        else:
+            head = f"挖掉 {block}"
+        return f"{head}（{where}）" if where else head
     if tool == "minecraft_pickup_item":
         # §十六：说明"捡的是地上的哪一个掉落物"，不写成"在 (x,y,z) 执行拾取"
         # （Item 会滑动/被推走，位置只是启动时的提示，不是授权身份本体）

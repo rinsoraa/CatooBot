@@ -189,13 +189,28 @@ class MinecraftRuntimeClient:
             body={"x": x, "y": y, "z": z, "face": face, "expected_item": expected_item},
         )
 
-    async def dig(self, x: float, y: float, z: float, expected_block: str) -> dict[str, Any]:
-        """破坏一个指定方块（Phase 4B：启动即返回 RUNNING，终态经事件送达）。"""
-        return await self._request(
-            "POST",
-            "/minecraft/dig",
-            body={"x": x, "y": y, "z": z, "expected_block": expected_block},
-        )
+    async def dig(
+        self,
+        x: float,
+        y: float,
+        z: float,
+        expected_block: str,
+        expected_tool: str | None = None,
+    ) -> dict[str, Any]:
+        """破坏一个指定方块（Phase 4B；Phase 4I 起可带 expected_tool）。
+
+        启动即返回 RUNNING，终态经事件送达。``expected_tool`` 给了就要求**执行瞬间**主手
+        拿着它（runtime 在 start 里实时校验，绝不自动换工具）；缺省 = Phase 4B 行为。
+        """
+        body: dict[str, Any] = {
+            "x": x,
+            "y": y,
+            "z": z,
+            "expected_block": expected_block,
+        }
+        if expected_tool is not None:
+            body["expected_tool"] = expected_tool
+        return await self._request("POST", "/minecraft/dig", body=body)
 
     async def stop(self) -> dict[str, Any]:
         """最高优先级安全停止（Phase 3B）：取消进行中动作，幂等。"""
