@@ -459,6 +459,33 @@ class MinecraftApiRoutes(WebContext):
             )
         return ok(result.data, request=request)
 
+    async def _v1_minecraft_dig_capability(self, request: web.Request) -> web.Response:
+        """Phase 4J：只读查「这个方块现在能不能挖、大概多久」（SAFE，同步返回）。"""
+        try:
+            service = _service(self._bot)
+        except MinecraftBridgeError as exc:
+            raise _translate(exc) from exc
+        bridge = getattr(service, "agent", None)
+        if bridge is None:
+            raise ApiError(503, "minecraft.disabled", "Minecraft Agent 未装配")
+        body = await read_json(request)
+        arguments = {"x": body.get("x"), "y": body.get("y"), "z": body.get("z")}
+        try:
+            service.validate_dig_capability(arguments["x"], arguments["y"], arguments["z"])
+        except MinecraftBridgeError as exc:
+            raise _translate(exc) from exc
+        result = await bridge.invoke_developer(
+            "minecraft_dig_capability",
+            arguments,
+            lambda svc: svc.dig_capability(arguments["x"], arguments["y"], arguments["z"]),
+        )
+        if not result.success:
+            code = result.error_type or "minecraft.action_failed"
+            raise ApiError(
+                _TOOL_STATUS.get(code, 500), code, result.error or code, detail=result.data
+            )
+        return ok(result.data, request=request)
+
     async def _v1_minecraft_dropped_items(self, request: web.Request) -> web.Response:
         """Phase 4H：看附近的掉落物实体（SAFE 只读，同步返回）。"""
         try:
@@ -833,6 +860,9 @@ class MinecraftApiRoutes(WebContext):
             f"{API_PREFIX}/minecraft/recipe_lookup", wrap(self._v1_minecraft_recipe_lookup)
         )
         app.router.add_post(f"{API_PREFIX}/minecraft/craft", wrap(self._v1_minecraft_craft))
+        app.router.add_post(
+            f"{API_PREFIX}/minecraft/dig_capability", wrap(self._v1_minecraft_dig_capability)
+        )
         app.router.add_post(
             f"{API_PREFIX}/minecraft/dropped_items", wrap(self._v1_minecraft_dropped_items)
         )

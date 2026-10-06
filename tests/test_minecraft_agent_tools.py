@@ -372,6 +372,28 @@ class FakeMinecraftService:
             raise outcome
         return {"action_id": "act_dig_1", "action": "dig", **outcome}
 
+    async def dig_capability(self, x: Any, y: Any, z: Any) -> dict[str, Any]:
+        self._record("dig_capability", x=x, y=y, z=z)
+        outcome = self._next(
+            "dig_capability",
+            {
+                "status": "SUCCEEDED",
+                "result": {
+                    "ok": True,
+                    "position": {"x": x, "y": y, "z": z},
+                    "block": {"name": "iron_ore"},
+                    "held_item": {"name": "stone_pickaxe", "count": 1},
+                    "distance": {"goal_near": 1, "raw": 4.28},
+                    "can_dig": True,
+                    "dig_time_ms": 1250,
+                    "reason": None,
+                },
+            },
+        )
+        if isinstance(outcome, Exception):
+            raise outcome
+        return {"action_id": "act_dig_capability_1", "action": "dig_capability", **outcome}
+
     async def stop_action(self) -> dict[str, Any]:
         self._record("stop")
         outcome = self._next("stop", {"ok": True, "status": "IDLE", "cancelled": []})
@@ -502,6 +524,7 @@ async def test_all_tools_share_one_risk_table() -> None:
         "minecraft_container_transfer",
         "minecraft_craft",
         "minecraft_dig",
+        "minecraft_dig_capability",
         "minecraft_dropped_items",
         "minecraft_equip",
         "minecraft_follow_player",

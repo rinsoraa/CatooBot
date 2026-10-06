@@ -609,7 +609,7 @@ minecraft:
   agent:
     tools:
       enabled: true          # 关掉 = 模型完全碰不到 Minecraft（WebUI 连接页不受影响）
-      allow_safe: true       # minecraft_world / chat / look_at / stop
+      allow_safe: true       # minecraft_world / chat / look_at / stop / inventory / dropped_items / dig_capability
       allow_low: true        # minecraft_move_to / follow_player（非破坏性导航）
       allow_medium: false    # dig / place / equip / inventory_move / container_transfer / craft / pickup_item 默认关闭；启用后仍需确认
       allow_high: false      # 还没有 HIGH 级动作；保持关闭

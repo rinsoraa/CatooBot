@@ -88,6 +88,8 @@ ACTION_RISK: dict[str, str] = {
     # Phase 4H：掉落物感知（只读）/ 拾取单个掉落物实体（会移动 + 改背包 → MEDIUM）
     "minecraft_dropped_items": "SAFE",
     "minecraft_pickup_item": "MEDIUM",
+    # Phase 4J：挖掘能力只读查询（不改世界、不改背包、不移动、不装备）
+    "minecraft_dig_capability": "SAFE",
 }
 
 #: Tool → Action Runtime 动作名（chat 也走统一生命周期）
@@ -106,6 +108,7 @@ TOOL_ACTION: dict[str, str] = {
     "minecraft_recipe_lookup": "recipe_lookup",
     "minecraft_craft": "craft",
     "minecraft_dropped_items": "dropped_items",
+    "minecraft_dig_capability": "dig_capability",
     "minecraft_pickup_item": "pickup_item",
 }
 
@@ -128,6 +131,8 @@ NON_EXCLUSIVE_TOOLS: frozenset[str] = frozenset(
         "minecraft_recipe_lookup",
         # Phase 4H：看地上的掉落物也是纯读取（实体列表变化频繁不代表它要独占）
         "minecraft_dropped_items",
+        # Phase 4J：挖掘能力查询是纯读取（只回答「现在能不能挖、多久」）
+        "minecraft_dig_capability",
     }
 )
 
@@ -1194,6 +1199,30 @@ def _summarize(tool: str, data: Mapping[str, Any]) -> str:
         more = f"，另有 {drop_total - 5} 个未列出" if drop_total > 5 else ""
         truncated = "（超过上限，只列了前 32 个）" if dropped.get("truncated") else ""
         return f"附近有 {drop_total} 个掉落物：{listed}{more}{truncated}。"
+    if tool == "minecraft_dig_capability":
+        raw_capability: Any = data.get("result")
+        capability: dict[str, Any] = raw_capability if isinstance(raw_capability, dict) else {}
+        raw_block: Any = capability.get("block")
+        if isinstance(raw_block, Mapping):
+            block = str(raw_block.get("name") or "那个方块")
+        else:
+            block = "那个方块"
+        raw_held: Any = capability.get("held_item")
+        held_name = str((raw_held or {}).get("name") or "") if isinstance(raw_held, Mapping) else ""
+        reason = capability.get("reason")
+        if capability.get("can_dig"):
+            dig_time = capability.get("dig_time_ms")
+            took = f"，大约 {dig_time} 毫秒" if isinstance(dig_time, int) else ""
+            who = f"用 {held_name}" if held_name else "空手"
+            return f"{who}能挖 {block}{took}。"
+        if reason == "air":
+            return f"{block} 是空气，没什么可挖的。"
+        if reason == "too_far":
+            return f"{block} 太远了（超过挖掘距离上限），现在够不到。"
+        if reason == "not_diggable":
+            who = f"当前主手是 {held_name}" if held_name else "现在是空手"
+            return f"{who}，挖不动 {block}。"
+        return f"现在挖不了 {block}。"
     if tool == "minecraft_recipe_lookup":
         raw_lookup: Any = data.get("result")
         lookup: dict[str, Any] = raw_lookup if isinstance(raw_lookup, dict) else {}

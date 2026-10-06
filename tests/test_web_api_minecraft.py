@@ -394,6 +394,7 @@ async def test_minecraft_projection_includes_agent_block(tmp_path):
             "minecraft_container_transfer",
             "minecraft_craft",
             "minecraft_dig",
+            "minecraft_dig_capability",
             "minecraft_dropped_items",
             "minecraft_equip",
             "minecraft_inventory",

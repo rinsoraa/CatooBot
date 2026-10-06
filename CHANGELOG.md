@@ -3,6 +3,28 @@
 本文件记录 CatooBot 的版本演进。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号见 `pyproject.toml`；日期取自真实提交历史（本仓库 2026-09-30 起）。
 
+## Minecraft Phase 4J — Tool Capability Knowledge（挖掘能力只读模型）
+
+* 新增 LLM 工具 `minecraft_dig_capability`（**SAFE 只读、非独占、不新增 ActionRuntime 动作**）：
+  给三个整数坐标，回答"罐头**现在站的这个位置、现在主手拿着的东西**，对这个方块能不能挖、
+  预计多少毫秒"。事实全部来自 Mineflayer 运行时（`bot.blockAt` / `bot.heldItem` /
+  `bot.canDigBlock` / `bot.digTime`），**不自己维护方块硬度/工具等级/最佳工具表**。
+* 返回 `block` / `held_item{name,count}` / **两种距离口径**（`distance.goal_near` 与
+  `distance.raw`，后者与 dig 的距离门禁同一个量）/ `can_dig` / `dig_time_ms` / `reason`
+  （`null` / `air` / `too_far` / `not_diggable`）；那里没方块是结构化错误
+  `minecraft.block_unavailable`，那里是空气是**正常数据**；**不返回任何推荐工具**。
+* **只读**：不改世界、不改背包、不装备、不切槽、**不移动、不导航、不挖**；任何回合都能查、
+  不需要确认、可与前台动作并行读取；**不新增任何用户配置**；`minecraft_dig` 一行没动。
+* 真机上观察到的真实事实（服务器自己说了算）：同一块 stone，拿 dirt / 空手都是
+  `can_dig=true, dig_time_ms=7500`，拿 stone_pickaxe 是 `can_dig=true, dig_time_ms=600`
+  —— `bot.canDigBlock` 不看工具（只判 diggable + 距离），工具差异体现在 `digTime` 上，
+  我们如实把两个数都给模型，不替它编规则。
+* 验证：Node `dig_capability.test.js` **43 checks**（A–L，含"前台动作跑着时只读查询照样执行"与
+  "连续查询零副作用"）；Python 新增 `tests/test_minecraft_dig_capability_tool.py`（17 个用例 A–O）；
+  WebUI 新增 Dig Capability 面板（CHECK + 七项事实，**没有** AUTO EQUIP/AUTO DIG，vitest +6）；
+  真机 smoke 新增 DIG CAPABILITY 段（三种状态 + 世界未改 + 背包恢复 + ensureIdle）→
+  `REAL SERVER: PASS`。
+
 ## Minecraft Phase 4I — Tool Awareness（工具感知与单方块挖掘联动）
 
 * `minecraft_dig` 增加**可选** `expected_tool`：给了就要求"**执行瞬间**主手确实拿着它"

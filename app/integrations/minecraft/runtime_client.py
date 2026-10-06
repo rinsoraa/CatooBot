@@ -212,6 +212,12 @@ class MinecraftRuntimeClient:
             body["expected_tool"] = expected_tool
         return await self._request("POST", "/minecraft/dig", body=body)
 
+    async def dig_capability(self, x: int, y: int, z: int) -> dict[str, Any]:
+        """只读查「这个方块现在能不能挖、大概多久」（Phase 4J；同步返回语义投影）。"""
+        return await self._request(
+            "POST", "/minecraft/dig_capability", body={"x": x, "y": y, "z": z}
+        )
+
     async def stop(self) -> dict[str, Any]:
         """最高优先级安全停止（Phase 3B）：取消进行中动作，幂等。"""
         return await self._request("POST", "/minecraft/stop", body={})

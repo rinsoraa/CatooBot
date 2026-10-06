@@ -848,7 +848,9 @@ _NOTES: dict[str, str] = {
     "minecraft.agent.chat.max_reply_chars": "游戏内回复最长多少字符",
     "minecraft.agent.trusted_players": "可信 Minecraft 玩家名（LOW 及以上动作只对这些人执行）",
     "minecraft.agent.tools.enabled": "LLM 能不能用 Minecraft 工具（关掉 = 模型完全碰不到游戏）",
-    "minecraft.agent.tools.allow_safe": "允许 SAFE 动作：查世界 / 说话 / 朝向 / 停止",
+    "minecraft.agent.tools.allow_safe": (
+        "允许 SAFE 动作：查世界 / 说话 / 朝向 / 停止 / 看背包 / 看掉落物 / 查挖掘能力"
+    ),
     "minecraft.agent.tools.allow_low": "允许 LOW 动作：非破坏性移动与跟随（仍需用户明确要求）",
     "minecraft.agent.tools.allow_medium": (
         "允许 MEDIUM 动作：minecraft_dig（挖单方块）/ minecraft_place（放单方块）/ "

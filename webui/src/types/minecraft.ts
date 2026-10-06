@@ -360,6 +360,33 @@ export interface MinecraftDroppedItemsResponse {
   result: MinecraftDroppedItemsView
 }
 
+/**
+ * Phase 4J：挖掘能力查询的语义投影（只读）。
+ *
+ * 注意两种距离口径是不同的量：`goal_near` 是"罐头占的方块格 → 目标方块格"，
+ * `raw` 是眼睛 → 方块中心的浮点距离（与 minecraft_dig 的门禁同一个量）。
+ */
+export interface MinecraftDigCapabilityView {
+  ok: boolean
+  position: MinecraftPosition
+  block: { name: string }
+  held_item: { name: string; count: number } | null
+  distance: { goal_near: number | null; raw: number | null }
+  can_dig: boolean
+  /** 能挖时是预计毫秒数（可能为 null = 运行时算不出来）；不着急挖不动时一定是 null。 */
+  dig_time_ms: number | null
+  /** null | air | too_far | not_diggable（不会推测"工具等级不够"）。 */
+  reason: string | null
+}
+
+export interface MinecraftDigCapabilityResponse {
+  ok: boolean
+  action: string
+  status: MinecraftActionStatus
+  action_id?: string
+  result: MinecraftDigCapabilityView
+}
+
 /** pickup 的启动响应（持续型：终态由事件送达）。 */
 export interface MinecraftPickupItemResult {
   ok: boolean

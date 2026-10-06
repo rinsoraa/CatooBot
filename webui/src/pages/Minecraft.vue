@@ -19,6 +19,7 @@ import type {
   MinecraftActionView,
   MinecraftAgentContext,
   MinecraftDroppedItem,
+  MinecraftDigCapabilityView,
   MinecraftDroppedItemsView,
   MinecraftCraftingTable,
   MinecraftRecipeEntry,
@@ -138,6 +139,10 @@ const moveTarget = reactive({ x: '', y: '', z: '' })
 const followTarget = reactive({ username: '', distance: '2.5' })
 // Phase 4B：Dig Test（第一个世界修改动作；必须过 MEDIUM 确认门）
 const digTarget = reactive({ x: '', y: '', z: '', expectedBlock: '', expectedTool: '' })
+// Phase 4J：Dig Capability（只读查询；绝不自动装备/挖掘）
+const capabilityTarget = reactive({ x: '', y: '', z: '' })
+const capability = ref<MinecraftDigCapabilityView | null>(null)
+const capabilityError = ref('')
 // Phase 4C：Place Test（对称于 dig；六个 face + 主手物品约束）
 const PLACE_FACES: MinecraftPlaceFace[] = ['up', 'down', 'north', 'south', 'east', 'west']
 const placeTarget = reactive({
@@ -397,6 +402,16 @@ async function moveTo(): Promise<void> {
 }
 
 function prefillDigTarget(): void {
+  // Phase 4J：能力面板跟随同一个默认目标（只填坐标，不自动做任何动作）
+  if (
+    capabilityTarget.x === '' &&
+    capabilityTarget.y === '' &&
+    capabilityTarget.z === ''
+  ) {
+    capabilityTarget.x = digTarget.x
+    capabilityTarget.y = digTarget.y
+    capabilityTarget.z = digTarget.z
+  }
   // 默认填「脚下前方」的一个可挖方块，只为开发调试方便
   const position = connection.value?.position
   if (!position) return
@@ -467,6 +482,52 @@ async function placeBlock(): Promise<void> {
   } finally {
     working.value = false
   }
+}
+
+async function checkDigCapability(): Promise<void> {
+  const raw = [capabilityTarget.x, capabilityTarget.y, capabilityTarget.z]
+  if (raw.some((value) => String(value).trim() === '')) {
+    toast.error('目标坐标不合法', 'X / Y / Z 都要填写（方块整数坐标）')
+    return
+  }
+  const [x, y, z] = raw.map(Number)
+  if (![x, y, z].every((value) => Number.isInteger(value))) {
+    toast.error('目标坐标不合法', '方块坐标必须是整数（不要小数点）')
+    return
+  }
+  working.value = true
+  capabilityError.value = ''
+  try {
+    const payload = await minecraftApi.digCapability(x, y, z)
+    capability.value = payload.result
+  } catch (caught) {
+    capability.value = null
+    capabilityError.value = errorMessage(caught)
+    toast.error('CHECK 失败', errorMessage(caught))
+  } finally {
+    working.value = false
+  }
+}
+
+/** 能力的 reason → 中文字面（只翻译，不推测"工具等级不够"这种运行时没说的话）。 */
+function capabilityReason(view: MinecraftDigCapabilityView | null): string {
+  if (!view) return '还没有查询过'
+  if (view.can_dig) return '能挖'
+  switch (view.reason) {
+    case 'air':
+      return '那里是空气（没什么可挖）'
+    case 'too_far':
+      return '太远（超过挖掘距离上限）'
+    case 'not_diggable':
+      return '当前主手挖不动（挖不动 ≠ 用别的工具就能挖，一切以运行时为准）'
+    default:
+      return view.reason || '挖不了'
+  }
+}
+
+function capabilityDistance(view: MinecraftDigCapabilityView | null, key: 'goal_near' | 'raw'): string {
+  const value = view?.distance?.[key]
+  return typeof value === 'number' ? `${value} 格` : '-'
 }
 
 async function digBlock(): Promise<void> {
@@ -1257,6 +1318,109 @@ onUnmounted(stopPolling)
             方块和用 minecraft_world 看到的不一致时会拒绝（block_changed）。
             Expected Tool 只校验**当前主手**：不一致会拒绝（held_item_changed），
             **绝不会自动装备** —— 要换工具请用上面的 Equip Test（那是另一条要确认的动作）。
+          </p>
+        </section>
+
+        <section class="minecraft__card cb-card" data-test="mc-capability">
+          <SectionHeader
+            title="Dig Capability（Phase 4J · SAFE 只读）"
+            description="只读查询：罐头现在站着的位置、现在的主手，对这个方块到底能不能挖、预计多少毫秒。不会换工具、不会导航、不会挖。"
+          />
+          <div class="minecraft__form" data-test="mc-capability-form">
+            <label class="minecraft__field">
+              <span>X</span>
+              <input
+                v-model="capabilityTarget.x"
+                type="text"
+                inputmode="numeric"
+                data-test="mc-capability-x"
+              />
+            </label>
+            <label class="minecraft__field">
+              <span>Y</span>
+              <input
+                v-model="capabilityTarget.y"
+                type="text"
+                inputmode="numeric"
+                data-test="mc-capability-y"
+              />
+            </label>
+            <label class="minecraft__field">
+              <span>Z</span>
+              <input
+                v-model="capabilityTarget.z"
+                type="text"
+                inputmode="numeric"
+                data-test="mc-capability-z"
+              />
+            </label>
+            <button
+              type="button"
+              class="minecraft__button"
+              :disabled="working || !isOnline"
+              data-test="mc-capability-check"
+              @click="checkDigCapability"
+            >
+              CHECK
+            </button>
+          </div>
+          <dl class="minecraft__facts" data-test="mc-capability-facts">
+            <div>
+              <dt>Block</dt>
+              <dd data-test="mc-capability-block">{{ capability?.block.name ?? '-' }}</dd>
+            </div>
+            <div>
+              <dt>Held Item</dt>
+              <dd data-test="mc-capability-held">
+                {{
+                  capability
+                    ? capability.held_item
+                      ? `${capability.held_item.name} × ${capability.held_item.count}`
+                      : '空手'
+                    : '-'
+                }}
+              </dd>
+            </div>
+            <div>
+              <dt>GoalNear Distance</dt>
+              <dd data-test="mc-capability-goal-near">
+                {{ capabilityDistance(capability, 'goal_near') }}
+              </dd>
+            </div>
+            <div>
+              <dt>Raw Distance</dt>
+              <dd data-test="mc-capability-raw">{{ capabilityDistance(capability, 'raw') }}</dd>
+            </div>
+            <div>
+              <dt>Can Dig</dt>
+              <dd data-test="mc-capability-can-dig">
+                {{ capability ? (capability.can_dig ? 'true' : 'false') : '-' }}
+              </dd>
+            </div>
+            <div>
+              <dt>Dig Time</dt>
+              <dd data-test="mc-capability-dig-time">
+                {{
+                  capability
+                    ? capability.dig_time_ms === null
+                      ? '-'
+                      : `${capability.dig_time_ms} ms`
+                    : '-'
+                }}
+              </dd>
+            </div>
+            <div>
+              <dt>Reason</dt>
+              <dd data-test="mc-capability-reason">{{ capabilityReason(capability) }}</dd>
+            </div>
+          </dl>
+          <p v-if="capabilityError" class="cb-caption" data-test="mc-capability-error">
+            {{ capabilityError }}
+          </p>
+          <p class="cb-caption">
+            两种距离不是同一个量：GoalNear 是「罐头占的方块格 → 目标方块格」，
+            Raw 是眼睛 → 方块中心的浮点距离（与挖方块的距离门禁同一个量）。
+            这里**只回答事实**：不会自动装备、不会自动挖 —— 要不要换工具、要不要挖，由你和罐头决定。
           </p>
         </section>
 

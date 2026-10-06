@@ -88,6 +88,7 @@ class ToolRuntime:
             MinecraftContainerInspectTool,
             MinecraftContainerTransferTool,
             MinecraftCraftTool,
+            MinecraftDigCapabilityTool,
             MinecraftDigTool,
             MinecraftDroppedItemsTool,
             MinecraftEquipTool,
@@ -133,6 +134,8 @@ class ToolRuntime:
             ("minecraft_recipe_lookup", lambda: MinecraftRecipeLookupTool()),
             # Phase 4H：掉落物感知（SAFE 只读）/ 捡起一个明确实体（MEDIUM）
             ("minecraft_dropped_items", lambda: MinecraftDroppedItemsTool()),
+            # Phase 4J：挖掘能力只读查询（SAFE；只回答「现在能不能挖、多久」）
+            ("minecraft_dig_capability", lambda: MinecraftDigCapabilityTool()),
             ("minecraft_pickup_item", lambda: MinecraftPickupItemTool()),
             ("minecraft_craft", lambda: MinecraftCraftTool()),
             ("query_image_memory", lambda: QueryImageMemoryTool()),

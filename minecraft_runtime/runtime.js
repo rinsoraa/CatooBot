@@ -759,6 +759,11 @@ function recipeSetsFor(bot, itemName, craftingTable = null) {
 
 // ------------------------------------------------- Phase 4H: dropped items
 
+// Phase 4J：能力查询是纯计算（一次 blockAt + canDigBlock + digTime），5s 足够
+const DIG_CAPABILITY_TIMEOUT_MS = Number.parseInt(
+  process.env.MC_DIG_CAPABILITY_TIMEOUT_MS || '5000',
+  10,
+)
 const DROPPED_ITEMS_TIMEOUT_MS = Number.parseInt(
   process.env.MC_DROPPED_ITEMS_TIMEOUT_MS || '5000',
   10,
@@ -994,6 +999,76 @@ function releaseMoveGoal(bot) {
   } catch (error) {
     log('warn', 'move_to setGoal(null) failed', { error: error.message })
   }
+}
+
+// Phase 4J：capability 的 reason 只有这几个有限取值（§十六：绝不推测"工具等级不够"）
+const DIG_CAPABILITY_REASONS = Object.freeze(['air', 'too_far', 'not_diggable'])
+
+/**
+ * Phase 4J：**只读**回答"当前站在这里、当前主手拿着这个物品时，这个方块能不能挖、大概多久"。
+ *
+ * 事实来源全部是 mineflayer 的**运行时**（绝不自己维护方块硬度/工具等级/最佳工具表）：
+ *   ``bot.blockAt`` / ``bot.heldItem`` / ``bot.canDigBlock`` / ``bot.digTime``
+ * 绝不改世界、不改背包、不装备、不切槽、不移动、不导航（§二/§十一/§十二/§十八）。
+ *
+ * 距离分成两个口径（§十五，沿用 Phase 4H.1）：
+ *   * ``goal_near`` —— 罐头**占的方块格** → 目标方块格（GoalNear 口径）
+ *   * ``raw`` —— 眼睛 → 方块中心的浮点距离（**与 minecraft_dig 的距离门禁同一个量**）
+ */
+function digCapabilityView(bot, params) {
+  const position = new Vec3(params.x, params.y, params.z)
+  const block = typeof bot.blockAt === 'function' ? bot.blockAt(position) : null
+  if (!block) {
+    // §七：那个位置没有方块（没加载 / 超出世界）→ 结构化错误，不是"能不能挖"的回答
+    throw new ActionError(
+      `那个位置没有方块（${params.x},${params.y},${params.z}）`,
+      'block.unavailable',
+      404,
+    )
+  }
+  const blockName = blockNameOf(block) || 'unknown'
+  const held = bot.heldItem && bot.heldItem.name ? bot.heldItem : null
+  const heldItem = held ? { name: normalizeItemName(held.name), count: held.count } : null
+  const self = bot.entity && bot.entity.position ? bot.entity.position : null
+  const center = position.offset(0.5, 0.5, 0.5)
+  const eyes = self ? self.offset(0, 1.65, 0) : null
+  const raw = eyes ? round2(eyes.distanceTo(center)) : null
+  const goalNear = self ? round2(self.floored().distanceTo(position)) : null
+  const view = {
+    ok: true,
+    position: { x: params.x, y: params.y, z: params.z },
+    block: { name: blockName },
+    held_item: heldItem,
+    distance: { goal_near: goalNear, raw },
+    can_dig: false,
+    dig_time_ms: null,
+    reason: null,
+  }
+  if (isAir(blockName)) {
+    // §八：空气是正常数据，不是服务器错误
+    return { ...view, reason: 'air' }
+  }
+  const maxDistance = digMaxDistance()
+  if (raw !== null && raw > maxDistance) {
+    // §九：复用 dig 的交互距离语义；**绝不**为了这个查询让罐头移动
+    return { ...view, reason: 'too_far' }
+  }
+  const diggable = typeof bot.canDigBlock === 'function' ? Boolean(bot.canDigBlock(block)) : false
+  if (!diggable) {
+    // §十一/§十六：canDigBlock 说了算，不猜原因（工具不对？被保护？统一 not_diggable）
+    return { ...view, reason: 'not_diggable' }
+  }
+  let digTime = null
+  if (typeof bot.digTime === 'function') {
+    try {
+      const value = bot.digTime(block)
+      // §十二：不可挖/算不出来时是 null（绝不返回负数，也不把 Infinity 传出去）
+      if (Number.isFinite(value) && value >= 0) digTime = Math.round(value)
+    } catch (error) {
+      log('warn', 'dig_capability digTime failed', { error: error.message })
+    }
+  }
+  return { ...view, can_dig: true, dig_time_ms: digTime }
 }
 
 /** 停掉导航意图（setGoal(null) + 清控制位），失败只记日志。 */
@@ -1509,6 +1584,25 @@ function round2(value) {
 }
 
 /** Phase 3B §六 / Phase 3C §六：共享的世界坐标校验（有限数字 + 世界边界）。 */
+/**
+ * Phase 4J §四：方块坐标必须是**整数**（capability 查的是"真实位置的方块"，
+ * 浮点坐标会让调用者有机会指向格子里面的一个想象位置）。
+ */
+function validateBlockCoords(params) {
+  const coords = {}
+  for (const name of ['x', 'y', 'z']) {
+    const value = params[name]
+    if (typeof value !== 'number' || !Number.isInteger(value)) {
+      throw new ActionError(`坐标 ${name} 必须是整数（方块坐标没有小数）`, 'action.invalid', 400)
+    }
+    coords[name] = value
+  }
+  if (Math.abs(coords.x) > 3.0e7 || Math.abs(coords.z) > 3.0e7 || coords.y < -512 || coords.y > 2048) {
+    throw new ActionError('坐标超出 Minecraft 世界边界', 'action.invalid', 400)
+  }
+  return coords
+}
+
 function validateWorldCoords(params) {
   const coords = {}
   for (const name of ['x', 'y', 'z']) {
@@ -2804,6 +2898,23 @@ const ACTION_REGISTRY = {
         return droppedItemsView(bot)
       },
     },
+    dig_capability: {
+      // Phase 4J：读"当前状态下这个方块能不能挖、大概要多久"（SAFE 只读；**非独占**）。
+      // 纯查询：不改世界、不改背包、不装备、不切槽、不移动、不导航 —— 与 inventory /
+      // dropped_items 是同一条路（只读动作，不需要确认、不会忙）。
+      exclusive: false,
+      timeout_ms: DIG_CAPABILITY_TIMEOUT_MS,
+      risk: 'SAFE',
+      validate(params) {
+        return validateBlockCoords(params)
+      },
+      async run(bot, params) {
+        if (bot === null || bot === undefined) {
+          throw new ActionError('罐头还没有进入世界', 'action.not_online', 400)
+        }
+        return digCapabilityView(bot, params)
+      },
+    },
     pickup_item: {
       // Phase 4H：拾取**一个明确指定**的掉落物实体（MEDIUM：改背包 + bot 会主动移动）。
       // 内部自己管 pathfinding + 目标实体 + 收集等待，绝不嵌套 move_to（那会 action.busy）。
@@ -3642,6 +3753,17 @@ async function handleRequest(request, response) {
       jsonResponse(response, 200, { ok: true, ...result })
       return
     }
+    if (request.method === 'POST' && path === '/minecraft/dig_capability') {
+      // Phase 4J：读"这个方块现在能不能挖、大概多久"（SAFE 只读；同步返回语义投影）
+      const body = await readBody(request)
+      const result = await actionRuntime.execute('dig_capability', {
+        x: body.x,
+        y: body.y,
+        z: body.z,
+      })
+      jsonResponse(response, 200, { ok: true, ...result })
+      return
+    }
     if (request.method === 'POST' && path === '/minecraft/pickup_item') {
       // Phase 4H：捡起一个明确的掉落物实体（MEDIUM）。启动即 RUNNING，终态经事件送达。
       const body = await readBody(request)
@@ -3833,6 +3955,11 @@ module.exports = {
     inventoryGraceMs: PICKUP_INVENTORY_GRACE_MS,
     droppedItemsTimeoutMs: DROPPED_ITEMS_TIMEOUT_MS,
   },
+  DIG_CAPABILITY_DEFAULTS: {
+    timeoutMs: DIG_CAPABILITY_TIMEOUT_MS,
+    reasons: [...DIG_CAPABILITY_REASONS],
+  },
+  digCapabilityView,
   isDroppedItemEntity,
   droppedItemStack,
   droppedItemSlotIndex,

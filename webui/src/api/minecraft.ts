@@ -4,6 +4,7 @@ import { api } from '@/api/client'
 
 import type {
   MinecraftContainerDirection,
+  MinecraftDigCapabilityResponse,
   MinecraftDroppedItemsResponse,
   MinecraftPickupItemResult,
   MinecraftCraftingTable,
@@ -145,6 +146,10 @@ export const minecraftApi = {
     })
   },
   /** Phase 4H：看附近地上的掉落物实体（SAFE 只读，同步返回）。 */
+  /** Phase 4J：只读查「这个方块现在能不能挖、大概多久」（SAFE，同步返回）。 */
+  digCapability(x: number, y: number, z: number) {
+    return api.post<MinecraftDigCapabilityResponse>('/minecraft/dig_capability', { x, y, z })
+  },
   droppedItems() {
     return api.post<MinecraftDroppedItemsResponse>('/minecraft/dropped_items', {})
   },

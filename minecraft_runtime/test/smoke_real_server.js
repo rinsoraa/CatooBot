@@ -24,6 +24,9 @@
  *      （方块不变 / 没有新 Action / 主手没变）→ 自己 equip → 重读主手 → dig(expected_tool)
  *      → 真实世界复核 → 不带 expected_tool 的 legacy dig → 还原临时方块 + 清夹具
  *      （支持 SMOKE_TOOL_ITEM="minecraft:stone_pickaxe"；拿不到工具就 SKIPPED）
+ *   6c. Phase 4J：DIG CAPABILITY（只读）—— 临时 stone 块 + 包里凑齐镐/土 → 拿对照物品查一次、
+ *      换成镐再查一次、主手腾空查第三次 → 断言 can_dig / dig_time_ms / 两种距离口径，
+ *      并确认**一个方块都没动**、背包逐槽恢复、endIdle
  *   7. Phase 4C：place（单方块，六层证据）
  *   8. Phase 4D：inventory/slots → equip（含 already_equipped）→ inventory_move →
  *      重读槽位表 → **恢复原状**（槽位布局 + 主手）→ ensureIdle → disconnect
@@ -595,9 +598,12 @@ async function main() {
       }
       // §三十三：**不再用"零距离 move_to"清残留 Goal** —— 任何终态（成功/失败/取消）
       // 都由 runtime 自己收掉导航意图，这里只做验证。
-      const afterStop = (await status()).pathfinder || {}
+      const afterStop = await waitForValue(async () => {
+        const snap = (await status()).pathfinder || {}
+        return snap.goal === null && snap.moving === false ? snap : null
+      }, 'STOP 段之后回到静止', 4000)
       check(
-        afterStop.goal === null && afterStop.moving === false,
+        Boolean(afterStop),
         'move_to goal cleanup = PASS（STOP 段之后没有残留 Goal / 没有在移动）',
       )
     }
@@ -611,10 +617,12 @@ async function main() {
       // 守卫的目标是"找不到路"，但我们不希望它把罐头带进洞穴/远走 —— 结束后 tp 回原位，
       // 后面的段落（dig / place / craft / pickup）地形环境不受影响。
       const guardOrigin = { x: base.x, y: base.y, z: base.z }
+      // 顺序有讲究：先试**头顶空气**（不可达但不会把罐头带上树/带下洞），
+      // 再试脚下的岩层（真机上它可能让罐头顺着"部分路径"往上爬）。
       const candidates = [
-        { label: '脚下 20 格的实心岩层', x: base.x, y: base.y - 20, z: base.z },
-        { label: '斜下方 30 格外的岩层', x: base.x + 30, y: base.y - 20, z: base.z },
         { label: '头顶 30 格的空气', x: base.x, y: base.y + 30, z: base.z },
+        { label: '斜上方 30 格的空气', x: base.x + 30, y: base.y + 30, z: base.z },
+        { label: '脚下 20 格的实心岩层', x: base.x, y: base.y - 20, z: base.z },
       ]
       let guard = null
       const guardNotes = []
@@ -729,6 +737,9 @@ async function main() {
     await ensureIdle('move_to 段收尾')
 
     // ---- 3. follow_player 真实验证（第二个客户端当目标） ----
+    // 前面的 move_to/守卫段可能把罐头带到树上/洞里（真机上它顺着"部分路径"爬过树冠），
+    // 跟随要在地面上走，所以先挪回一处干燥落脚点（只动罐头自己，不改世界）。
+    await relocateForMoveTests()
     const mineflayer = require('mineflayer')
     const targetName = process.env.SMOKE_FOLLOW_TARGET || 'SmokeTgt'
     console.log(`[smoke] 跟随测试：拉起目标客户端 ${targetName}`)
@@ -1532,6 +1543,312 @@ async function main() {
           const idle4I = await idleState()
           check(idle4I.idle, 'ensureIdle = PASS（工具感知 dig 之后 runtime 回到 IDLE）')
         }
+      }
+    }
+
+    // ---- 6c. Phase 4J：DIG CAPABILITY（只读：这个方块现在能不能挖、大概多久） ----
+    // 三种真实状态都查一遍（空手 / 拿对工具 / 拿错东西），并且**绝不挖、绝不改世界**：
+    // 临时石头块用完还原，主手与背包逐槽恢复。capability 只回答事实，不装备、不导航。
+    if (!digReady) {
+      console.log('[smoke] ✗ Phase 4J：runtime 未空闲，capability 硬门禁不能执行')
+    } else {
+      const TOOL_4J = (process.env.SMOKE_TOOL_ITEM || 'minecraft:stone_pickaxe').trim()
+      const WRONG_4J = (process.env.SMOKE_CAPABILITY_WRONG_ITEM || 'minecraft:dirt').trim()
+      const inv4J = async () => (await request(runtimePort, 'GET', '/minecraft/inventory')).body
+      const rows4J = async () =>
+        ((await request(runtimePort, 'GET', '/minecraft/inventory/slots')).body || {}).slots || []
+      const signature4J = async () =>
+        (await rows4J())
+          .map((row) => `${row.slot}:${normalizeItemName(row.name)}×${row.count}`)
+          .sort()
+          .join('|')
+      const hand4J = async () => (await inv4J()).held_item || null
+      const capability4J = async (x, y, z) => {
+        const resp = await request(runtimePort, 'POST', '/minecraft/dig_capability', { x, y, z })
+        return { status: resp.status, body: resp.body, view: resp.body && resp.body.result }
+      }
+      const botName4J = (await status()).username
+      const signatureBefore4J = await signature4J()
+
+      // 夹具 1：临时石头块（记录原方块，结束后还原）—— 只读查询要有一个**确定**的方块
+      const origin4J = (await status()).position
+      const base4J = {
+        x: Math.round(origin4J.x),
+        y: Math.round(origin4J.y),
+        z: Math.round(origin4J.z),
+      }
+      const offsets4J = [
+        [1, 0, 0],
+        [0, 0, 1],
+        [-1, 0, 0],
+        [0, 0, -1],
+        [1, 1, 0],
+        [0, 1, 1],
+        [1, 0, 1],
+      ]
+      let spot4J = null
+      let spotOrigin4J = 'air'
+      for (const [dx, dy, dz] of offsets4J) {
+        const candidate = { x: base4J.x + dx, y: base4J.y + dy, z: base4J.z + dz }
+        const raw = await blockAt(candidate)
+        if (raw !== null && normalizeBlock(raw) !== 'air' && normalizeBlock(raw) !== 'water') continue
+        await say(`/setblock ${candidate.x} ${candidate.y} ${candidate.z} minecraft:stone`)
+        const placed = await waitForValue(async () => {
+          const now = normalizeBlock(await blockAt(candidate))
+          return now === 'stone' ? now : null
+        }, '临时石头块出现在感知里', 4000)
+        if (placed) {
+          spot4J = candidate
+          spotOrigin4J = raw === null ? 'air' : raw
+          break
+        }
+      }
+
+      // 夹具 2：包里要有石镐与土（两个状态各要一个；只清自己给的那份）
+      let gave4J = false
+      for (const item of [TOOL_4J, WRONG_4J]) {
+        const inv = await inv4J()
+        const have = (inv.items || []).some(
+          (row) => normalizeItemName(row.name) === normalizeItemName(item),
+        )
+        if (!have && botName4J) {
+          await say(`/give ${botName4J} ${item} 8`)
+          gave4J = true
+          await sleep(600)
+        }
+      }
+      const missingFixture = !spot4J
+
+      if (missingFixture) {
+        console.log('[smoke] SKIPPED Phase 4J：身边放不出临时石头块（不伪造结论）')
+      } else {
+        console.log(
+          `[smoke] 4J：在 (${spot4J.x},${spot4J.y},${spot4J.z}) 放了临时 stone（原方块 ${spotOrigin4J}）`
+            + `→ 只读查三次后还原；测试工具 ${TOOL_4J} / 对照物品 ${WRONG_4J}`,
+        )
+        const query = () => capability4J(spot4J.x, spot4J.y, spot4J.z)
+        const first = await query()
+        check(
+          first.status === 200 && first.view && first.view.ok === true,
+          `capability 查询 → 200（HTTP ${first.status}）`,
+        )
+        check(
+          Boolean(first.view) &&
+            first.view.block.name === 'stone' &&
+            first.view.position.x === spot4J.x,
+          `capability 回答的是那个真实方块（${JSON.stringify(first.view && first.view.block)}）`,
+        )
+        check(
+          first.view &&
+            typeof first.view.distance.goal_near === 'number' &&
+            typeof first.view.distance.raw === 'number' &&
+            first.view.distance.goal_near !== first.view.distance.raw,
+          `两种距离口径分开上报（goal_near=${first.view && first.view.distance.goal_near} / `
+            + `raw=${first.view && first.view.distance.raw}）`,
+        )
+
+        // ---- 状态 3：拿"不合适"的物品（真实结果由服务器说了算，不人为规定） ----
+        const wrongEquip = await request(runtimePort, 'POST', '/minecraft/equip', { item: WRONG_4J })
+        if (wrongEquip.status === 200 && wrongEquip.body.action_id) {
+          await waitForActionTerminal(wrongEquip.body.action_id, 'equip 对照物品', 30000)
+        }
+        const mismatch = await query()
+        console.log(
+          `[smoke] 4J 状态 · 拿 ${(await hand4J())?.name || '空手'} 查 stone：`
+            + `can_dig=${mismatch.view && mismatch.view.can_dig} / `
+            + `dig_time_ms=${mismatch.view && mismatch.view.dig_time_ms} / `
+            + `reason=${mismatch.view && mismatch.view.reason}`,
+        )
+        check(
+          Boolean(mismatch.view) &&
+            normalizeItemName((mismatch.view.held_item || {}).name || '') ===
+              normalizeItemName(WRONG_4J),
+          'capability mismatch-tool state = PASS（如实报告当前主手是那把"不合适"的物品）',
+        )
+
+        // ---- 状态 2：拿对工具（can_dig 必须为 true，dig_time 必须是有限正数） ----
+        const toolEquip = await request(runtimePort, 'POST', '/minecraft/equip', { item: TOOL_4J })
+        if (!(toolEquip.status === 200 && toolEquip.body.action_id)) {
+          check(false, `equip ${TOOL_4J} 必须 200/RUNNING（HTTP ${toolEquip.status}）`)
+        } else {
+          await waitForActionTerminal(toolEquip.body.action_id, 'equip 测试工具', 30000)
+          const withTool = await query()
+          check(
+            Boolean(withTool.view) &&
+              normalizeItemName((withTool.view.held_item || {}).name || '') ===
+                normalizeItemName(TOOL_4J) &&
+              withTool.view.can_dig === true &&
+              Number.isFinite(withTool.view.dig_time_ms) &&
+              withTool.view.dig_time_ms > 0,
+            `capability tool-held = PASS（held=${(withTool.view.held_item || {}).name} / `
+              + `can_dig=${withTool.view.can_dig} / dig_time_ms=${withTool.view.dig_time_ms}）`,
+          )
+          console.log(
+            `[smoke] 4J 状态 · 拿 ${TOOL_4J} 查 stone：can_dig=${withTool.view.can_dig} / `
+              + `dig_time_ms=${withTool.view.dig_time_ms} / reason=${withTool.view.reason}`,
+          )
+          // 交叉验证：同一个方块，拿对工具的耗时必须**明显短于**拿对照物品（说明这个数
+          // 真的来自运行时的工具感知计算，而不是我们编的常量）
+          if (
+            mismatch.view &&
+            mismatch.view.can_dig === true &&
+            Number.isFinite(mismatch.view.dig_time_ms) &&
+            Number.isFinite(withTool.view.dig_time_ms)
+          ) {
+            check(
+              withTool.view.dig_time_ms < mismatch.view.dig_time_ms,
+              `real can_dig matches runtime = PASS（同一方块：石镐 ${withTool.view.dig_time_ms}ms `
+                + `< ${WRONG_4J} ${mismatch.view.dig_time_ms}ms）`,
+            )
+          } else {
+            check(
+              mismatch.view && mismatch.view.can_dig === false,
+              `real can_dig matches runtime = PASS（拿 ${WRONG_4J} 时运行时直接说`
+                + ` can_dig=false / reason=${mismatch.view && mismatch.view.reason}）`,
+            )
+          }
+          check(
+            Number.isFinite(withTool.view.dig_time_ms),
+            `real dig_time_ms is finite/valid when diggable（${withTool.view.dig_time_ms}ms）`,
+          )
+        }
+
+        // ---- 状态 1：空手（把主手那一格搬到背包空格；可完全还原） ----
+        const invNow4J = await inv4J()
+        const heldNow = invNow4J.held_item || null
+        // 注意口径：/minecraft/inventory 的 selected_hotbar_slot 是 **0-8 的快捷栏下标**，
+        // 而 inventory_move 用的是玩家窗口的绝对槽位（快捷栏 = 36 + 下标）。
+        const selectedSlot =
+          Number.isInteger(invNow4J.selected_hotbar_slot) &&
+          invNow4J.selected_hotbar_slot >= 0 &&
+          invNow4J.selected_hotbar_slot <= 8
+            ? 36 + invNow4J.selected_hotbar_slot
+            : null
+        let emptiedHand = false
+        let movedTo = null
+        if (heldNow && Number.isInteger(selectedSlot)) {
+          const occupied = new Set((await rows4J()).map((row) => row.slot))
+          const free = []
+          for (let slot = 9; slot <= 35; slot += 1) if (!occupied.has(slot)) free.push(slot)
+          const target4J = free[0]
+          if (target4J === undefined) {
+            console.log('[smoke] 4J 空手夹具：背包 9-35 没有空格可放（不伪造结论）')
+          } else {
+            const move = await request(runtimePort, 'POST', '/minecraft/inventory_move', {
+              source_slot: selectedSlot,
+              destination_slot: target4J,
+              item: heldNow.name,
+              count: heldNow.count,
+            })
+            if (!(move.status === 200 && move.body.action_id)) {
+              console.log(
+                `[smoke] 4J 空手夹具：inventory_move 启动失败 HTTP ${move.status}`
+                  + `（${JSON.stringify(move.body && move.body.error)}）`,
+              )
+            } else {
+              const moveTerminal = await waitForActionTerminal(
+                move.body.action_id,
+                '搬走主手物品',
+                30000,
+              )
+              if (!moveTerminal || moveTerminal.event !== 'minecraft.action.completed') {
+                console.log(
+                  `[smoke] 4J 空手夹具：搬走主手物品的终态是 `
+                    + `${moveTerminal && moveTerminal.event}`
+                    + `（${(moveTerminal && (moveTerminal.error || moveTerminal.reason)) || '-'}）`,
+                )
+              }
+              emptiedHand = Boolean(
+                await waitForValue(async () => {
+                  const hand = await hand4J()
+                  return hand === null ? true : null
+                }, '主手变空', 4000),
+              )
+              movedTo = emptiedHand ? target4J : null
+              if (!emptiedHand) {
+                const stillHeld = await hand4J()
+                console.log(
+                  `[smoke] 4J 空手夹具：搬完以后主手还是 `
+                    + `${stillHeld ? `${stillHeld.name}×${stillHeld.count}` : '空'}`,
+                )
+              }
+            }
+          }
+        } else {
+          console.log(
+            `[smoke] 4J 空手夹具：主手=${heldNow ? heldNow.name : '空'} / `
+              + `selected_hotbar_slot=${JSON.stringify(selectedSlot)}`,
+          )
+        }
+        if (emptiedHand) {
+          const emptyHand = await query()
+          check(
+            Boolean(emptyHand.view) && emptyHand.view.held_item === null,
+            `capability empty-hand = PASS（held_item=${JSON.stringify(
+              emptyHand.view && emptyHand.view.held_item,
+            )} / can_dig=${emptyHand.view && emptyHand.view.can_dig} / `
+              + `dig_time_ms=${emptyHand.view && emptyHand.view.dig_time_ms}）`,
+          )
+          console.log(
+            `[smoke] 4J 状态 · 空手查 stone：can_dig=${emptyHand.view.can_dig} / `
+              + `dig_time_ms=${emptyHand.view.dig_time_ms} / reason=${emptyHand.view.reason}`,
+          )
+        } else {
+          console.log('[smoke] SKIPPED 4J 空手状态：没能把主手那一格腾空（不伪造结论）')
+        }
+
+        // ---- no world modification：整个查询过程一个方块都没动 ----
+        check(
+          normalizeBlock(await blockAt(spot4J)) === 'stone',
+          'no world modification = PASS（三次查询之后那个方块还是 stone）',
+        )
+        const slotRows4J = await rows4J()
+        const sameCount = slotRows4J.filter((row) => normalizeItemName(row.name) === 'stone').length
+        check(sameCount === 0, 'no world modification = PASS（背包里没有多出挖下来的石头）')
+
+        // ---- 恢复：把手持搬回去 → 还原临时方块 → 清夹具 → 逐槽比对 ----
+        if (movedTo !== null && heldNow) {
+          await request(runtimePort, 'POST', '/minecraft/inventory_move', {
+            source_slot: movedTo,
+            destination_slot: selectedSlot,
+            item: heldNow.name,
+            count: heldNow.count,
+          })
+          await sleep(1000)
+        }
+        await say(`/setblock ${spot4J.x} ${spot4J.y} ${spot4J.z} ${spotOrigin4J}`)
+        await sleep(600)
+        if (botName4J && gave4J) {
+          await say(`/clear ${botName4J} ${TOOL_4J}`)
+          await say(`/clear ${botName4J} ${WRONG_4J}`)
+        } else {
+          console.log('[smoke] 4J：夹具物品原本就在背包里 → 不清掉（只清自己 /give 的份）')
+        }
+        const before4JMap = new Map(
+          (signatureBefore4J ? signatureBefore4J.split('|') : []).filter(Boolean).map((entry) => {
+            const [slot, rest] = entry.split(':')
+            const [item, count] = rest.split('×')
+            return [`${slot}:${item}`, Number.parseInt(count, 10)]
+          }),
+        )
+        const after4J = new Map(
+          (await signature4J()).split('|').filter(Boolean).map((entry) => {
+            const [slot, rest] = entry.split(':')
+            const [item, count] = rest.split('×')
+            return [`${slot}:${item}`, Number.parseInt(count, 10)]
+          }),
+        )
+        const lost4J = []
+        for (const [key, count] of before4JMap) {
+          if ((after4J.get(key) || 0) < count) lost4J.push(`${key} ×${count}→${after4J.get(key) || 0}`)
+        }
+        check(
+          lost4J.length === 0,
+          `inventory restored = PASS（capability 没有消耗/移动任何原有物品；before=${signatureBefore4J || '空'}）`,
+        )
+        if (lost4J.length > 0) console.log(`[smoke]    ✗ 4J 少了原有物品：${lost4J.join('、')}`)
+        const idle4J = await idleState()
+        check(idle4J.idle, 'ensureIdle = PASS（capability 查询之后 runtime 仍然 IDLE）')
       }
     }
 

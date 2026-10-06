@@ -151,6 +151,7 @@ function makeHandler(
     craft?: MockReply
     droppedItems?: MockReply
     pickupItem?: MockReply
+    digCapability?: MockReply
   } = {},
 ) {
   return (request: MockRequest): MockReply => {
@@ -190,6 +191,27 @@ function makeHandler(
     }
     if (url.pathname === '/api/v1/minecraft/agent/confirm' && request.method === 'POST') {
       return ok({ created: true, confirmation_id: 'cfm_test_1', status: 'CANCELLED' })
+    }
+    if (url.pathname === '/api/v1/minecraft/dig_capability' && request.method === 'POST') {
+      return (
+        overrides.digCapability ??
+        ok({
+          ok: true,
+          action: 'dig_capability',
+          status: 'SUCCEEDED',
+          action_id: 'act_cap_ui',
+          result: {
+            ok: true,
+            position: { x: 100, y: 64, z: 100 },
+            block: { name: 'iron_ore' },
+            held_item: { name: 'stone_pickaxe', count: 1 },
+            distance: { goal_near: 1, raw: 4.28 },
+            can_dig: true,
+            dig_time_ms: 1250,
+            reason: null,
+          },
+        })
+      )
     }
     if (url.pathname === '/api/v1/minecraft/dig' && request.method === 'POST') {
       return overrides.dig ?? ok({ ok: true, action: 'dig', action_id: 'act_dig_ui', status: 'RUNNING' })
@@ -813,6 +835,128 @@ describe('Minecraft 页 · Dig Test 工具感知（Phase 4I）', () => {
     await flushAll()
     const call = calls.find((c) => c.url.endsWith('/minecraft/dig'))
     expect(call?.body).toEqual({ x: 120, y: 64, z: -230, expected_block: 'minecraft:stone' })
+  })
+})
+
+describe('Minecraft 页 · Dig Capability（Phase 4J · SAFE 只读）', () => {
+  it('初始不显示任何结论（还没查过）', async () => {
+    const { wrapper } = await mountPage(makeHandler())
+    await flushAll()
+    const facts = wrapper.get('[data-test="mc-capability-facts"]').text()
+    expect(facts).toContain('还没有查询过')
+    expect(wrapper.get('[data-test="mc-capability-block"]').text()).toBe('-')
+  })
+
+  it('CHECK 把整数坐标发给 /minecraft/dig_capability 并显示七项事实', async () => {
+    const { wrapper, calls } = await mountPage(makeHandler())
+    await flushAll()
+    await wrapper.get('[data-test="mc-capability-x"]').setValue('100')
+    await wrapper.get('[data-test="mc-capability-y"]').setValue('64')
+    await wrapper.get('[data-test="mc-capability-z"]').setValue('100')
+    await wrapper.get('[data-test="mc-capability-check"]').trigger('click')
+    await flushAll()
+    const call = calls.find((c) => c.url.endsWith('/minecraft/dig_capability'))
+    expect(call?.body).toEqual({ x: 100, y: 64, z: 100 })
+    expect(wrapper.get('[data-test="mc-capability-block"]').text()).toBe('iron_ore')
+    expect(wrapper.get('[data-test="mc-capability-held"]').text()).toContain('stone_pickaxe × 1')
+    expect(wrapper.get('[data-test="mc-capability-goal-near"]').text()).toBe('1 格')
+    expect(wrapper.get('[data-test="mc-capability-raw"]').text()).toBe('4.28 格')
+    expect(wrapper.get('[data-test="mc-capability-can-dig"]').text()).toBe('true')
+    expect(wrapper.get('[data-test="mc-capability-dig-time"]').text()).toBe('1250 ms')
+    expect(wrapper.get('[data-test="mc-capability-reason"]').text()).toBe('能挖')
+  })
+
+  it('挖不动时如实显示原因与 "-" 耗时（不推测工具等级）', async () => {
+    const { wrapper } = await mountPage(
+      makeHandler({
+        digCapability: ok({
+          ok: true,
+          action: 'dig_capability',
+          status: 'SUCCEEDED',
+          result: {
+            ok: true,
+            position: { x: 100, y: 64, z: 100 },
+            block: { name: 'iron_ore' },
+            held_item: { name: 'dirt', count: 3 },
+            distance: { goal_near: 1, raw: 4.28 },
+            can_dig: false,
+            dig_time_ms: null,
+            reason: 'not_diggable',
+          },
+        }),
+      }),
+    )
+    await flushAll()
+    await wrapper.get('[data-test="mc-capability-x"]').setValue('100')
+    await wrapper.get('[data-test="mc-capability-y"]').setValue('64')
+    await wrapper.get('[data-test="mc-capability-z"]').setValue('100')
+    await wrapper.get('[data-test="mc-capability-check"]').trigger('click')
+    await flushAll()
+    expect(wrapper.get('[data-test="mc-capability-can-dig"]').text()).toBe('false')
+    expect(wrapper.get('[data-test="mc-capability-dig-time"]').text()).toBe('-')
+    expect(wrapper.get('[data-test="mc-capability-reason"]').text()).toContain('挖不动')
+    expect(wrapper.get('[data-test="mc-capability-held"]').text()).toContain('dirt × 3')
+  })
+
+  it('空手也是事实（held item 显示"空手"）', async () => {
+    const { wrapper } = await mountPage(
+      makeHandler({
+        digCapability: ok({
+          ok: true,
+          action: 'dig_capability',
+          status: 'SUCCEEDED',
+          result: {
+            ok: true,
+            position: { x: 100, y: 64, z: 100 },
+            block: { name: 'stone' },
+            held_item: null,
+            distance: { goal_near: 1, raw: 2.1 },
+            can_dig: false,
+            dig_time_ms: null,
+            reason: 'not_diggable',
+          },
+        }),
+      }),
+    )
+    await flushAll()
+    await wrapper.get('[data-test="mc-capability-x"]').setValue('100')
+    await wrapper.get('[data-test="mc-capability-y"]').setValue('64')
+    await wrapper.get('[data-test="mc-capability-z"]').setValue('100')
+    await wrapper.get('[data-test="mc-capability-check"]').trigger('click')
+    await flushAll()
+    expect(wrapper.get('[data-test="mc-capability-held"]').text()).toBe('空手')
+  })
+
+  it('非整数坐标本地拦截（不发请求）', async () => {
+    const { wrapper, calls } = await mountPage(makeHandler())
+    await flushAll()
+    await wrapper.get('[data-test="mc-capability-x"]').setValue('100.5')
+    await wrapper.get('[data-test="mc-capability-y"]').setValue('64')
+    await wrapper.get('[data-test="mc-capability-z"]').setValue('100')
+    await wrapper.get('[data-test="mc-capability-check"]').trigger('click')
+    await flushAll()
+    expect(calls.some((c) => c.url.endsWith('/minecraft/dig_capability'))).toBe(false)
+  })
+
+  it('没有方块时如实报错，且页面不会自己去装备或挖掘', async () => {
+    const { wrapper, calls } = await mountPage(
+      makeHandler({
+        digCapability: fail(404, 'minecraft.block_unavailable', '那个位置没有方块'),
+      }),
+    )
+    await flushAll()
+    await wrapper.get('[data-test="mc-capability-x"]').setValue('100')
+    await wrapper.get('[data-test="mc-capability-y"]').setValue('64')
+    await wrapper.get('[data-test="mc-capability-z"]').setValue('100')
+    await wrapper.get('[data-test="mc-capability-check"]').trigger('click')
+    await flushAll()
+    expect(wrapper.get('[data-test="mc-capability-error"]').text()).toContain('没有方块')
+    // 只读面板绝不触发 equip / dig
+    expect(calls.some((c) => c.url.endsWith('/minecraft/equip'))).toBe(false)
+    expect(calls.some((c) => c.url.endsWith('/minecraft/dig'))).toBe(false)
+    // 也没有 AUTO EQUIP / AUTO DIG 这类按钮
+    expect(wrapper.find('[data-test="mc-capability-auto-equip"]').exists()).toBe(false)
+    expect(wrapper.find('[data-test="mc-capability-auto-dig"]').exists()).toBe(false)
   })
 })
 

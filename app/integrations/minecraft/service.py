@@ -1593,6 +1593,38 @@ class MinecraftService:
             raise MinecraftActionInvalid("recipe_id 不能包含控制字符")
         return clean, MinecraftService.validate_crafting_table(crafting_table)
 
+    @staticmethod
+    def validate_dig_capability(x: Any, y: Any, z: Any) -> dict[str, int]:
+        """dig_capability 的参数校验（纯函数，抛 :class:`MinecraftActionInvalid`）。
+
+        §四：**方块坐标必须是整数**（查的是「真实位置的方块」，不接受浮点想象坐标），
+        也**不接受** block name / expected_tool —— 那两样都会把「事实」变成「调用者声称」。
+        """
+        coords: dict[str, int] = {}
+        for name, value in (("x", x), ("y", y), ("z", z)):
+            if isinstance(value, bool) or not isinstance(value, int):
+                raise MinecraftActionInvalid(f"坐标 {name} 必须是整数（方块坐标没有小数）")
+            coords[name] = int(value)
+        if abs(coords["x"]) > 3.0e7 or abs(coords["z"]) > 3.0e7 or not -512 <= coords["y"] <= 2048:
+            raise MinecraftActionInvalid("坐标超出 Minecraft 世界边界")
+        return coords
+
+    async def dig_capability(self, x: Any, y: Any, z: Any) -> dict[str, Any]:
+        """只读查「当前状态下这个方块能不能挖、大概多久」（Phase 4J · SAFE · 非独占）。
+
+        事实全部来自 runtime 的实时读取（blockAt / heldItem / canDigBlock / digTime）；
+        本方法绝不改世界、不改背包、不装备、不移动。返回同步语义投影。
+        """
+        self._require_enabled()
+        coords = self.validate_dig_capability(x, y, z)
+        try:
+            await self._ensure_runtime()
+            return await self._client.dig_capability(coords["x"], coords["y"], coords["z"])
+        except MinecraftRuntimeError as exc:
+            if exc.unreachable:
+                self._mark_runtime_down(str(exc))
+            raise _translate(exc) from exc
+
     async def dropped_items(self) -> dict[str, Any]:
         """读附近的**掉落物实体**（Phase 4H · SAFE 只读）。
 
