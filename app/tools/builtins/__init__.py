@@ -14,7 +14,9 @@ from app.tools.builtins.minecraft_actions import (
     MinecraftStopTool,
 )
 from app.tools.builtins.minecraft_dig import MinecraftDigTool
+from app.tools.builtins.minecraft_equip import MinecraftEquipTool
 from app.tools.builtins.minecraft_inventory import MinecraftInventoryTool
+from app.tools.builtins.minecraft_inventory_move import MinecraftInventoryMoveTool
 from app.tools.builtins.minecraft_place import MinecraftPlaceTool
 from app.tools.builtins.minecraft_world import MinecraftWorldTool
 from app.tools.builtins.providers import WeatherTool, WebSearchTool
@@ -25,7 +27,9 @@ __all__ = [
     "CalculatorTool",
     "MinecraftChatTool",
     "MinecraftDigTool",
+    "MinecraftEquipTool",
     "MinecraftFollowPlayerTool",
+    "MinecraftInventoryMoveTool",
     "MinecraftInventoryTool",
     "MinecraftLookAtTool",
     "MinecraftMoveToTool",

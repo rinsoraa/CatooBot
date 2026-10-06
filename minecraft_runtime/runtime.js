@@ -131,6 +131,90 @@ function inventorySlice(bot) {
   }
 }
 
+// Phase 4D：equip / inventory_move（背包写操作；MEDIUM，需要确认）
+const EQUIP_DEFAULT_TIMEOUT_MS = Number.parseInt(process.env.MC_EQUIP_TIMEOUT_MS || '15000', 10)
+const MOVE_DEFAULT_TIMEOUT_MS = Number.parseInt(
+  process.env.MC_INVENTORY_MOVE_TIMEOUT_MS || '15000',
+  10,
+)
+//: mineflayer 玩家窗口（window id 0）的绝对槽位：0=合成产物 1-4=合成格 5-8=盔甲
+//: 9-35=主背包 36-44=快捷栏 45=副手。本阶段只允许操作 **9..44**（主背包+快捷栏）。
+const PLAYER_WINDOW_SLOTS = Object.freeze({ craftingEnd: 8, inventoryStart: 9, hotbarStart: 36, inventoryEnd: 45 })
+
+function inventorySlotBounds(bot) {
+  const inv = bot && bot.inventory ? bot.inventory : null
+  const start = Number.isInteger(inv && inv.inventoryStart) ? inv.inventoryStart : PLAYER_WINDOW_SLOTS.inventoryStart
+  const hotbarStart = Number.isInteger(inv && inv.hotbarStart)
+    ? inv.hotbarStart
+    : PLAYER_WINDOW_SLOTS.hotbarStart
+  const end = Number.isInteger(inv && inv.inventoryEnd) ? inv.inventoryEnd : PLAYER_WINDOW_SLOTS.inventoryEnd
+  return { start, hotbarStart, end, last: end - 1 }
+}
+
+function equipTimeoutMs() {
+  const raw = Number.parseInt(process.env.MC_EQUIP_TIMEOUT_MS || '', 10)
+  return Number.isFinite(raw) && raw > 0 ? raw : EQUIP_DEFAULT_TIMEOUT_MS
+}
+
+function inventoryMoveTimeoutMs() {
+  const raw = Number.parseInt(process.env.MC_INVENTORY_MOVE_TIMEOUT_MS || '', 10)
+  return Number.isFinite(raw) && raw > 0 ? raw : MOVE_DEFAULT_TIMEOUT_MS
+}
+
+/** 只读**调试**槽位视图（WebUI Move Test / smoke 用；LLM 工具绝不使用它）。 */
+function inventorySlots(bot) {
+  if (bot === null || bot === undefined) {
+    return { ok: true, online: false, hotbar_start: null, inventory_start: null, slots: [] }
+  }
+  const bounds = inventorySlotBounds(bot)
+  const slots = []
+  for (let slot = bounds.start; slot < bounds.end; slot += 1) {
+    const item = bot.inventory?.slots ? bot.inventory.slots[slot] : null
+    if (!item || !item.name) continue
+    slots.push({
+      slot,
+      name: normalizeItemName(item.name),
+      count: item.count || 0,
+      hotbar: slot >= bounds.hotbarStart,
+    })
+  }
+  return {
+    ok: true,
+    online: true,
+    hotbar_start: bounds.hotbarStart,
+    inventory_start: bounds.start,
+    slots,
+  }
+}
+
+/** 按槽位稳定顺序找第一个匹配的物品（§六：不随机、不按数量、不换槽）。 */
+function findInventoryItem(bot, itemName) {
+  const bounds = inventorySlotBounds(bot)
+  const wanted = normalizeItemName(itemName)
+  for (let slot = bounds.start; slot < bounds.end; slot += 1) {
+    const item = bot.inventory?.slots ? bot.inventory.slots[slot] : null
+    if (item && item.name && normalizeItemName(item.name) === wanted) {
+      return { item, slot }
+    }
+  }
+  return null
+}
+
+function requireInventorySlot(value, field, bot) {
+  if (typeof value !== 'number' || !Number.isFinite(value) || !Number.isInteger(value)) {
+    throw new ActionError(`${field} 必须是整数`, 'slot.invalid', 400)
+  }
+  const bounds = inventorySlotBounds(bot)
+  if (value < bounds.start || value >= bounds.end) {
+    throw new ActionError(
+      `${field} 超出可操作范围（${bounds.start}~${bounds.last}：主背包 + 快捷栏）`,
+      'slot.invalid',
+      400,
+    )
+  }
+  return value
+}
+
 // Phase 3D：follow_player（动态跟随）
 const FOLLOW_DEFAULT_DISTANCE = 2.5
 const FOLLOW_MIN_DISTANCE = 1.5
@@ -1065,6 +1149,216 @@ const ACTION_REGISTRY = {
         if (bot && typeof bot.clearControlStates === 'function') bot.clearControlStates()
       },
     },
+    equip: {
+      // Phase 4D：把背包里**明确指定**的物品拿到主手（MEDIUM；改手持状态 → exclusive + 确认）
+      // 只支持 destination=hand；不碰盔甲/副手；不自动换槽、不自动挑"更方便"的 stack。
+      exclusive: true,
+      timeout_ms: EQUIP_DEFAULT_TIMEOUT_MS,
+      risk: 'MEDIUM',
+      detached: true,
+      validate(params) {
+        const item = params.item
+        if (typeof item !== 'string' || !item.trim()) {
+          throw new ActionError('item 不能为空', 'item.invalid', 400)
+        }
+        if (item.length > MAX_PLACE_ITEM_CHARS) {
+          throw new ActionError('item 过长', 'item.invalid', 400)
+        }
+        return { item: normalizeItemName(item) }
+      },
+      async start(bot, params) {
+        if (bot === null || bot.entity === null) {
+          throw new ActionError('罐头还没有进入世界', 'action.not_online', 400)
+        }
+        // §七：执行前重新读取（不看缓存）；已经拿着就直接给成功语义（但要实时确认）
+        const held = bot.heldItem
+        if (held && held.name && normalizeItemName(held.name) === params.item && (held.count || 0) > 0) {
+          return {
+            already_equipped: true,
+            item: params.item,
+            held_item: { name: normalizeItemName(held.name), count: held.count || 0 },
+            source_slot: null,
+          }
+        }
+        const found = findInventoryItem(bot, params.item)
+        if (!found) {
+          throw new ActionError(`背包里没有 ${params.item}`, 'item.not_found', 404)
+        }
+        return {
+          already_equipped: false,
+          item: params.item,
+          item_type: found.item.type,
+          source_slot: found.slot,
+          item_before: { name: normalizeItemName(found.item.name), count: found.item.count || 0 },
+        }
+      },
+      async wait(bot, params, token, state) {
+        try {
+          if (state.already_equipped) return { ...state, destination: 'hand' }
+          // §五/§六：Mineflayer 原生 equip（Item 对象 + destination="hand"）
+          await bot.equip(state.item_type, 'hand')
+        } catch (error) {
+          if (token && token.cancelled) throw new ActionCancelled(token.reason)
+          const message = String(error && error.message ? error.message : error)
+          throw new ActionError(`装备失败：${message}`, 'action.failed', 500)
+        }
+        // §八：equip resolve 不算事实 —— 重新读 heldItem
+        const held = bot.heldItem
+        const actual = held && held.name ? normalizeItemName(held.name) : ''
+        if (!held || actual !== state.item || !((held.count || 0) > 0)) {
+          throw new ActionError(
+            `装备后主手不是 ${state.item}`,
+            'equip.unconfirmed',
+            500,
+            { expected: state.item, actual: actual || 'empty' },
+          )
+        }
+        return {
+          item: state.item,
+          destination: 'hand',
+          source_slot: state.source_slot,
+          held_item: { name: actual, count: held.count || 0 },
+          already_equipped: false,
+        }
+      },
+      cleanup(bot) {
+        if (bot && typeof bot.clearControlStates === 'function') bot.clearControlStates()
+      },
+    },
+    inventory_move: {
+      // Phase 4D：把一个**明确槽位**上的指定物品移动指定数量到另一个**明确槽位**（MEDIUM）
+      // 一个物品、一个 source、一个 destination、一个 count；绝不隐式交换、绝不批量整理。
+      exclusive: true,
+      timeout_ms: MOVE_DEFAULT_TIMEOUT_MS,
+      risk: 'MEDIUM',
+      detached: true,
+      validate(params) {
+        const source = requireInventorySlot(params.source_slot, 'source_slot', state.bot)
+        const destination = requireInventorySlot(params.destination_slot, 'destination_slot', state.bot)
+        if (source === destination) {
+          throw new ActionError('source_slot 与 destination_slot 不能相同', 'slot.invalid', 400)
+        }
+        const item = params.item
+        if (typeof item !== 'string' || !item.trim()) {
+          throw new ActionError('item 不能为空', 'item.invalid', 400)
+        }
+        const count = params.count
+        if (typeof count !== 'number' || !Number.isFinite(count) || !Number.isInteger(count) || count < 1) {
+          throw new ActionError('count 必须是 >= 1 的整数', 'item.invalid', 400)
+        }
+        return { source_slot: source, destination_slot: destination, item: normalizeItemName(item), count }
+      },
+      async start(bot, params) {
+        if (bot === null || bot.entity === null) {
+          throw new ActionError('罐头还没有进入世界', 'action.not_online', 400)
+        }
+        // §十三：执行前读真实 inventory，逐项校验 source / item / count / destination
+        const slots = bot.inventory?.slots || []
+        const sourceItem = slots[params.source_slot]
+        if (!sourceItem || !sourceItem.name) {
+          throw new ActionError(`source_slot ${params.source_slot} 是空的`, 'item.not_found', 404)
+        }
+        const sourceName = normalizeItemName(sourceItem.name)
+        if (sourceName !== params.item) {
+          throw new ActionError(
+            `source_slot ${params.source_slot} 上是 ${sourceName}，不是 ${params.item}`,
+            'item.changed',
+            409,
+            { expected: params.item, actual: sourceName },
+          )
+        }
+        if ((sourceItem.count || 0) < params.count) {
+          throw new ActionError(
+            `source_slot ${params.source_slot} 只有 ${sourceItem.count || 0} 个，不够 ${params.count} 个`,
+            'item.count_insufficient',
+            409,
+            { available: sourceItem.count || 0, requested: params.count },
+          )
+        }
+        const destItem = slots[params.destination_slot]
+        if (destItem && destItem.name) {
+          // §十四：目标非空且不是"同名可堆叠" → 拒绝（绝不隐式交换）
+          const destName = normalizeItemName(destItem.name)
+          const stackable =
+            destName === sourceName && (destItem.count || 0) < (destItem.stackSize || 64)
+          if (!stackable) {
+            throw new ActionError(
+              `destination_slot ${params.destination_slot} 已经被 ${destName} 占用`,
+              'destination.occupied',
+              409,
+              { actual: destName },
+            )
+          }
+        }
+        return {
+          source_slot: params.source_slot,
+          destination_slot: params.destination_slot,
+          item: params.item,
+          requested_count: params.count,
+          item_type: sourceItem.type,
+          source_before: { name: sourceName, count: sourceItem.count || 0 },
+          destination_before:
+            destItem && destItem.name
+              ? { name: normalizeItemName(destItem.name), count: destItem.count || 0 }
+              : null,
+        }
+      },
+      async wait(bot, params, token, state) {
+        try {
+          // §十五：Mineflayer 原生 transfer —— 把 source/destination 都钉死在单个槽位上
+          await bot.transfer({
+            window: bot.inventory,
+            itemType: state.item_type,
+            count: state.requested_count,
+            sourceStart: state.source_slot,
+            sourceEnd: state.source_slot + 1,
+            destStart: state.destination_slot,
+            destEnd: state.destination_slot + 1,
+          })
+        } catch (error) {
+          if (token && token.cancelled) throw new ActionCancelled(token.reason)
+          const message = String(error && error.message ? error.message : error)
+          if (/destination full/i.test(message)) {
+            throw new ActionError('目标槽位放不下', 'destination.occupied', 409)
+          }
+          throw new ActionError(`移动物品失败：${message}`, 'action.failed', 500)
+        }
+        // §十六：重新读 source / destination，按**真实状态**判定，不硬编码 +count
+        const slots = bot.inventory?.slots || []
+        const sourceAfter = slots[state.source_slot]
+        const destAfter = slots[state.destination_slot]
+        const sourceName = sourceAfter && sourceAfter.name ? normalizeItemName(sourceAfter.name) : ''
+        const destName = destAfter && destAfter.name ? normalizeItemName(destAfter.name) : ''
+        const movedOut = state.source_before.count - (sourceName === state.item ? sourceAfter.count || 0 : 0)
+        const destGained =
+          (destName === state.item ? destAfter.count || 0 : 0) -
+          (state.destination_before && state.destination_before.name === state.item
+            ? state.destination_before.count
+            : 0)
+        if (movedOut < state.requested_count || destGained <= 0) {
+          throw new ActionError(
+            `移动后状态不对（source 减少 ${movedOut}，destination 增加 ${destGained}）`,
+            'move.unconfirmed',
+            500,
+            {
+              source_after: sourceName ? { name: sourceName, count: sourceAfter.count || 0 } : null,
+              destination_after: destName ? { name: destName, count: destAfter.count || 0 } : null,
+            },
+          )
+        }
+        return {
+          item: state.item,
+          source_slot: state.source_slot,
+          destination_slot: state.destination_slot,
+          requested_count: state.requested_count,
+          source_after: sourceName ? { name: sourceName, count: sourceAfter.count || 0 } : null,
+          destination_after: destName ? { name: destName, count: destAfter.count || 0 } : null,
+        }
+      },
+      cleanup(bot) {
+        if (bot && typeof bot.clearControlStates === 'function') bot.clearControlStates()
+      },
+    },
     follow_player: {
       // Phase 3D：动态跟随（LOW；不改世界，但属于持续自动移动 → exclusive + STOP + timeout）
       exclusive: true,
@@ -1641,6 +1935,30 @@ async function handleRequest(request, response) {
       jsonResponse(response, 200, inventorySlice(state.bot))
       return
     }
+    if (request.method === 'GET' && path === '/minecraft/inventory/slots') {
+      // Phase 4D：**调试**槽位视图（WebUI Move Test / smoke 用；LLM 工具绝不读它）
+      jsonResponse(response, 200, inventorySlots(state.bot))
+      return
+    }
+    if (request.method === 'POST' && path === '/minecraft/equip') {
+      // Phase 4D：把指定物品拿到主手（MEDIUM）。启动即 RUNNING，结果经事件送达。
+      const body = await readBody(request)
+      const result = await actionRuntime.execute('equip', { item: body.item })
+      jsonResponse(response, 200, { ok: true, ...result })
+      return
+    }
+    if (request.method === 'POST' && path === '/minecraft/inventory_move') {
+      // Phase 4D：单物品、单来源槽、单目标槽、单数量（MEDIUM）。
+      const body = await readBody(request)
+      const result = await actionRuntime.execute('inventory_move', {
+        source_slot: body.source_slot,
+        destination_slot: body.destination_slot,
+        item: body.item,
+        count: body.count,
+      })
+      jsonResponse(response, 200, { ok: true, ...result })
+      return
+    }
     if (request.method === 'POST' && path === '/minecraft/place') {
       // Phase 4C：放置单方块（MEDIUM）。启动即 RUNNING，结果经事件送达。
       const body = await readBody(request)
@@ -1762,6 +2080,12 @@ module.exports = {
     maxDistance: MOVE_MAX_DISTANCE,
     timeoutMs: MOVE_TIMEOUT_MS,
   },
+  EQUIP_DEFAULTS: { timeoutMs: EQUIP_DEFAULT_TIMEOUT_MS },
+  INVENTORY_MOVE_DEFAULTS: { timeoutMs: MOVE_DEFAULT_TIMEOUT_MS },
+  PLAYER_WINDOW_SLOTS,
+  inventorySlotBounds,
+  inventorySlots,
+  findInventoryItem,
   PLACE_DEFAULTS: {
     timeoutMs: PLACE_DEFAULT_TIMEOUT_MS,
     maxDistance: PLACE_MAX_DISTANCE,

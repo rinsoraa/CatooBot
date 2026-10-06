@@ -194,6 +194,40 @@ export interface MinecraftInventoryView {
   items: MinecraftInventoryItem[]
 }
 
+// ---------------- Phase 4D · Inventory Control（Equip / Move） ----------------
+
+/** 玩家窗口的一个绝对槽位（主背包 9-35 + 快捷栏 36-44）。 */
+export interface MinecraftInventorySlot {
+  slot: number
+  /** 物品名（与 runtime / held_item / items 同形，如 dirt）。 */
+  name: string
+  count: number
+  hotbar: boolean
+}
+
+/**
+ * 调试用的**原始槽位**视图（WebUI Move Test / smoke 用）。
+ *
+ * 它不是 LLM 的数据源：`minecraft_inventory` 工具只给按物品名聚合的切片，模型看不到槽位号 ——
+ * 这个面板的用途是「开发者照着槽位表做一次明确的操作」。
+ */
+export interface MinecraftInventorySlotsView {
+  ok: boolean
+  online: boolean
+  hotbar_start: number | null
+  inventory_start: number | null
+  slots: MinecraftInventorySlot[]
+}
+
+/** equip / inventory_move 的启动响应（持续型：启动即 RUNNING，终态由事件送达）。 */
+export interface MinecraftInventoryActionResult {
+  ok: boolean
+  action: string
+  status: MinecraftActionStatus
+  action_id?: string
+  [key: string]: unknown
+}
+
 // ---------------- Phase 3E · LLM Agent（Tool Debug + Context） ----------------
 
 export type MinecraftActionRisk = 'SAFE' | 'LOW' | 'MEDIUM' | 'HIGH' | 'DESTRUCTIVE'

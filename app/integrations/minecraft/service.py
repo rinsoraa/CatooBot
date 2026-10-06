@@ -256,6 +256,96 @@ class MinecraftBlockUnavailable(MinecraftBridgeError):
         super().__init__(message, code="minecraft.block_unavailable")
 
 
+class MinecraftItemNotFound(MinecraftBridgeError):
+    """背包里没有这个物品（或者 source 槽位是空的）。"""
+
+    status = 404
+
+    def __init__(self, message: str = "背包里没有这个物品") -> None:
+        super().__init__(message, code="minecraft.item_not_found")
+
+
+class MinecraftItemChanged(MinecraftBridgeError):
+    """槽位上的物品与请求的不一致（带 expected/actual）。"""
+
+    status = 409
+
+    def __init__(
+        self, message: str = "槽位上的物品与请求的不一致", *, expected: str = "", actual: str = ""
+    ) -> None:
+        super().__init__(
+            message, code="minecraft.item_changed", detail={"expected": expected, "actual": actual}
+        )
+
+
+class MinecraftItemCountInsufficient(MinecraftBridgeError):
+    """source 槽位上的数量不够。"""
+
+    status = 409
+
+    def __init__(
+        self,
+        message: str = "数量不够",
+        *,
+        available: int | None = None,
+        requested: int | None = None,
+    ) -> None:
+        detail: dict[str, Any] = {}
+        if available is not None:
+            detail["available"] = available
+        if requested is not None:
+            detail["requested"] = requested
+        super().__init__(message, code="minecraft.item_count_insufficient", detail=detail)
+
+
+class MinecraftDestinationOccupied(MinecraftBridgeError):
+    """目标槽位被别的物品占用（绝不隐式交换），或同名堆已满。"""
+
+    status = 409
+
+    def __init__(self, message: str = "目标槽位被占用", *, actual: str = "") -> None:
+        super().__init__(
+            message,
+            code="minecraft.destination_occupied",
+            detail={"actual": actual} if actual else {},
+        )
+
+
+class MinecraftSlotInvalid(MinecraftBridgeError):
+    """槽位编号非法（必须是主背包 + 快捷栏 9..44 的整数）。"""
+
+    status = 422
+
+    def __init__(self, message: str = "槽位编号非法") -> None:
+        super().__init__(message, code="minecraft.slot_invalid")
+
+
+class MinecraftEquipUnconfirmed(MinecraftBridgeError):
+    """equip resolve 了但主手不是预期物品：不能报成功。"""
+
+    status = 500
+
+    def __init__(
+        self, message: str = "未能确认装备结果", *, expected: str = "", actual: str = ""
+    ) -> None:
+        super().__init__(
+            message,
+            code="minecraft.equip_unconfirmed",
+            detail={"expected": expected, "actual": actual},
+        )
+
+
+class MinecraftMoveUnconfirmed(MinecraftBridgeError):
+    """transfer resolve 了但 source/destination 的真实状态不符合预期。"""
+
+    status = 500
+
+    def __init__(
+        self, message: str = "未能确认移动结果", *, detail: dict[str, Any] | None = None
+    ) -> None:
+        super().__init__(message, code="minecraft.move_unconfirmed", detail=detail or {})
+
+
 class MinecraftBlockPlaceUnconfirmed(MinecraftBridgeError):
     """placeBlock resolve 了但世界里没出现预期方块：客户端/服务器不同步，不能报成功。"""
 
@@ -336,6 +426,33 @@ def _translate(exc: MinecraftRuntimeError) -> MinecraftBridgeError:
         return MinecraftActionInvalid(str(exc))
     if exc.code == "item.invalid":
         return MinecraftActionInvalid(str(exc))
+    # Phase 4D：背包写操作（equip / inventory_move）
+    if exc.code == "item.not_found":
+        return MinecraftItemNotFound(str(exc))
+    if exc.code == "item.changed":
+        return MinecraftItemChanged(
+            str(exc),
+            expected=str(exc.detail.get("expected") or ""),
+            actual=str(exc.detail.get("actual") or ""),
+        )
+    if exc.code == "item.count_insufficient":
+        return MinecraftItemCountInsufficient(
+            str(exc),
+            available=exc.detail.get("available"),
+            requested=exc.detail.get("requested"),
+        )
+    if exc.code == "destination.occupied":
+        return MinecraftDestinationOccupied(str(exc), actual=str(exc.detail.get("actual") or ""))
+    if exc.code == "slot.invalid":
+        return MinecraftSlotInvalid(str(exc))
+    if exc.code == "equip.unconfirmed":
+        return MinecraftEquipUnconfirmed(
+            str(exc),
+            expected=str(exc.detail.get("expected") or ""),
+            actual=str(exc.detail.get("actual") or ""),
+        )
+    if exc.code == "move.unconfirmed":
+        return MinecraftMoveUnconfirmed(str(exc), detail=dict(exc.detail))
     if exc.code == "player.not_found":
         return MinecraftPlayerNotFound(str(exc))
     # player.lost / follow.target_too_far 发生在持续动作的后台阶段，正常经事件上报；
@@ -388,6 +505,10 @@ FOLLOW_MAX_USERNAME_CHARS = 16
 
 #: dig 的 expected_block 长度上限（minecraft:xxx 之类）
 DIG_MAX_BLOCK_CHARS = 64
+
+#: Phase 4D：mineflayer 玩家窗口可操作的槽位范围（主背包 9-35 + 快捷栏 36-44）
+PLAYER_SLOT_MIN = 9
+PLAYER_SLOT_MAX = 44
 
 #: Phase 4C：place 只允许这六个方向（与 runtime 同一张表，绝不接受任意向量）
 PLACE_FACES: tuple[str, ...] = ("up", "down", "north", "south", "east", "west")
@@ -649,6 +770,11 @@ class MinecraftService:
         # Phase 4C：place 的安全门
         env["MC_PLACE_TIMEOUT_MS"] = str(int(self.config.action.place.timeout * 1000))
         env["MC_PLACE_MAX_DISTANCE"] = str(self.config.action.place.max_distance)
+        # Phase 4D：背包写操作的超时
+        env["MC_EQUIP_TIMEOUT_MS"] = str(int(self.config.action.equip.timeout * 1000))
+        env["MC_INVENTORY_MOVE_TIMEOUT_MS"] = str(
+            int(self.config.action.inventory_move.timeout * 1000)
+        )
         env["MC_AUTH_FILE"] = str(self._runtime_dir() / "auth.json")
         # Phase 3C：move_to 的最大距离（runtime 侧与 Service 侧同规则）
         env["MC_MOVE_MAX_DISTANCE"] = str(self.config.action.move_to.max_distance)
@@ -907,6 +1033,99 @@ class MinecraftService:
         try:
             await self._ensure_runtime()
             return await self._client.inventory()
+        except MinecraftRuntimeError as exc:
+            if exc.unreachable:
+                self._mark_runtime_down(str(exc))
+            raise _translate(exc) from exc
+
+    async def inventory_slots(self) -> dict[str, Any]:
+        """**调试**用的原始槽位视图（WebUI Move Test / smoke 用；LLM 工具不读它）。
+
+        只读投影：槽位号 + 物品名 + 数量 + 是否快捷栏；没有 NBT、没有 window 对象。
+        """
+        self._require_enabled()
+        try:
+            await self._ensure_runtime()
+            return await self._client.inventory_slots()
+        except MinecraftRuntimeError as exc:
+            if exc.unreachable:
+                self._mark_runtime_down(str(exc))
+            raise _translate(exc) from exc
+
+    @staticmethod
+    def validate_equip(item: Any) -> str:
+        """equip 的参数校验（纯函数）：item 非空字符串、长度受限、无控制字符。"""
+        if not isinstance(item, str) or not item.strip():
+            raise MinecraftActionInvalid("item 不能为空（先看清背包里有什么）")
+        if len(item) > PLACE_MAX_ITEM_CHARS:
+            raise MinecraftActionInvalid(f"item 最长 {PLACE_MAX_ITEM_CHARS} 个字符")
+        if any(ord(ch) < 32 or ord(ch) == 127 for ch in item):
+            raise MinecraftActionInvalid("item 不能包含控制字符")
+        return item.strip()
+
+    @staticmethod
+    def validate_inventory_move(
+        source_slot: Any, destination_slot: Any, item: Any, count: Any
+    ) -> tuple[int, int, str, int]:
+        """inventory_move 的参数校验（纯函数）。
+
+        槽位必须是 :data:`PLAYER_SLOT_MIN` ~ :data:`PLAYER_SLOT_MAX`（主背包 + 快捷栏）的整数；
+        count 是 >= 1 的整数；item 是非空字符串。**不是**聚合视图，槽位只在这里出现。
+        """
+        slots: dict[str, int] = {}
+        for name, value in (("source_slot", source_slot), ("destination_slot", destination_slot)):
+            if isinstance(value, bool) or not isinstance(value, int):
+                raise MinecraftActionInvalid(f"{name} 必须是整数")
+            if not PLAYER_SLOT_MIN <= value <= PLAYER_SLOT_MAX:
+                raise MinecraftActionInvalid(
+                    f"{name} 必须在 {PLAYER_SLOT_MIN}~{PLAYER_SLOT_MAX} 之间"
+                    "（主背包 9-35 + 快捷栏 36-44）"
+                )
+            slots[name] = int(value)
+        if slots["source_slot"] == slots["destination_slot"]:
+            raise MinecraftActionInvalid("source_slot 与 destination_slot 不能相同")
+        if isinstance(count, bool) or not isinstance(count, int) or count < 1:
+            raise MinecraftActionInvalid("count 必须是 >= 1 的整数")
+        if not isinstance(item, str) or not item.strip():
+            raise MinecraftActionInvalid("item 不能为空")
+        if len(item) > PLACE_MAX_ITEM_CHARS:
+            raise MinecraftActionInvalid(f"item 最长 {PLACE_MAX_ITEM_CHARS} 个字符")
+        if any(ord(ch) < 32 or ord(ch) == 127 for ch in item):
+            raise MinecraftActionInvalid("item 不能包含控制字符")
+        return slots["source_slot"], slots["destination_slot"], item.strip(), int(count)
+
+    async def equip(self, item: Any) -> dict[str, Any]:
+        """把背包里**明确指定**的物品拿到主手（Phase 4D · MEDIUM · 需要用户确认）。
+
+        只支持 destination=hand；不自动装备、不切 hotbar、不挑"更方便"的 stack
+        （runtime 按槽位稳定顺序取第一个匹配的物品）。返回启动即 ``RUNNING``，
+        终态经事件送达（成功带 ``item/destination/held_item/already_equipped``）。
+        """
+        self._require_enabled()
+        clean = self.validate_equip(item)
+        try:
+            await self._ensure_runtime()
+            return await self._client.equip(clean)
+        except MinecraftRuntimeError as exc:
+            if exc.unreachable:
+                self._mark_runtime_down(str(exc))
+            raise _translate(exc) from exc
+
+    async def inventory_move(
+        self, source_slot: Any, destination_slot: Any, item: Any, count: Any
+    ) -> dict[str, Any]:
+        """把一个明确槽位上的物品移动指定数量到另一个明确槽位（Phase 4D · MEDIUM）。
+
+        一个物品、一个 source、一个 destination、一个 count；目标被别的物品占用时
+        **拒绝**（绝不隐式交换）；不批量整理、不自动找"最优"槽位。
+        """
+        self._require_enabled()
+        source, destination, clean_item, clean_count = self.validate_inventory_move(
+            source_slot, destination_slot, item, count
+        )
+        try:
+            await self._ensure_runtime()
+            return await self._client.inventory_move(source, destination, clean_item, clean_count)
         except MinecraftRuntimeError as exc:
             if exc.unreachable:
                 self._mark_runtime_down(str(exc))

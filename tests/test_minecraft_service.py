@@ -67,6 +67,23 @@ class FakeRuntime:
         }
         self.place_calls: list[dict[str, Any]] = []
         self.place_plan: list[dict[str, Any]] = []
+        # Phase 4D：inventory/slots（只读调试视图）+ equip + inventory_move（持续型）
+        self.inventory_slots_calls = 0
+        self.inventory_slots_payload: dict[str, Any] = {
+            "ok": True,
+            "online": True,
+            "hotbar_start": 36,
+            "inventory_start": 9,
+            "slots": [
+                {"slot": 9, "name": "dirt", "count": 12, "hotbar": False},
+                {"slot": 36, "name": "dirt", "count": 12, "hotbar": True},
+                {"slot": 37, "name": "sand", "count": 24, "hotbar": True},
+            ],
+        }
+        self.equip_calls: list[dict[str, Any]] = []
+        self.equip_plan: list[dict[str, Any]] = []
+        self.inventory_move_calls: list[dict[str, Any]] = []
+        self.inventory_move_plan: list[dict[str, Any]] = []
         self.pathfinder_state: dict[str, Any] = {
             "goal": None,
             "target": None,
@@ -89,6 +106,9 @@ class FakeRuntime:
         app.router.add_post("/minecraft/dig", self._dig)
         app.router.add_get("/minecraft/inventory", self._inventory)
         app.router.add_post("/minecraft/place", self._place)
+        app.router.add_get("/minecraft/inventory/slots", self._inventory_slots)
+        app.router.add_post("/minecraft/equip", self._equip)
+        app.router.add_post("/minecraft/inventory_move", self._inventory_move)
         app.router.add_post("/minecraft/stop", self._stop)
         self._runner = web.AppRunner(app, access_log=None)
         await self._runner.setup()
@@ -252,6 +272,58 @@ class FakeRuntime:
     async def _inventory(self, request: web.Request) -> web.Response:
         self.inventory_calls += 1
         return web.json_response(dict(self.inventory_payload))
+
+    async def _inventory_slots(self, request: web.Request) -> web.Response:
+        self.inventory_slots_calls += 1
+        return web.json_response(dict(self.inventory_slots_payload))
+
+    async def _equip(self, request: web.Request) -> web.Response:
+        body = await request.json()
+        self.equip_calls.append(body)
+        plan = self.equip_plan.pop(0) if self.equip_plan else {"status": "RUNNING"}
+        if "error" in plan:
+            code, status = plan["error"]
+            payload: dict[str, Any] = {
+                "ok": False,
+                "error": {"code": code, "message": f"{code}（fake runtime）"},
+            }
+            if plan.get("detail"):
+                payload["error"]["detail"] = plan["detail"]
+            return web.json_response(payload, status=status)
+        return web.json_response(
+            {
+                "ok": True,
+                "action_id": plan.get("action_id", "act_equip_1"),
+                "action": "equip",
+                "status": plan["status"],
+                **plan.get("extra", {}),
+            }
+        )
+
+    async def _inventory_move(self, request: web.Request) -> web.Response:
+        body = await request.json()
+        self.inventory_move_calls.append(body)
+        plan = (
+            self.inventory_move_plan.pop(0) if self.inventory_move_plan else {"status": "RUNNING"}
+        )
+        if "error" in plan:
+            code, status = plan["error"]
+            payload: dict[str, Any] = {
+                "ok": False,
+                "error": {"code": code, "message": f"{code}（fake runtime）"},
+            }
+            if plan.get("detail"):
+                payload["error"]["detail"] = plan["detail"]
+            return web.json_response(payload, status=status)
+        return web.json_response(
+            {
+                "ok": True,
+                "action_id": plan.get("action_id", "act_move_item_1"),
+                "action": "inventory_move",
+                "status": plan["status"],
+                **plan.get("extra", {}),
+            }
+        )
 
     async def _place(self, request: web.Request) -> web.Response:
         body = await request.json()

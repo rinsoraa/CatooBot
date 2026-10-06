@@ -88,6 +88,29 @@ class MinecraftRuntimeClient:
         """只读背包切片（Phase 4C：按物品名聚合，无 slot/NBT/window）。"""
         return await self._request("GET", "/minecraft/inventory")
 
+    async def inventory_slots(self) -> dict[str, Any]:
+        """调试用的**原始槽位**视图（WebUI Move Test / smoke；LLM 工具不读它）。"""
+        return await self._request("GET", "/minecraft/inventory/slots")
+
+    async def equip(self, item: str) -> dict[str, Any]:
+        """把指定物品拿到主手（Phase 4D：启动即 RUNNING）。"""
+        return await self._request("POST", "/minecraft/equip", body={"item": item})
+
+    async def inventory_move(
+        self, source_slot: int, destination_slot: int, item: str, count: int
+    ) -> dict[str, Any]:
+        """把一个明确槽位上的物品移动指定数量到另一个明确槽位（Phase 4D）。"""
+        return await self._request(
+            "POST",
+            "/minecraft/inventory_move",
+            body={
+                "source_slot": source_slot,
+                "destination_slot": destination_slot,
+                "item": item,
+                "count": count,
+            },
+        )
+
     async def place(self, x: int, y: int, z: int, face: str, expected_item: str) -> dict[str, Any]:
         """放置单个方块（Phase 4C：启动即返回 RUNNING，终态经事件送达）。"""
         return await self._request(

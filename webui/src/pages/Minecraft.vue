@@ -20,6 +20,8 @@ import type {
   MinecraftAgentContext,
   MinecraftAgentToolRow,
   MinecraftConfirmationView,
+  MinecraftInventorySlot,
+  MinecraftInventorySlotsView,
   MinecraftInventoryView,
   MinecraftOverview,
   MinecraftPathfinderInfo,
@@ -33,6 +35,8 @@ const overview = ref<MinecraftOverview | null>(null)
 const world = ref<MinecraftWorldView | null>(null)
 // Phase 4C：只读背包切片（Place 面板要看到手里有什么）
 const inventory = ref<MinecraftInventoryView | null>(null)
+// Phase 4D：调试用原始槽位表（Move Test 照着它操作；模型看不到槽位）
+const inventorySlots = ref<MinecraftInventorySlotsView | null>(null)
 const disabled = ref(false)
 const loading = ref(false)
 const error = ref('')
@@ -135,7 +139,19 @@ const placeTarget = reactive({
   face: 'up' as MinecraftPlaceFace,
   expectedItem: '',
 })
+// Phase 4D：Equip / Move Test（一次只操作一个物品 / 一个槽位；MEDIUM 必须确认）
+const equipTarget = reactive({ item: '' })
+const invMove = reactive({ source: '', destination: '', item: '', count: '1' })
+const hotbarStart = computed(() => inventorySlots.value?.hotbar_start ?? 36)
+const inventoryStart = computed(() => inventorySlots.value?.inventory_start ?? 9)
+const slotRows = computed<MinecraftInventorySlot[]>(() => inventorySlots.value?.slots ?? [])
 const heldItem = computed(() => inventory.value?.held_item ?? null)
+/** 不是主手物品的第一个背包物品（Equip Test 的默认值：真的能换出东西来）。 */
+const equipSuggestion = computed(() => {
+  const held = heldItem.value?.name ?? ''
+  const candidate = (inventory.value?.items ?? []).find((item) => item.name !== held)
+  return candidate?.name ?? ''
+})
 const inventorySummary = computed(() => {
   const items = inventory.value?.items ?? []
   if (!items.length) return '背包是空的'
@@ -403,6 +419,71 @@ async function followPlayer(): Promise<void> {
   }
 }
 
+async function equipItem(): Promise<void> {
+  const item = equipTarget.item.trim()
+  if (!item) {
+    toast.error('缺少物品名', '先填写要拿到手里的物品（背包里必须真的存在）')
+    return
+  }
+  working.value = true
+  try {
+    const result = await minecraftApi.equip(item)
+    toast.success('已开始换手', `${result.action} · ${result.status}（结果会由事件确认）`)
+    await load(true)
+  } catch (caught) {
+    // MEDIUM 动作必须用户确认：这里只会拿到 minecraft.confirmation_required
+    toast.error('EQUIP 被拒绝', errorMessage(caught))
+    if (caught instanceof ApiError && catchConfirmationId(caught)) {
+      toast.info('已挂起一条待确认', '确认只能由用户在对话里做出；这里只能 CANCEL / EXPIRE')
+    }
+  } finally {
+    working.value = false
+  }
+}
+
+async function moveSlot(): Promise<void> {
+  const source = Number(invMove.source)
+  const destination = Number(invMove.destination)
+  const count = Number(invMove.count)
+  const item = invMove.item.trim()
+  const low = inventoryStart.value
+  const high = hotbarStart.value + 8
+  if (!Number.isInteger(source) || source < low || source > high) {
+    toast.error('source 槽位不合法', `必须是 ${low}~${high} 的整数（主背包 9-35 + 快捷栏 36-44）`)
+    return
+  }
+  if (!Number.isInteger(destination) || destination < low || destination > high) {
+    toast.error('destination 槽位不合法', `必须是 ${low}~${high} 的整数`)
+    return
+  }
+  if (source === destination) {
+    toast.error('槽位冲突', 'source 与 destination 不能相同')
+    return
+  }
+  if (!item) {
+    toast.error('缺少物品名', 'source 槽位上的物品名必须与之一致（照着槽位表填）')
+    return
+  }
+  if (!Number.isInteger(count) || count < 1) {
+    toast.error('数量不合法', 'count 必须是 >= 1 的整数')
+    return
+  }
+  working.value = true
+  try {
+    const result = await minecraftApi.inventoryMove(source, destination, item, count)
+    toast.success('已开始搬运', `${result.action} · ${result.status}（结果会由事件确认）`)
+    await load(true)
+  } catch (caught) {
+    // MEDIUM 动作必须用户确认：这里只会拿到 minecraft.confirmation_required
+    toast.error('MOVE 被拒绝', errorMessage(caught))
+    if (caught instanceof ApiError && catchConfirmationId(caught)) {
+      toast.info('已挂起一条待确认', '确认只能由用户在对话里做出；这里只能 CANCEL / EXPIRE')
+    }
+  } finally {
+    working.value = false
+  }
+}
+
 async function stopAction(): Promise<void> {
   working.value = true
   try {
@@ -475,6 +556,36 @@ async function loadWorld(): Promise<void> {
   } catch {
     /* 保留上一份数据 */
   }
+  // Phase 4D：原始槽位表（Move Test 的输入参考；同样是只读、恒 200）
+  try {
+    inventorySlots.value = await minecraftApi.inventorySlots()
+  } catch {
+    /* 保留上一份数据 */
+  }
+  prefillInventoryTargets()
+}
+
+/** Move Test 默认值：第一个有东西的槽 → 第一个空槽（都是 9~44 里的真实槽位）。 */
+function prefillInventoryTargets(): void {
+  if (!equipTarget.item && equipSuggestion.value) equipTarget.item = equipSuggestion.value
+  const rows = slotRows.value
+  if (!rows.length) return
+  const occupied = new Set(rows.map((row) => row.slot))
+  if (invMove.source === '') invMove.source = String(rows[0]!.slot)
+  if (invMove.item === '') invMove.item = rows[0]!.name
+  if (invMove.destination === '') {
+    const empty: number[] = []
+    for (let slot = inventoryStart.value; slot <= hotbarStart.value + 8; slot += 1) {
+      if (!occupied.has(slot)) empty.push(slot)
+    }
+    if (empty.length) invMove.destination = String(empty[0]!)
+  }
+}
+
+/** 照着槽位表点一行：填进 Move Test 的 source / item（目标槽仍需人自己选）。 */
+function useSlot(row: MinecraftInventorySlot): void {
+  invMove.source = String(row.slot)
+  invMove.item = row.name
 }
 
 async function join(): Promise<void> {
@@ -907,6 +1018,176 @@ onUnmounted(stopPolling)
           </p>
         </section>
 
+        <section class="minecraft__card cb-card" data-test="mc-inventory-control">
+          <SectionHeader
+            title="Inventory Control（Phase 4D · MEDIUM）"
+            description="一次只操作一个明确物品 / 一个明确槽位：EQUIP 换主手、MOVE 搬一格。两者都是 MEDIUM，必须用户确认（这里只能发起）。"
+          />
+          <dl class="minecraft__facts" data-test="mc-inventory-facts">
+            <div>
+              <dt>主手物品</dt>
+              <dd data-test="mc-inventory-held">
+                {{
+                  heldItem
+                    ? `${heldItem.name} × ${heldItem.count}`
+                    : inventory?.online
+                      ? '空手'
+                      : '不在世界里'
+                }}
+              </dd>
+            </div>
+            <div>
+              <dt>槽位范围</dt>
+              <dd data-test="mc-inventory-range">
+                {{ inventoryStart }}–{{ hotbarStart + 8 }}（快捷栏从 {{ hotbarStart }} 起）
+              </dd>
+            </div>
+            <div>
+              <dt>背包</dt>
+              <dd data-test="mc-inventory-summary">{{ inventorySummary }}</dd>
+            </div>
+          </dl>
+
+          <div class="minecraft__form" data-test="mc-equip-form">
+            <label class="minecraft__field">
+              <span>Item</span>
+              <input
+                v-model="equipTarget.item"
+                type="text"
+                placeholder="dirt"
+                data-test="mc-equip-item"
+              />
+            </label>
+            <button
+              type="button"
+              class="minecraft__button"
+              :disabled="working || !equipSuggestion"
+              data-test="mc-equip-suggest"
+              @click="equipTarget.item = equipSuggestion"
+            >
+              填一个不在手里的物品
+            </button>
+            <button
+              type="button"
+              class="minecraft__button"
+              :disabled="working || !isOnline"
+              data-test="mc-equip-run"
+              @click="equipItem"
+            >
+              EQUIP
+            </button>
+            <button
+              type="button"
+              class="minecraft__button minecraft__button--danger"
+              :disabled="working"
+              data-test="mc-equip-stop"
+              @click="stopAction"
+            >
+              STOP
+            </button>
+          </div>
+
+          <div class="minecraft__form" data-test="mc-invmove-form">
+            <label class="minecraft__field">
+              <span>Source Slot</span>
+              <input
+                v-model="invMove.source"
+                type="text"
+                inputmode="numeric"
+                data-test="mc-invmove-source"
+              />
+            </label>
+            <label class="minecraft__field">
+              <span>Destination Slot</span>
+              <input
+                v-model="invMove.destination"
+                type="text"
+                inputmode="numeric"
+                data-test="mc-invmove-destination"
+              />
+            </label>
+            <label class="minecraft__field">
+              <span>Item</span>
+              <input
+                v-model="invMove.item"
+                type="text"
+                placeholder="dirt"
+                data-test="mc-invmove-item"
+              />
+            </label>
+            <label class="minecraft__field">
+              <span>Count</span>
+              <input
+                v-model="invMove.count"
+                type="text"
+                inputmode="numeric"
+                data-test="mc-invmove-count"
+              />
+            </label>
+            <button
+              type="button"
+              class="minecraft__button"
+              :disabled="working || !isOnline"
+              data-test="mc-invmove-run"
+              @click="moveSlot"
+            >
+              MOVE
+            </button>
+            <button
+              type="button"
+              class="minecraft__button minecraft__button--danger"
+              :disabled="working"
+              data-test="mc-invmove-stop"
+              @click="stopAction"
+            >
+              STOP
+            </button>
+          </div>
+
+          <table class="minecraft__table" data-test="mc-slot-table">
+            <thead>
+              <tr>
+                <th>槽位</th>
+                <th>物品</th>
+                <th>数量</th>
+                <th>区域</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-for="row in slotRows" :key="row.slot" :data-test="`mc-slot-${row.slot}`">
+                <td>{{ row.slot }}</td>
+                <td>{{ row.name }}</td>
+                <td>{{ row.count }}</td>
+                <td>{{ row.hotbar ? '快捷栏' : '主背包' }}</td>
+                <td>
+                  <button
+                    type="button"
+                    class="minecraft__button"
+                    :disabled="working"
+                    :data-test="`mc-slot-use-${row.slot}`"
+                    @click="useSlot(row)"
+                  >
+                    用作 source
+                  </button>
+                </td>
+              </tr>
+              <tr v-if="!slotRows.length">
+                <td colspan="5" class="cb-caption">
+                  没有可显示的槽位（不在世界里，或背包是空的）。
+                </td>
+              </tr>
+            </tbody>
+          </table>
+
+          <p class="cb-caption">
+            一次只动一个物品、一个来源槽、一个目标槽、一个数量：EQUIP 只换主手（不碰盔甲/副手、不切快捷栏、
+            不挑更合适的 stack，按槽位顺序取第一个匹配项）；MOVE 目标槽被别的物品占用时直接拒绝，
+            <strong>绝不隐式交换</strong>。两张表都不是模型的数据源——模型只看 minecraft_inventory 的聚合切片，
+            槽位只在这里（和 smoke）出现。不批量整理、不自动补货、不操作箱子/熔炉（后续阶段）。
+          </p>
+        </section>
+
         <section class="minecraft__card cb-card" data-test="mc-agent">
           <SectionHeader
             title="LLM Tool Debug（只读）"
@@ -990,9 +1271,10 @@ onUnmounted(stopPolling)
           </table>
           <p class="cb-caption">
             LOW 动作（移动 / 跟随）只有在用户明确要求的对话里才会执行；模型自己想动也会被拒。
-            会修改世界的动作目前只有两个：minecraft_dig（破坏单个方块）与
-            minecraft_place（放置单个方块），它们都是 MEDIUM——除了用户明确要求，
-            还必须经过确认门。连续挖矿/建造、攻击、合成、背包操作等能力都还没有。
+            会修改世界的动作有四个：minecraft_dig / minecraft_place（各一个方块）、
+            minecraft_equip（换主手）、minecraft_inventory_move（搬一格）——它们都是 MEDIUM，
+            除了用户明确要求，还必须经过确认门。连续挖矿/建造、攻击、合成、容器、
+            批量整理背包等能力都还没有。
           </p>
         </section>
 

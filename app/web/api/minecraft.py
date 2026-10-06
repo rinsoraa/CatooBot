@@ -118,6 +118,14 @@ _TOOL_STATUS: dict[str, int] = {
     "minecraft.reference_block_missing": 404,
     "minecraft.block_unavailable": 404,
     "minecraft.block_place_unconfirmed": 500,
+    # Phase 4D：背包写操作
+    "minecraft.item_not_found": 404,
+    "minecraft.item_changed": 409,
+    "minecraft.item_count_insufficient": 409,
+    "minecraft.destination_occupied": 409,
+    "minecraft.slot_invalid": 422,
+    "minecraft.equip_unconfirmed": 500,
+    "minecraft.move_unconfirmed": 500,
 }
 
 
@@ -211,6 +219,30 @@ class MinecraftApiRoutes(WebContext):
             )
         try:
             data = await service.inventory()
+        except MinecraftBridgeError as exc:
+            raise _translate(exc) from exc
+        return ok(data, request=request)
+
+    async def _v1_minecraft_inventory_slots(self, request: web.Request) -> web.Response:
+        """Phase 4D：**调试**用的原始槽位视图（WebUI Move Test / smoke）。
+
+        只读投影（槽位号 + 物品名 + 数量 + 是否快捷栏）；它**不是** LLM 工具的数据源 ——
+        ``minecraft_inventory`` 仍然只给按物品名聚合的切片。未启用/未在线恒 200。
+        """
+        service = getattr(self._bot, "minecraft", None)
+        if service is None or not isinstance(service, MinecraftService):
+            return ok(
+                {
+                    "ok": True,
+                    "online": False,
+                    "hotbar_start": None,
+                    "inventory_start": None,
+                    "slots": [],
+                },
+                request=request,
+            )
+        try:
+            data = await service.inventory_slots()
         except MinecraftBridgeError as exc:
             raise _translate(exc) from exc
         return ok(data, request=request)
@@ -379,6 +411,75 @@ class MinecraftApiRoutes(WebContext):
             )
         return ok(result.data, request=request)
 
+    async def _v1_minecraft_equip(self, request: web.Request) -> web.Response:
+        """Phase 4D：把指定物品拿到主手（开发调试入口；**必须**过 MEDIUM 确认门）。"""
+        try:
+            service = _service(self._bot)
+        except MinecraftBridgeError as exc:
+            raise _translate(exc) from exc
+        bridge = getattr(service, "agent", None)
+        if bridge is None:
+            raise ApiError(503, "minecraft.disabled", "Minecraft Agent 未装配")
+        body = await read_json(request)
+        arguments = {"item": body.get("item")}
+        try:
+            service.validate_equip(arguments["item"])
+        except MinecraftBridgeError as exc:
+            raise _translate(exc) from exc
+        result = await bridge.invoke_developer(
+            "minecraft_equip",
+            arguments,
+            lambda svc: svc.equip(arguments["item"]),
+        )
+        if not result.success:
+            code = result.error_type or "minecraft.action_failed"
+            raise ApiError(
+                _TOOL_STATUS.get(code, 500), code, result.error or code, detail=result.data
+            )
+        return ok(result.data, request=request)
+
+    async def _v1_minecraft_inventory_move(self, request: web.Request) -> web.Response:
+        """Phase 4D：单物品单槽位搬运（开发调试入口；**必须**过 MEDIUM 确认门）。"""
+        try:
+            service = _service(self._bot)
+        except MinecraftBridgeError as exc:
+            raise _translate(exc) from exc
+        bridge = getattr(service, "agent", None)
+        if bridge is None:
+            raise ApiError(503, "minecraft.disabled", "Minecraft Agent 未装配")
+        body = await read_json(request)
+        arguments = {
+            "source_slot": body.get("source_slot"),
+            "destination_slot": body.get("destination_slot"),
+            "item": body.get("item"),
+            "count": body.get("count"),
+        }
+        try:
+            service.validate_inventory_move(
+                arguments["source_slot"],
+                arguments["destination_slot"],
+                arguments["item"],
+                arguments["count"],
+            )
+        except MinecraftBridgeError as exc:
+            raise _translate(exc) from exc
+        result = await bridge.invoke_developer(
+            "minecraft_inventory_move",
+            arguments,
+            lambda svc: svc.inventory_move(
+                arguments["source_slot"],
+                arguments["destination_slot"],
+                arguments["item"],
+                arguments["count"],
+            ),
+        )
+        if not result.success:
+            code = result.error_type or "minecraft.action_failed"
+            raise ApiError(
+                _TOOL_STATUS.get(code, 500), code, result.error or code, detail=result.data
+            )
+        return ok(result.data, request=request)
+
     # ------------------------------------------- Confirmation Gate（Phase 4A）
 
     async def _v1_minecraft_confirm(self, request: web.Request) -> web.Response:
@@ -466,6 +567,9 @@ class MinecraftApiRoutes(WebContext):
         app.router.add_get(f"{API_PREFIX}/minecraft", wrap(self._v1_minecraft_get))
         app.router.add_get(f"{API_PREFIX}/minecraft/world", wrap(self._v1_minecraft_world))
         app.router.add_get(f"{API_PREFIX}/minecraft/inventory", wrap(self._v1_minecraft_inventory))
+        app.router.add_get(
+            f"{API_PREFIX}/minecraft/inventory/slots", wrap(self._v1_minecraft_inventory_slots)
+        )
         app.router.add_post(f"{API_PREFIX}/minecraft/join", wrap(self._v1_minecraft_join))
         app.router.add_post(f"{API_PREFIX}/minecraft/leave", wrap(self._v1_minecraft_leave))
         app.router.add_post(f"{API_PREFIX}/minecraft/look_at", wrap(self._v1_minecraft_look_at))
@@ -480,3 +584,7 @@ class MinecraftApiRoutes(WebContext):
         )
         app.router.add_post(f"{API_PREFIX}/minecraft/dig", wrap(self._v1_minecraft_dig))
         app.router.add_post(f"{API_PREFIX}/minecraft/place", wrap(self._v1_minecraft_place))
+        app.router.add_post(f"{API_PREFIX}/minecraft/equip", wrap(self._v1_minecraft_equip))
+        app.router.add_post(
+            f"{API_PREFIX}/minecraft/inventory_move", wrap(self._v1_minecraft_inventory_move)
+        )

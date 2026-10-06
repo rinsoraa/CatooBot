@@ -76,6 +76,9 @@ ACTION_RISK: dict[str, str] = {
     # Phase 4C：只读背包切片（SAFE）与放置单方块（MEDIUM，对称于 dig）
     "minecraft_inventory": "SAFE",
     "minecraft_place": "MEDIUM",
+    # Phase 4D：背包写操作（改真实角色状态，且影响后续 place/dig 的物品语义 → MEDIUM）
+    "minecraft_equip": "MEDIUM",
+    "minecraft_inventory_move": "MEDIUM",
 }
 
 #: Tool → Action Runtime 动作名（chat 也走统一生命周期）
@@ -87,6 +90,8 @@ TOOL_ACTION: dict[str, str] = {
     "minecraft_stop": "stop",
     "minecraft_dig": "dig",
     "minecraft_place": "place",
+    "minecraft_equip": "equip",
+    "minecraft_inventory_move": "inventory_move",
 }
 
 #: 离线也能用的 Tool：minecraft_world（离线也要能回答「我不在游戏里」）
@@ -144,6 +149,14 @@ RUNTIME_ERROR_CODES: dict[str, str] = {
     "block.place_unconfirmed": "minecraft.block_place_unconfirmed",
     "face.invalid": "minecraft.action_invalid",
     "item.invalid": "minecraft.action_invalid",
+    # Phase 4D：背包写操作
+    "item.not_found": "minecraft.item_not_found",
+    "item.changed": "minecraft.item_changed",
+    "item.count_insufficient": "minecraft.item_count_insufficient",
+    "destination.occupied": "minecraft.destination_occupied",
+    "slot.invalid": "minecraft.slot_invalid",
+    "equip.unconfirmed": "minecraft.equip_unconfirmed",
+    "move.unconfirmed": "minecraft.move_unconfirmed",
 }
 
 #: 一句话活动（§二十二：SUCCEEDED → minecraft.activity）。只写事实，不写情绪。
@@ -155,10 +168,17 @@ _ACTIVITY_TEMPLATES: dict[str, str] = {
     "stop": "刚把 Minecraft 行动停下来了",
     "dig": "刚挖掉了 {block}",
     "place": "刚放好了 {block}",
+    "equip": "刚把 {block} 拿到手里",
+    "inventory_move": "刚把 {block} 从 {source} 格移到了 {destination} 格",
 }
 
-#: activity 取哪个结果字段当"那个方块"（dig 看挖掉的是什么，place 看放上去的是什么）
-_ACTIVITY_BLOCK_FIELDS: dict[str, str] = {"dig": "block_before", "place": "block_after"}
+#: activity 取哪个结果字段当"那个方块/物品"（dig 看挖掉的、place 看放上的、equip/move 看物品名）
+_ACTIVITY_BLOCK_FIELDS: dict[str, str] = {
+    "dig": "block_before",
+    "place": "block_after",
+    "equip": "item",
+    "inventory_move": "item",
+}
 
 _TERMINAL_STATUSES = frozenset({"SUCCEEDED", "FAILED", "CANCELLED", "TIMEOUT"})
 
@@ -448,7 +468,11 @@ class MinecraftAgentContext:
         block = str(result.get(field) or "").strip()
         try:
             return template.format(
-                where=where or "目标位置", who=who or "对方", block=block or "一个方块"
+                where=where or "目标位置",
+                who=who or "对方",
+                block=block or "一个方块",
+                source=result.get("source_slot"),
+                destination=result.get("destination_slot"),
             )
         except (KeyError, IndexError):  # pragma: no cover - 模板是常量，坏不了
             return "刚做完一个 Minecraft 动作"
@@ -906,6 +930,13 @@ def _confirmation_summary(tool: str, risk: str, arguments: Mapping[str, Any] | N
         block = str(args.get("expected_block") or "方块")
         where = _format_position(args)
         return f"挖掉 {block}（{where}）" if where else f"挖掉 {block}"
+    if tool == "minecraft_equip":
+        return f"把 {args.get('item') or '物品'} 拿到手里"
+    if tool == "minecraft_inventory_move":
+        return (
+            f"把 {args.get('source_slot')} 格的 {args.get('item') or '物品'} "
+            f"×{args.get('count')} 移到 {args.get('destination_slot')} 格"
+        )
     if tool == "minecraft_place":
         item = str(args.get("expected_item") or "方块")
         where = _format_position(args)

@@ -391,7 +391,9 @@ async def test_minecraft_projection_includes_agent_block(tmp_path):
             "minecraft_follow_player",
             "minecraft_stop",
             "minecraft_dig",
+            "minecraft_equip",
             "minecraft_inventory",
+            "minecraft_inventory_move",
             "minecraft_place",
         }
         assert all(row["allowed"] is False for row in agent["tools"])
@@ -774,3 +776,295 @@ async def test_follow_player_endpoint_reaches_runtime(tmp_path):
                 await service._cleanup()
     finally:
         await fake.stop()
+
+
+# ------------------------------------------------ Phase 4D：背包控制端点
+
+
+async def test_inventory_slots_endpoint_is_debug_read_only(tmp_path):
+    """§二十：`GET /minecraft/inventory/slots` 是**调试**用原始槽位视图（恒 200、只读）。
+
+    它不进 LLM 工具链（`minecraft_inventory` 的聚合切片才是模型看到的）。
+    """
+    from tests.test_minecraft_service import FakeRuntime
+
+    async with api_server(tmp_path) as (client, bot, server):
+        await client.login()
+        # 未启用 → 200 + 空槽位表（读端点不因功能关闭而报错）
+        status, payload = await client.get("/api/v1/minecraft/inventory/slots")
+        assert status == 200
+        assert payload["data"] == {
+            "ok": True,
+            "online": False,
+            "hotbar_start": None,
+            "inventory_start": None,
+            "slots": [],
+        }
+
+        fake = FakeRuntime()
+        await fake.start()
+        try:
+            service = MinecraftService(
+                bot, MinecraftConfig(enabled=True, auto_start_runtime=False, runtime_port=fake.port)
+            )
+            bot.minecraft = service
+            try:
+                status, payload = await client.get("/api/v1/minecraft/inventory/slots")
+                assert status == 200
+                assert payload["data"]["slots"] == fake.inventory_slots_payload["slots"]
+                assert fake.inventory_slots_calls == 1
+                # 只读端点绝不触发任何动作
+                assert fake.equip_calls == [] and fake.inventory_move_calls == []
+            finally:
+                await service._cleanup()
+        finally:
+            await fake.stop()
+
+
+async def test_equip_endpoint_validates_and_requires_confirmation(tmp_path):
+    """§二十六：WebUI 的 EQUIP 也必须过 MEDIUM 确认门 —— 第一次只会得到 409。"""
+    from tests.test_minecraft_service import FakeRuntime
+
+    fake = FakeRuntime()
+    await fake.start()
+    try:
+        async with api_server(tmp_path) as (client, bot, server):
+            await client.login()
+            service = MinecraftService(
+                bot,
+                MinecraftConfig(
+                    enabled=True,
+                    auto_start_runtime=False,
+                    runtime_port=fake.port,
+                    agent={"tools": {"allow_medium": True}},
+                ),
+            )
+            bot.minecraft = service
+            try:
+                from app.integrations.minecraft.agent import MinecraftAgentBridge
+                from app.integrations.minecraft.events import parse_bridge_event
+
+                service.agent = MinecraftAgentBridge(service)
+
+                # 参数不合法 → 422（且不挂确认）
+                for bad in ({}, {"item": ""}, {"item": 7}, {"item": "x" * 200}):
+                    status, payload = await client.post("/api/v1/minecraft/equip", body=bad)
+                    assert status == 422 and error_code(payload) == "minecraft.action_invalid", bad
+                assert service.agent.confirmations.pending() == []
+
+                # 在线后才谈得上"拿东西"
+                fake.online = True
+                await service.status()
+                service.agent.apply_event(
+                    parse_bridge_event(
+                        {
+                            "event": "minecraft.spawned",
+                            "session_id": "s1",
+                            "timestamp": 1.0,
+                            "username": "Catodayo",
+                        }
+                    )
+                )
+
+                status, payload = await client.post(
+                    "/api/v1/minecraft/equip", body={"item": "dirt"}
+                )
+                assert status == 409
+                assert error_code(payload) == "minecraft.confirmation_required"
+                detail = payload.get("detail") or payload["error"]["detail"]
+                assert detail["confirmation"]["tool"] == "minecraft_equip"
+                assert detail["confirmation"]["summary"] == "把 dirt 拿到手里"
+                assert fake.equip_calls == [], "确认前绝不装备"
+            finally:
+                await service._cleanup()
+    finally:
+        await fake.stop()
+
+
+async def test_inventory_move_endpoint_validates_slots_before_confirmation(tmp_path):
+    """§十八/§二十二：槽位在进确认门**之前**就校验（垃圾参数不挂待确认）。"""
+    from tests.test_minecraft_service import FakeRuntime
+
+    fake = FakeRuntime()
+    await fake.start()
+    try:
+        async with api_server(tmp_path) as (client, bot, server):
+            await client.login()
+            service = MinecraftService(
+                bot,
+                MinecraftConfig(
+                    enabled=True,
+                    auto_start_runtime=False,
+                    runtime_port=fake.port,
+                    agent={"tools": {"allow_medium": True}},
+                ),
+            )
+            bot.minecraft = service
+            try:
+                from app.integrations.minecraft.agent import MinecraftAgentBridge
+
+                service.agent = MinecraftAgentBridge(service)
+                good = {"source_slot": 37, "destination_slot": 9, "item": "dirt", "count": 1}
+                bad_cases = [
+                    {"destination_slot": 9, "item": "dirt", "count": 1},  # 缺 source
+                    {**good, "source_slot": 8},  # 主背包从 9 开始
+                    {**good, "source_slot": 45},  # 快捷栏到 44 结束
+                    {**good, "destination_slot": 37},  # 同一个槽位
+                    {**good, "source_slot": 2.5},
+                    {**good, "count": 0},
+                    {**good, "count": 1.5},
+                    {**good, "item": ""},
+                    {**good, "item": "x" * 200},
+                ]
+                for bad in bad_cases:
+                    status, payload = await client.post(
+                        "/api/v1/minecraft/inventory_move", body=bad
+                    )
+                    assert status == 422 and error_code(payload) == "minecraft.action_invalid", bad
+                assert service.agent.confirmations.pending() == [], "垃圾参数绝不挂待确认"
+                assert fake.inventory_move_calls == []
+
+                # 确认门之前还有「必须在线」这一关（离线时根本谈不到确认）
+                fake.online = True
+                await service.status()
+                from app.integrations.minecraft.events import parse_bridge_event
+
+                service.agent.apply_event(
+                    parse_bridge_event(
+                        {
+                            "event": "minecraft.spawned",
+                            "session_id": "s1",
+                            "timestamp": 1.0,
+                            "username": "Catodayo",
+                        }
+                    )
+                )
+
+                # 合法参数 → 409（确认门）；这时才允许出现一条待确认
+                status, payload = await client.post("/api/v1/minecraft/inventory_move", body=good)
+                assert status == 409
+                assert error_code(payload) == "minecraft.confirmation_required"
+                detail = payload.get("detail") or payload["error"]["detail"]
+                assert detail["confirmation"]["summary"] == "把 37 格的 dirt ×1 移到 9 格"
+                assert fake.inventory_move_calls == [], "确认前绝不搬"
+            finally:
+                await service._cleanup()
+    finally:
+        await fake.stop()
+
+
+async def test_medium_endpoints_cannot_self_authorise(tmp_path):
+    """§二十六/§一：WebUI 与开发者入口拿不到 MEDIUM 的执行权。
+
+    即使确认真的存在（这里由测试直接造出来），消费确认也要求**用户回合**：
+    开发者入口的 turn_origin 是 SYSTEM → 409 ``confirmation_not_user_turn``，
+    runtime 一个请求都收不到。确认只能由用户在对话里说「确认」后、由那个回合的
+    工具调用消费。
+    """
+    from tests.test_minecraft_service import FakeRuntime
+
+    fake = FakeRuntime()
+    await fake.start()
+    try:
+        fake.online = True
+        async with api_server(tmp_path) as (client, bot, server):
+            await client.login()
+            service = MinecraftService(
+                bot,
+                MinecraftConfig(
+                    enabled=True,
+                    auto_start_runtime=False,
+                    runtime_port=fake.port,
+                    agent={"tools": {"allow_medium": True}},
+                ),
+            )
+            bot.minecraft = service
+            try:
+                from app.integrations.minecraft.agent import (
+                    MinecraftAgentBridge,
+                )
+                from app.integrations.minecraft.events import parse_bridge_event
+
+                service.agent = MinecraftAgentBridge(service)
+                await service.status()
+                service.agent.apply_event(
+                    parse_bridge_event(
+                        {
+                            "event": "minecraft.spawned",
+                            "session_id": "s1",
+                            "timestamp": 1.0,
+                            "username": "Catodayo",
+                        }
+                    )
+                )
+
+                # 第一次：如实请求确认（挂 PENDING，不执行）
+                status, payload = await client.post(
+                    "/api/v1/minecraft/equip", body={"item": "dirt"}
+                )
+                assert status == 409 and error_code(payload) == "minecraft.confirmation_required"
+                pending = service.agent.confirmations.pending()
+                assert len(pending) == 1 and pending[0].tool == "minecraft_equip"
+
+                # 之后：确认在，但开发者入口消费不了（来源门先于一切）
+                for item in ("dirt", "sand"):
+                    status, payload = await client.post(
+                        "/api/v1/minecraft/equip", body={"item": item}
+                    )
+                    assert status == 409, item
+                    assert error_code(payload) == "minecraft.confirmation_not_user_turn", item
+                assert fake.equip_calls == [], "非用户回合绝不装备"
+                assert len(service.agent.confirmations.pending()) == 1, "来源门不消费确认"
+
+                # 搬运同理
+                body = {"source_slot": 37, "destination_slot": 9, "item": "dirt", "count": 1}
+                status, payload = await client.post("/api/v1/minecraft/inventory_move", body=body)
+                assert status == 409 and error_code(payload) == "minecraft.confirmation_required"
+                status, payload = await client.post("/api/v1/minecraft/inventory_move", body=body)
+                assert (
+                    status == 409 and error_code(payload) == "minecraft.confirmation_not_user_turn"
+                )
+                assert fake.inventory_move_calls == [], "非用户回合绝不搬东西"
+            finally:
+                await service._cleanup()
+    finally:
+        await fake.stop()
+
+
+def test_phase4d_error_codes_agree_between_service_and_api():
+    """两个事实源必须一致：Service 异常自带的 HTTP 语义 vs API 的错误码映射表。"""
+    from app.integrations.minecraft.service import (
+        MinecraftDestinationOccupied,
+        MinecraftEquipUnconfirmed,
+        MinecraftItemChanged,
+        MinecraftItemCountInsufficient,
+        MinecraftItemNotFound,
+        MinecraftMoveUnconfirmed,
+        MinecraftSlotInvalid,
+    )
+    from app.web.api.minecraft import _TOOL_STATUS
+
+    pairs = [
+        (MinecraftItemNotFound(), 404),
+        (MinecraftItemChanged(), 409),
+        (MinecraftItemCountInsufficient(), 409),
+        (MinecraftDestinationOccupied(), 409),
+        (MinecraftSlotInvalid(), 422),
+        (MinecraftEquipUnconfirmed(), 500),
+        (MinecraftMoveUnconfirmed(), 500),
+    ]
+    for exc, expected in pairs:
+        assert exc.status == expected, exc.code
+        assert _TOOL_STATUS[exc.code] == expected, exc.code
+
+
+async def test_equip_and_move_endpoints_disabled_without_minecraft(tmp_path):
+    async with api_server(tmp_path) as (client, bot, server):
+        await client.login()
+        status, payload = await client.post("/api/v1/minecraft/equip", body={"item": "dirt"})
+        assert status == 503 and error_code(payload) == "minecraft.disabled"
+        status, payload = await client.post(
+            "/api/v1/minecraft/inventory_move",
+            body={"source_slot": 37, "destination_slot": 9, "item": "dirt", "count": 1},
+        )
+        assert status == 503 and error_code(payload) == "minecraft.disabled"

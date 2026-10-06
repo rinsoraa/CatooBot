@@ -4,6 +4,8 @@ import { api } from '@/api/client'
 
 import type {
   MinecraftFollowPlayerResult,
+  MinecraftInventoryActionResult,
+  MinecraftInventorySlotsView,
   MinecraftInventoryView,
   MinecraftPlaceFace,
   MinecraftJoinResult,
@@ -72,6 +74,23 @@ export const minecraftApi = {
       z,
       face,
       expected_item: expectedItem,
+    })
+  },
+  /** Phase 4D：调试用的原始槽位表（只读；LLM 工具不读它）。 */
+  inventorySlots() {
+    return api.get<MinecraftInventorySlotsView>('/minecraft/inventory/slots')
+  },
+  /** Phase 4D：把指定物品拿到主手（开发者调试入口；**必须**过 MEDIUM 确认门）。 */
+  equip(item: string) {
+    return api.post<MinecraftInventoryActionResult>('/minecraft/equip', { item })
+  },
+  /** Phase 4D：单物品单槽位搬运（开发者调试入口；**必须**过 MEDIUM 确认门）。 */
+  inventoryMove(sourceSlot: number, destinationSlot: number, item: string, count: number) {
+    return api.post<MinecraftInventoryActionResult>('/minecraft/inventory_move', {
+      source_slot: sourceSlot,
+      destination_slot: destinationSlot,
+      item,
+      count,
     })
   },
   /** Phase 4A：确认门 Debug（只能缩小授权：造测试条 / 取消 / 置过期）。 */

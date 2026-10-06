@@ -577,6 +577,10 @@ minecraft:
     place:
       timeout: 30                # 单次放置最长秒数（5~120）
       max_distance: 5            # 最大交互距离（格，眼睛→目标方块中心）；超出的直接拒绝
+    equip:
+      timeout: 30                # 单次换手最长秒数（5~120）；equip 只支持 destination=hand
+    inventory_move:
+      timeout: 30                # 单次搬运最长秒数（5~120）；单个物品、单个来源槽、单个目标槽、一个数量
     move_to:
       max_distance: 64           # 单次 move_to 的最大距离（格）；不允许数千米长距离
     follow_player:
@@ -584,13 +588,14 @@ minecraft:
       max_chase_distance: 64     # 离目标超过多少格就放弃追逐（不追到世界尽头）
   # ---- LLM 工具权限（Phase 3E 起）：模型能用哪些 Minecraft 动作
   # 风险分级：SAFE（只读/说话/朝向/停止/看背包）、LOW（非破坏性移动与跟随，还需用户明确要求）、
-  # MEDIUM（会真实修改世界：minecraft_dig 破坏单方块、minecraft_place 放单方块 —— 必须用户确认）。
-  # 风险开关是"功能允许"这一层，不代替确认门：打开 allow_medium 后 dig/place 仍要用户确认。
+  # MEDIUM（会改状态：minecraft_dig 破坏单方块、minecraft_place 放单方块、minecraft_equip 换主手、
+  # minecraft_inventory_move 搬一格背包 —— 都必须用户确认），而且一次只操作一个明确物品/槽位。
+  # 风险开关是"功能允许"这一层，不代替确认门：打开 allow_medium 后这四个动作仍要用户确认。
   agent:
     tools:
       enabled: true          # 关掉 = 模型完全碰不到 Minecraft（WebUI 连接页不受影响）
       allow_safe: true       # minecraft_world / chat / look_at / stop
       allow_low: true        # minecraft_move_to / follow_player（非破坏性导航）
-      allow_medium: false    # minecraft_dig / minecraft_place（单方块挖/放）默认关闭；启用后仍需用户确认
+      allow_medium: false    # dig / place / equip / inventory_move（单方块 + 单物品/单槽位）默认关闭；启用后仍需用户确认
       allow_high: false      # 还没有 HIGH 级动作；保持关闭
       allow_destructive: false  # 还没有 DESTRUCTIVE 级动作；保持关闭

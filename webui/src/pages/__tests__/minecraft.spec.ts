@@ -138,7 +138,14 @@ const DISABLED_OVERVIEW = {
 }
 
 function makeHandler(
-  overrides: { join?: MockReply; leave?: MockReply; dig?: MockReply; place?: MockReply } = {},
+  overrides: {
+    join?: MockReply
+    leave?: MockReply
+    dig?: MockReply
+    place?: MockReply
+    equip?: MockReply
+    inventoryMove?: MockReply
+  } = {},
 ) {
   return (request: MockRequest): MockReply => {
     const url = new URL(request.url, 'http://localhost')
@@ -197,6 +204,31 @@ function makeHandler(
       return (
         overrides.place ??
         ok({ ok: true, action: 'place', action_id: 'act_place_ui', status: 'RUNNING' })
+      )
+    }
+    if (url.pathname === '/api/v1/minecraft/inventory/slots' && request.method === 'GET') {
+      return ok({
+        ok: true,
+        online: true,
+        hotbar_start: 36,
+        inventory_start: 9,
+        slots: [
+          { slot: 9, name: 'dirt', count: 12, hotbar: false },
+          { slot: 10, name: 'sand', count: 24, hotbar: false },
+          { slot: 36, name: 'dirt', count: 12, hotbar: true },
+        ],
+      })
+    }
+    if (url.pathname === '/api/v1/minecraft/equip' && request.method === 'POST') {
+      return (
+        overrides.equip ??
+        ok({ ok: true, action: 'equip', action_id: 'act_equip_ui', status: 'RUNNING' })
+      )
+    }
+    if (url.pathname === '/api/v1/minecraft/inventory_move' && request.method === 'POST') {
+      return (
+        overrides.inventoryMove ??
+        ok({ ok: true, action: 'inventory_move', action_id: 'act_move_ui', status: 'RUNNING' })
       )
     }
     return fail(404, 'resource.not_found', `未模拟 ${request.method} ${url.pathname}`)
@@ -672,6 +704,131 @@ describe('Minecraft 页 · Place Test（Phase 4C）', () => {
     await flushAll()
     expect(wrapper.text()).toContain('需要用户确认')
     expect(wrapper.text()).not.toContain('已开始放置')
+  })
+})
+
+describe('Minecraft 页 · Inventory Control（Phase 4D）', () => {
+  it('EQUIP 把物品名发到 /minecraft/equip', async () => {
+    const { wrapper, calls } = await mountPage(makeHandler())
+    await flushAll()
+    await wrapper.get('[data-test="mc-equip-item"]').setValue('sand')
+    await wrapper.get('[data-test="mc-equip-run"]').trigger('click')
+    await flushAll()
+    const call = calls.find((c) => c.url.endsWith('/minecraft/equip'))
+    expect(call).toBeTruthy()
+    expect(call?.body).toEqual({ item: 'sand' })
+  })
+
+  it('EQUIP 缺少物品名时本地拦截（不发请求）', async () => {
+    const { wrapper, calls } = await mountPage(makeHandler())
+    await flushAll()
+    await wrapper.get('[data-test="mc-equip-item"]').setValue('   ')
+    await wrapper.get('[data-test="mc-equip-run"]').trigger('click')
+    await flushAll()
+    expect(calls.some((c) => c.url.endsWith('/minecraft/equip'))).toBe(false)
+    expect(useToast().items.value.at(-1)?.message).toBe('缺少物品名')
+  })
+
+  it('EQUIP 被确认门拒绝时如实报错（不假装成功）', async () => {
+    const { wrapper } = await mountPage(
+      makeHandler({
+        equip: fail(409, 'minecraft.confirmation_required', '这个 Minecraft 动作需要用户确认'),
+      }),
+    )
+    await flushAll()
+    await wrapper.get('[data-test="mc-equip-run"]').trigger('click')
+    await flushAll()
+    expect(useToast().items.value.at(-1)?.message).toBe('EQUIP 被拒绝')
+    expect(useToast().items.value.at(-1)?.detail).toContain('需要用户确认')
+  })
+
+  it('MOVE 把槽位 / 物品 / 数量发到 /minecraft/inventory_move', async () => {
+    const { wrapper, calls } = await mountPage(makeHandler())
+    await flushAll()
+    await wrapper.get('[data-test="mc-invmove-source"]').setValue('37')
+    await wrapper.get('[data-test="mc-invmove-destination"]').setValue('9')
+    await wrapper.get('[data-test="mc-invmove-item"]').setValue('dirt')
+    await wrapper.get('[data-test="mc-invmove-count"]').setValue('2')
+    await wrapper.get('[data-test="mc-invmove-run"]').trigger('click')
+    await flushAll()
+    const call = calls.find((c) => c.url.endsWith('/minecraft/inventory_move'))
+    expect(call).toBeTruthy()
+    expect(call?.body).toEqual({
+      source_slot: 37,
+      destination_slot: 9,
+      item: 'dirt',
+      count: 2,
+    })
+  })
+
+  it('MOVE 在本地就拦住非法槽位 / 数量（不发请求）', async () => {
+    const { wrapper, calls } = await mountPage(makeHandler())
+    await flushAll()
+    const run = () => wrapper.get('[data-test="mc-invmove-run"]').trigger('click')
+    const set = async (key: string, value: string) => {
+      await wrapper.get(`[data-test="${key}"]`).setValue(value)
+    }
+
+    await set('mc-invmove-source', '8') // 主背包从 9 开始
+    await run()
+    await set('mc-invmove-source', '37')
+    await set('mc-invmove-destination', '37') // 同一个槽位
+    await run()
+    await set('mc-invmove-destination', '9')
+    await set('mc-invmove-count', '0') // 数量必须 >= 1
+    await run()
+    await set('mc-invmove-count', '1')
+    await set('mc-invmove-item', '') // 物品名必填
+    await run()
+    await flushAll()
+    expect(calls.some((c) => c.url.endsWith('/minecraft/inventory_move'))).toBe(false)
+  })
+
+  it('槽位表照 /minecraft/inventory/slots 渲染，点一行填入 source / item', async () => {
+    const { wrapper, calls } = await mountPage(makeHandler())
+    await flushAll()
+    expect(calls.some((c) => c.url.endsWith('/minecraft/inventory/slots'))).toBe(true)
+    expect(wrapper.get('[data-test="mc-slot-10"]').text()).toContain('sand')
+    await wrapper.get('[data-test="mc-slot-use-10"]').trigger('click')
+    await flushAll()
+    expect(
+      (wrapper.get('[data-test="mc-invmove-source"]').element as HTMLInputElement).value,
+    ).toBe('10')
+    expect((wrapper.get('[data-test="mc-invmove-item"]').element as HTMLInputElement).value).toBe(
+      'sand',
+    )
+  })
+
+  it('Move Test 的默认值是真实槽位（第一个有物品的槽 + 第一个空槽）', async () => {
+    const { wrapper } = await mountPage(makeHandler())
+    await flushAll()
+    // 9 / 10 / 36 被占 → 第一个空槽是 11
+    expect(
+      (wrapper.get('[data-test="mc-invmove-source"]').element as HTMLInputElement).value,
+    ).toBe('9')
+    expect(
+      (wrapper.get('[data-test="mc-invmove-destination"]').element as HTMLInputElement).value,
+    ).toBe('11')
+    expect((wrapper.get('[data-test="mc-invmove-count"]').element as HTMLInputElement).value).toBe(
+      '1',
+    )
+  })
+
+  it('Equip 的默认物品不是当前主手（真的能换个东西）', async () => {
+    const { wrapper } = await mountPage(makeHandler())
+    await flushAll()
+    // 主手是 dirt → 默认填 sand
+    expect((wrapper.get('[data-test="mc-equip-item"]').element as HTMLInputElement).value).toBe(
+      'sand',
+    )
+  })
+
+  it('背包面板如实显示主手与槽位范围', async () => {
+    const { wrapper } = await mountPage(makeHandler())
+    await flushAll()
+    expect(wrapper.get('[data-test="mc-inventory-held"]').text()).toContain('dirt')
+    expect(wrapper.get('[data-test="mc-inventory-range"]').text()).toContain('9–44')
+    expect(wrapper.text()).toContain('一次只动一个物品、一个来源槽、一个目标槽、一个数量')
   })
 })
 

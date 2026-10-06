@@ -878,6 +878,18 @@ class PlaceConfig(BaseModel):
     max_distance: float = Field(default=5.0, gt=0, le=6.0)
 
 
+class EquipConfig(BaseModel):
+    """Phase 4D：equip（把物品拿到主手）的超时。背包写操作很快，15s 足够。"""
+
+    timeout: float = Field(default=15.0, ge=5.0, le=120.0)
+
+
+class InventoryMoveConfig(BaseModel):
+    """Phase 4D：inventory_move（单物品单槽位搬运）的超时。"""
+
+    timeout: float = Field(default=15.0, ge=5.0, le=120.0)
+
+
 class MinecraftActionConfig(BaseModel):
     """Action Runtime 的动作级配置（Phase 3C 起）。"""
 
@@ -887,6 +899,9 @@ class MinecraftActionConfig(BaseModel):
     dig: DigConfig = Field(default_factory=DigConfig)
     #: Phase 4C：放置单个方块（dig 的对称实现）
     place: PlaceConfig = Field(default_factory=PlaceConfig)
+    #: Phase 4D：背包写操作（拿到手上 / 单物品单槽位搬运）
+    equip: EquipConfig = Field(default_factory=EquipConfig)
+    inventory_move: InventoryMoveConfig = Field(default_factory=InventoryMoveConfig)
 
 
 class MinecraftAgentToolsConfig(BaseModel):

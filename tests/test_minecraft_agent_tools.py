@@ -176,6 +176,49 @@ class FakeMinecraftService:
             raise outcome
         return {"action_id": "act_place_1", "action": "place", **outcome}
 
+    async def inventory_slots(self) -> dict[str, Any]:
+        self._record("inventory_slots")
+        outcome = self._next(
+            "inventory_slots",
+            {
+                "ok": True,
+                "online": True,
+                "hotbar_start": 36,
+                "inventory_start": 9,
+                "slots": [
+                    {"slot": 9, "item": "dirt", "count": 12, "hotbar": False},
+                    {"slot": 36, "item": "dirt", "count": 12, "hotbar": True},
+                ],
+            },
+        )
+        if isinstance(outcome, Exception):
+            raise outcome
+        return outcome
+
+    async def equip(self, item: Any) -> dict[str, Any]:
+        self._record("equip", item=item)
+        outcome = self._next("equip", {"status": "RUNNING", "action_id": "act_equip_1"})
+        if isinstance(outcome, Exception):
+            raise outcome
+        return {"action_id": "act_equip_1", "action": "equip", **outcome}
+
+    async def inventory_move(
+        self, source_slot: Any, destination_slot: Any, item: Any, count: Any
+    ) -> dict[str, Any]:
+        self._record(
+            "inventory_move",
+            source_slot=source_slot,
+            destination_slot=destination_slot,
+            item=item,
+            count=count,
+        )
+        outcome = self._next(
+            "inventory_move", {"status": "RUNNING", "action_id": "act_move_item_1"}
+        )
+        if isinstance(outcome, Exception):
+            raise outcome
+        return {"action_id": "act_move_item_1", "action": "inventory_move", **outcome}
+
     async def dig(self, x: Any, y: Any, z: Any, expected_block: Any) -> dict[str, Any]:
         self._record("dig", x=x, y=y, z=z, expected_block=expected_block)
         outcome = self._next("dig", {"status": "RUNNING", "action_id": "act_dig_1"})
@@ -298,7 +341,7 @@ async def test_minecraft_stop_tool_registered() -> None:
 
 
 async def test_all_tools_share_one_risk_table() -> None:
-    """Phase 4C 起九个生产 Tool（含 SAFE 的 inventory 与 MEDIUM 的 dig/place）。"""
+    """Phase 4D 起十一个生产 Tool（含 SAFE 的 inventory/只读，和四个 MEDIUM 写动作）。"""
     runtime = await _runtime()
     for name in ACTION_RISK:
         tool = runtime.registry.maybe_get(name)
@@ -310,8 +353,10 @@ async def test_all_tools_share_one_risk_table() -> None:
         "calculator",
         "minecraft_chat",
         "minecraft_dig",
+        "minecraft_equip",
         "minecraft_follow_player",
         "minecraft_inventory",
+        "minecraft_inventory_move",
         "minecraft_look_at",
         "minecraft_move_to",
         "minecraft_place",
@@ -429,6 +474,8 @@ def test_risk_flags_gate_every_level() -> None:
     # Phase 4B/4C：dig 与 place 都是 MEDIUM，风险开关默认关闭 → 配置视角先拦一道
     assert table.risk_of("minecraft_dig") == "MEDIUM"
     assert table.risk_of("minecraft_place") == "MEDIUM"
+    assert table.risk_of("minecraft_equip") == "MEDIUM"
+    assert table.risk_of("minecraft_inventory_move") == "MEDIUM"
     assert table.risk_of("minecraft_inventory") == "SAFE"
     assert table.allowed_by_config("minecraft_dig") is False
     assert table.allowed_by_config("minecraft_place") is False

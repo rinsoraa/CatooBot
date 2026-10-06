@@ -86,7 +86,9 @@ class ToolRuntime:
             CalculatorTool,
             MinecraftChatTool,
             MinecraftDigTool,
+            MinecraftEquipTool,
             MinecraftFollowPlayerTool,
+            MinecraftInventoryMoveTool,
             MinecraftInventoryTool,
             MinecraftLookAtTool,
             MinecraftMoveToTool,
@@ -115,6 +117,9 @@ class ToolRuntime:
             # Phase 4C：只读背包切片（SAFE）+ 放置单方块（MEDIUM，对称于 dig）
             ("minecraft_inventory", lambda: MinecraftInventoryTool()),
             ("minecraft_place", lambda: MinecraftPlaceTool()),
+            # Phase 4D：背包写操作（MEDIUM；单物品单槽位，必须用户确认）
+            ("minecraft_equip", lambda: MinecraftEquipTool()),
+            ("minecraft_inventory_move", lambda: MinecraftInventoryMoveTool()),
             ("query_image_memory", lambda: QueryImageMemoryTool()),
             (
                 "weather",

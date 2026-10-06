@@ -3,6 +3,28 @@
 本文件记录 CatooBot 的版本演进。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号见 `pyproject.toml`；日期取自真实提交历史（本仓库 2026-09-30 起）。
 
+## Minecraft Phase 4D — Inventory Control（Equip + 单项 Inventory Move）
+
+* 新增 LLM 工具 `minecraft_equip`（MEDIUM）：把背包里**明确指定**的物品拿到主手；
+  只支持 `destination=hand`，按槽位顺序确定性选第一个匹配 stack，已经拿在手里时如实回
+  `already_equipped`（零副作用），执行后重读 `heldItem`，不符 → `equip_unconfirmed`。
+* 新增 LLM 工具 `minecraft_inventory_move`（MEDIUM）：**一个物品、一个来源槽、一个目标槽、一个数量**
+  （9–44 玩家窗口绝对槽位）；目标被别的物品占用 → `destination_occupied`（**绝不隐式交换**）；
+  用 Mineflayer 原生 `transfer`（source/destination 钉死在单槽），执行后重读 source/destination，
+  不按 `+count` 硬编码 → 否则 `move_unconfirmed`。
+* 两个动作都走既有确认门（MEDIUM + USER 回合 + 可信玩家 + 独占 + 一次性确认）；
+  摘要形如「把 minecraft:dirt 拿到手里」「把 37 格的 minecraft:dirt ×1 移到 9 格」；
+  参数指纹覆盖全部参数；WebUI / 开发者入口**不能**自授权（非用户回合 → `confirmation_not_user_turn`）。
+* 调试面：`GET /api/v1/minecraft/inventory/slots`（原始槽位表，只读恒 200；**不是** LLM 的数据源）、
+  `POST /api/v1/minecraft/equip`、`POST /api/v1/minecraft/inventory_move`；
+  WebUI 新增 Inventory Control 面板（Equip Test / Move Test + 槽位表 + 一键填 source）。
+* `minecraft_inventory` 的 LLM 切片保持五项不变（不含槽位/NBT/window）；
+  `allow_medium` 默认仍是 `false`。
+* 验证：Node 单测 equip 59 checks / inventory_move 56 checks（含取消/超时/竞态/cleanup 恰好一次）、
+  Python 测试 +34（两个工具文件 + API + 确认门不可自授权）、E2E 拒绝路径、
+  真实服务器 smoke 真机 equip + inventory_move（含 `/give` 夹具与 `/clear`、
+  逐槽比对确认状态完全恢复）。
+
 ## [Unreleased] — Minecraft Phase 4C · 单方块 Place + Inventory 只读切片
 
 - **`minecraft_inventory`（SAFE，只读）**：背包切片只有五项——`online` /

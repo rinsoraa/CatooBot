@@ -772,6 +772,143 @@ async function main() {
         }
       }
 
+      // ---------------- Phase 4D：equip / inventory_move（假服务器上只有拒绝路径） ----------------
+      // flying-squid 没有 /give → 这台服务器上 bot 的背包**永远是空的**：equip/move 的成功
+      // 路径只能在真实服务器 smoke 里验证。这里验证所有不依赖背包内容的可观察行为：
+      // 调试槽位视图、参数校验、空槽位/不存在物品的拒绝、以及 exclusivity。
+      if (cycle === 1) {
+        const slotsView = await request(runtimePort, 'GET', '/minecraft/inventory/slots')
+        assert(
+          slotsView.status === 200 && slotsView.body.online === true,
+          `槽位视图在线（得到 ${JSON.stringify(slotsView.body)}）`,
+        )
+        assert(
+          slotsView.body.hotbar_start === 36 && slotsView.body.inventory_start === 9,
+          `槽位范围 9..44（快捷栏从 36 起，得到 ${JSON.stringify(slotsView.body)}）`,
+        )
+        assert(
+          Array.isArray(slotsView.body.slots) && slotsView.body.slots.length === 0,
+          `空背包 → 没有槽位行（得到 ${JSON.stringify(slotsView.body.slots)}）`,
+        )
+        console.log('[e2e] inventory/slots ✓ 调试槽位视图（只读，空背包为空表）')
+
+        // 背包里没有这个物品 → 404 item.not_found（绝不自动造物、绝不换别的物品）
+        const equipMissing = await request(runtimePort, 'POST', '/minecraft/equip', {
+          item: 'minecraft:dirt',
+        })
+        assert(
+          equipMissing.status === 404 && equipMissing.body.error.code === 'item.not_found',
+          `equip 不在背包里的物品 → item.not_found（得到 ${JSON.stringify(equipMissing.body)}）`,
+        )
+        // 物品名不合法 → 400 item.invalid
+        const equipBad = await request(runtimePort, 'POST', '/minecraft/equip', { item: '   ' })
+        assert(
+          equipBad.status === 400 && equipBad.body.error.code === 'item.invalid',
+          `equip 空物品名 → item.invalid（得到 ${JSON.stringify(equipBad.body)}）`,
+        )
+        console.log('[e2e] equip ✓ 参数校验 + 背包里没有 → item.not_found（不自动装备）')
+
+        // 槽位范围：8 / 45 都是 400 slot.invalid（主背包 9-35 + 快捷栏 36-44）
+        const lowSlot = await request(runtimePort, 'POST', '/minecraft/inventory_move', {
+          source_slot: 8,
+          destination_slot: 9,
+          item: 'dirt',
+          count: 1,
+        })
+        assert(
+          lowSlot.status === 400 && lowSlot.body.error.code === 'slot.invalid',
+          `source_slot=8 → slot.invalid（得到 ${JSON.stringify(lowSlot.body)}）`,
+        )
+        const highSlot = await request(runtimePort, 'POST', '/minecraft/inventory_move', {
+          source_slot: 9,
+          destination_slot: 45,
+          item: 'dirt',
+          count: 1,
+        })
+        assert(
+          highSlot.status === 400 && highSlot.body.error.code === 'slot.invalid',
+          `destination_slot=45 → slot.invalid（得到 ${JSON.stringify(highSlot.body)}）`,
+        )
+        // 同一个槽位 → slot.invalid；数量 < 1 → item.invalid
+        const sameSlot = await request(runtimePort, 'POST', '/minecraft/inventory_move', {
+          source_slot: 37,
+          destination_slot: 37,
+          item: 'dirt',
+          count: 1,
+        })
+        assert(
+          sameSlot.status === 400 && sameSlot.body.error.code === 'slot.invalid',
+          `source=destination → slot.invalid（得到 ${JSON.stringify(sameSlot.body)}）`,
+        )
+        const badCount = await request(runtimePort, 'POST', '/minecraft/inventory_move', {
+          source_slot: 37,
+          destination_slot: 9,
+          item: 'dirt',
+          count: 0,
+        })
+        assert(
+          badCount.status === 400 && badCount.body.error.code === 'item.invalid',
+          `count=0 → item.invalid（得到 ${JSON.stringify(badCount.body)}）`,
+        )
+        console.log('[e2e] inventory_move ✓ 参数校验（槽位范围 / 同槽 / count）')
+
+        // 槽位合法但 source 是空的 → 404 item.not_found（空背包，如实拒绝）
+        const moveEmpty = await request(runtimePort, 'POST', '/minecraft/inventory_move', {
+          source_slot: 9,
+          destination_slot: 36,
+          item: 'dirt',
+          count: 1,
+        })
+        assert(
+          moveEmpty.status === 404 && moveEmpty.body.error.code === 'item.not_found',
+          `空槽位 → item.not_found（得到 ${JSON.stringify(moveEmpty.body)}）`,
+        )
+        console.log('[e2e] inventory_move ✓ 空 source 槽位 → item.not_found（不隐式换槽）')
+
+        // exclusivity：move_to 跑着的时候，equip 必须被拒（action.busy），且不会打断它
+        const here4d = (await request(runtimePort, 'GET', '/minecraft/status')).body.position
+        const busyMove = await request(runtimePort, 'POST', '/minecraft/move_to', {
+          x: here4d.x + 6,
+          y: here4d.y,
+          z: here4d.z,
+        })
+        if (busyMove.status === 200 && busyMove.body.status === 'RUNNING') {
+          const busyEquip = await request(runtimePort, 'POST', '/minecraft/equip', { item: 'dirt' })
+          assert(
+            busyEquip.status === 409 && busyEquip.body.error.code === 'action.busy',
+            `move_to 跑着时 equip → action.busy（得到 ${JSON.stringify(busyEquip.body)}）`,
+          )
+          const busySlotMove = await request(runtimePort, 'POST', '/minecraft/inventory_move', {
+            source_slot: 9,
+            destination_slot: 36,
+            item: 'dirt',
+            count: 1,
+          })
+          assert(
+            busySlotMove.status === 409 && busySlotMove.body.error.code === 'action.busy',
+            `move_to 跑着时 inventory_move → action.busy（得到 ${JSON.stringify(busySlotMove.body)}）`,
+          )
+          await request(runtimePort, 'POST', '/minecraft/stop', {})
+          await waitFor(
+            () =>
+              events.some(
+                (e) =>
+                  e.event === 'minecraft.action.cancelled' &&
+                  e.action_id === busyMove.body.action_id,
+              ),
+            'move_to cancelled（4D exclusivity 段收尾）',
+            10000,
+          )
+          console.log('[e2e] equip / inventory_move ✓ 独占（move_to 跑着时 → action.busy）')
+        } else {
+          console.log('[e2e] equip / inventory_move 独占检查：move_to 没进入 RUNNING，跳过')
+        }
+
+        // 空背包上 equip 一定 fail-fast，没有"挖到一半"那种可取消窗口：
+        // 假服务器上 STOP 路径无法真实触发（与 dig 的 STOP 段同理）。
+        console.log('[e2e] equip / inventory_move STOP：SKIPPED（假服务器背包永远是空的，没有可取消的窗口）')
+      }
+
       // ---------------- Phase 3D：follow_player（Test A 跟随 / B STOP / C 丢失 / D 太远 / E 超时） ----------------
       if (cycle === 1) {
         const botPosNow = async () =>

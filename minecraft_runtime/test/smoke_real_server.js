@@ -17,7 +17,11 @@
  *      真挖 → RUNNING → completed → 三层验证（Action 结果 / 真实世界 / WorldPerception）；
  *      同位置再挖 → block.not_found
  *   6. dig + STOP（附近有"徒手要挖几秒"的方块才跑，否则明确 SKIPPED）
- *   7. disconnect
+ *   7. Phase 4C：place（单方块，六层证据）
+ *   8. Phase 4D：inventory/slots → equip（含 already_equipped）→ inventory_move →
+ *      重读槽位表 → **恢复原状**（槽位布局 + 主手）→ ensureIdle → disconnect
+ *      （背包里没有可换的物品 / 没有空槽 → 明确 SKIPPED，不伪造结论）
+ *   9. disconnect
  *
  * 认证：默认用 minecraft_runtime/auth.json（本地文件，绝不进 Git）。
  * 服务器没开 / 连不上 → 打印 NOT AVAILABLE 并以 0 退出（文档记录用）；
@@ -791,6 +795,335 @@ async function main() {
         }
       }
     }
+
+    // ---- 6. Phase 4D 硬门禁：slots → equip → inventory_move → 恢复（单物品 / 单槽位） ----
+    if (!digReady) {
+      console.log('[smoke] ✗ Phase 4D：runtime 未空闲，equip / inventory_move 硬门禁不能执行')
+    } else {
+      const name = (value) => normalizeItemName(value || '')
+      /** 槽位表 → 稳定签名（用于"恢复原状"的逐槽比对）；空槽位不出现在表里。 */
+      const signature = (rows) =>
+        rows
+          .map((row) => `${row.slot}:${name(row.name)}×${row.count}`)
+          .sort((a, b) => Number.parseInt(a, 10) - Number.parseInt(b, 10))
+          .join('|')
+      const readSlots = async () => {
+        const resp = await request(runtimePort, 'GET', '/minecraft/inventory/slots')
+        return resp.status === 200 && resp.body ? resp.body.slots || [] : null
+      }
+      const readSlice = async () => (await request(runtimePort, 'GET', '/minecraft/inventory')).body
+
+      const slotsBefore = await readSlots()
+      const sliceBefore = await readSlice()
+      const heldBefore = sliceBefore ? sliceBefore.held_item : null
+      if (!slotsBefore) {
+        check(false, 'inventory/slots 必须 200（Phase 4D 调试槽位视图）')
+      } else {
+        check(true, `inventory/slots 只读在线（${slotsBefore.length} 个非空槽位）`)
+        console.log(
+          `[smoke]    主手=${heldBefore ? `${heldBefore.name}×${heldBefore.count}` : '空'}；`
+            + `槽位布局=${signature(slotsBefore) || '（空背包）'}`,
+        )
+
+        // (a) already_equipped：把"当前主手物品"再 equip 一次 —— 必须如实报 already_equipped=true，
+        //     且不改任何槽位（可安全验证，零副作用）
+        if (!heldBefore || !heldBefore.name) {
+          console.log('[smoke] SKIPPED already_equipped：主手是空手（没有可重复装备的物品）')
+        } else {
+          const again = await request(runtimePort, 'POST', '/minecraft/equip', {
+            item: heldBefore.name,
+          })
+          const started = again.status === 200 && again.body.status === 'RUNNING' && again.body.action_id
+          if (!started) {
+            console.log(`[smoke]    equip(already) 启动失败：${JSON.stringify(again)}`)
+            check(false, `equip 当前主手物品必须 200/RUNNING（HTTP ${again.status}）`)
+          } else {
+            const terminal = await waitForActionTerminal(again.body.action_id, 'equip(already) 终态', 30000)
+            const result = (terminal && terminal.result) || {}
+            check(
+              Boolean(terminal) &&
+                terminal.event === 'minecraft.action.completed' &&
+                result.already_equipped === true,
+              `already_equipped 如实上报（event=${terminal && terminal.event}，`
+                + `already_equipped=${result.already_equipped}）`,
+            )
+            const slotsAfter = await readSlots()
+            check(
+              signature(slotsAfter) === signature(slotsBefore),
+              'already_equipped 不改任何槽位（布局与装备前一致）',
+            )
+          }
+        }
+
+        // (b) 真换手：找一个**真实存在**且不是主手物品的物品（动态选，绝不写死 dirt）
+        //     这台服务器不给掉落：背包里只有一件物品时，用服务器自己的 /give 造一件夹具
+        //     （与 dig STOP 段用 /setblock 造慢方块同一手法；结束后 /clear 清掉）
+        const FIXTURE_ITEM = 'minecraft:oak_planks'
+        let seeded = false
+        let equipTarget = slotsBefore.find(
+          (row) => name(row.name) !== name(heldBefore && heldBefore.name),
+        )
+        let slotsReady = slotsBefore
+        if (!equipTarget) {
+          const botName = (await status()).username
+          if (!botName) {
+            console.log('[smoke] ✗ 4D 夹具：拿不到 bot 用户名，无法 /give')
+          } else {
+            const give = await request(runtimePort, 'POST', '/minecraft/chat', {
+              message: `/give ${botName} ${FIXTURE_ITEM} 3`,
+            })
+            if (give.status !== 200) {
+              console.log(`[smoke]    /give 发送失败：${JSON.stringify(give)}`)
+            }
+            const seededSlots = await waitForValue(async () => {
+              const rows = await readSlots()
+              return rows && rows.some((row) => name(row.name) === name(FIXTURE_ITEM)) ? rows : null
+            }, '4D 夹具物品进入背包', 10000)
+            if (seededSlots) {
+              seeded = true
+              slotsReady = seededSlots
+              equipTarget = slotsReady.find((row) => name(row.name) === name(FIXTURE_ITEM))
+              console.log(
+                `[smoke] 4D 夹具：/give ${botName} ${FIXTURE_ITEM} 3 → 槽位 ${equipTarget.slot}`
+                  + '（测试结束后 /clear 清掉）',
+              )
+            } else {
+              console.log(
+                '[smoke]    /give 没有生效（服务器不允许 / 命令权限）：无法在真机上造出"第二件物品"',
+              )
+            }
+          }
+        }
+        if (!equipTarget) {
+          console.log(
+            '[smoke] SKIPPED equip：背包里没有"不是主手"的物品，且无法用 /give 造夹具'
+              + '（换手必然改变你的物品，不做）；请往背包里放一件东西再跑这段',
+          )
+        } else {
+          const item = equipTarget.name
+          const sourceSlotBefore = equipTarget.slot
+          console.log(`[smoke] equip 目标：${item}（换手前在槽位 ${sourceSlotBefore}）`)
+          const resp = await request(runtimePort, 'POST', '/minecraft/equip', { item })
+          const started = resp.status === 200 && resp.body.status === 'RUNNING' && resp.body.action_id
+          if (!started) {
+            console.log(`[smoke]    equip 启动失败：${JSON.stringify(resp)}`)
+            check(false, `equip 启动必须 200/RUNNING 且带 action_id（HTTP ${resp.status}）`)
+          } else {
+            check(true, `equip 启动 → RUNNING（action_id=${resp.body.action_id}）`)
+            const terminal = await waitForActionTerminal(resp.body.action_id, 'equip 终态事件', 30000)
+            if (!terminal) {
+              check(false, 'equip 未在 30s 内进入终态')
+            } else if (terminal.event !== 'minecraft.action.completed') {
+              check(false, `equip 终态=${terminal.event}（${terminal.error || terminal.reason || '-'}）`)
+            } else {
+              const result = terminal.result || {}
+              check(
+                name(result.item) === name(item) && result.destination === 'hand',
+                `equip completed（item=${result.item}，destination=${result.destination}）`,
+              )
+              check(
+                result.held_item && name(result.held_item.name) === name(item),
+                `结果里的 held_item=${result.held_item ? result.held_item.name : '空'}`,
+              )
+              // 第二层：真实背包（重读只读切片）
+              const heldNow = await waitForValue(async () => {
+                const body = await readSlice()
+                const held = body && body.held_item
+                return held && name(held.name) === name(item) ? held : null
+              }, '真实世界主手换成目标物品', 15000)
+              check(Boolean(heldNow), `真实主手改变（现在 ${heldNow ? heldNow.name : '未知'}）`)
+              // 第三层：WorldPerception 输入（snapshot 的 self 里应能看到它）
+              const perceivable = await waitForValue(async () => {
+                const snap = await snapshot('near')
+                return JSON.stringify(snap.self || {}).includes(name(item)) ? true : null
+              }, 'WorldPerception 反映新主手', 10000)
+              check(Boolean(perceivable), 'WorldPerception 输入反映新主手（snapshot.self）')
+
+              // (c) inventory_move：把刚拿到手里的那个物品搬 1 个到**空槽**（主背包优先，避开选中快捷栏）
+              const slotsNow = await readSlots()
+              if (seeded && slotsReady === slotsBefore) slotsReady = slotsNow
+              const selectedHotbar = 36 + Number(sliceBefore.selected_hotbar_slot || 0)
+              const handSlot = (slotsNow.find(
+                (row) => name(row.name) === name(item) && row.slot === selectedHotbar,
+              ) || {}).slot
+              const occupied = new Set(slotsNow.map((row) => row.slot))
+              const emptySlots = []
+              for (let slot = 9; slot <= 44; slot += 1) {
+                if (!occupied.has(slot) && slot !== selectedHotbar) emptySlots.push(slot)
+              }
+              const sourceSlot = handSlot || sourceSlotBefore
+              const destinationSlot = emptySlots.find((slot) => slot !== sourceSlot)
+              if (destinationSlot === undefined) {
+                console.log('[smoke] SKIPPED inventory_move：背包里没有空槽位（9~44 全满），不做隐式交换')
+              } else {
+                const before = (slotsNow.find((row) => row.slot === sourceSlot) || {}).count || 0
+                console.log(
+                  `[smoke] inventory_move：${item} ×1 从槽位 ${sourceSlot} → ${destinationSlot}`
+                    + `（source 原有 ${before} 个）`,
+                )
+                const moveResp = await request(runtimePort, 'POST', '/minecraft/inventory_move', {
+                  source_slot: sourceSlot,
+                  destination_slot: destinationSlot,
+                  item,
+                  count: 1,
+                })
+                const moveStarted =
+                  moveResp.status === 200 &&
+                  moveResp.body.status === 'RUNNING' &&
+                  Boolean(moveResp.body.action_id)
+                if (!moveStarted) {
+                  console.log(`[smoke]    inventory_move 启动失败：${JSON.stringify(moveResp)}`)
+                  check(false, `inventory_move 启动必须 200/RUNNING（HTTP ${moveResp.status}）`)
+                } else {
+                  check(true, `inventory_move 启动 → RUNNING（action_id=${moveResp.body.action_id}）`)
+                  const moveTerminal = await waitForActionTerminal(
+                    moveResp.body.action_id,
+                    'inventory_move 终态事件',
+                    30000,
+                  )
+                  if (!moveTerminal) {
+                    check(false, 'inventory_move 未在 30s 内进入终态')
+                  } else if (moveTerminal.event !== 'minecraft.action.completed') {
+                    check(
+                      false,
+                      `inventory_move 终态=${moveTerminal.event}`
+                        + `（${moveTerminal.error || moveTerminal.reason || '-'}）`,
+                    )
+                  } else {
+                    const moveResult = moveTerminal.result || {}
+                    const srcAfter = moveResult.source_after
+                    const dstAfter = moveResult.destination_after
+                    check(
+                      name(moveResult.item) === name(item) &&
+                        moveResult.source_slot === sourceSlot &&
+                        moveResult.destination_slot === destinationSlot,
+                      `move completed（source=${moveResult.source_slot} → dest=${moveResult.destination_slot}）`,
+                    )
+                    check(
+                      Boolean(dstAfter) && name(dstAfter.name) === name(item) && dstAfter.count >= 1,
+                      `destination 真的多出了 ${item}（${JSON.stringify(dstAfter)}）`,
+                    )
+                    check(
+                      srcAfter === null || srcAfter.count < before,
+                      `source 真的少了（before=${before} → ${JSON.stringify(srcAfter)}）`,
+                    )
+                    // 第二层：重读槽位表（不从事件里抄结论）
+                    const slotsMoved = await waitForValue(async () => {
+                      const rows = await readSlots()
+                      const dest = rows.find((row) => row.slot === destinationSlot)
+                      const src = rows.find((row) => row.slot === sourceSlot)
+                      const destOk = dest && name(dest.name) === name(item) && dest.count >= 1
+                      const srcOk = !src || src.count < before
+                      return destOk && srcOk ? rows : null
+                    }, '真实槽位表反映这次搬运', 15000)
+                    check(Boolean(slotsMoved), '真实槽位表改变（重读确认，不硬编码 +count）')
+                    // 第三层：WorldPerception 输入（inventory 层里应该能看到 destinationSlot 上的物品）
+                    const perceivableMove = await waitForValue(async () => {
+                      const snap = await snapshot('local')
+                      return JSON.stringify(snap).includes(name(item)) ? true : null
+                    }, 'WorldPerception 反映搬运结果', 10000)
+                    check(Boolean(perceivableMove), 'WorldPerception 输入反映搬运结果')
+
+                    // 把搬走的 1 个搬回去（恢复槽位布局；同物品合并 → 允许）
+                    const undo = await request(runtimePort, 'POST', '/minecraft/inventory_move', {
+                      source_slot: destinationSlot,
+                      destination_slot: sourceSlot,
+                      item,
+                      count: 1,
+                    })
+                    if (undo.status === 200 && undo.body.action_id) {
+                      await waitForActionTerminal(undo.body.action_id, '撤销搬运终态', 30000)
+                      console.log(`[smoke]    已把 ${item} ×1 搬回槽位 ${sourceSlot}`)
+                    } else {
+                      console.log(`[smoke]    ✗ 撤销搬运失败：${JSON.stringify(undo)}`)
+                      check(false, '撤销搬运必须成功（否则不恢复原状）')
+                    }
+                  }
+                }
+              }
+
+              // (d) 恢复主手：有原主手 → equip 它（一次交换即可还原布局）；原主手是空手 →
+              //     把刚拿到手里的东西整堆搬回原槽（手槽变空 = 空手），没有"放回背包"动作也不编造
+              const slotsAfterMove = await readSlots()
+              if (heldBefore && heldBefore.name) {
+                const back = await request(runtimePort, 'POST', '/minecraft/equip', {
+                  item: heldBefore.name,
+                })
+                if (back.status === 200 && back.body.action_id) {
+                  await waitForActionTerminal(back.body.action_id, '恢复主手终态', 30000)
+                } else {
+                  console.log(`[smoke]    ✗ 恢复主手失败：${JSON.stringify(back)}`)
+                  check(false, '恢复原主手必须成功')
+                }
+              } else {
+                const handRow = slotsAfterMove.find(
+                  (row) => row.slot === selectedHotbar && name(row.name) === name(item),
+                )
+                const homeSlot = sourceSlotBefore
+                if (handRow && homeSlot !== selectedHotbar) {
+                  const put = await request(runtimePort, 'POST', '/minecraft/inventory_move', {
+                    source_slot: handRow.slot,
+                    destination_slot: homeSlot,
+                    item,
+                    count: handRow.count,
+                  })
+                  if (put.status === 200 && put.body.action_id) {
+                    await waitForActionTerminal(put.body.action_id, '空手恢复终态', 30000)
+                  } else {
+                    console.log(`[smoke]    ✗ 空手恢复失败：${JSON.stringify(put)}`)
+                    check(false, '空手恢复（整堆搬回原槽）必须成功')
+                  }
+                } else {
+                  console.log('[smoke] SKIPPED 空手恢复：拿在手里的物品原本就在快捷栏手槽上（无法还原空手）')
+                }
+              }
+
+              // (d2) 夹具清理：把自己 /give 出来的物品从背包里清掉（不留测试痕迹）
+              if (seeded) {
+                const botName = (await status()).username
+                const cleared = await request(runtimePort, 'POST', '/minecraft/chat', {
+                  message: `/clear ${botName} ${FIXTURE_ITEM}`,
+                })
+                const gone = await waitForValue(async () => {
+                  const rows = await readSlots()
+                  return rows && !rows.some((row) => name(row.name) === name(FIXTURE_ITEM))
+                    ? rows
+                    : null
+                }, '夹具物品已清出背包', 10000)
+                check(
+                  cleared.status === 200 && Boolean(gone),
+                  `/clear 夹具物品 ${FIXTURE_ITEM}（背包里已不存在）`,
+                )
+              }
+
+              // (e) 逐槽比对：布局 + 主手是否回到测试前
+              await sleep(600)
+              const slotsFinal = await readSlots()
+              const sliceFinal = await readSlice()
+              const heldFinal = sliceFinal ? sliceFinal.held_item : null
+              check(
+                signature(slotsFinal) === signature(slotsBefore),
+                `槽位布局已恢复（before=${signature(slotsBefore) || '空'} / `
+                  + `after=${signature(slotsFinal) || '空'}）`,
+              )
+              check(
+                name(heldFinal && heldFinal.name) === name(heldBefore && heldBefore.name),
+                `主手已恢复（before=${heldBefore ? heldBefore.name : '空'} / `
+                  + `after=${heldFinal ? heldFinal.name : '空'}）`,
+              )
+              console.log(
+                `[smoke]    Phase 4D 结束状态：槽位=${signature(slotsFinal) || '空'}；`
+                  + `主手=${heldFinal ? `${heldFinal.name}×${heldFinal.count}` : '空'}`,
+              )
+            }
+          }
+        }
+      }
+    }
+
+    // equip / inventory_move 都是 MEDIUM 但**毫秒级**：真实服务器上不存在
+    // "挖到一半"那种可取消窗口（Node 单测已用假 bot 覆盖 CANCELLED/TIMEOUT/race/cleanup）。
+    console.log('[smoke] SKIPPED equip / inventory_move STOP：动作毫秒级完成，真实服务器上没有可取消窗口')
 
     await ensureIdle('smoke 收尾')
 
