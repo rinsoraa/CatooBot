@@ -157,16 +157,38 @@ runtime restart safety = PASS SQLite 读回 → RUNTIME_RESTART → 只读对账
 | **world change**（smoke 用 `/setblock … air` 扮演另一个玩家，读回确认已变 air） | PASS |
 | **授权到期**（短 TTL：签出 → 过期 → LOW/MEDIUM 被拒 → 继续 → `PENDING_CONFIRMATION`（计划不变）→ 重新确认 → 继续跑完） | PASS |
 | **RUNTIME RESTART SAFETY**（create 进程退出 → recover 进程：SQLite 读回 `WAITING_ACTION` + 原 action_id → `RUNTIME_RESTART` → 只读对账 `RECONCILED` → 旧 action 失效 → 旧确认作废 → `PAUSED` → **无重复世界动作** → `resume` 被拒 `task.replan_required`） | PASS |
-| **重规划链**（v1 → WORLD_CHANGED → v1 `SUPERSEDED` → v2 → 新确认 → v2 成功） | **BLOCKED（环境）** |
+| **重规划链**（v1 → WORLD_CHANGED → v1 `SUPERSEDED` → v2 → 新确认 → v2 成功） | **PASS**（`REAL SERVER: PASS`） |
 
-重规划链没跑通的原因不是代码路径：这台服务器上罐头当时的落脚点**没有可行走路径**
-（`move_to` 一律 `path.not_found` 或 30s 超时 → 任务按设计 PAUSED，没能走到"世界变了"那一步）。
-同一条链路由确定性集成测试覆盖并通过：
-`tests/test_minecraft_task_integration.py::test_world_change_hands_off_to_replanning_then_new_plan_runs_after_confirmation`
-（世界变化 → `REPLANNING` → v2（新 hash）→ 未确认时零世界动作 → 确认后跑新目标），
-以及 `tests/test_task_replanning_security.py` 的 12 条授权安全用例。
-smoke 里也备了环境准备（用 op 权限 `/fill` 清小块树冠 + 绝对坐标 `/tp` 落地），
-但它在这台服务器的当前地形里没能找到可工作的落脚点。
+重规划链的真实输出（`--sections replan`）：
+
+```
+Plan v1 generation = PASS（plan_hash=c576ebb75041426d2e67）
+world change = PASS（(332,76,220) 现在是 air）
+v1 confirmation = PASS（确认后第一步就发现目标没了）
+old plan rejected = PASS（TARGET_LOST）
+Plan v1 superseded = PASS（status=SUPERSEDED）
+对账：reason=TARGET_LOST outcome=TARGET_ALREADY_DONE
+new plan targets another block = PASS（(332,76,220) → (354,72,205)）
+Plan v2 = PASS / new plan hash = PASS（c576ebb75041426d2e67 → ac7143709bd1b3319276）
+v2 需要重新确认 / 旧确认已作废 / v1 授权不能执行 v2
+new confirmation = PASS（WAITING_ACTION）
+5 步全 SUCCEEDED（move_to → dig → dropped_items → pickup_item → inventory）
+Task resumed = PASS（SUCCEEDED）/ Final verification = PASS（{'oak_log': 1}）
+计划历史可审计（['SUPERSEDED', 'COMPLETED']）→ REAL SERVER: PASS
+```
+
+**已知限制（smoke，不是产品）**：真机上一次跑完五段时，罐头会被前几段移动/挖过，
+所以后面几段能不能跑取决于"她当下站的地方附近有没有够得到的橡木"。跑单段最稳：
+
+```powershell
+.venv\Scripts\python.exe scripts	ask_smoke_real.py --sections replan
+.venv\Scripts\python.exe scripts	ask_smoke_real.py --sections expiry
+```
+
+`--anchor x,z` 可以让脚本先把她放到指定那一列的地面（x/z 用真实数字，PowerShell 里别写尖括号）。
+smoke 会在开头用 op 权限做环境准备（清一小块树冠 + 绝对坐标 `/tp` 落地 + SAFE `find_blocks`
+确认附近有地面高度的橡木），并预检"事件是否真的回调到本脚本"（runtime 被 CatooBot 托管时它会
+如实拒绝，而不是让任务卡死）。
 
 ## 十一、已知限制
 

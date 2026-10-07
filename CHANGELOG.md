@@ -35,8 +35,10 @@
 * 验证：`tests/test_task_recovery.py`（19，含**真 SQLite** 持久化与假时钟 t0+ttl-1 / t0+ttl）、
   `tests/test_task_replanning_security.py`（12，§三十六 8 条 + TASK 凭据一次性）、
   `tests/test_minecraft_task_integration.py` 新增两例、WebUI vitest 新增计划版本历史用例。
-  真机：`scripts/task_smoke_real.py`（真实重规划 + 授权到期）与
-  `scripts/task_restart_smoke_real.py`（**两个进程**验证重启恢复）→ `REAL SERVER: PASS`。
+  真机：`scripts/task_smoke_real.py`（真实重规划 + 授权到期，`--sections` 可只跑某一段）与
+  `scripts/task_restart_smoke_real.py`（**两个进程**验证重启恢复）→ `REAL SERVER: PASS`：
+  重规划链跑出 `v1 superseded → v2（新 hash）→ 新确认 → v2 五步全 SUCCEEDED →
+  FINAL INVENTORY VERIFIED {'oak_log': 1}`，重启恢复 10/10，授权到期 8/8。
 
 ## Minecraft Phase 5A — 多步骤任务运行时（Task Runtime）
 
