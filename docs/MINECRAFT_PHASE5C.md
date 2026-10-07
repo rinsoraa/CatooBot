@@ -192,10 +192,16 @@ block = await bridge.context_block(text=..., platform="qq", user_id="2731431246"
 
 `app/core/bot.py`：
 
-* Minecraft 桥装配好后调用 `_setup_minecraft_memory()` 建 `MinecraftMemoryBridge`
-  （复用 `self.memory` / `self.database`），把 `self.minecraft_memory` 交给角色运行时，
-  并把 `_on_minecraft_memory_event` 挂到服务事件上；
+* 连接层**真的起来了之后**（`start()` 里 `minecraft.start()` 成功）才调用
+  `_setup_minecraft_memory()` 建 `MinecraftMemoryBridge`（复用 `self.memory` / `self.database`），
+  把 `self.minecraft_memory` 交给角色运行时，并把 `_on_minecraft_memory_event` 挂到服务事件上。
+  放在这里有两个原因：记忆 scope 用**角色名**，而人设是 `start()` 里才从磁盘/库里读进来的
+  （放在 `__init__` 会拿到 `default` —— 真机上就这么错过一次）；连接层起不来就干脆没有记忆能力，
+  不留半死对象；
 * `_on_minecraft_memory_event` **只认** `minecraft.player_joined`（其它事件一律不写记忆）；
+* **她自己不算"一个玩家"**：`self_username()` 从镜像的 `connection.username` 读她自己的 MC 名字，
+  凡是她自己的 `player_joined` 一律跳过，`online_players()` 也把她排除（否则会记出
+  「Catodayo 在这个服务器里活动过」，甚至能把自己绑给自己 —— 真机踩到过）；
 * `_publish_task_event()` 在 `task.succeeded` / `task.failed` / `task.expired` 上
   后台调 `on_task_finished(record)`（记忆写失败只记账，绝不冒泡到任务收尾）；
 * `_start_memory_reconcile()` 起一个周期对账任务（默认 300s，随 `shutdown()` 一起停）；

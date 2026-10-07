@@ -44,10 +44,14 @@
   已失效的排最后并超出预算直接不进上下文；检索时对前 2 条位置事实做一次真实世界复核 ——
   世界说没有了就把那句话当场改写成「（这条已经被当前世界证伪）」（**当前世界优先**）。
 * **接入**：`CharacterRuntime.respond()` 把记忆块拼在她"此刻处境"后面（QQ 与游戏内共用同一条
-  路径，平台名由会话前缀判定）；Bot 装配 `MinecraftMemoryBridge`（复用同一个 SQLite / 记忆引擎），
+  路径，平台名由会话前缀判定）；Bot 在连接层**真的起来之后**（`start()` 里人设已载入）装配
+  `MinecraftMemoryBridge`（复用同一个 SQLite / 记忆引擎；记忆 scope 用**角色名**，放 `__init__`
+  会拿到 `default` —— 真机上错过一次），
   订阅 `minecraft.player_joined` → 记忆、`task.succeeded/failed/expired` → 任务经验、
   周期对账（默认 300s，随 shutdown 一起停）、`minecraft.memory.linked_players` 运维显式配置
-  （玩家不在线就等下一轮；已有显式绑定绝不覆盖）。任何一步失败**只降级记忆**
+  （玩家不在线就等下一轮；已有显式绑定绝不覆盖）。**她自己不算"一个玩家"**：自己的
+  `player_joined` 一律跳过、`online_players()` 也排除自己（否则会记出「Catodayo 在这个服务器里
+  活动过」，甚至能把自己绑给自己 —— 真机踩到过）。任何一步失败**只降级记忆**
   （`memory_degraded` 可见、`context_block()` 返回空串），聊天与任务完全不受影响。
 * **LLM 安全边界**：记忆内容一律是"不可信上下文" —— 试图改规则的语句照记但置信度压到 0.40、
   provenance 标 `untrusted_directive`，说十遍也不长信心；关系事实带 `grants_permission=False`。
