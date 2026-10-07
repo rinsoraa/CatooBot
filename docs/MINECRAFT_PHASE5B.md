@@ -25,7 +25,7 @@ Policy → Confirmation → Agent Bridge → MinecraftService → ActionRuntime 
 
   ```python
   self.event_bus.on("message", self.core_router.on_message)
-  self.event_bus.on("message", self._dispatch_task_message)   # ← 任务入口
+  self.event_bus.on("message", self._dispatch_task_message)  # ← 任务入口
   ```
 
 * 事件总线新增一个**最小**的认领语义：处理器返回真值 = 认领该事件，后续处理器不再跑
