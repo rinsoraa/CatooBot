@@ -1252,6 +1252,37 @@ CREATE INDEX IF NOT EXISTS idx_agent_task_checkpoints_task
     ON agent_task_checkpoints(task_id, id);
 """,
     ),
+    (
+        28,
+        "minecraft identity bridge (Phase 5C)",
+        """
+-- QQ（或其它平台）↔ Minecraft 玩家 的显式绑定。**player_uuid 才是身份**，
+-- username 只是"最后一次确认时的显示名"（改名不换人，重名不认亲）。
+-- 解除绑定只把状态改成 REVOKED —— 历史行永远保留（Phase 5C §八）。
+CREATE TABLE IF NOT EXISTS minecraft_identity_links (
+    link_id     TEXT PRIMARY KEY,
+    platform    TEXT NOT NULL,
+    user_id     TEXT NOT NULL,
+    server_id   TEXT NOT NULL,
+    player_uuid TEXT NOT NULL,
+    username    TEXT NOT NULL DEFAULT '',
+    status      TEXT NOT NULL,
+    source      TEXT NOT NULL,
+    created_at  REAL NOT NULL,
+    verified_at REAL NOT NULL DEFAULT 0,
+    revoked_at  REAL NOT NULL DEFAULT 0,
+    note        TEXT NOT NULL DEFAULT ''
+);
+-- §三十五：同一个玩家 UUID 只能有一条 VERIFIED 绑定（别人想绑 → 冲突并拒绝）
+CREATE UNIQUE INDEX IF NOT EXISTS idx_mc_identity_uuid_verified
+    ON minecraft_identity_links(server_id, player_uuid) WHERE status = 'VERIFIED';
+-- 同一个平台用户在**同一台服务器**上也只能有一条 VERIFIED 绑定
+CREATE UNIQUE INDEX IF NOT EXISTS idx_mc_identity_user_verified
+    ON minecraft_identity_links(platform, user_id, server_id) WHERE status = 'VERIFIED';
+CREATE INDEX IF NOT EXISTS idx_mc_identity_lookup
+    ON minecraft_identity_links(platform, user_id, status);
+""",
+    ),
 ]
 
 

@@ -34,6 +34,7 @@ import type {
   MinecraftInventorySlot,
   MinecraftInventorySlotsView,
   MinecraftInventoryView,
+  MinecraftMemoryResponse,
   MinecraftOverview,
   MinecraftPathfinderInfo,
   MinecraftPlaceFace,
@@ -55,6 +56,8 @@ const error = ref('')
 const working = ref(false)
 // Phase 5A：当前活动的多步骤任务（没有 = null；只读投影，不含 raw 世界状态）
 const task = ref<MinecraftTaskView | null>(null)
+// Phase 5C：身份桥 + 世界记忆（只读；记忆**不**提供权限）
+const memory = ref<MinecraftMemoryResponse | null>(null)
 
 const host = ref('')
 const port = ref('25565')
@@ -115,6 +118,30 @@ function taskStepState(state: string): StatusState {
 
 /** 任务进度：完成/总数（"最后一步 action 完成"不等于整个任务完成）。 */
 const taskProgress = computed(() => task.value?.progress ?? { completed: 0, total: 0 })
+
+/** Phase 5C：记忆状态块（没有记忆能力时后端也回 200）。 */
+const memoryStatus = computed(() => memory.value?.status ?? null)
+const memoryFacts = computed(() => memory.value?.facts ?? [])
+const memoryLinks = computed(() => memory.value?.links ?? [])
+/** 记忆层降级原因（有值就是**降级**：绝不假装检索成功）。 */
+const memoryDegraded = computed(
+  () => memoryStatus.value?.memory_degraded || memoryStatus.value?.identity_degraded || '',
+)
+
+/** 记忆新鲜度 → 徽标语义色（stale/invalidated 一眼看出世界已经变了）。 */
+function freshnessState(fresh: string): StatusState {
+  if (fresh === 'ACTIVE') return 'ok'
+  if (fresh === 'STALE') return 'warn'
+  return 'idle'
+}
+
+async function loadMemory(): Promise<void> {
+  try {
+    memory.value = await minecraftApi.memory()
+  } catch {
+    /* 保留上一份数据（记忆不是这一页的主状态） */
+  }
+}
 
 async function loadTask(): Promise<void> {
   try {
@@ -860,6 +887,8 @@ async function loadWorld(): Promise<void> {
   prefillInventoryTargets()
   // Phase 5A：当前任务（只读投影 + 暂停/继续/取消按钮）
   await loadTask()
+  // Phase 5C：身份桥 + 世界记忆（只读投影；记忆不提供权限）
+  await loadMemory()
 }
 
 /** 3×3 上下文必须给出明确的整数坐标（绝不接受 nearest/auto）。 */
@@ -2741,6 +2770,119 @@ onUnmounted(stopPolling)
           </template>
           <p v-else class="cb-caption" data-test="mc-task-empty">
             当前没有任务。在游戏里对罐头说「去砍一棵橡树，挖一块原木并捡回来」，她会先列一份计划让你确认。
+          </p>
+        </section>
+
+        <section class="minecraft__card cb-card" data-test="mc-memory">
+          <SectionHeader
+            title="Identity & World Memory（Phase 5C）"
+            description="她知道谁是谁、记得在这个服务器上遇到过什么。记忆只是**上下文** —— 它不授予任何权限，也不会让 MEDIUM 动作少一步确认。世界变了，旧事实会变 STALE / INVALIDATED（历史不删）。"
+          />
+          <dl class="minecraft__facts" data-test="mc-memory-facts">
+            <div>
+              <dt>Enabled</dt>
+              <dd data-test="mc-memory-enabled">{{ memory?.enabled ? '是' : '否' }}</dd>
+            </div>
+            <div>
+              <dt>Server</dt>
+              <dd data-test="mc-memory-server">{{ memoryStatus?.server_label || '—' }}</dd>
+            </div>
+            <div>
+              <dt>Character</dt>
+              <dd data-test="mc-memory-character">{{ memoryStatus?.character_key || '—' }}</dd>
+            </div>
+            <div>
+              <dt>Facts</dt>
+              <dd data-test="mc-memory-count">
+                {{ memoryStatus?.facts ?? 0 }}
+                （stale {{ memoryStatus?.stale ?? 0 }} / invalidated
+                {{ memoryStatus?.invalidated ?? 0 }}）
+              </dd>
+            </div>
+            <div>
+              <dt>Links</dt>
+              <dd data-test="mc-memory-links-count">
+                VERIFIED {{ memoryStatus?.links?.VERIFIED ?? 0 }}
+                / REVOKED {{ memoryStatus?.links?.REVOKED ?? 0 }}
+                / CONFLICT {{ memoryStatus?.links?.CONFLICT ?? 0 }}
+              </dd>
+            </div>
+            <div>
+              <dt>Last Reconcile</dt>
+              <dd data-test="mc-memory-reconcile">
+                {{
+                  memoryStatus?.last_reconcile && Object.keys(memoryStatus.last_reconcile).length
+                    ? JSON.stringify(memoryStatus.last_reconcile)
+                    : '—'
+                }}
+              </dd>
+            </div>
+          </dl>
+
+          <p v-if="memoryDegraded" class="cb-caption" data-test="mc-memory-degraded">
+            记忆层当前**降级**：{{ memoryDegraded }}。她不会假装还想得起以前的事。
+          </p>
+
+          <h4 class="cb-caption">身份绑定（QQ ↔ Minecraft）</h4>
+          <table v-if="memoryLinks.length" class="minecraft__table" data-test="mc-memory-link-table">
+            <thead>
+              <tr>
+                <th>Platform</th>
+                <th>User</th>
+                <th>Player</th>
+                <th>UUID</th>
+                <th>Status</th>
+                <th>Source</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-for="link in memoryLinks" :key="`${link.platform}:${link.user_id}:${link.verified_at}`">
+                <td>{{ link.platform }}</td>
+                <td>{{ link.user_id }}</td>
+                <td>{{ link.username }}</td>
+                <td>…{{ link.uuid_suffix }}</td>
+                <td>
+                  <StatusBadge
+                    :state="link.status === 'VERIFIED' ? 'ok' : 'idle'"
+                    :label="link.status"
+                  />
+                </td>
+                <td>{{ link.source }}</td>
+              </tr>
+            </tbody>
+          </table>
+          <p v-else class="cb-caption" data-test="mc-memory-link-empty">
+            还没有绑定。在 QQ 里对罐头说「把我和 Minecraft 里的 &lt;玩家名&gt; 绑定」，
+            她会先报出服务器 + 玩家名 + UUID 尾号，要你回一句「确认绑定」才真的记住。
+          </p>
+
+          <h4 class="cb-caption">记住的事（最近 50 条）</h4>
+          <table v-if="memoryFacts.length" class="minecraft__table" data-test="mc-memory-table">
+            <thead>
+              <tr>
+                <th>Kind</th>
+                <th>Content</th>
+                <th>Source</th>
+                <th>Confidence</th>
+                <th>Freshness</th>
+                <th>Seen</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-for="fact in memoryFacts" :key="`${fact.kind}:${fact.subject}`">
+                <td>{{ fact.kind }}</td>
+                <td>{{ fact.content }}</td>
+                <td>{{ fact.source }}</td>
+                <td>{{ fact.confidence.toFixed(2) }}</td>
+                <td>
+                  <StatusBadge :state="freshnessState(fact.fresh)" :label="fact.fresh" />
+                </td>
+                <td>{{ fact.observation_count }}</td>
+              </tr>
+            </tbody>
+          </table>
+          <p v-else class="cb-caption" data-test="mc-memory-empty">
+            还没有记住什么。玩家上线、任务收尾与世界对账都会写入事实 —— 但每个 tick 不写。
           </p>
         </section>
 

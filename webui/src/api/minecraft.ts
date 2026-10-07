@@ -23,6 +23,7 @@ import type {
   MinecraftJoinResult,
   MinecraftLeaveResult,
   MinecraftLookAtResult,
+  MinecraftMemoryResponse,
   MinecraftMoveToResult,
   MinecraftOverview,
   MinecraftStopResult,
@@ -193,5 +194,9 @@ export const minecraftApi = {
   /** Phase 4A：确认门 Debug（只能缩小授权：造测试条 / 取消 / 置过期）。 */
   confirm(action: 'create_test' | 'cancel' | 'expire', body: Record<string, unknown> = {}) {
     return api.post<Record<string, unknown>>('/minecraft/agent/confirm', { action, ...body })
+  },
+  /** Phase 5C：身份桥 + 世界记忆（只读；没有记忆能力也恒 200）。 */
+  memory() {
+    return api.get<MinecraftMemoryResponse>('/minecraft/memory')
   },
 }

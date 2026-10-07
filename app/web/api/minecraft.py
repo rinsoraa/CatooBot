@@ -941,6 +941,44 @@ class MinecraftApiRoutes(WebContext):
 
     # ------------------------------------------------------- bridge callbacks
 
+    async def _v1_minecraft_memory(self, request: web.Request) -> web.Response:
+        """Phase 5C：身份桥 + 世界记忆的只读投影（读端点恒 200）。
+
+        没有记忆能力（未启用 / 装配失败 / 不在世界里）时如实返回 ``enabled: false``；
+        ``memory_degraded`` / ``identity_degraded`` 有值就是**降级**，绝不假装检索成功。
+        """
+        bridge = getattr(self._bot, "minecraft_memory", None)
+        if bridge is None:
+            return ok(
+                {
+                    "ok": True,
+                    "enabled": False,
+                    "facts": [],
+                    "links": [],
+                    "status": {"enabled": False},
+                },
+                request=request,
+            )
+        try:
+            status = await bridge.status()
+            facts = await bridge.facts_view(limit=50)
+            links = await bridge.links_view(limit=50)
+        except Exception as exc:  # noqa: BLE001 - 记忆读失败只降级，不变成 5xx
+            return ok(
+                {"ok": True, "enabled": False, "degraded": type(exc).__name__},
+                request=request,
+            )
+        return ok(
+            {
+                "ok": True,
+                "enabled": status.enabled,
+                "status": status.to_payload(),
+                "facts": facts,
+                "links": links,
+            },
+            request=request,
+        )
+
     async def _v1_minecraft_events(self, request: web.Request) -> web.Response:
         """Bridge runtime 的事件回调。中间件已做 token 门，这里做权威复检。"""
         service = _service(self._bot)
@@ -970,6 +1008,8 @@ class MinecraftApiRoutes(WebContext):
             wrap(self._v1_minecraft_task_action),
         )
         app.router.add_get(f"{API_PREFIX}/minecraft/world", wrap(self._v1_minecraft_world))
+        # Phase 5C：身份桥 + 世界记忆（只读；没有记忆能力也恒 200）
+        app.router.add_get(f"{API_PREFIX}/minecraft/memory", wrap(self._v1_minecraft_memory))
         app.router.add_get(f"{API_PREFIX}/minecraft/inventory", wrap(self._v1_minecraft_inventory))
         app.router.add_get(
             f"{API_PREFIX}/minecraft/inventory/slots", wrap(self._v1_minecraft_inventory_slots)

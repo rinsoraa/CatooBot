@@ -1037,6 +1037,22 @@ class TaskRuntimeConfig(BaseModel):
     no_progress_limit: int = Field(default=3, ge=1, le=10)
 
 
+class MinecraftMemoryConfig(BaseModel):
+    """Phase 5C：身份桥 + 持久世界记忆（只暴露真正需要的旋钮）。
+
+    关掉这里只影响"记得/想得起"，**绝不影响**任务、确认门与动作权限（§二：记忆只给上下文）。
+    """
+
+    enabled: bool = True
+    #: 周期对账间隔（世界感知 → 记忆；绝不反向写世界）
+    reconcile_interval_seconds: float = Field(default=300.0, ge=30.0, le=3600.0)
+    #: 一次 turn 注入的记忆条数上限（§四十九：≤5 条）
+    context_items: int = Field(default=5, ge=1, le=5)
+    #: 运维显式配置的「QQ 号 → Minecraft 玩家名」（§六 优先级 2；
+    #: 次于用户自己显式验证，且**只**建立身份关联，绝不授予任何权限）
+    linked_players: dict[str, str] = Field(default_factory=dict)
+
+
 class MinecraftConfig(BaseModel):
     """Minecraft 连接层（Phase 1）：Bridge runtime（mineflayer 子进程）的托管参数。
 
@@ -1080,6 +1096,8 @@ class MinecraftConfig(BaseModel):
     action: MinecraftActionConfig = Field(default_factory=MinecraftActionConfig)
     #: Phase 3E：Agent Bridge（六个 LLM Tool 的权限门）
     agent: MinecraftAgentConfig = Field(default_factory=MinecraftAgentConfig)
+    #: Phase 5C：身份桥 + 持久 Minecraft 记忆
+    memory: MinecraftMemoryConfig = Field(default_factory=MinecraftMemoryConfig)
 
 
 class AppConfig(BaseModel):

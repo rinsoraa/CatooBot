@@ -630,3 +630,12 @@ minecraft:
       allow_medium: false    # dig / place / equip / inventory_move / container_transfer / craft / pickup_item 默认关闭；启用后仍需确认
       allow_high: false      # 还没有 HIGH 级动作；保持关闭
       allow_destructive: false  # 还没有 DESTRUCTIVE 级动作；保持关闭
+  # ---- 身份桥 + 持久世界记忆（Phase 5C）
+  # 记忆只提供"上下文"：它不授予任何权限，也不会降低 MEDIUM 动作的确认要求。
+  # 关掉这里 = 她"不记得"Minecraft 里的事，任务与动作权限一点都不受影响。
+  memory:
+    enabled: true              # 身份绑定 + 记忆写入/检索/对账的总开关
+    reconcile_interval_seconds: 300  # 多久拿当前世界核对一次记忆（30~3600）；对账只读、绝不反向写世界
+    context_items: 5           # 一次对话最多带几条 Minecraft 记忆（1~5）
+    linked_players: {}         # 运维直接写死的「QQ 号 → Minecraft 玩家名」，例：{"2731431246": "空凛"}
+                               # 只在玩家在线时生效；已有的用户显式绑定绝不会被它覆盖；它不给任何权限

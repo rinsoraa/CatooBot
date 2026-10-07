@@ -27,9 +27,29 @@ CATEGORIES = (
 
 LAYERS = ("semantic", "episodic")
 
-STATUSES = ("active", "archived", "superseded", "expired", "deleted")
+STATUSES = (
+    "active",
+    "archived",
+    "superseded",
+    "expired",
+    "deleted",
+    # Phase 5C：Minecraft 世界是动态的 —— 事实会"过时 / 被现实推翻"，
+    # 但历史记录绝不删除（`invalidated` = 当前世界已经和它矛盾）。
+    "stale",
+    "invalidated",
+)
 
-SOURCES = ("explicit", "conversation", "inferred", "imported", "system", "vision", "sandbox")
+SOURCES = (
+    "explicit",
+    "conversation",
+    "inferred",
+    "imported",
+    "system",
+    "vision",
+    "sandbox",
+    # Phase 5C：Minecraft 域的语义记忆（身份桥 / 世界观察 / 任务经验）
+    "minecraft",
+)
 
 TEMPORAL_SCOPES = ("long_term", "short_term", "event")
 

@@ -606,3 +606,65 @@ export interface MinecraftTaskCurrentResponse {
   task: MinecraftTaskView | null
   session_id: string | null
 }
+
+// ---- Phase 5C：身份桥 + 持久世界记忆（只读投影；权限永远不在这里） ----
+
+/** 一条 Minecraft 记忆事实（server/character 隔离；历史不删，只变 stale/invalidated）。 */
+export interface MinecraftMemoryFactView {
+  kind: string
+  server_id: string
+  subject: string
+  content: string
+  source: string
+  confidence: number
+  observed_at: number
+  last_verified_at: number
+  fresh: string
+  world_revision: string
+  player_uuid: string
+  username: string
+  position: { x: number; y: number; z: number } | null
+  radius: number
+  task_id: string
+  plan_version: number
+  initiator: string
+  outcome: string
+  observation_count: number
+  extra: Record<string, unknown>
+}
+
+/** QQ ↔ Minecraft 身份绑定（只给 UUID 尾号，绝不外泄完整 UUID）。 */
+export interface MinecraftIdentityLinkView {
+  platform: string
+  user_id: string
+  server_id: string
+  username: string
+  uuid_suffix: string
+  status: string
+  source: string
+  verified_at: number
+}
+
+export interface MinecraftMemoryStatusView {
+  enabled: boolean
+  server_id: string
+  server_label: string
+  character_key: string
+  facts: number
+  stale: number
+  invalidated: number
+  links: Record<string, number>
+  /** 非空 = 记忆层降级（绝不假装检索成功） */
+  memory_degraded: string
+  identity_degraded: string
+  last_reconcile: Record<string, unknown>
+}
+
+export interface MinecraftMemoryResponse {
+  ok: boolean
+  enabled: boolean
+  status?: MinecraftMemoryStatusView
+  facts?: MinecraftMemoryFactView[]
+  links?: MinecraftIdentityLinkView[]
+  degraded?: string
+}

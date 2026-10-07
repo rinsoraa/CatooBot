@@ -3,6 +3,64 @@
 本文件记录 CatooBot 的版本演进。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号见 `pyproject.toml`；日期取自真实提交历史（本仓库 2026-09-30 起）。
 
+## Minecraft Phase 5C — 身份桥与持久世界记忆
+
+* **身份桥（Identity Bridge）**：新增 `app/integrations/minecraft/identity.py`。
+  `MinecraftServerIdentity` 的 `server_id` 是 `edition|host|port|world_key` 的确定性摘要
+  （同一台服务器重启后不变，换服必变）；`player_uuid` 是 canonical identity、`username` 只是
+  显示名；`IdentityLink(platform=qq, user_id, server_id, player_uuid, status=VERIFIED)`；
+  来源优先级「用户显式验证 > 运维配置 > 无绑定」，**绝不**用昵称/同名自动认定。
+  迁移 28 建 `minecraft_identity_links`（partial unique index 钉死"一个 uuid 在一台服务器上
+  只能有一个 VERIFIED 主体"）；冲突请求一律 `identity.conflict` 拒绝且不覆盖；解绑 = REVOKED、
+  历史行保留。绑定只建立"谁是谁"：`grants_permission=False`，**不授予任何权限**。
+* **QQ 绑定命令**：新增 `app/integrations/minecraft/identity_commands.py`（认领式订阅，
+  注册在任务入口之前）：两步确认（先报「服务器 + 玩家名 + UUID 尾号」，回「确认绑定」才写）、
+  二次确认时重新解析并比对 uuid（人走了/换人了就什么都不改）、「解除绑定」、普通聊天不认领。
+* **Minecraft 记忆域**：新增 `app/memory/minecraft/`（model/store/writer/reconcile/retrieval），
+  复用**现有**记忆引擎（同一张 `memories` 表、同一套 dedupe/conflict/embedding/quota），
+  只用专用 scope `character:<角色>:minecraft` 与普通聊天记忆隔离，每条 `source=minecraft`、
+  provenance 带 `domain=minecraft` + `server_id`。**不新增第二套存储/向量库**。
+  七种 kind（PLAYER/LOCATION/RESOURCE/TASK/EVENT/RELATIONSHIP/PREFERENCE）、五种来源
+  （OBSERVED/USER_STATED/TASK_RESULT/DERIVED/SYSTEM）与各自的置信度上限
+  （DERIVED ≤0.70）、新鲜度 ACTIVE/STALE/INVALIDATED/SUPERSEDED（引擎 status 直接映射，
+  **过期不删历史**）。
+* **写入策略**：只在任务收尾（SUCCEEDED/FAILED/EXPIRED）、玩家出现、重要地点/资源观察、
+  用户明确说过的事、关系变化时写；`moved 1 block` / `look_at` / 路径更新 / 每 tick 一律不写
+  （域里根本没有这类 API）。任务结果只留语义摘要，不留 action_id / 超时 / pathfinder 调试 /
+  checkpoint 树；失败任务写成"当时的情况"（`temporary`），不下永久结论。
+* **去重与冲突**：`dedupe_key = sha256(domain|server_id|kind|subject)` 作为语义身份 ——
+  同一件事反复观察只强化那一条（观察次数 +1、置信度 +0.05 且不超上限）；矛盾内容保留冲突
+  （旧条 `superseded` + `conflicts_with_id`），绝不覆盖。
+* **世界对账**：`MinecraftMemoryReconciler` 只做单向 `WorldPerception → Memory`。
+  世界说"不在了" → `INVALIDATED`（行还在）；"还在" → 刷新复核时间；"读不到"（太远 / 桥挂了 /
+  `reason=unavailable`）→ **什么都不做**；非位置事实只按时间变 `STALE`。
+  位置类事实按 `radius` 区分"聚簇锚点"（锚点空 = unknown）与"就是那一格"（空 = absent）。
+  复核只用 SAFE 只读，记忆桥/对账器上**没有**任何世界修改方法。
+* **检索适配器**：`MinecraftMemoryRetriever` 最多注入 **5 条**、每条一句话（≤120 字、
+  整块 ≤420 字），优先级「当前玩家 > 附近资源/地点 > 最近任务 > 事件/关系/偏好 > 历史」，
+  已失效的排最后并超出预算直接不进上下文；检索时对前 2 条位置事实做一次真实世界复核 ——
+  世界说没有了就把那句话当场改写成「（这条已经被当前世界证伪）」（**当前世界优先**）。
+* **接入**：`CharacterRuntime.respond()` 把记忆块拼在她"此刻处境"后面（QQ 与游戏内共用同一条
+  路径，平台名由会话前缀判定）；Bot 装配 `MinecraftMemoryBridge`（复用同一个 SQLite / 记忆引擎），
+  订阅 `minecraft.player_joined` → 记忆、`task.succeeded/failed/expired` → 任务经验、
+  周期对账（默认 300s，随 shutdown 一起停）、`minecraft.memory.linked_players` 运维显式配置
+  （玩家不在线就等下一轮；已有显式绑定绝不覆盖）。任何一步失败**只降级记忆**
+  （`memory_degraded` 可见、`context_block()` 返回空串），聊天与任务完全不受影响。
+* **LLM 安全边界**：记忆内容一律是"不可信上下文" —— 试图改规则的语句照记但置信度压到 0.40、
+  provenance 标 `untrusted_directive`，说十遍也不长信心；关系事实带 `grants_permission=False`。
+  测试里有源码级守卫：Agent / TaskRuntime / Tools 的授权链路**不认识**记忆桥。
+* **API / WebUI**：新增只读端点 `GET /api/v1/minecraft/memory`（恒 200；未启用 → `enabled:false`）；
+  WebUI Minecraft 页新增只读卡片 **Identity & World Memory**（状态 + 绑定表（只显示 UUID 尾号）+
+  最近 50 条事实）。
+* **配置**：新增 `minecraft.memory`（`enabled` / `reconcile_interval_seconds` / `context_items` /
+  `linked_players`）—— **`allow_medium` 默认值没有变化**，记忆也不会降低任何动作的确认要求。
+* **真机取证**：新增 `scripts/memory_smoke_real.py`（identity / memory / world / setblock /
+  retrieval / restart 六段，含 `/setblock` 交互段与跨进程持久化子进程取证）；
+  新增 `tests/test_minecraft_identity.py`、`test_minecraft_memory.py`、
+  `test_minecraft_memory_reconciliation.py`、`test_minecraft_memory_retrieval.py`、
+  `test_minecraft_memory_security.py`、`test_minecraft_memory_recovery.py`。
+  Minecraft 工具仍是 **19** 个，未新增任何 Minecraft tool / ActionRuntime action。
+
 ## Minecraft Phase 5B — QQ 任务入口与统一任务控制
 
 * **QQ 只是入口，不是执行器**：新增 `app/tasks/qq_entry.py`（QQ Task Entry），只做

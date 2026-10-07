@@ -96,7 +96,7 @@ class MemoryRepository:
             """UPDATE memories SET category=?, content=?, content_hash=?, importance=?,
                    confidence=?, updated_at=?, layer=?, summary=?, source=?, status=?,
                    supersedes_id=?, conflicts_with_id=?, valid_from=?, valid_until=?,
-                   event_at=?, search_text=?
+                   event_at=?, search_text=?, character_id=?, provenance=?, dedupe_key=?
                WHERE id=?""",
             (
                 memory.category,
@@ -115,6 +115,11 @@ class MemoryRepository:
                 memory.valid_until,
                 memory.event_at,
                 index_text(memory.content, memory.summary),
+                # Phase 5C：域记忆靠 provenance/dedupe_key 承载结构化事实，
+                # update 也必须把它们写回去（否则"再观察一次"只改了内容、丢了计数/时间）
+                memory.character_id,
+                json.dumps(memory.provenance, ensure_ascii=False),
+                memory.dedupe_key,
                 memory.id,
             ),
         )

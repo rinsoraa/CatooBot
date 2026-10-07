@@ -74,6 +74,8 @@ class CharacterRuntime:
         self.sandbox: Any = None  # optional SandboxRuntime (v2.0): her life
         # Phase 3E：Minecraft Agent Bridge（LLM Tool 的唯一入口；Bot 装配）
         self.minecraft_agent: Any = None
+        # Phase 5C：Minecraft 身份桥 + 持久世界记忆（Bot 装配；只提供上下文）
+        self.minecraft_memory: Any = None
         self.builder = CharacterContextBuilder()
         self.processor = CharacterResponseProcessor(logger=self._log)
         self.expression_store: Any = None  # optional ExpressionStore (Task 22)
@@ -161,6 +163,17 @@ class CharacterRuntime:
             except Exception:  # noqa: BLE001 - the bridge must never break chat
                 self._log.debug("Cognitive context unavailable", exc_info=True)
 
+        # Phase 5C：把她「记得的 Minecraft 事情」接在世界处境后面（≤5 条、检索时
+        # 用只读工具复核过）。**只是上下文** —— 它不参与任何权限判断（§二/§五十二）。
+        minecraft_context = self._minecraft_context()
+        memory_block = await self._minecraft_memory_context(
+            session_id=session_id, user_id=user_id, text=user_text
+        )
+        if memory_block:
+            minecraft_context = (
+                f"{minecraft_context}\n{memory_block}" if minecraft_context else memory_block
+            )
+
         messages = self.builder.build(
             persona,
             state,
@@ -173,7 +186,7 @@ class CharacterRuntime:
             time_context=time_context,
             extra_instruction=extra_instruction,
             world=await self._world_context(),
-            minecraft=self._minecraft_context(),
+            minecraft=minecraft_context,
             media_context=media_context,
             facts=facts,
             expressions=expressions,
@@ -548,6 +561,30 @@ class CharacterRuntime:
         await self.states.update(activity=activity, current_focus=current_focus)
 
     # ---------------------------------------------------------------- world
+
+    @staticmethod
+    def _memory_platform(session_id: str) -> str:
+        """会话 → 身份平台名（和 :data:`PLATFORMS` 同口径）。"""
+        return "minecraft_chat" if str(session_id).startswith("minecraft:") else "qq"
+
+    async def _minecraft_memory_context(
+        self, *, session_id: str, user_id: int | str, text: str
+    ) -> str:
+        """一次 turn 的「相关 Minecraft 记忆」块（没有记忆/不在世界里 → 空串）。"""
+        bridge = getattr(self, "minecraft_memory", None)
+        if bridge is None:
+            return ""
+        try:
+            return str(
+                await bridge.context_block(
+                    text=text,
+                    platform=self._memory_platform(session_id),
+                    user_id=str(user_id or ""),
+                )
+            )
+        except Exception:  # noqa: BLE001 - 记忆只是上下文，绝不拖垮对话
+            self._log.debug("Minecraft memory context unavailable", exc_info=True)
+            return ""
 
     def _minecraft_context(self) -> str:
         """她此刻在 Minecraft 里的一行处境（Phase 3E §十九；没有就完全静默）。"""

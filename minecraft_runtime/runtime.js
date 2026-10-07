@@ -1605,6 +1605,9 @@ function buildWorldSnapshot(bot, layers) {
       const position = player.entity.position
       return {
         username: player.username,
+        // Phase 5C：canonical identity —— mineflayer 给的玩家 UUID（离线服也有稳定 UUID）。
+        // username 只用于显示/说话，绝不作为身份键（改名不该换人）。
+        uuid: player.uuid ?? null,
         pos: { x: Math.round(position.x * 10) / 10, y: Math.round(position.y * 10) / 10, z: Math.round(position.z * 10) / 10 },
         ...fields,
       }
@@ -3560,11 +3563,18 @@ function wireBot(bot) {
   })
 
   bot.on('playerJoined', (player) => {
-    pushEvent('minecraft.player_joined', { username: player?.username ?? null })
+    // Phase 5C：事件里带上 uuid，身份桥（IdentityLink）用它做 canonical key
+    pushEvent('minecraft.player_joined', {
+      username: player?.username ?? null,
+      uuid: player?.uuid ?? null,
+    })
   })
 
   bot.on('playerLeft', (player) => {
-    pushEvent('minecraft.player_left', { username: player?.username ?? null })
+    pushEvent('minecraft.player_left', {
+      username: player?.username ?? null,
+      uuid: player?.uuid ?? null,
+    })
   })
 
   bot.on('kicked', (reason) => {

@@ -76,6 +76,10 @@ class MemoryManager:
         source: str = "conversation",
         temporal_scope: str = "long_term",
         event_at: int | None = None,
+        # Phase 5C：域专用元数据（Minecraft 域用它带 server_id/kind/observed_at 等结构化事实）
+        character_id: str = "",
+        provenance: dict[str, Any] | None = None,
+        dedupe_key: str = "",
     ) -> Memory | None:
         """Store one memory; a database failure queues it in the outbox.
 
@@ -98,6 +102,9 @@ class MemoryManager:
             "source": source,
             "temporal_scope": temporal_scope,
             "event_at": event_at,
+            "character_id": character_id,
+            "provenance": provenance,
+            "dedupe_key": dedupe_key,
         }
         try:
             return await self._remember_now(**inputs)
@@ -154,6 +161,9 @@ class MemoryManager:
         source: str = "conversation",
         temporal_scope: str = "long_term",
         event_at: int | None = None,
+        character_id: str = "",
+        provenance: dict[str, Any] | None = None,
+        dedupe_key: str = "",
     ) -> Memory | None:
         """Store one memory with dedup/merge/conflict logic. None = skipped."""
         content = content.strip()
@@ -209,6 +219,9 @@ class MemoryManager:
                     scope_key=key,
                     user_id=user_id,
                     group_id=group_id,
+                    character_id=character_id,
+                    provenance=dict(provenance or {}),
+                    dedupe_key=dedupe_key,
                     category=category,
                     content=content,
                     summary=summary.strip(),

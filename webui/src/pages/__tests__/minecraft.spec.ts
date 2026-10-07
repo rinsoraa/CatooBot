@@ -116,6 +116,81 @@ const WORLD_VIEW = {
   raw: { self: {}, blocks: {} },
 }
 
+// Phase 5C：身份桥 + 世界记忆（只读投影；UUID 只给尾号）
+const MEMORY_STATUS = {
+  enabled: true,
+  server_id: 'mc-deadbeef',
+  server_label: '本地服务器 · 127.0.0.1:25565',
+  character_key: '空凛',
+  facts: 2,
+  stale: 1,
+  invalidated: 1,
+  links: { VERIFIED: 1, REVOKED: 0, CONFLICT: 0 },
+  memory_degraded: '',
+  identity_degraded: '',
+  last_reconcile: { invalidated: 1, staled: 1, confirmed: 0 },
+}
+
+const MEMORY_FACTS = [
+  {
+    kind: 'LOCATION',
+    server_id: 'mc-deadbeef',
+    subject: 'location:oak_log@16:1:32',
+    content: '16:1:32 附近有一片橡树。',
+    source: 'OBSERVED',
+    confidence: 0.9,
+    observed_at: 1_700_000_000,
+    last_verified_at: 1_700_000_100,
+    fresh: 'INVALIDATED',
+    world_revision: 'rev-2',
+    player_uuid: '11111111-2222-3333-4444-555555559f2c',
+    username: '',
+    position: { x: 16, y: 64, z: 32 },
+    radius: 16,
+    task_id: '',
+    plan_version: 0,
+    initiator: '',
+    outcome: '',
+    observation_count: 3,
+    extra: {},
+  },
+  {
+    kind: 'PLAYER',
+    server_id: 'mc-deadbeef',
+    subject: 'player:11111111',
+    content: '见过玩家 空凛。',
+    source: 'OBSERVED',
+    confidence: 0.9,
+    observed_at: 1_700_000_200,
+    last_verified_at: 1_700_000_200,
+    fresh: 'ACTIVE',
+    world_revision: '',
+    player_uuid: '11111111-2222-3333-4444-555555559f2c',
+    username: '空凛',
+    position: null,
+    radius: 0,
+    task_id: '',
+    plan_version: 0,
+    initiator: '',
+    outcome: '',
+    observation_count: 1,
+    extra: {},
+  },
+]
+
+const MEMORY_LINKS = [
+  {
+    platform: 'qq',
+    user_id: '2731431246',
+    server_id: 'mc-deadbeef',
+    username: '空凛',
+    uuid_suffix: '9f2c',
+    status: 'VERIFIED',
+    source: 'explicit',
+    verified_at: 1_700_000_300,
+  },
+]
+
 const TASK_VIEW = {
   task_id: 'task_abc',
   session_id: 'minecraft:127.0.0.1:25565:空凛',
@@ -242,6 +317,7 @@ function makeHandler(
     findBlocks?: MockReply
     task?: MockReply
     taskAction?: MockReply
+    memory?: MockReply
   } = {},
 ) {
   return (request: MockRequest): MockReply => {
@@ -257,6 +333,9 @@ function makeHandler(
     }
     if (/^\/api\/v1\/minecraft\/task\/[^/]+\/(pause|resume|cancel)$/.test(url.pathname)) {
       return overrides.taskAction ?? ok({ ...TASK_VIEW, state: 'PAUSED' })
+    }
+    if (url.pathname === '/api/v1/minecraft/memory' && request.method === 'GET') {
+      return overrides.memory ?? ok({ ok: true, enabled: true, status: MEMORY_STATUS, facts: [], links: [] })
     }
     if (url.pathname === '/api/v1/minecraft/join' && request.method === 'POST') {
       return overrides.join ?? ok({ session_id: 'mc_new', status: 'CONNECTING' })
@@ -2082,5 +2161,76 @@ describe('Minecraft 页 · follow_player（Phase 3D）', () => {
     await flushAll()
     expect(wrapper.find('[data-test="mc-task-pause"]').exists()).toBe(false)
     expect(wrapper.find('[data-test="mc-task-cancel"]').exists()).toBe(false)
+  })
+
+  // ------------------------------------------------- Phase 5C：身份桥 + 世界记忆
+
+  it('没有记忆时给出引导，不渲染空表', async () => {
+    const { wrapper } = await mountPage(
+      makeHandler({
+        memory: ok({
+          ok: true,
+          enabled: false,
+          status: { ...MEMORY_STATUS, enabled: false, facts: 0, stale: 0, invalidated: 0 },
+          facts: [],
+          links: [],
+        }),
+      }),
+    )
+    await flushAll()
+    expect(wrapper.find('[data-test="mc-memory"]').exists()).toBe(true)
+    expect(wrapper.get('[data-test="mc-memory-enabled"]').text()).toBe('否')
+    expect(wrapper.find('[data-test="mc-memory-table"]').exists()).toBe(false)
+    expect(wrapper.find('[data-test="mc-memory-empty"]').exists()).toBe(true)
+    expect(wrapper.find('[data-test="mc-memory-link-table"]').exists()).toBe(false)
+    expect(wrapper.find('[data-test="mc-memory-degraded"]').exists()).toBe(false)
+  })
+
+  it('有记忆时展示事实（含 freshness）、绑定尾号与对账结果', async () => {
+    const { wrapper } = await mountPage(
+      makeHandler({
+        memory: ok({
+          ok: true,
+          enabled: true,
+          status: MEMORY_STATUS,
+          facts: MEMORY_FACTS,
+          links: MEMORY_LINKS,
+        }),
+      }),
+    )
+    await flushAll()
+    expect(wrapper.get('[data-test="mc-memory-count"]').text()).toContain('2')
+    expect(wrapper.get('[data-test="mc-memory-count"]').text()).toContain('stale 1')
+    expect(wrapper.get('[data-test="mc-memory-reconcile"]').text()).toContain('invalidated')
+
+    const facts = wrapper.get('[data-test="mc-memory-table"]').text()
+    expect(facts).toContain('LOCATION')
+    expect(facts).toContain('INVALIDATED')
+    expect(facts).toContain('OBSERVED')
+
+    const links = wrapper.get('[data-test="mc-memory-link-table"]').text()
+    expect(links).toContain('2731431246')
+    expect(links).toContain('空凛')
+    // §五：只给 UUID 尾号，绝不外泄完整 UUID
+    expect(links).toContain('…9f2c')
+    expect(links).not.toContain('11111111-2222')
+    expect(links).toContain('VERIFIED')
+  })
+
+  it('记忆层降级时如实展示（绝不假装检索成功）', async () => {
+    const { wrapper } = await mountPage(
+      makeHandler({
+        memory: ok({
+          ok: true,
+          enabled: true,
+          status: { ...MEMORY_STATUS, memory_degraded: 'OperationalError' },
+          facts: [],
+          links: [],
+        }),
+      }),
+    )
+    await flushAll()
+    expect(wrapper.get('[data-test="mc-memory-degraded"]').text()).toContain('OperationalError')
+    expect(wrapper.get('[data-test="mc-memory-degraded"]').text()).toContain('降级')
   })
 })

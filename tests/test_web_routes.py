@@ -55,6 +55,7 @@ ROUTES = [
     "GET /api/v1/minecraft",
     "GET /api/v1/minecraft/inventory",
     "GET /api/v1/minecraft/inventory/slots",
+    "GET /api/v1/minecraft/memory",
     "GET /api/v1/minecraft/task",
     "GET /api/v1/minecraft/task/{task_id}",
     "GET /api/v1/minecraft/world",

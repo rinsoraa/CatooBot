@@ -68,6 +68,8 @@ class RelativeObject(BaseModel):
 
 class RelativePlayer(RelativeObject):
     username: str = ""
+    #: Phase 5C：canonical identity（身份桥用它，username 只用于显示/说话）
+    uuid: str = ""
 
 
 class RelativeEntity(RelativeObject):
@@ -212,6 +214,7 @@ def build_semantic_model(raw: RawSnapshot) -> dict[str, Any]:
     model["players"] = [
         {
             "name": player.username,
+            "uuid": player.uuid or None,
             "direction": player.relative_direction,
             "distance": round(player.distance, 1),
             "compass": player.compass,

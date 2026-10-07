@@ -869,6 +869,10 @@ _NOTES: dict[str, str] = {
     "minecraft.agent.tools.allow_destructive": (
         "允许 DESTRUCTIVE 动作（还没有这一级动作；保持关闭）"
     ),
+    "minecraft.memory.enabled": "Minecraft 身份桥 + 世界记忆（关掉只是「不记得」，权限照旧）",
+    "minecraft.memory.reconcile_interval_seconds": "多久拿当前世界核对一次记忆（对账）",
+    "minecraft.memory.context_items": "每次对话最多带几条 Minecraft 记忆（≤5）",
+    "minecraft.memory.linked_players": "运维直接写死的「QQ 号 → 玩家名」（只认人，不给权限）",
     "minecraft.action.place.timeout": "单次放置最长多少秒（到点按 TIMEOUT 收尾并清理）",
     "minecraft.action.equip.timeout": "单次换手（把物品拿到主手）最长多少秒",
     "minecraft.action.inventory_move.timeout": "单次背包搬运（单物品单槽位）最长多少秒",
@@ -987,6 +991,7 @@ _SECTION_LABELS: dict[str, str] = {
     "minecraft.agent.tools": "模型可以做什么（风险分级）",
     "minecraft.agent.confirmation": "高风险动作的用户确认（Phase 4A）",
     "minecraft.agent.chat": "游戏内聊天（Phase 4A）",
+    "minecraft.memory": "身份桥 + 世界记忆（Phase 5C）",
     "minecraft.action.dig": "Minecraft 挖掘（dig · 破坏单方块）",
     "minecraft.action.place": "Minecraft 放置（place · 放单方块）",
     "minecraft.action.equip": "Minecraft 换主手（equip · 单个物品）",

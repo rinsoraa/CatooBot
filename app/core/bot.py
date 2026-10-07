@@ -323,6 +323,11 @@ class Bot:
         self.task_turns: Any = None
         #: Phase 5B：QQ 任务入口（任务运行时装配好之后才存在）
         self.task_entry: Any = None
+        #: Phase 5C：Minecraft 身份桥 + 持久世界记忆（装配失败 = 只是没有记忆能力）
+        self.minecraft_memory: Any = None
+        self.minecraft_identity: Any = None
+        self._memory_tasks: set[Any] = set()
+        self._memory_reconcile_task: Any = None
         if config.minecraft.enabled:
             try:
                 from app.integrations.minecraft.service import MinecraftService
@@ -337,6 +342,7 @@ class Bot:
                 self.minecraft.chat_bridge = MinecraftChatBridge(self, self.minecraft)
                 # Agent Bridge 暴露给工具上下文 / 每轮 prompt 上下文
                 self.character.minecraft_agent = self.minecraft.agent
+                self._setup_minecraft_memory()
             except Exception:  # noqa: BLE001 - minecraft trouble must not stop startup
                 self.log.exception("Minecraft bridge initialization failed; continuing without it")
                 self.minecraft = None
@@ -534,9 +540,12 @@ class Bot:
 
         # QQ surface: message recording + character chat. No command dispatch.
         self.event_bus.on("message", self.core_router.on_message)
+        # Phase 5C §七/§八：身份绑定命令（更具体 → 排在任务入口之前；认不出来就不认领）。
+        self.event_bus.on("message", self._dispatch_identity_message)
         # Phase 5B §二十二/§二十三：QQ 任务入口排在**人格插件之前** —— 只有确认是任务
         # 请求（或任务控制命令）时它才认领这条消息；否则原样交给正常对话管线。
         self.event_bus.on("message", self._dispatch_task_message)
+        self._start_memory_reconcile()
 
         await self.plugins.load_all()
         loaded = list(self.plugins.loaded)
@@ -797,6 +806,10 @@ class Bot:
                 self.log.exception("Minecraft bridge failed to start; continuing without it")
                 self.minecraft = None
                 story.boot_step("Minecraft 桥启动失败（QQ 聊天不受影响）", ok=False)
+        if self.minecraft_memory is not None:
+            # Phase 5C §六 优先级 2：运维显式配置的 QQ → 玩家名。
+            # 玩家当时不在线就留着 —— 每次周期对账前会再试一次。
+            self._spawn_memory(self._apply_configured_links())
         if self.minecraft is not None:
             # Phase 5A：多步骤任务运行时（checkpoint 复用同一个 SQLite）。
             # 装配失败 = 没有任务能力，单工具行为完全不受影响（§一百零二）。
@@ -958,7 +971,168 @@ class Bot:
             sandbox.character.location,
         )
 
+    # ------------------------------------------------- Phase 5C：身份桥/记忆
+
+    def _setup_minecraft_memory(self) -> None:
+        """装配身份桥 + Minecraft 记忆域（失败**只降级记忆**，绝不影响任务/聊天）。"""
+        memory_config = getattr(self.config.minecraft, "memory", None)
+        if memory_config is not None and not memory_config.enabled:
+            self.log.info("[Minecraft.Memory] disabled by configuration")
+            return
+        try:
+            from app.integrations.minecraft.identity_commands import (
+                MinecraftIdentityCommands,
+            )
+            from app.integrations.minecraft.memory_bridge import MinecraftMemoryBridge
+
+            persona_name = ""
+            try:
+                persona_name = str(self.character.personas.persona.identity.name or "")
+            except Exception:  # noqa: BLE001 - 拿不到名字就用默认 scope
+                persona_name = ""
+            self.minecraft_memory = MinecraftMemoryBridge(
+                self.minecraft,
+                memory_manager=self.memory,
+                database=self.database,
+                character_key=persona_name or "default",
+                character_label=persona_name or "罐头",
+                logger=self.log,
+            )
+            if self.character is not None:
+                # 回合上下文注入（QQ 与游戏内共用同一条 respond 路径）
+                self.character.minecraft_memory = self.minecraft_memory
+            self.minecraft_identity = MinecraftIdentityCommands(
+                self, self.minecraft_memory, logger=self.log
+            )
+            # 玩家上线 → 记忆（与任务事件同一条事件通道，§三十）
+            self.minecraft.add_listener(self._on_minecraft_memory_event)
+            self.log.info("[Minecraft.Memory] identity bridge + world memory ready")
+        except Exception:  # noqa: BLE001 - 记忆装配失败不拖垮启动（§四十）
+            self.log.exception("Minecraft memory initialization failed; continuing without it")
+            self.minecraft_memory = None
+            self.minecraft_identity = None
+
+    def _start_memory_reconcile(self) -> None:
+        """周期对账（世界感知 → 记忆；绝不反向写世界）。没有记忆能力就什么都不做。"""
+        if self.minecraft_memory is None:
+            return
+        interval = 300.0
+        try:
+            interval = float(self.config.minecraft.memory.reconcile_interval_seconds)
+        except Exception:  # noqa: BLE001 - 配置缺失就用默认
+            interval = 300.0
+        try:
+            self._memory_reconcile_task = asyncio.create_task(
+                self._memory_reconcile_loop(max(30.0, interval))
+            )
+        except RuntimeError:  # pragma: no cover - 没有事件循环（测试）
+            self._memory_reconcile_task = None
+
+    async def _memory_reconcile_loop(self, interval: float) -> None:
+        while True:
+            try:
+                await asyncio.sleep(interval)
+                memory = getattr(self, "minecraft_memory", None)
+                if memory is None:
+                    return
+                await self._apply_configured_links()
+                await memory.reconcile()
+            except asyncio.CancelledError:
+                raise
+            except Exception:  # noqa: BLE001 - 对账失败只是记忆降级
+                self.log.exception("[Minecraft.Memory] reconcile failed (ignored)")
+
+    async def _apply_configured_links(self) -> None:
+        """运维显式配置的「QQ 号 → 玩家名」（§六 优先级 2；绝不越过用户自己的显式验证）。
+
+        只建立**身份关联**：不授予 trusted 权限，也不降低任何动作的确认要求（§十/§五十二）。
+        玩家不在线（拿不到真实 UUID）时什么都不做，等下一次对账再试。
+        """
+        memory = getattr(self, "minecraft_memory", None)
+        if memory is None:
+            return
+        try:
+            mapping = dict(getattr(self.config.minecraft.memory, "linked_players", {}) or {})
+        except Exception:  # noqa: BLE001 - 配置缺失就没有这条来源
+            return
+        for user_id, username in mapping.items():
+            try:
+                if await memory.link_for(platform="qq", user_id=str(user_id)) is not None:
+                    continue
+                if memory.player_named(str(username)) is None:
+                    continue
+                outcome = await memory.bind_configured(
+                    platform="qq", user_id=str(user_id), username=str(username)
+                )
+                if outcome is not None and not outcome.ok:
+                    self.log.warning(
+                        "[Minecraft.Memory] configured link rejected user=%s code=%s",
+                        user_id,
+                        outcome.code,
+                    )
+            except Exception:  # noqa: BLE001 - 单条配置失败不影响其它
+                self.log.exception("[Minecraft.Memory] configured link failed user=%s", user_id)
+
+    async def _stop_memory_reconcile(self) -> None:
+        task = self._memory_reconcile_task
+        self._memory_reconcile_task = None
+        if task is None:
+            return
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+        except Exception:  # noqa: BLE001 - 关闭路径绝不抛
+            pass
+
+    def _on_minecraft_memory_event(self, event: Any) -> None:
+        """只订阅「值得记住」的事件（§三十）；其它一律不写记忆。"""
+        memory = getattr(self, "minecraft_memory", None)
+        if memory is None:
+            return
+        name = str(getattr(event, "type_name", "") or "")
+        if name != "minecraft.player_joined":
+            return
+        data = dict(getattr(event, "data", None) or {})
+        self._spawn_memory(memory.on_player_joined(data))
+
+    def _spawn_memory(self, coro: Any) -> None:
+        """记忆写入放后台（失败只记账，绝不阻塞事件通道）。"""
+        try:
+            task = asyncio.create_task(coro)
+        except RuntimeError:  # pragma: no cover - 没有事件循环时安静放弃
+            return
+        self._memory_tasks.add(task)
+        task.add_done_callback(self._memory_tasks.discard)
+
+    async def _dispatch_identity_message(self, event: MessageEvent) -> bool:
+        """把消息先交给身份命令；返回 True = 它认领了（人格插件不再处理）。"""
+        commands = getattr(self, "minecraft_identity", None)
+        if commands is None:
+            return False
+        return bool(await commands.on_message(event))
+
     # ------------------------------------------------- Phase 5B：任务入口/事件
+
+    def _remember_task_outcome(self, event: str, payload: dict[str, Any]) -> None:
+        """任务终态 → 记忆（后台写；记忆层故障绝不影响任务）。"""
+        memory = getattr(self, "minecraft_memory", None)
+        tasks = getattr(self, "tasks", None)
+        if memory is None or tasks is None:
+            return
+        if str(event) not in {"task.succeeded", "task.failed", "task.expired"}:
+            return
+        task_id = str(payload.get("task_id") or "")
+        if not task_id:
+            return
+
+        async def write() -> None:
+            record = await tasks.get(task_id)
+            if record is not None:
+                await memory.on_task_finished(record)
+
+        self._spawn_memory(write())
 
     async def _dispatch_task_message(self, event: MessageEvent) -> bool:
         """把消息先交给 QQ 任务入口；返回 True = 它认领了（人格插件不再处理）。"""
@@ -976,9 +1150,12 @@ class Bot:
             entry.publish(event, dict(payload))
         except Exception:  # noqa: BLE001 - 通知出问题绝不影响任务
             self.log.exception("[Task] publish failed event=%s", event)
+        # Phase 5C §三十一/§三十二：任务收尾 → 一条语义经验（后台写）
+        self._remember_task_outcome(event, dict(payload))
 
     async def shutdown(self) -> None:
         """Graceful stop: schedulers, plugins, web, adapter, database."""
+        await self._stop_memory_reconcile()
         if self.watchdog is not None:
             await self.watchdog.stop()
         if self.config_watcher is not None:

@@ -165,6 +165,93 @@ def session_target(session_id: str) -> tuple[str, int] | None:
         return None
 
 
+async def send_qq(
+    bot: Any,
+    identity: QQIdentity,
+    text: str,
+    *,
+    delays: tuple[float, ...],
+    logger: Any = None,
+) -> bool:
+    """把一句话发到 QQ；``delays`` = 每次失败之后等多久再试（有界，绝不无限重试）。
+
+    真机踩到过：重启 CatooBot 时，内存里的恢复通知会在 **NapCat 还没重连**的时候就发出去
+    （启动日志：`Connection closed → 发送失败 → NapCat connected`），于是
+    "我重启过…"这条就永久丢了。发消息的路径因此都带一段有界重试。
+    """
+    message = str(text or "").strip()
+    if not message:
+        return False
+    api = getattr(bot, "api", None)
+    if api is None:
+        return False
+    attempts = (0.0, *tuple(delays))
+    for index, delay in enumerate(attempts):
+        if delay:
+            await asyncio.sleep(delay)
+        try:
+            if identity.is_group and identity.group_id is not None:
+                await api.send_group_msg(identity.group_id, message)
+            else:
+                await api.send_private_msg(int(identity.user_id or 0), message)
+            return True
+        except Exception as exc:  # noqa: BLE001 - 发不出去只记账
+            if logger is not None:
+                logger.warning(
+                    "[QQ] 发送失败 session=%s attempt=%d/%d error=%s",
+                    identity.session_id,
+                    index + 1,
+                    len(attempts),
+                    exc,
+                )
+    if logger is not None:
+        logger.error("[QQ] 发送放弃 session=%s", identity.session_id)
+    return False
+
+
+def qq_text_of(event: Any) -> str:
+    """事件里的纯文本正文（去空白）。"""
+    message = getattr(event, "message", None)
+    if message is None:
+        return ""
+    return str(getattr(message, "text", "") or "").strip()
+
+
+def qq_addressed(bot: Any, event: Any) -> bool:
+    """群里只有 @她 或"回复她那条消息"才算在跟她说话（§二十二：普通群聊照旧走人格）。"""
+    message = getattr(event, "message", None)
+    if message is None:
+        return False
+    self_id = str(getattr(event, "self_id", "") or "")
+    if self_id and message.is_mentioned(self_id):
+        return True
+    return qq_replies_to_bot(bot, event)
+
+
+def qq_replies_to_bot(bot: Any, event: Any) -> bool:
+    """与人格插件同一套判据：OneBot 的 reply 段指向她刚发过的消息。"""
+    message = getattr(event, "message", None)
+    replies = message.get("reply") if message is not None else None
+    if not replies:
+        return False
+    group_id = str(getattr(event, "group_id", "") or "")
+    social = getattr(bot, "social", None)
+    delivery = getattr(bot, "response_delivery", None)
+    for segment in replies:
+        message_id = getattr(segment, "message_id", None)
+        if message_id is None:
+            continue
+        try:
+            if social is not None and social.monitor.is_bot_message_id(group_id, str(message_id)):
+                return True
+        except Exception:  # noqa: BLE001 - 查不到就当不是
+            pass
+        last_sent = getattr(delivery, "last_sent_ids", {}).get(f"group:{group_id}")
+        if last_sent is not None and int(message_id) == int(last_sent):
+            return True
+    return False
+
+
 class QQTaskEntry:
     """QQ 侧的任务入口（订阅消息事件 + 任务事件）。"""
 
@@ -271,45 +358,13 @@ class QQTaskEntry:
         return True
 
     def _text_of(self, event: Any) -> str:
-        message = getattr(event, "message", None)
-        if message is None:
-            return ""
-        return str(getattr(message, "text", "") or "").strip()
+        return qq_text_of(event)
 
     def _addressed(self, event: Any) -> bool:
-        """群里只有 @她 或"回复她那条消息"才进任务入口（§二十二：普通群聊照旧走人格）。"""
-        message = getattr(event, "message", None)
-        if message is None:
-            return False
-        self_id = str(getattr(event, "self_id", "") or "")
-        if self_id and message.is_mentioned(self_id):
-            return True
-        return self._replies_to_bot(event)
+        return qq_addressed(self.bot, event)
 
     def _replies_to_bot(self, event: Any) -> bool:
-        """与人格插件同一套判据：OneBot 的 reply 段指向她刚发过的消息。"""
-        message = getattr(event, "message", None)
-        replies = message.get("reply") if message is not None else None
-        if not replies:
-            return False
-        group_id = str(getattr(event, "group_id", "") or "")
-        social = getattr(self.bot, "social", None)
-        delivery = getattr(self.bot, "response_delivery", None)
-        for segment in replies:
-            message_id = getattr(segment, "message_id", None)
-            if message_id is None:
-                continue
-            try:
-                if social is not None and social.monitor.is_bot_message_id(
-                    group_id, str(message_id)
-                ):
-                    return True
-            except Exception:  # noqa: BLE001 - 查不到就当不是
-                pass
-            last_sent = getattr(delivery, "last_sent_ids", {}).get(f"group:{group_id}")
-            if last_sent is not None and int(message_id) == int(last_sent):
-                return True
-        return False
+        return qq_replies_to_bot(self.bot, event)
 
     async def _other_session_task(self, identity: QQIdentity) -> Any:
         """这个用户在别的会话里还有没做完的任务吗（§十七）。"""
@@ -362,38 +417,8 @@ class QQTaskEntry:
         await self._send(identity, text, delays=REPLY_RETRY_DELAYS)
 
     async def _send(self, identity: QQIdentity, text: str, *, delays: tuple[float, ...]) -> bool:
-        """把一句话发到 QQ。``delays`` = 每次失败之后等多久再试（有界，绝不无限重试）。
-
-        真机踩到过：重启 CatooBot 时，内存里的恢复通知会在 **NapCat 还没重连**的时候就发出去
-        （启动日志：`Connection closed → 发送失败 → NapCat connected`），于是"我重启过…"这条
-        就永久丢了。通知路径因此带一段有界重试（QQ 通道通常几秒内就回来）。
-        """
-        message = str(text or "").strip()
-        if not message:
-            return False
-        api = getattr(self.bot, "api", None)
-        if api is None:
-            return False
-        attempts = (0.0, *tuple(delays))
-        for index, delay in enumerate(attempts):
-            if delay:
-                await asyncio.sleep(delay)
-            try:
-                if identity.is_group and identity.group_id is not None:
-                    await api.send_group_msg(identity.group_id, message)
-                else:
-                    await api.send_private_msg(int(identity.user_id or 0), message)
-                return True
-            except Exception as exc:  # noqa: BLE001 - 发不出去只记账（她还在跑）
-                self._log.warning(
-                    "[Task/QQ] 发送失败 session=%s attempt=%d/%d error=%s",
-                    identity.session_id,
-                    index + 1,
-                    len(attempts),
-                    exc,
-                )
-        self._log.error("[Task/QQ] 发送放弃 session=%s", identity.session_id)
-        return False
+        """本入口的发消息路径（薄封装；重试语义见 :func:`send_qq`）。"""
+        return await send_qq(self.bot, identity, text, delays=delays, logger=self._log)
 
     async def notify(self, session_id: str, text: str) -> None:
         """按会话身份把通知发回去（任务事件用）。"""

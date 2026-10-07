@@ -347,6 +347,11 @@ async function main() {
         // Players：观察者必须被发现，且带完整空间字段
         const tester = s.players.find((p) => p.username === OBSERVER_NAME)
         assert(tester, 'observer discovered in players')
+        // Phase 5C：canonical identity —— 快照里的玩家必须带 UUID（身份桥靠它认人，改名不换人）
+        assert(
+          typeof tester.uuid === 'string' && /^[0-9a-f-]{32,36}$/i.test(tester.uuid),
+          `player uuid present: ${tester.uuid}`,
+        )
         assert(Number.isFinite(tester.distance) && tester.distance > 0, 'player distance')
         assert(Number.isFinite(tester.bearing), 'player bearing numeric')
         // Blocks：近层柱面扫描有数据、无空气、方向合法
