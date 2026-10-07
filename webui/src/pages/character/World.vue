@@ -11,6 +11,7 @@ import { computed, onMounted, reactive, ref } from 'vue'
 import { NInput, NSelect } from 'naive-ui'
 
 import { behaviorApi } from '@/api/behavior'
+import { worldApi } from '@/api/world'
 import { errorMessage } from '@/api/client'
 import ConfirmDialog from '@/components/ConfirmDialog.vue'
 import EmptyState from '@/components/EmptyState.vue'
@@ -23,6 +24,7 @@ import NeedList from '@/components/domain/NeedList.vue'
 import WorldStateCard from '@/components/domain/WorldStateCard.vue'
 import { toast } from '@/composables/toast'
 import { useWorldStore } from '@/stores/world'
+import type { WorldActivityView } from '@/types/domain'
 import type {
   BehaviorPreviewInput,
   BehaviorPreviewResult,
@@ -32,8 +34,38 @@ import type {
 
 const store = useWorldStore()
 
+// Phase 6A §三十六：当前活动（Activity Episode）的**只读**投影。
+// 这一页不提供 start / cancel / extend —— WebUI 不得修改 Episode（§三十七）。
+const activity = ref<WorldActivityView | null>(null)
+const activityError = ref('')
+
+async function loadActivity(): Promise<void> {
+  try {
+    activity.value = await worldApi.activity(10)
+    activityError.value = ''
+  } catch (caught) {
+    activityError.value = errorMessage(caught)
+  }
+}
+
+function activityDuration(row: WorldActivityView['recent'][number]): string {
+  const start = Number(row.started_at || 0)
+  const end = Number(row.ended_at || 0) || Number(row.planned_end_at || 0)
+  if (!start || !end || end <= start) return '—'
+  const minutes = Math.round((end - start) / 60)
+  if (minutes < 60) return `${minutes} 分钟`
+  const hours = Math.floor(minutes / 60)
+  return `${hours} 小时 ${minutes % 60} 分钟`
+}
+
+function activityClock(seconds: number): string {
+  if (!seconds) return '—'
+  return new Date(seconds * 1000).toLocaleTimeString()
+}
+
 onMounted(() => {
   if (!store.world && !store.loading) void store.loadWorld()
+  void loadActivity()
 })
 
 function reload(): void {
@@ -493,6 +525,96 @@ function previewMoodText(): string {
       </div>
 
       <NeedList :needs="store.world.needs_full ?? []" />
+
+      <section class="cb-card cb-world__section" data-test="world-activity">
+        <SectionHeader
+          title="当前活动（Phase 6A）"
+          description="她现在正在做什么来自 ActivityEpisode（唯一事实来源）。这里**只读**：不提供开始 / 取消 / 延长，也不会驱动任何 Minecraft 动作。"
+        />
+        <p v-if="activityError" class="cb-world__readonly" data-test="world-activity-error">
+          {{ activityError }}
+        </p>
+        <template v-else-if="activity && activity.enabled && activity.current">
+          <dl class="cb-world__facts" data-test="world-activity-facts">
+            <div>
+              <dt>Episode</dt>
+              <dd data-test="world-activity-id">{{ activity.current.episode_id }}</dd>
+            </div>
+            <div>
+              <dt>Activity</dt>
+              <dd data-test="world-activity-name">
+                {{ activity.current.activity_name }}（{{ activity.current.activity_type }}）
+              </dd>
+            </div>
+            <div>
+              <dt>Status</dt>
+              <dd data-test="world-activity-status">{{ activity.current.status }}</dd>
+            </div>
+            <div>
+              <dt>Started</dt>
+              <dd data-test="world-activity-started">{{ activityClock(activity.current.started_at) }}</dd>
+            </div>
+            <div>
+              <dt>Planned End</dt>
+              <dd data-test="world-activity-planned">
+                {{ activityClock(activity.current.planned_end_at) }}
+              </dd>
+            </div>
+            <div>
+              <dt>Duration</dt>
+              <dd data-test="world-activity-duration">{{ activityDuration(activity.current) }}</dd>
+            </div>
+            <div>
+              <dt>Source</dt>
+              <dd data-test="world-activity-source">{{ activity.current.source }}</dd>
+            </div>
+            <div>
+              <dt>Related Task</dt>
+              <dd data-test="world-activity-task">{{ text(activity.current.related_task_id) }}</dd>
+            </div>
+            <div>
+              <dt>Transition Reason</dt>
+              <dd data-test="world-activity-reason">
+                {{ text(activity.current.transition_reason) }}
+              </dd>
+            </div>
+            <div>
+              <dt>Extensions</dt>
+              <dd data-test="world-activity-extensions">{{ activity.current.extension_count }}</dd>
+            </div>
+          </dl>
+          <p v-if="activity.degraded" class="cb-world__readonly" data-test="world-activity-degraded">
+            活动层当前**降级**：{{ activity.degraded }}
+          </p>
+        </template>
+        <p v-else class="cb-world__readonly" data-test="world-activity-empty">
+          现在没有活动片段（没有 Episode 是合法状态 —— 她"还没开始做什么"）。
+        </p>
+
+        <template v-if="activity && activity.recent.length > 0">
+          <h4 class="cb-world__subtitle">最近的活动（最多 10 条）</h4>
+          <table class="cb-world__table" data-test="world-activity-recent">
+            <thead>
+              <tr>
+                <th>Episode</th>
+                <th>Activity</th>
+                <th>Status</th>
+                <th>Source</th>
+                <th>Reason</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-for="row in activity.recent" :key="row.episode_id">
+                <td>{{ row.episode_id }}</td>
+                <td>{{ row.activity_name }}</td>
+                <td>{{ row.status }}</td>
+                <td>{{ row.source }}</td>
+                <td>{{ text(row.transition_reason) }}</td>
+              </tr>
+            </tbody>
+          </table>
+        </template>
+      </section>
 
       <section class="cb-world__section" data-test="world-goals">
         <SectionHeader title="目标" description="来自运行期目标；显示真实状态与进度，不做美化" />

@@ -2,6 +2,7 @@
 
     real clock → runtime tick scheduler → SandboxRuntime.tick() → existing
     Autonomous Life Loop (Goal / Action / Experience / Continuity)
+                                   ↘ ActivityRuntime.advance()（Phase 6A：Episode 生命周期）
 
 Deliberately thin (§9): the scheduler owns *when* the world is asked to
 advance, and nothing else. It never touches a Goal, an Action, Memory or a
@@ -29,16 +30,19 @@ class RuntimeScheduler:
         runtime: Any,
         *,
         config: Any,
+        activity: Any = None,
         clock: Any = time.time,
         loop_clock: Any = None,
         logger: Any = None,
     ) -> None:
         self.runtime = runtime
+        #: Phase 6A：可选的 Episode 生命周期推进器（不认识沙盒，也不产生世界动作）
+        self.activity = activity
         self.config = config
         self._clock = clock
         #: monotonic source for the deadline (no drift, §67)
         self._loop_clock = loop_clock or (lambda: asyncio.get_running_loop().time())
-        self._log = logger or getattr(runtime, "_log", None)
+        self._log = logger or getattr(runtime, "_log", None) if runtime is not None else logger
         self._task: asyncio.Task[Any] | None = None
         self.ticks = 0
         self.catchups = 0
@@ -111,7 +115,17 @@ class RuntimeScheduler:
         # §8: the world step *is* the real elapsed time (never the sandbox's
         # one-minute floor, which would run her life 60× too fast at a 1s cadence)
         minutes = max(0.0, bounded / 60.0)
-        report = await self.runtime.tick(minutes=minutes)
+        report = await self.runtime.tick(minutes=minutes) if self.runtime is not None else {}
+        # Phase 6A §八：世界时间前进之后，让 Activity Runtime 推进 Episode 生命周期。
+        # 它**只**做"到期 / 超时 / 排下一个"，不重新选择活动、不产生任何世界动作。
+        if self.activity is not None:
+            try:
+                await self.activity.advance()
+            except asyncio.CancelledError:
+                raise
+            except Exception:  # noqa: BLE001 - Activity 故障只降级（6A §五十一）
+                if self._log is not None:
+                    self._log.exception("[Runtime] activity advance failed (ignored)")
         self.ticks += 1
         self.last_tick_at = float(self._clock())
         self.last_report = dict(report or {})
@@ -137,6 +151,8 @@ class RuntimeScheduler:
 
     def _elapsed_seconds(self) -> float:
         """World time is whatever the sandbox last advanced to (the anchor)."""
+        if self.runtime is None:
+            return 0.0
         last = float(getattr(self.runtime, "_last_tick", 0.0) or 0.0)  # noqa: SLF001 - same runtime
         if last <= 0:
             return 0.0
@@ -144,4 +160,6 @@ class RuntimeScheduler:
 
     def _trace(self, event_type: ET, payload: dict[str, Any]) -> Any:
         """Trace only (§65/§66): a tick log never moves a revision."""
+        if self.runtime is None:
+            return None
         return self.runtime.events.publish(event_type, source="runtime", payload=payload)

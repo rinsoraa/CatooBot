@@ -76,6 +76,8 @@ class CharacterRuntime:
         self.minecraft_agent: Any = None
         # Phase 5C：Minecraft 身份桥 + 持久世界记忆（Bot 装配；只提供上下文）
         self.minecraft_memory: Any = None
+        # Phase 6A：世界活动（只读：她"现在在做什么"由 Bot 装配的 ActivityRuntime 提供）
+        self.activity: Any = None
         self.builder = CharacterContextBuilder()
         self.processor = CharacterResponseProcessor(logger=self._log)
         self.expression_store: Any = None  # optional ExpressionStore (Task 22)
@@ -134,6 +136,9 @@ class CharacterRuntime:
         if record_interaction:
             relationship = await self.relationships.record_interaction(user_id)
             await self._note_world_interaction(session_id, user_id)
+            # Phase 6A §八：把"有人在跟她说话"记成一次观察（**只记录**，不改活动 ——
+            # QQ / 游戏内聊天都不能控制 Activity，§三十八/§三十九）。
+            await self._note_activity_interaction(session_id)
         else:
             relationship = await self.relationships.get(user_id)
         memories = await self._safe_memories(session_id, user_text, relationship.stage)
@@ -169,6 +174,8 @@ class CharacterRuntime:
         memory_block = await self._minecraft_memory_context(
             session_id=session_id, user_id=user_id, text=user_text
         )
+        # Phase 6A §四十：她"现在在做什么"（活动上下文；预算 1 条 + ≤3 条变化）
+        activity_context = await self._activity_context()
         if memory_block:
             minecraft_context = (
                 f"{minecraft_context}\n{memory_block}" if minecraft_context else memory_block
@@ -187,6 +194,7 @@ class CharacterRuntime:
             extra_instruction=extra_instruction,
             world=await self._world_context(),
             minecraft=minecraft_context,
+            activity=activity_context,
             media_context=media_context,
             facts=facts,
             expressions=expressions,
@@ -586,6 +594,17 @@ class CharacterRuntime:
             self._log.debug("Minecraft memory context unavailable", exc_info=True)
             return ""
 
+    async def _activity_context(self) -> str:
+        """她此刻的活动（Phase 6A §四十）。拿不到就什么都不加，绝不拖垮对话。"""
+        runtime = getattr(self, "activity", None)
+        if runtime is None:
+            return ""
+        try:
+            return str(await runtime.context_block())
+        except Exception:  # noqa: BLE001 - 活动上下文只是上下文
+            self._log.debug("Activity context unavailable", exc_info=True)
+            return ""
+
     def _minecraft_context(self) -> str:
         """她此刻在 Minecraft 里的一行处境（Phase 3E §十九；没有就完全静默）。"""
         bridge = getattr(self, "minecraft_agent", None)
@@ -640,6 +659,22 @@ class CharacterRuntime:
             await sandbox.note_user_interaction(user_id=str(user_id), session_id=session_id)
         except Exception:  # noqa: BLE001
             self._log.debug("Sandbox interaction note failed", exc_info=True)
+
+    async def _note_activity_interaction(self, session_id: str) -> None:
+        """把一次用户交互交给 Activity 层（只写观察；失败绝不影响聊天，§三十八）。"""
+        runtime = getattr(self, "activity", None)
+        if runtime is None:
+            return
+        try:
+            await runtime.observe(
+                {
+                    "user_interaction_at": time.time(),
+                    "last_interaction_source": "qq",
+                    "last_interaction_session": session_id,
+                }
+            )
+        except Exception:  # noqa: BLE001 - 交互记录失败绝不能影响回复
+            self._log.debug("Activity interaction note failed", exc_info=True)
 
     async def _note_agent_result(self, result: Any, *, session_id: str, user_id: int | str) -> None:
         """Task finished → her life notes it; the agent never writes state."""

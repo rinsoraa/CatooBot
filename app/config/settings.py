@@ -1024,6 +1024,27 @@ class MinecraftAgentConfig(BaseModel):
     trusted_players: list[str] = Field(default_factory=list)
 
 
+class WorldActivityConfig(BaseModel):
+    """Phase 6A：世界活动（Activity Episode）—— 只暴露真正需要的四个旋钮（§五十三）。"""
+
+    #: 关掉 = 完全没有 Episode 生命周期（角色状态里的 activity 不再被投影覆盖）
+    enabled: bool = True
+    #: 运行中的观察/时间推进最多多久落一次盘（§二十三：禁止每秒写数据库）
+    persistence_interval_seconds: float = Field(default=60.0, ge=10.0, le=600.0)
+    #: 重启恢复的宽限：计划结束时间离现在这么近就不算"已过期"（避免每次重启都强行转移）
+    recovery_grace_seconds: float = Field(default=30.0, ge=0.0, le=3600.0)
+    #: 最近 Episode 读多少条（LLM 上下文与 WebUI 的默认窗口，§三十五/§三十六）
+    recent_episode_limit: int = Field(default=5, ge=1, le=10)
+
+
+class WorldConfig(BaseModel):
+    """Phase 6A：角色世界（目前只有时钟与活动）。"""
+
+    #: 世界时钟的时区（§二十二：默认 Asia/Singapore，可配置）
+    timezone: str = "Asia/Singapore"
+    activity: WorldActivityConfig = Field(default_factory=WorldActivityConfig)
+
+
 class TaskRuntimeConfig(BaseModel):
     """Phase 5A：多步骤任务的上限（保守默认；只暴露这四个旋钮，§九十七）。"""
 
@@ -1119,6 +1140,7 @@ class AppConfig(BaseModel):
     minecraft: MinecraftConfig = Field(default_factory=MinecraftConfig)
     #: Phase 5A：多步骤任务运行时（第一期只接入 Minecraft 工具回路）
     task: TaskRuntimeConfig = Field(default_factory=TaskRuntimeConfig)
+    world: WorldConfig = Field(default_factory=WorldConfig)
     sandbox: SandboxConfig = Field(default_factory=SandboxConfig)
     tools: ToolsConfig = Field(default_factory=ToolsConfig)
     agent: AgentConfig = Field(default_factory=AgentConfig)

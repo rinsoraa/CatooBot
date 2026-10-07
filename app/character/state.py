@@ -69,6 +69,10 @@ class CharacterState(BaseModel):
     activity_started_at: int = 0
     activity_planned_end_at: int = 0
     activity_status: str = ""
+    #: Phase 6A §十四：活动由什么机制创建（USER/TASK/ROUTINE/WORLD_EVENT/RECOVERY/SYSTEM）。
+    #: 与上面几个字段一样，**只**由 ActivityEpisode 的投影写入；任何模块都不许绕过
+    #: Episode 直接写 activity（否则就会出现"Episode 说 A、角色状态说 B"的分裂）。
+    activity_source: str = ""
     interaction_overlay: str = ""  # chatting / assisting_user (never the primary activity)
 
     def decayed(self, now: int) -> CharacterState:
@@ -141,6 +145,15 @@ class StateManager:
         schedule_state: str | None = None,
         current_goal: str | None = None,
         current_project: str | None = None,
+        # Phase 6A §十四：这几个是**当前 ActivityEpisode 的投影**，只由 ActivityProjection 写。
+        # 它们在这里有名字，是为了让投影走同一个 update 通道（原子落盘），而不是为了让
+        # 别的模块绕过 Episode 直接改 activity。
+        current_activity_episode_id: str | None = None,
+        activity_started_at: int | None = None,
+        activity_planned_end_at: int | None = None,
+        activity_status: str | None = None,
+        activity_source: str | None = None,
+        activity_since: int | None = None,
         reason: str = "",
         extra: dict[str, Any] | None = None,
     ) -> CharacterState:
@@ -177,6 +190,18 @@ class StateManager:
             changes["current_goal"] = current_goal
         if current_project is not None:
             changes["current_project"] = current_project
+        if current_activity_episode_id is not None:
+            changes["current_activity_episode_id"] = current_activity_episode_id
+        if activity_started_at is not None:
+            changes["activity_started_at"] = int(activity_started_at)
+        if activity_planned_end_at is not None:
+            changes["activity_planned_end_at"] = int(activity_planned_end_at)
+        if activity_status is not None:
+            changes["activity_status"] = activity_status
+        if activity_source is not None:
+            changes["activity_source"] = activity_source
+        if activity_since is not None:
+            changes["activity_since"] = int(activity_since)
         if extra:
             changes.update(extra)
         self._state = self._state.model_copy(update=changes)

@@ -323,6 +323,13 @@ class Bot:
         self.task_turns: Any = None
         #: Phase 5B：QQ 任务入口（任务运行时装配好之后才存在）
         self.task_entry: Any = None
+        #: Phase 6A：世界活动（Activity Episode 生命周期；装配失败 = 没有活动能力）
+        self.activity: Any = None
+        self.activity_sandbox: Any = None
+        self.activity_tasks: Any = None
+        self.activity_observation: Any = None
+        self.activity_user: Any = None
+        self._activity_tasks_running: set[Any] = set()
         #: Phase 5C：Minecraft 身份桥 + 持久世界记忆（装配失败 = 只是没有记忆能力）
         self.minecraft_memory: Any = None
         self.minecraft_identity: Any = None
@@ -409,10 +416,21 @@ class Bot:
     # ------------------------------------------------------------ lifecycle
 
     async def _sync_sandbox_state(self, activity: str, location: str, energy: float) -> None:
-        """The sandbox is the only writer of her life: mirror it onto state."""
-        await self.character.states.update(
-            activity=activity, location=location, energy=energy, reason="sandbox"
-        )
+        """沙盒报来的"她现在在做什么" → Episode（活动状态的唯一来源，Phase 6A §一/§十四）。
+
+        沙盒仍然是她虚拟生活的模拟器，但它**不再**直接写 ``CharacterState.activity``：
+        那个字段只由 ActivityEpisode 的投影写。没有 Activity 能力（关掉/装配失败）时，
+        退回旧行为（直接写状态）—— 这是明确的降级路径，不是两套并行的系统。
+        """
+        adapter = getattr(self, "activity_sandbox", None)
+        if adapter is None:
+            await self.character.states.update(
+                activity=activity, location=location, energy=energy, reason="sandbox"
+            )
+            return
+        await adapter.observe_virtual_life(activity, location=location)
+        # 位置与精力仍然直接同步（它们是沙盒自己的状态，不是"活动"）
+        await self.character.states.update(location=location, energy=energy, reason="sandbox")
 
     def _sandbox_asleep(self) -> bool | None:
         """Presence's source of truth for sleep: sandbox state, or None (off)."""
@@ -869,6 +887,13 @@ class Bot:
                 self.task_coordinator = None
                 self.task_turns = None
                 self.task_entry = None
+        # Phase 6A：世界活动（Episode 生命周期）。人设已载入、任务运行时也已就绪，
+        # 这时候才装 —— 失败**只**降级活动能力（§五十一：绝不阻断聊天/任务/启动）。
+        try:
+            await self._setup_world_activity()
+        except Exception:  # noqa: BLE001 - 活动装配失败不拖垮启动
+            self.log.exception("World activity initialization failed; continuing without it")
+            self.activity = None
         await self.adapter.start()
         story.boot_step("OneBot 适配器已监听", detail=self.config.onebot.url)
         if self.watchdog is not None:
@@ -977,6 +1002,134 @@ class Bot:
             "+".join(sandbox.modes.ids()) or "-",
             sandbox.character.location,
         )
+
+    # ------------------------------------------------- Phase 6A：世界活动（Episode）
+
+    async def _setup_world_activity(self) -> None:
+        """装配 ActivityRuntime + 四个适配器（失败**只**降级活动能力，§五十一）。
+
+        装配点选择：人设已载入（角色名拿得到）、任务运行时已就绪（任务事件已经在发）、
+        沙盒已 boot（``character_id`` 是权威的那个 ``名字@圣经哈希``）。
+        """
+        config = getattr(getattr(self.config, "world", None), "activity", None)
+        if config is not None and not config.enabled:
+            self.log.info("[World.Activity] 已在配置里关闭")
+            return
+        from app.activity import (
+            ACTIVITY_EVENT_NAMES,
+            ActivityEventPublisher,
+            ActivityPlanner,
+            ActivityProjection,
+            ActivityRuntime,
+            MinecraftObservationAdapter,
+            SandboxActivityAdapter,
+            SqliteActivityStore,
+            TaskActivityAdapter,
+            UserInteractionAdapter,
+            WorldClock,
+        )
+
+        world_config = getattr(self.config, "world", None)
+        timezone = str(getattr(world_config, "timezone", "") or "Asia/Singapore")
+        self.activity_clock = WorldClock(timezone)
+        character_id = self._activity_character_id()
+        runtime = ActivityRuntime(
+            store=SqliteActivityStore(self.database, logger=self.log),
+            clock=self.activity_clock,
+            character_id=character_id,
+            planner=ActivityPlanner(),
+            publisher=ActivityEventPublisher(logger=self.log),
+            projection=ActivityProjection(self.character.states, logger=self.log),
+            recent_episode_limit=int(getattr(config, "recent_episode_limit", 5) or 5),
+            persistence_interval_seconds=float(
+                getattr(config, "persistence_interval_seconds", 60.0) or 60.0
+            ),
+            recovery_grace_seconds=float(getattr(config, "recovery_grace_seconds", 30.0) or 0.0),
+            logger=self.log,
+        )
+        self.activity = runtime
+        self.activity_sandbox = SandboxActivityAdapter(runtime, logger=self.log)
+        self.activity_tasks = TaskActivityAdapter(runtime, logger=self.log)
+        self.activity_observation = MinecraftObservationAdapter(
+            runtime, self.minecraft, logger=self.log
+        )
+        self.activity_user = UserInteractionAdapter(runtime, logger=self.log)
+        # 角色运行时可以读它（§三十八/§三十九：QQ 与游戏内聊天都能读，但谁都不能改）
+        if self.character is not None:
+            self.character.activity = runtime
+        # 世界 tick 里推进 Episode 生命周期（§八：tick 只推进时间，不重新选活动）
+        if self.runtime_scheduler is not None:
+            self.runtime_scheduler.activity = runtime
+        recovered = await runtime.recover()
+        self.log.info(
+            "[World.Activity] ready character=%s recovered=%s events=%d",
+            character_id,
+            recovered.get("action", "none"),
+            len(ACTIVITY_EVENT_NAMES),
+        )
+
+    def _activity_character_id(self) -> str:
+        """活动归属的角色 id。
+
+        优先用沙盒的 ``名字@圣经哈希``（项目既有的权威 character_id）—— 改角色名/改圣经时
+        她的"生活"是一个整体，Activity 不该和沙盒对同一个角色用两个 id。拿不到就退回角色名。
+        """
+        sandbox = getattr(self, "sandbox", None)
+        sandbox_id = str(getattr(sandbox, "character_id", "") or "")
+        if sandbox_id:
+            return sandbox_id
+        try:
+            return str(self.character.personas.persona.identity.name or "") or "unscoped"
+        except Exception:  # noqa: BLE001 - 拿不到名字就用兜底 id
+            return "unscoped"
+
+    def _observe_activity_task_event(self, event: str, payload: dict[str, Any]) -> None:
+        """任务事件 → Episode（后台执行；活动层故障绝不影响任务）。"""
+        adapter = getattr(self, "activity_tasks", None)
+        if adapter is None:
+            return
+        self._spawn_activity(adapter.on_task_event(event, dict(payload)))
+
+    async def observe_activity_interaction(
+        self, *, session_id: str = "", source: str = "qq"
+    ) -> None:
+        """把"有人跟她说话了"记成观察（**不**改活动：QQ/游戏内都不能控制 Activity）。"""
+        adapter = getattr(self, "activity_user", None)
+        if adapter is None:
+            return
+        await adapter.note_interaction(session_id=session_id, source=source)
+
+    async def observe_minecraft_activity(self) -> None:
+        """让活动层看一眼 Minecraft 的**只读**现状（§十六/§十七：观察不是命令）。"""
+        observer = getattr(self, "activity_observation", None)
+        if observer is None:
+            return
+        task = None
+        tasks = getattr(self, "tasks", None)
+        if tasks is not None:
+            try:
+                task = await tasks.current()
+            except Exception:  # noqa: BLE001 - 拿不到任务不影响观察
+                task = None
+        await observer.observe(task=task)
+
+    def _spawn_activity(self, coro: Any) -> None:
+        """活动相关的后台工作（失败只记账，绝不阻塞任务事件通道）。"""
+        try:
+            task = asyncio.create_task(coro)
+        except RuntimeError:  # pragma: no cover - 没有事件循环时安静放弃
+            return
+        self._activity_tasks_running.add(task)
+        task.add_done_callback(self._activity_tasks_running.discard)
+
+    async def _stop_world_activity(self) -> None:
+        runtime = getattr(self, "activity", None)
+        if runtime is None:
+            return
+        try:
+            await runtime.shutdown()
+        except Exception:  # noqa: BLE001 - 关闭路径绝不抛
+            self.log.exception("[World.Activity] shutdown failed (ignored)")
 
     # ------------------------------------------------- Phase 5C：身份桥/记忆
 
@@ -1156,6 +1309,8 @@ class Bot:
         # Phase 5C §三十一/§三十二：任务收尾 → 一条语义经验（后台写）。
         # 与 QQ 通知**互不影响**：任务入口装配失败也不该让"记住这件事"跟着失效。
         self._remember_task_outcome(event, payload)
+        # Phase 6A §十九/§四十二：任务生命周期 → Episode 生命周期（后台，失败只降级）
+        self._observe_activity_task_event(event, payload)
         entry = getattr(self, "task_entry", None)
         if entry is None:
             return
@@ -1166,6 +1321,7 @@ class Bot:
 
     async def shutdown(self) -> None:
         """Graceful stop: schedulers, plugins, web, adapter, database."""
+        await self._stop_world_activity()
         await self._stop_memory_reconcile()
         if self.watchdog is not None:
             await self.watchdog.stop()

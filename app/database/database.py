@@ -1283,6 +1283,65 @@ CREATE INDEX IF NOT EXISTS idx_mc_identity_lookup
     ON minecraft_identity_links(platform, user_id, status);
 """,
     ),
+    (
+        29,
+        "world activity: episodes + transitions (Phase 6A)",
+        """
+-- "她此刻正在做什么"的**唯一事实来源**（Phase 6A §一/§三）。
+-- v1.x 也有过一张 activity_episodes，但那张在 migration 14 跟着 v0.8 persistent world
+-- 整体删掉了；这一张按 6A §二十五 重建，并且**只**负责活动生命周期
+-- （真实世界动作仍然只能由 TaskRuntime → Policy → Confirmation → ActionRuntime 产生）。
+CREATE TABLE IF NOT EXISTS activity_episodes (
+    episode_id          TEXT PRIMARY KEY,
+    character_id        TEXT NOT NULL,
+    activity_type       TEXT NOT NULL,
+    activity_name       TEXT NOT NULL,
+    location            TEXT NOT NULL DEFAULT '',
+    social_state        TEXT NOT NULL DEFAULT 'alone',
+    tags                TEXT NOT NULL DEFAULT '[]',
+    started_at          REAL NOT NULL DEFAULT 0,
+    planned_end_at      REAL NOT NULL DEFAULT 0,
+    ended_at            REAL NOT NULL DEFAULT 0,
+    min_duration        REAL NOT NULL DEFAULT 0,
+    typical_duration    REAL NOT NULL DEFAULT 0,
+    max_duration        REAL NOT NULL DEFAULT 0,
+    status              TEXT NOT NULL,
+    transition_reason   TEXT NOT NULL DEFAULT '',
+    source              TEXT NOT NULL,
+    parent_episode_id   TEXT NOT NULL DEFAULT '',
+    related_task_id     TEXT NOT NULL DEFAULT '',
+    extension_count     INTEGER NOT NULL DEFAULT 0,
+    observation         TEXT NOT NULL DEFAULT '{}',
+    created_at          REAL NOT NULL,
+    updated_at          REAL NOT NULL
+);
+-- §十二/§二十六：每个角色同一时间**最多一个**未结束的 primary Episode。
+-- 数据库层兜底（运行态还有 ActivityRuntime 的串行化 + CAS）：
+-- 两个进程同时想创建 ACTIVE Episode 时，第二个会被这个 partial unique index 拒绝。
+CREATE UNIQUE INDEX IF NOT EXISTS idx_activity_episodes_primary
+    ON activity_episodes(character_id)
+    WHERE status IN ('SCHEDULED', 'ACTIVE', 'EXTENDED');
+CREATE INDEX IF NOT EXISTS idx_activity_episodes_character
+    ON activity_episodes(character_id, created_at DESC);
+
+-- 转移审计日志（§三十一/§五十五）：回答了"为什么开始 / 为什么结束 / 是否被打断"。
+CREATE TABLE IF NOT EXISTS activity_transitions (
+    seq         INTEGER PRIMARY KEY AUTOINCREMENT,
+    episode_id  TEXT NOT NULL,
+    transition  TEXT NOT NULL,
+    reason      TEXT NOT NULL DEFAULT '',
+    source      TEXT NOT NULL DEFAULT '',
+    at          REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_activity_transitions_episode
+    ON activity_transitions(episode_id, seq);
+-- §三十三：同一个 Episode 的**一次性**转移只允许落一行 —— 重启/重试都不会再发一次
+-- completed/interrupted/cancelled/expired/started 事件（EXTENDED 可以重复，故不在其中）。
+CREATE UNIQUE INDEX IF NOT EXISTS idx_activity_transitions_once
+    ON activity_transitions(episode_id, transition)
+    WHERE transition IN ('ACTIVE', 'COMPLETED', 'INTERRUPTED', 'CANCELLED', 'EXPIRED');
+""",
+    ),
 ]
 
 

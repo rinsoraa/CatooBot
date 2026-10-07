@@ -19,12 +19,12 @@ from app.config.settings import DatabaseConfig
 from app.database.database import Database
 from app.sandbox.lifecycle import CHARACTER_TABLES, CharacterLifecycleManager
 
+#: v0.8 persistent world 的表（migration 14 整体删掉，之后**不许**再出现）
 WORLD_TABLES = (
     "world_events",
     "persistent_goals",
     "character_projects",
     "world_snapshots",
-    "activity_episodes",
 )
 
 
@@ -52,6 +52,33 @@ class TestMigrationChain:
                 "character_states",
                 "sandbox_entities",
             } <= tables
+
+            # Phase 6A 按任务书 §二十五 **重建**了 activity_episodes（v1.x 那张在 m14 被删）。
+            # 所以这里断言的是"现在这张是 6A 的形状"，而不是"这个名字必须不存在"——
+            # v0.8 那套（world_events/…）依然必须不存在。
+            assert "activity_episodes" in tables
+            columns = {
+                str(row["name"])
+                for row in await db.fetchall("PRAGMA table_info(activity_episodes)")
+            }
+            for column in (
+                "episode_id",
+                "character_id",
+                "activity_type",
+                "activity_name",
+                "min_duration",
+                "typical_duration",
+                "max_duration",
+                "transition_reason",
+                "source",
+                "parent_episode_id",
+                "related_task_id",
+                "extension_count",
+                "observation",
+            ):
+                assert column in columns, f"activity_episodes 缺少 {column}"
+            # 6A 的两张表都在（Episode 本体 + 转移审计）
+            assert "activity_transitions" in tables
 
             applied = await db.fetchall(
                 "SELECT version, name FROM schema_migrations ORDER BY version"

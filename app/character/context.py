@@ -124,6 +124,9 @@ class CharacterContextBuilder:
         extra_instruction: str | None = None,
         world: dict | None = None,
         minecraft: str = "",
+        # Phase 6A §四十：她**现在在做什么**（来自 ActivityEpisode；≤1 条 + ≤3 条最近变化）。
+        # 只是上下文（§四十一 的优先级里排在"当前任务"之后），**不是**权限（§五十）。
+        activity: str = "",
         media_context: str = "",
         facts: str = "",
         expressions: str = "",
@@ -192,6 +195,12 @@ class CharacterContextBuilder:
         if minecraft:
             system_parts.append(minecraft)
         trace("minecraft", bool(minecraft), "minecraft off/offline")
+
+        # 3b''. 世界活动（Phase 6A §四十）：当前 Episode + 最近活动变化（预算写死在这里：
+        # 一条当前活动 + ≤3 条转移）。没有 Episode 就什么都不加 —— 绝不编一个出来。
+        if activity:
+            system_parts.append(activity)
+        trace("activity", bool(activity), "no current episode")
 
         # 3c. Character continuity (v1.2): the short-timescale "same person"
         # state — current interest, unfinished things, last exchange (v1.2 §52-§54).

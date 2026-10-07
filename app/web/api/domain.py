@@ -24,6 +24,7 @@ from typing import Any
 
 from aiohttp import web
 
+from app.activity.model import ActivitySource, TransitionReason
 from app.web.api.common import (
     API_PREFIX,
     bad_request,
@@ -145,6 +146,20 @@ class DomainApiRoutes(SocialApiRoutes, WebContext):
                 if not isinstance(value, str):
                     raise unprocessable(f"{key} 必须是字符串", field=key)
                 changes[key] = value
+        # Phase 6A §十四：``activity`` 是**当前 Episode 的派生快照**，不能绕过 Episode 直接写
+        # （否则就会出现"Episode 说 A、角色状态说 B"的分裂）。有活动能力时把它翻译成一次
+        # 显式换活动（source=USER / reason=MANUAL），由 Episode 生命周期来落状态；没有活动能力
+        # （关掉/装配失败）时才退回直接写 —— 那是明确的降级路径。
+        requested_activity = changes.pop("activity", None)
+        runtime = getattr(self._bot, "activity", None)
+        if requested_activity is not None and runtime is not None:
+            await runtime.switch_to(
+                activity_name=str(requested_activity),
+                source=ActivitySource.USER,
+                reason=TransitionReason.MANUAL,
+            )
+        elif requested_activity is not None:
+            changes["activity"] = requested_activity
         state = await self._admin.set_state(**changes)
         return ok(state, request=request)
 
@@ -152,6 +167,42 @@ class DomainApiRoutes(SocialApiRoutes, WebContext):
 
     async def _v1_world(self, request: web.Request) -> web.Response:
         return ok(await self._world().world(), request=request)
+
+    async def _v1_world_activity(self, request: web.Request) -> web.Response:
+        """Phase 6A：她此刻的**活动**（Activity Episode）只读投影。
+
+        读端点恒 200：没有活动能力（未装配/配置关掉）时如实返回 ``enabled: false``
+        —— 那是功能状态，不是故障。**只读**：这里没有 start / cancel / extend
+        （§三十七：WebUI 不得修改 Episode），也没有任何能碰世界的动作。
+        """
+        runtime = getattr(self._bot, "activity", None)
+        if runtime is None:
+            return ok(
+                {
+                    "enabled": False,
+                    "character_id": "",
+                    "degraded": "",
+                    "current": None,
+                    "recent": [],
+                },
+                request=request,
+            )
+        try:
+            data = await runtime.status()
+        except Exception as exc:  # noqa: BLE001 - 只读失败不变成 5xx（如实降级）
+            return ok(
+                {
+                    "enabled": False,
+                    "character_id": "",
+                    "degraded": type(exc).__name__,
+                    "current": None,
+                    "recent": [],
+                },
+                request=request,
+            )
+        limit = read_query_int(request, "limit", default=10, minimum=1, maximum=10)
+        data["recent"] = list(data.get("recent") or [])[:limit]
+        return ok(data, request=request)
 
     async def _v1_world_trace(self, request: web.Request) -> web.Response:
         limit = read_query_int(request, "limit", default=120, minimum=1, maximum=500)
@@ -491,6 +542,8 @@ class DomainApiRoutes(SocialApiRoutes, WebContext):
         app.router.add_get(f"{API_PREFIX}/character/state", wrap(self._v1_character_state))
         app.router.add_patch(f"{API_PREFIX}/character/state", wrap(self._v1_character_state_patch))
         app.router.add_get(f"{API_PREFIX}/world", wrap(self._v1_world))
+        # Phase 6A：世界活动（Episode）—— **只读**，最近 ≤10 条（§三十六/§三十七）
+        app.router.add_get(f"{API_PREFIX}/world/activity", wrap(self._v1_world_activity))
         app.router.add_get(f"{API_PREFIX}/world/trace", wrap(self._v1_world_trace))
         app.router.add_get(f"{API_PREFIX}/world/timeline", wrap(self._v1_world_timeline))
         app.router.add_get(f"{API_PREFIX}/world/topics", wrap(self._v1_world_topics))

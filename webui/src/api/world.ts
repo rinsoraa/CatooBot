@@ -9,6 +9,7 @@ import type {
   CharacterState,
   InterruptedInfo,
   TopicRow,
+  WorldActivityView,
   WorldData,
   WorldTimelineRow,
 } from '@/types/domain'
@@ -48,6 +49,11 @@ export const worldApi = {
 
   world() {
     return api.get<WorldData>('/world')
+  },
+
+  /** Phase 6A：她此刻的活动（Episode）。**只读** —— 不能启动/取消/延长。 */
+  activity(limit = 10) {
+    return api.get<WorldActivityView>('/world/activity', { query: { limit } })
   },
 
   timeline(limit = 100) {

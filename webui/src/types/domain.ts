@@ -65,6 +65,44 @@ export interface ModeDefRow {
 }
 
 /** `GET /api/v1/world` 的 data（W5 追加块全部为可选，缺失即 null/[]）。 */
+/** Phase 6A：一个活动片段（Activity Episode）的只读投影。 */
+export interface WorldActivityEpisode {
+  episode_id: string
+  character_id: string
+  activity_type: string
+  activity_name: string
+  status: string
+  location: string
+  social_state: string
+  tags: string[]
+  started_at: number
+  planned_end_at: number
+  ended_at: number
+  max_end_at: number
+  min_duration: number
+  typical_duration: number
+  max_duration: number
+  transition_reason: string
+  source: string
+  parent_episode_id: string
+  related_task_id: string
+  extension_count: number
+  observation: Record<string, unknown>
+  created_at: number
+  updated_at: number
+}
+
+/** `GET /api/v1/world/activity`（**只读**；没有活动能力时 enabled=false）。 */
+export interface WorldActivityView {
+  enabled: boolean
+  character_id: string
+  degraded: string
+  current: WorldActivityEpisode | null
+  recent: WorldActivityEpisode[]
+  last_observation?: Record<string, unknown>
+  context_budget?: Record<string, number>
+}
+
 export interface WorldData {
   phase?: string | null
   location?: string | null

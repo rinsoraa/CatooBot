@@ -3,6 +3,57 @@
 本文件记录 CatooBot 的版本演进。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号见 `pyproject.toml`；日期取自真实提交历史（本仓库 2026-09-30 起）。
 
+## Minecraft Phase 6A — 世界活动运行时（Activity Episode）
+
+* **「当前活动」升级为有生命周期的 Episode**：新增 `app/activity/`（model/clock/store/events/
+  planner/runtime/projection/adapters）。`ActivityEpisode` 是"她此刻在做什么"的**唯一事实来源**：
+  稳定 ID（`ACT-YYYYMMDD-NNN`，可反解、重启不变）、7 状态显式状态机、min/typical/max 时长、
+  标准化转移原因（`TIME_EXPIRED`/`TASK_STARTED`/…）、`related_task_id` 引用、只读观察。
+  **不新增 Minecraft 工具**（仍是 19 个）、不新增 ActionRuntime action、不新增 TaskRuntime 状态。
+* **升级复用而不是新系统**：检查过仓库 —— `app/world/` 不存在（她的世界是 `app/sandbox/`）；
+  v1.x 曾有一张 `activity_episodes`（迁移 v10）并在 v14 被整体 DROP，6A 按同一语义**重建**
+  （迁移 **29**）；`CharacterState` 里 v1.0 声明但从未写入的死字段（`current_activity_episode_id` /
+  `activity_started_at` / `activity_planned_end_at` / `activity_status`）这次**接线**成 Episode 投影，
+  并补上 `activity_source`。
+* **状态机与并发**：终态没有出口（`COMPLETED/CANCELLED/EXPIRED/INTERRUPTED → ACTIVE` 全部拒绝）；
+  每次转移都是 compare-and-set（SQLite 走事务），两个事件同时收尾只会有一次最终转移；
+  数据库层用 partial unique index 保证"每个角色最多一个 live primary Episode"。
+* **持久化与幂等**：`activity_episodes` + `activity_transitions`（迁移 29）；状态转移立即落盘、
+  运行中的观察按 `persistence_interval_seconds`（默认 60s）节流；`activity_transitions` 上的
+  partial unique index + `INSERT OR IGNORE` 保证**一次性转移的事件只发一次**（重启重试也不会
+  再发一个 `activity.completed`；`EXTENDED` 可重复）。
+* **重启恢复**：`recover()` 按时间对账三种情况（窗口内继续 / 过期交给 Planner / 超硬上限终结），
+  带 `recovery_grace_seconds` 宽限；**绝不伪造离线期间的活动**（离线 8 小时后旧 Episode 只被终结，
+  新活动的 `started_at` 只能是"现在"）；没有 Episode 是合法状态，不生成占位数据。
+* **世界 tick 只推进不决策**：复用现有的 `RuntimeScheduler`（`activity=` 钩子）在每次 tick 末尾
+  调一次 `ActivityRuntime.advance()` —— 到期/超时/排下一个，**绝不**"每分钟重新问她该干什么"。
+  Activity 不在时调度器照常工作（沙盒契约不变）。
+* **确定性 Planner**：`ActivityPlanner` 只在"她空着 / Episode 到期"时按世界时钟的**时段表**给出下一个
+  虚拟活动（确定性旋转，无 `random`、无 LLM）；日程表里的名字沿用沙盒的动作词表
+  （`eating/gaming/reading/out/sleeping/idle/…`）并**禁止** Minecraft 活动名。
+* **CharacterState 投影**：`activity` / `activity_status` / `activity_source` / 起止时间只由
+  Episode 投影写入；Episode 一终结就把快照清空（"她刚结束一件事"）；WebUI 上的"直接改 activity"
+  会被翻译成一次显式换活动（`source=USER` / `reason=MANUAL`），**不许绕过 Episode**（§十四）。
+* **Task ↔ Activity**：订阅现有 `task.*` 事件 —— 开始/恢复 → 任务型 Episode（`source=TASK`，
+  只引用 `task_id`）；**暂停 → INTERRUPTED**（任务 PAUSED 时活动不能还 ACTIVE）；四个终态映射到
+  四种不同的 Episode 状态；重启恢复复用同一条 Episode（不重建、不换 id）。
+* **Minecraft 只读观察**：`MinecraftObservationAdapter` 只允许调 `snapshot()` / `world_view()`，
+  **观察不是命令** —— 看一眼世界不会创建/修改/终结任何 Episode；掉线时不会凭空出现
+  `minecraft_*` 虚拟活动（虚拟活动 ≠ 真实 Minecraft 行动）。
+* **安全边界**：Activity 这一层不 import 也不调用任何世界动作（AST 级 guard），
+  不认识 `MinecraftService`；Policy/工具/确认门也不认识 Activity；
+  事件只有一个同步 sink + 日志（**不会**触发 LLM turn）；Activity 不写 Memory（连 memory 都不 import）。
+* **配置**：只新增 `world.timezone` 与 `world.activity`（enabled / persistence_interval_seconds /
+  recovery_grace_seconds / recent_episode_limit）—— **`allow_medium` 默认值没有变化**。
+* **API / WebUI**：`GET /api/v1/world/activity?limit=10`（只读、恒 200）；World 页新增只读卡片
+  「当前活动（Phase 6A）」（Episode ID/状态/开始/计划结束/时长/来源/关联任务/原因/延长次数 +
+  最近 ≤10 条），**没有任何** start/cancel/extend 入口。
+* **测试与文档**：新增 `tests/test_activity_episode.py`、`test_activity_runtime.py`、
+  `test_activity_recovery.py`、`test_activity_projection.py`、`test_activity_events.py`、
+  `test_activity_minecraft_adapter.py`（覆盖任务书 A–P 矩阵，含幂等/主唯一/假时钟/恢复/
+  LLM 隔离/记忆隔离/离线不造假/安全 guard）；文档 `docs/MINECRAFT_PHASE6A.md` +
+  `docs/README.md`；真机门禁脚本 `scripts/activity_smoke_real.py`（A–E，只读核对）。
+
 ## Minecraft Phase 5C — 身份桥与持久世界记忆
 
 * **身份桥（Identity Bridge）**：新增 `app/integrations/minecraft/identity.py`。

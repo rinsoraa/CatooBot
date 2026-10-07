@@ -869,6 +869,11 @@ _NOTES: dict[str, str] = {
     "minecraft.agent.tools.allow_destructive": (
         "允许 DESTRUCTIVE 动作（还没有这一级动作；保持关闭）"
     ),
+    "world.timezone": "她那个世界的时区（活动时段与「今天」按它算；默认 Asia/Singapore）",
+    "world.activity.enabled": "世界活动（Episode 生命周期）：关掉 = 不再记录/推进她在做什么",
+    "world.activity.persistence_interval_seconds": "活动观察多久落一次盘（重大状态变化随时落盘）",
+    "world.activity.recovery_grace_seconds": "重启宽限：计划结束时间离现在这么近就不算过期",
+    "world.activity.recent_episode_limit": "最近活动读几条（对话上下文与界面默认窗口）",
     "minecraft.memory.enabled": "Minecraft 身份桥 + 世界记忆（关掉只是「不记得」，权限照旧）",
     "minecraft.memory.reconcile_interval_seconds": "多久拿当前世界核对一次记忆（对账）",
     "minecraft.memory.context_items": "每次对话最多带几条 Minecraft 记忆（≤5）",
@@ -986,6 +991,8 @@ _SECTION_LABELS: dict[str, str] = {
     "agent.planner": "任务规划",
     "continuity": "连续性",
     "conversation.debounce": "消息合并",
+    "world": "角色世界（世界时钟 · 活动）",
+    "world.activity": "世界活动（Activity Episode · Phase 6A）",
     "minecraft": "Minecraft 集成",
     "minecraft.agent": "Minecraft 智能体（LLM 工具）",
     "minecraft.agent.tools": "模型可以做什么（风险分级）",
