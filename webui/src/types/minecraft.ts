@@ -508,6 +508,38 @@ export interface MinecraftWorldView {
   raw?: Record<string, unknown> | null
 }
 
+/** Phase 5A.1 §三十一：一版计划的历史（旧计划永不覆盖，只标 SUPERSEDED）。 */
+export interface MinecraftTaskPlanVersion {
+  version: number
+  plan_hash: string
+  created_at: number
+  summary: string
+  steps: { step_id: string; tool: string; risk: MinecraftActionRisk; arguments: Record<string, unknown> }[]
+  confirmed_at: number
+  superseded_at: number
+  /** 被取代的原因（WORLD_CHANGED / RUNTIME_RESTART / …）；空 = 没有被取代 */
+  reason: string
+  status: 'PENDING_CONFIRMATION' | 'ACTIVE' | 'SUPERSEDED' | 'COMPLETED'
+}
+
+export interface MinecraftTaskRecoveryView {
+  reason: string
+  outcome: string
+  at: number
+  detail: Record<string, unknown>
+  message?: string
+}
+
+export interface MinecraftTaskAuthorizationView {
+  plan_hash: string
+  plan_version: number
+  approved_at: number
+  expires_at: number
+  /** 服务端算好的剩余秒数（UI 只倒计时，不信任客户端时钟） */
+  remaining_seconds: number
+  valid: boolean
+}
+
 /** Phase 5A：多步骤任务（TaskRuntime）的只读投影（GET /minecraft/task）。 */
 export interface MinecraftTaskStepView {
   step_id: string
@@ -557,6 +589,15 @@ export interface MinecraftTaskView {
   /** Phase 5A：不提供通用回滚。 */
   rollback_supported: boolean
   updated_at: number
+  // ---- Phase 5A.1 §三十一：版本历史 / 恢复原因 / 授权时效 ----
+  plan_version: number
+  plan_status: MinecraftTaskPlanVersion['status']
+  plan_history: MinecraftTaskPlanVersion[]
+  replan_required: boolean
+  replan_reason: string | null
+  recovery: MinecraftTaskRecoveryView | null
+  authorization: MinecraftTaskAuthorizationView | null
+  authorization_expired_at: number | null
 }
 
 export interface MinecraftTaskCurrentResponse {

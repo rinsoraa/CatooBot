@@ -29,6 +29,7 @@ from typing import Any, Protocol
 
 from app.tasks.models import (
     ALLOWED_TASK_TRANSITIONS,
+    TASK_AUTHORIZATION_EXPIRED,
     TASK_CANCELLED,
     TASK_CONFIRMATION_REQUIRED,
     TASK_CREATED,
@@ -36,6 +37,7 @@ from app.tasks.models import (
     TASK_FAILED,
     TASK_PAUSED,
     TASK_PLAN_READY,
+    TASK_RECOVERED,
     TASK_REPLANNING,
     TASK_RESUMED,
     TASK_STARTED,
@@ -45,6 +47,9 @@ from app.tasks.models import (
     TASK_STEP_WAITING,
     TASK_SUCCEEDED,
     ExpectedFinalState,
+    PlanStatus,
+    ReconcileOutcome,
+    ReplanReason,
     StepState,
     TaskAuthorization,
     TaskFailure,
@@ -53,6 +58,7 @@ from app.tasks.models import (
     TaskState,
     TaskStep,
     arguments_hash,
+    canonical_item_name,
     new_task_id,
 )
 from app.tasks.validation import (
@@ -76,6 +82,9 @@ class TaskConfig:
     max_replans: int = 2
     no_progress_limit: int = 3
     safe_retries: int = 2
+    #: 5A.1 §十/§十一：一份计划授权的有效期（≠ 任务总时长）。生产上取
+    #: ``minecraft.agent.confirmation.ttl_seconds``；测试/真机 expiry 场景用极短值。
+    authorization_ttl_seconds: float = 60.0
 
 
 @dataclass
@@ -199,6 +208,11 @@ def classify_failure(code: str, *, event: str = "") -> TaskFailure:
     return TaskFailure.ACTION_FAILED
 
 
+def _reconcile(outcome: ReconcileOutcome, **detail: Any) -> dict[str, Any]:
+    """对账结论 + 事实明细（只读；绝不包含"接下来要做什么"的决定）。"""
+    return {"outcome": outcome.value, "detail": detail}
+
+
 class TaskRuntime:
     """多步骤任务的生命期管理（状态 / 调度 / 等待 / 恢复 / 取消 / 校验）。"""
 
@@ -267,6 +281,12 @@ class TaskRuntime:
         # 确认时的那份计划 = 现在这份计划（否则说明计划被改过 → 授权作废）
         if record.authorization.plan_hash != record.plan_hash:
             return False
+        # 5A.1 §四十四：授权必须批的是**当前这一版**计划。
+        # 重新规划后 plan_version 会前进，旧确认（哪怕 task_id/user 都一样）一律不生效。
+        if int(record.authorization.plan_version or 0) != int(record.plan_version):
+            return False
+        if record.replan_required or record.state is TaskState.REPLANNING:
+            return False
         if record.plan_hash != str(plan_hash):
             return False
         step = record.step(str(step_id))
@@ -331,6 +351,13 @@ class TaskRuntime:
             plan=plan,
             state=TaskState.PLANNING,
             expires_at=self._clock() + float(self.config.ttl_seconds),
+        )
+        # 5A.1 §七：计划版本历史从第 1 版开始（旧计划永不覆盖，只 mark superseded）
+        record.record_plan(
+            now=record.created_at,
+            summary=self.summary_of(record) if not self._validate_plan(record.plan) else "",
+            status=PlanStatus.PENDING_CONFIRMATION.value,
+            reason="",
         )
         await self._save(record, event=TASK_CREATED)
         problems = self._validate_plan(record.plan)
@@ -400,15 +427,19 @@ class TaskRuntime:
                 await self._save(record, event=TASK_CONFIRMATION_REQUIRED)
             return record
         now = self._clock()
+        # 5A.1 §十/§十一：授权有效期独立于任务总时长（expires_at 记的是任务上限，不覆盖它）
         record.authorization = TaskAuthorization(
             task_id=record.task_id,
             user_id=user_id,
             session_id=session_id,
             plan_hash=record.plan_hash,
+            plan_version=record.plan_version,
             approved_at=now,
-            expires_at=now + float(self.config.ttl_seconds),
+            expires_at=now + float(self.config.authorization_ttl_seconds),
         )
-        record.expires_at = record.authorization.expires_at
+        record.authorization_expired_at = 0.0
+        record.replan_required = False
+        record.mark_plan_confirmed(now=now)
         await self._enter(record, TaskState.RUNNING)
         await self._publish(TASK_STARTED, self._event_payload(record))
         record.result["started_inventory"] = await self._inventory_snapshot()
@@ -429,6 +460,10 @@ class TaskRuntime:
             if record.state.terminal or record.state is TaskState.PENDING_CONFIRMATION:
                 return record
             if record.state is TaskState.WAITING_ACTION:
+                return record
+            if record.state is TaskState.REPLANNING:
+                # 5A.1 §五/§二十二：重规划期间只允许 SAFE 观察 —— 在拿到**新计划 + 新确认**
+                # 之前一步世界动作都不许走（Planner 会走 replan() 把状态推到等确认）。
                 return record
             if await self._expire_if_due(record):
                 return record
@@ -495,10 +530,9 @@ class TaskRuntime:
             record.authorization is None or not record.authorization.valid(now=self._clock())
         )
         if expired:
-            record.state = TaskState.PAUSED
-            record.failure = TaskFailure.AUTHORIZATION.value
-            record.message = "任务授权已过期，需要重新确认"
-            await self._save(record, event=TASK_PAUSED, step_id=step.step_id)
+            # 5A.1 §十-§十二：授权到期 → 安全边界（这一步还没开始）→ 回"等重新确认"。
+            # 绝不偷偷继续，也绝不在动作中间硬切状态。
+            await self._expire_authorization(record, step=step)
             return "stop"
 
         # 3) no-progress 检测（§七十二/§七十三）
@@ -621,15 +655,338 @@ class TaskRuntime:
     async def _pause_after_failure(
         self, record: TaskRecord, failure: TaskFailure, step: TaskStep
     ) -> None:
-        """LOW/MEDIUM 失败 → PAUSED（不自动做新的世界修改，§三十四）。"""
+        """步骤失败 → 停下，**绝不自动做新的世界修改**（§三十四）。
+
+        Phase 5A.1 §四/§八：世界变了 / 目标丢了不是"暂停一下就能继续"的错误 ——
+        旧计划的假设已经不成立，必须 superseded 并交给 Planner 出**新计划**（新确认）。
+        """
         if failure is TaskFailure.CANCELLED:
             await self._cancel_record(record, reason="action cancelled")
+            return
+        if failure in {TaskFailure.WORLD_CHANGED, TaskFailure.TARGET_LOST}:
+            await self._begin_replanning(
+                record,
+                reason=failure.value,
+                step=step,
+                failure=failure.value,
+                message=(step.message or self.replan_headline(failure.value))[:400],
+            )
             return
         record.state = TaskState.PAUSED
         record.failure = failure.value
         record.failed_step = step.step_id
         record.message = step.message[:400]
         await self._save(record, event=TASK_PAUSED, step_id=step.step_id)
+
+    # ------------------------------------------- Phase 5A.1：重规划 / 到期 / 恢复
+
+    async def _begin_replanning(
+        self,
+        record: TaskRecord,
+        *,
+        reason: str,
+        step: TaskStep | None = None,
+        failure: str = "",
+        message: str = "",
+        detail: str = "",
+    ) -> TaskRecord:
+        """进入 REPLANNING（§四/§九/§二十二）：旧计划 superseded，等新计划 + 新确认。
+
+        在这里做一次**只读**对账（SAFE 查询），只为把"世界现在是什么样"写进审计；
+        绝不挑替代目标、绝不产生任何世界动作。
+        """
+        now = self._clock()
+        if record.state is not TaskState.REPLANNING:
+            await self._enter(record, TaskState.REPLANNING)
+        record.supersede_plan(now=now, reason=reason)
+        record.replan_required = True
+        record.replan_reason = str(reason)
+        record.failure = str(failure or reason)
+        if step is not None:
+            record.failed_step = step.step_id
+        record.message = (message or self.replan_headline(reason))[:400]
+        reconcile = await self.reconcile_task(record)
+        record.recovery = {
+            "reason": str(reason),
+            "outcome": str(reconcile.get("outcome") or ReconcileOutcome.UNKNOWN.value),
+            "at": now,
+            "detail": dict(reconcile.get("detail") or {}),
+            "message": record.message,
+        }
+        await self._publish(TASK_REPLANNING, self._event_payload(record, step))
+        await self._save(
+            record,
+            event=TASK_REPLANNING,
+            step_id=step.step_id if step is not None else "",
+            detail=detail
+            or (
+                f"reason={reason} outcome={record.recovery['outcome']}"
+                f" plan_version={record.plan_version}"
+            ),
+        )
+        return record
+
+    async def _expire_authorization(
+        self,
+        record: TaskRecord,
+        *,
+        step: TaskStep | None = None,
+        reason: str = "任务授权已到期",
+    ) -> TaskRecord:
+        """授权到期（§十-§十二）：安全边界 → PENDING_CONFIRMATION + 新确认条目。
+
+        * 计划本身没有变（``plan_hash`` 不变），所以这**不是**重规划；
+        * 只有真实用户回合能重新确认（``confirm_and_start`` 的门一个都没动）；
+        * 正在跑的动作不会被强行终止 —— 这个检查只发生在"下一步还没开始"的位置。
+        """
+        now = self._clock()
+        record.authorization = None
+        record.authorization_expired_at = now
+        record.failure = TaskFailure.AUTHORIZATION.value
+        record.message = f"{reason}（计划没有变），需要重新确认"
+        if step is not None:
+            record.failed_step = step.step_id
+            if step.state in {StepState.RUNNING, StepState.WAITING_ACTION}:
+                step.state = StepState.FAILED
+                step.failure = TaskFailure.AUTHORIZATION.value
+                step.message = record.message
+        version = record.current_plan_version()
+        if version is not None:
+            version.status = PlanStatus.PENDING_CONFIRMATION.value
+        await self._enter(record, TaskState.PENDING_CONFIRMATION)
+        record.confirmation_id = await self._confirmations.request(
+            task_id=record.task_id,
+            session_id=record.session_id,
+            user_id=record.user_id,
+            risk=self._plan_risk(record.plan),
+            plan_hash=record.plan_hash,
+            arguments=self._confirmation_arguments(record),
+            summary=self.replan_summary(record, reason=ReplanReason.AUTHORIZATION_EXPIRED.value),
+        )
+        await self._publish(TASK_AUTHORIZATION_EXPIRED, self._event_payload(record, step))
+        await self._save(
+            record,
+            event=TASK_AUTHORIZATION_EXPIRED,
+            step_id=step.step_id if step is not None else "",
+            detail=f"authorization expired at {now} plan_version={record.plan_version}",
+        )
+        return record
+
+    # ------------------------------------------------------------ 只读对账（§二十一）
+
+    async def _safe_read(
+        self, tool: str, arguments: Mapping[str, Any] | None = None
+    ) -> TaskInvocation:
+        """对账/观察期唯一允许的调用面：SAFE 只读（绝不产生世界动作，§五）。"""
+        try:
+            return await self._invoke(
+                tool,
+                dict(arguments or {}),
+                task_id="",
+                step_id="",
+                plan_hash="",
+                risk="SAFE",
+                authorization=None,
+            )
+        except Exception:  # noqa: BLE001 - 读不到不是崩溃
+            return TaskInvocation(ok=False, error=f"{tool} 读取失败", code="task.internal")
+
+    async def reconcile_task(self, record: TaskRecord) -> dict[str, Any]:
+        """对持久化的 Task 与当前真实世界做**有限、只读**的事实对账（§二十一/§二十二）。
+
+        只回答"这一步的目标还在不在、还是不是原来那个东西"，输出
+        ``RECONCILED / WORLD_CHANGED / TARGET_LOST / TARGET_ALREADY_DONE / OFFLINE / UNKNOWN``。
+        **不做修复、不挑替代目标**：需要新目标时那是 Planner + 用户确认的事。
+        """
+        world = await self._safe_read("minecraft_world", {})
+        if not world.ok:
+            code = str(world.code or "")
+            if code in {
+                "minecraft.offline",
+                "minecraft.not_connected",
+                "minecraft.disabled",
+                "minecraft.runtime_down",
+                "action.not_online",
+            }:
+                return _reconcile(ReconcileOutcome.OFFLINE, code=code)
+            return _reconcile(ReconcileOutcome.UNKNOWN, code=code)
+        facts = world.result if isinstance(world.result, Mapping) else {}
+        if facts.get("online") is False:
+            return _reconcile(ReconcileOutcome.OFFLINE, reason="offline")
+
+        step = record.step(record.pending_step_id) if record.pending_step_id else None
+        if step is None:
+            step = record.next_step()
+        if step is None:
+            return _reconcile(ReconcileOutcome.RECONCILED, note="no_step")
+        return await self._reconcile_step(step)
+
+    async def _reconcile_step(self, step: TaskStep) -> dict[str, Any]:
+        """单个步骤的只读事实核对（只认"世界目标"这一类可判定事实）。"""
+        arguments = step.effective_arguments
+        if step.tool == "minecraft_dig":
+            coords = [arguments.get("x"), arguments.get("y"), arguments.get("z")]
+            if not all(isinstance(value, int) for value in coords):
+                return _reconcile(ReconcileOutcome.UNKNOWN, note="dig_without_coords")
+            expected = canonical_item_name(arguments.get("expected_block"))
+            probe = await self._safe_read(
+                "minecraft_dig_capability",
+                {"x": coords[0], "y": coords[1], "z": coords[2]},
+            )
+            if not probe.ok:
+                code = str(probe.code or "")
+                if code in {"minecraft.block_unavailable", "minecraft.block_not_found"}:
+                    return _reconcile(
+                        ReconcileOutcome.TARGET_LOST,
+                        code=code,
+                        expected=expected,
+                        position=coords,
+                    )
+                return _reconcile(ReconcileOutcome.UNKNOWN, code=code)
+            data = probe.result if isinstance(probe.result, Mapping) else {}
+            block = data.get("block") if isinstance(data.get("block"), Mapping) else {}
+            name = canonical_item_name(block.get("name")) if block else ""
+            reason = str(data.get("reason") or "")
+            if reason == "air" or not name:
+                # 方块已经不在了：可能是上次运行里挖掉的（checkpoint 没来得及记），
+                # 也可能是别人挖的。**绝不**再挖一次（§十八/§十九）。
+                return _reconcile(
+                    ReconcileOutcome.TARGET_ALREADY_DONE, reason="air", expected=expected
+                )
+            if expected and name != expected:
+                return _reconcile(ReconcileOutcome.WORLD_CHANGED, expected=expected, actual=name)
+            return _reconcile(ReconcileOutcome.RECONCILED, block=name, reason=reason)
+        if step.tool == "minecraft_pickup_item":
+            expected = canonical_item_name(arguments.get("expected_item"))
+            wanted = arguments.get("entity_id")
+            drops = await self._safe_read("minecraft_dropped_items", {})
+            if not drops.ok:
+                return _reconcile(ReconcileOutcome.UNKNOWN, code=str(drops.code or ""))
+            payload = dict(drops.result) if isinstance(drops.result, Mapping) else {}
+            raw_rows = payload.get("items")
+            rows: list[Any] = list(raw_rows) if isinstance(raw_rows, list) else []
+            for row in rows:
+                if not isinstance(row, Mapping):
+                    continue
+                if wanted is not None and row.get("entity_id") == wanted:
+                    item = row.get("item") if isinstance(row.get("item"), Mapping) else {}
+                    name = canonical_item_name(item.get("name")) if item else ""
+                    if expected and name and name != expected:
+                        return _reconcile(
+                            ReconcileOutcome.WORLD_CHANGED, expected=expected, actual=name
+                        )
+                    return _reconcile(ReconcileOutcome.RECONCILED, entity_id=wanted)
+            return _reconcile(ReconcileOutcome.TARGET_LOST, entity_id=wanted, expected=expected)
+        # 其余步骤（move_to / SAFE 读 / equip …）没有"世界目标还在不在"的可判定事实
+        return _reconcile(ReconcileOutcome.RECONCILED, tool=step.tool, note="no_fact")
+
+    # ------------------------------------------------------------ 重启恢复（§十三-§二十）
+
+    async def recover(
+        self, task_id: str, *, reason: str = ReplanReason.RUNTIME_RESTART.value
+    ) -> TaskRecord:
+        """进程重启后的安全恢复：旧 action 一律失效，**绝不重复世界动作**。
+
+        * 旧 Node runtime / action 生命周期已经不存在 —— 不查询、不猜、不等待；
+        * 先把"正在等动作"的那一步判成失效（``RUNTIME_RESTART``）；
+        * 再做一次只读对账，用**世界事实**决定是"世界变了 → REPLANNING"还是"停下等用户"。
+        """
+        record = await self._require(task_id)
+        if record.state.terminal:
+            return record
+        pending = bool(record.pending_action_id or record.pending_step_id)
+        stale_step: TaskStep | None = None
+        if pending:
+            stale_step = record.step(record.pending_step_id) if record.pending_step_id else None
+            if stale_step is not None and stale_step.state is StepState.WAITING_ACTION:
+                stale_step.state = StepState.FAILED
+                stale_step.failure = TaskFailure.RUNTIME_RESTART.value
+                stale_step.message = "进程重启：这一步的动作已经不存在了（不会重做）"
+                # §十七/§四十二：只要有一步骤**真的派出去过**，这份旧确认就不能再放行任何
+                # 世界动作 —— 必须重新观察 + 新计划 + 新确认（哪怕世界看起来没变）。
+                record.authorization = None
+                record.replan_required = True
+                record.replan_reason = ReplanReason.RUNTIME_RESTART.value
+        if (
+            not pending
+            and record.recovery
+            and record.state
+            in {TaskState.PAUSED, TaskState.REPLANNING, TaskState.PENDING_CONFIRMATION}
+        ):
+            # 已经恢复过（幂等）：重复扫描不重复告警、不重复对账
+            return record
+        record.pending_action_id = ""
+        record.pending_step_id = ""
+        record.pause_requested = False
+        reconcile = await self.reconcile_task(record)
+        outcome = str(reconcile.get("outcome") or ReconcileOutcome.UNKNOWN.value)
+        now = self._clock()
+        record.recovery = {
+            "reason": str(reason),
+            "outcome": outcome,
+            "at": now,
+            "detail": dict(reconcile.get("detail") or {}),
+        }
+        if outcome in {
+            ReconcileOutcome.WORLD_CHANGED.value,
+            ReconcileOutcome.TARGET_LOST.value,
+            ReconcileOutcome.TARGET_ALREADY_DONE.value,
+        }:
+            await self._begin_replanning(
+                record,
+                reason=ReplanReason.RUNTIME_RESTART.value,
+                step=stale_step,
+                failure=outcome,
+                message=self.recovery_message(outcome),
+            )
+        else:
+            await self._enter(record, TaskState.PAUSED)
+            record.failure = TaskFailure.RUNTIME_RESTART.value
+            record.failed_step = stale_step.step_id if stale_step is not None else ""
+            record.message = self.recovery_message(outcome)[:400]
+            record.recovery["message"] = record.message
+        await self._publish(TASK_RECOVERED, self._event_payload(record, stale_step))
+        await self._save(
+            record,
+            event=TASK_RECOVERED,
+            step_id=stale_step.step_id if stale_step is not None else "",
+            detail=f"recovery reason={reason} outcome={outcome} plan_version={record.plan_version}",
+        )
+        self._log_info(
+            "task recovered",
+            task_id=record.task_id,
+            reason=reason,
+            outcome=outcome,
+            state=record.state.value,
+        )
+        return record
+
+    async def recover_persisted_tasks(self, *, limit: int = 50) -> list[TaskRecord]:
+        """启动时扫描持久化的非终态任务并逐个安全恢复（§十三）。"""
+        recovered: list[TaskRecord] = []
+        for record in await self._store.list_recent(int(limit)):
+            if record.state.terminal:
+                continue
+            recovered.append(await self.recover(record.task_id))
+        return recovered
+
+    @staticmethod
+    def recovery_message(outcome: str) -> str:
+        table = {
+            ReconcileOutcome.TARGET_ALREADY_DONE.value: (
+                "罐头重启过；对账发现那个目标已经被处理掉了（不会重做）。原计划已停止。"
+            ),
+            ReconcileOutcome.WORLD_CHANGED.value: (
+                "罐头重启过；对账发现世界里的目标和原计划不一样了。原计划已停止。"
+            ),
+            ReconcileOutcome.TARGET_LOST.value: (
+                "罐头重启过；对账发现原计划的目标已经不在了。原计划已停止。"
+            ),
+            ReconcileOutcome.OFFLINE.value: (
+                "罐头重启过，而且现在不在世界里；之前那一步不会重做。等她回到世界再说。"
+            ),
+        }
+        return table.get(str(outcome), "罐头重启过，之前那一步的动作已经不存在了（不会重做）。")
 
     # ------------------------------------------------------------ action 事件
 
@@ -746,6 +1103,34 @@ class TaskRuntime:
             raise TaskAuthorizationError(
                 f"任务已经结束（{record.state.value}）", code="task.already_finished"
             )
+        if record.replan_required and record.state is TaskState.PAUSED:
+            # §十七：重启/世界变化之后，必须先有新计划 + 新确认，不能拿旧计划接着跑
+            raise TaskAuthorizationError(
+                "任务需要重新规划（旧动作已失效或世界已变化），请先确认新计划",
+                code="task.replan_required",
+            )
+        # 5A.1 §十七/§十九：比"授权还新不新"更要紧的是"那一步的世界动作还算不算数"。
+        # 先判旧动作（只有真的没有在等事件时才算旧），再判授权。
+        step = record.next_step()
+        if (
+            not record.pending_action_id
+            and step is not None
+            and step.action_id
+            and step.state is StepState.WAITING_ACTION
+        ):
+            # 被暂停/重启时那个动作已经结束了：不能假装它还在（§六十四/§七十七）
+            step.state = StepState.FAILED
+            step.failure = TaskFailure.RUNTIME_RESTART.value
+            step.message = "恢复时发现旧动作已经失效，需要重新规划"
+            record.resume_note = "旧动作失效"
+            await self._begin_replanning(
+                record,
+                reason=ReplanReason.RUNTIME_RESTART.value,
+                step=step,
+                failure=ReconcileOutcome.WORLD_CHANGED.value,
+                message=step.message,
+            )
+            return record
         if record.authorization is None or not record.authorization.valid(now=self._clock()):
             if not is_user:
                 # WebUI/后台只能"继续"一份还有效的授权，不能自己造一份新的
@@ -753,36 +1138,12 @@ class TaskRuntime:
                     "任务授权已过期，需要在对话里由用户重新确认",
                     code="task.resume_requires_user",
                 )
-            # §三十：MEDIUM 授权过期 → 重新确认（不偷偷继续）
-            record.authorization = None
-            await self._enter(record, TaskState.PENDING_CONFIRMATION)
-            record.confirmation_id = await self._confirmations.request(
-                task_id=record.task_id,
-                session_id=record.session_id,
-                user_id=record.user_id,
-                risk=self._plan_risk(record.plan),
-                plan_hash=record.plan_hash,
-                arguments=self._confirmation_arguments(record),
-                summary=self.summary_of(record),
-            )
-            record.message = "授权已过期，请重新确认计划"
-            await self._save(record, event=TASK_CONFIRMATION_REQUIRED)
-            return record
+            # §三十 + 5A.1 §十二：授权过期 → 回"等重新确认"（计划没变，不重规划）
+            return await self._expire_authorization(record)
         facts = await self._world_facts_snapshot()
         if facts and facts.get("online") is False:
             record.message = "罐头不在世界里，先恢复不了"
             await self._save(record, event=TASK_PAUSED)
-            return record
-        step = record.next_step()
-        if step is not None and step.action_id and step.state is StepState.WAITING_ACTION:
-            # 被暂停时那个动作已经结束了：不能假装它还在（§六十四/§七十七）
-            step.state = StepState.FAILED
-            step.failure = TaskFailure.RUNTIME_RESTART.value
-            step.message = "恢复时发现旧动作已经失效，需要重新规划"
-            record.resume_note = "旧动作失效"
-            await self._enter(record, TaskState.REPLANNING)
-            await self._publish(TASK_REPLANNING, self._event_payload(record, step))
-            await self._save(record, event=TASK_REPLANNING, step_id=step.step_id)
             return record
         record.pause_requested = False
         record.failure = ""
@@ -847,6 +1208,7 @@ class TaskRuntime:
                 await self._publish(TASK_FAILED, self._event_payload(record))
                 return record
         record.verification = verification
+        record.mark_plan_completed()
         record.state = TaskState.SUCCEEDED
         record.updated_at = self._clock()
         record.result["completed_steps"] = record.progress()["completed"]
@@ -975,9 +1337,11 @@ class TaskRuntime:
             raise TaskAuthorizationError(f"找不到任务 {task_id}", code="task.not_found")
         return record
 
-    async def _save(self, record: TaskRecord, *, event: str = "", step_id: str = "") -> None:
+    async def _save(
+        self, record: TaskRecord, *, event: str = "", step_id: str = "", detail: str = ""
+    ) -> None:
         record.updated_at = self._clock()
-        await self._store.save(record, event=event, step_id=step_id)
+        await self._store.save(record, event=event, step_id=step_id, detail=detail)
 
     async def _publish(self, event: str, payload: dict[str, Any]) -> None:
         try:
@@ -1109,6 +1473,30 @@ class TaskRuntime:
             "expires_at": record.expires_at,
             "rollback_supported": record.rollback_supported,
             "updated_at": record.updated_at,
+            # ---- Phase 5A.1 §三十一：版本历史 / 恢复原因 / 授权时效 ----
+            "plan_version": record.plan_version,
+            "plan_status": record.plan_status,
+            "plan_history": [item.to_payload() for item in record.plan_history],
+            "replan_required": record.replan_required,
+            "replan_reason": record.replan_reason or None,
+            "recovery": dict(record.recovery) or None,
+            "authorization": self.authorization_view(record),
+            "authorization_expired_at": record.authorization_expired_at or None,
+        }
+
+    def authorization_view(self, record: TaskRecord) -> dict[str, Any] | None:
+        """授权的只读投影（剩余时间由服务端算，UI 只倒计时 —— 不用客户端时钟）。"""
+        authorization = record.authorization
+        if authorization is None:
+            return None
+        now = self._clock()
+        return {
+            "plan_hash": authorization.plan_hash,
+            "plan_version": int(authorization.plan_version or 0),
+            "approved_at": authorization.approved_at,
+            "expires_at": authorization.expires_at,
+            "remaining_seconds": round(authorization.remaining_seconds(now=now), 1),
+            "valid": authorization.valid(now=now),
         }
 
     def context_line(self, record: TaskRecord, *, limit: int = 400) -> str:
@@ -1124,6 +1512,8 @@ class TaskRuntime:
             f"目标：{record.objective}",
             f"进度：{progress['completed']}/{progress['total']}",
         ]
+        if record.replan_required and record.replan_reason:
+            parts.append(f"需要重新规划（{record.replan_reason}）")
         if record.message:
             parts.append(f"说明：{record.message}")
         if remaining:
@@ -1140,8 +1530,26 @@ class TaskRuntime:
         completed = record.progress()["completed"]
         return f"任务完成（{completed} 个步骤）"
 
-    async def replan(self, task_id: str, plan: TaskPlan, *, reason: str = "replan") -> TaskRecord:
-        """重规划（§三十七）：只允许 SAFE 观察 + 新的计划，且**任何**新 LOW/MEDIUM 都要重新确认。"""
+    async def replan(
+        self,
+        task_id: str,
+        plan: TaskPlan,
+        *,
+        reason: str = ReplanReason.USER_REQUEST.value,
+        observations: list[dict[str, Any]] | None = None,
+    ) -> TaskRecord:
+        """用一份**新计划**替换旧计划（Phase 5A.1 §四-§九/§二十二-§二十五）。
+
+        第一原则：**旧 Plan 的授权绝不能授权新 Plan**。所以这里一律：
+
+        1. 把旧版本标成 ``SUPERSEDED``（不覆盖、保留审计：谁在什么时候因为什么被取代）；
+        2. 清空 ``authorization``（旧确认立刻失效）+ 前进 ``plan_version``；
+        3. 只挂一条**新的**确认，摘要里明确写"这是新计划、为什么"（§九/§三十二）；
+        4. 在用户确认之前，新计划里的任何 LOW/MEDIUM 都拿不到放行
+           （``authorize_step`` 同时查 plan_hash 与 plan_version）。
+
+        新计划必须由调用方完成 SAFE 观察后给出（Planner 的活），本方法不挑目标。
+        """
         record = await self._require(task_id)
         if record.state.terminal:
             raise TaskAuthorizationError("任务已经结束，不能重规划", code="task.already_finished")
@@ -1152,17 +1560,38 @@ class TaskRuntime:
         problems = self._validate_plan(plan)
         if problems:
             return await self._fail(record, TaskFailure.VALIDATION, "；".join(problems))
+        now = self._clock()
+        old_hash = record.plan_hash
+        if record.state is not TaskState.REPLANNING:
+            await self._enter(record, TaskState.REPLANNING)
+        record.supersede_plan(now=now, reason=str(reason))
         record.replans += 1
         record.plan = plan
+        if observations:
+            record.plan.observations = [dict(item) for item in observations]
         record.current_step = 0
         record.authorization = None
-        record.failure = ""
-        record.pause_requested = False
+        record.replan_required = False
+        record.replan_reason = str(reason)
         record.pending_action_id = ""
         record.pending_step_id = ""
-        await self._enter(record, TaskState.REPLANNING)
+        record.pause_requested = False
+        record.failure = ""
+        record.message = self.replan_headline(reason)
+        version = record.record_plan(
+            now=now,
+            summary=self.summary_of(record),
+            status=PlanStatus.PENDING_CONFIRMATION.value,
+            reason=str(reason),
+        )
         await self._publish(TASK_REPLANNING, self._event_payload(record))
-        await self._save(record, event=TASK_REPLANNING)
+        await self._save(
+            record,
+            event=TASK_REPLANNING,
+            detail=(
+                f"replan v{version.version} reason={reason} old={old_hash} new={record.plan_hash}"
+            ),
+        )
         await self._enter(record, TaskState.PENDING_CONFIRMATION)
         record.confirmation_id = await self._confirmations.request(
             task_id=record.task_id,
@@ -1171,11 +1600,47 @@ class TaskRuntime:
             risk=self._plan_risk(record.plan),
             plan_hash=record.plan_hash,
             arguments=self._confirmation_arguments(record),
-            summary=self.summary_of(record),
+            summary=self.replan_summary(record, reason=reason),
         )
-        record.message = f"已重新规划（{reason}），等用户确认新计划"
+        record.message = f"已重新规划（第 {version.version} 版，{reason}），等用户确认新计划"
         await self._save(record, event=TASK_CONFIRMATION_REQUIRED)
+        self._log_info(
+            "task replanned",
+            task_id=record.task_id,
+            version=version.version,
+            reason=reason,
+            old_hash=old_hash,
+            new_hash=record.plan_hash,
+        )
         return record
+
+    @staticmethod
+    def replan_headline(reason: str) -> str:
+        """重新规划时给用户看的第一句话（§三十二：不是"任务失败"，也不是"正在自动找替代目标"）。"""
+        table = {
+            ReplanReason.WORLD_CHANGED.value: "目标已经发生了变化。原计划已停止。",
+            ReplanReason.TARGET_LOST.value: "原计划里的目标已经不见了。原计划已停止。",
+            ReplanReason.RUNTIME_RESTART.value: (
+                "罐头重启过，原来那一步已经不存在了。原计划已停止。"
+            ),
+            ReplanReason.AUTHORIZATION_EXPIRED.value: (
+                "上一条许可到期了（计划没有变），需要你再确认一次。"
+            ),
+        }
+        return table.get(str(reason or ""), "原计划已停止，需要重新规划。")
+
+    def replan_summary(self, record: TaskRecord, *, reason: str = "") -> str:
+        """新计划的确认摘要（§九：必须明确这是新计划；§六十七：列出全部将执行的动作）。"""
+        body = summarize_plan(record.plan, label_of=self._label_of)
+        lines = body.splitlines()
+        # summarize_plan 的头两行是"任务：…"+空行（那是旧目标），这里换成版本头
+        steps_block = "\n".join(lines[2:]).strip() if len(lines) > 2 else body
+        return (
+            f"{self.replan_headline(reason)}\n\n"
+            f"新的计划（第 {record.plan_version} 版）：\n"
+            f"{steps_block}\n\n"
+            "需要重新确认。"
+        )
 
     def _event_payload(self, record: TaskRecord, step: TaskStep | None = None) -> dict[str, Any]:
         """Task 事件载荷（§五十一：task_id / step_id / state / timestamp，不含 raw 世界状态）。"""
@@ -1188,6 +1653,9 @@ class TaskRuntime:
             "tool": step.tool if step is not None else "",
             "failure": record.failure,
             "message": record.message,
+            "plan_version": record.plan_version,
+            "replan_reason": record.replan_reason,
+            "recovery_outcome": str((record.recovery or {}).get("outcome") or ""),
             "timestamp": self._clock(),
         }
 

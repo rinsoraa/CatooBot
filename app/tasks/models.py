@@ -55,12 +55,21 @@ ALLOWED_TASK_TRANSITIONS: dict[TaskState, frozenset[TaskState]] = {
         {TaskState.PENDING_CONFIRMATION, TaskState.FAILED, TaskState.CANCELLED}
     ),
     TaskState.PENDING_CONFIRMATION: frozenset(
-        {TaskState.RUNNING, TaskState.CANCELLED, TaskState.EXPIRED, TaskState.FAILED}
+        {
+            TaskState.RUNNING,
+            # 5A.1：还没确认也可以重新规划（用户改主意 / Planner 有了更好的计划）
+            TaskState.REPLANNING,
+            TaskState.CANCELLED,
+            TaskState.EXPIRED,
+            TaskState.FAILED,
+        }
     ),
     TaskState.RUNNING: frozenset(
         {
             TaskState.WAITING_ACTION,
             TaskState.WAITING_USER,
+            # 5A.1 §十二：授权到期时任务停在安全边界 → 回到"等重新确认"
+            TaskState.PENDING_CONFIRMATION,
             TaskState.PAUSED,
             TaskState.REPLANNING,
             TaskState.SUCCEEDED,
@@ -154,6 +163,36 @@ class TaskFailure(str, Enum):  # noqa: UP042 - 与 TaskState 一致（面向 JSO
     VERIFICATION = "VERIFICATION"
 
 
+class PlanStatus(str, Enum):  # noqa: UP042 - 与 TaskState 一致（面向 JSON）
+    """一份计划的版本状态（Phase 5A.1 §七：不要覆盖旧计划）。"""
+
+    PENDING_CONFIRMATION = "PENDING_CONFIRMATION"
+    ACTIVE = "ACTIVE"
+    SUPERSEDED = "SUPERSEDED"
+    COMPLETED = "COMPLETED"
+
+
+class ReplanReason(str, Enum):  # noqa: UP042 - 与 TaskState 一致（面向 JSON）
+    """为什么重新规划（Phase 5A.1 §八：不要所有情况都写成 REPLANNING）。"""
+
+    TARGET_LOST = "TARGET_LOST"
+    WORLD_CHANGED = "WORLD_CHANGED"
+    RUNTIME_RESTART = "RUNTIME_RESTART"
+    AUTHORIZATION_EXPIRED = "AUTHORIZATION_EXPIRED"
+    USER_REQUEST = "USER_REQUEST"
+
+
+class ReconcileOutcome(str, Enum):  # noqa: UP042 - 与 TaskState 一致（面向 JSON）
+    """只读对账的结论（Phase 5A.1 §二十一：有限、只读的事实对账）。"""
+
+    RECONCILED = "RECONCILED"
+    WORLD_CHANGED = "WORLD_CHANGED"
+    TARGET_LOST = "TARGET_LOST"
+    TARGET_ALREADY_DONE = "TARGET_ALREADY_DONE"
+    OFFLINE = "OFFLINE"
+    UNKNOWN = "UNKNOWN"
+
+
 class StepAuthorizationStatus(str, Enum):  # noqa: UP042 - 与 TaskState 一致（面向 JSON）
     """步骤授权状态（§十七）。"""
 
@@ -178,6 +217,10 @@ TASK_STEP_SUCCEEDED = "task.step_succeeded"
 TASK_STEP_FAILED = "task.step_failed"
 TASK_PAUSED = "task.paused"
 TASK_REPLANNING = "task.replanning"
+#: Phase 5A.1：进程重启后从 checkpoint 安全恢复（旧 action 一律失效）
+TASK_RECOVERED = "task.recovered"
+#: Phase 5A.1：授权到期 → 必须重新确认（绝不偷偷继续）
+TASK_AUTHORIZATION_EXPIRED = "task.authorization_expired"
 TASK_RESUMED = "task.resumed"
 TASK_CANCELLED = "task.cancelled"
 TASK_SUCCEEDED = "task.succeeded"
@@ -195,6 +238,8 @@ TASK_EVENTS: tuple[str, ...] = (
     TASK_STEP_FAILED,
     TASK_PAUSED,
     TASK_REPLANNING,
+    TASK_RECOVERED,
+    TASK_AUTHORIZATION_EXPIRED,
     TASK_RESUMED,
     TASK_CANCELLED,
     TASK_SUCCEEDED,
@@ -394,6 +439,53 @@ class TaskStep:
 
 
 @dataclass
+class PlanVersion:
+    """一份冻结计划的历史记录（Phase 5A.1 §七：不要覆盖旧 Plan）。
+
+    ``reason`` 只对被取代的版本有意义：它是"为什么这一版不再有效"
+    （``WORLD_CHANGED`` / ``RUNTIME_RESTART`` / …），审计与 UI 都靠它解释。
+    """
+
+    version: int
+    plan_hash: str
+    created_at: float
+    summary: str = ""
+    steps: list[dict[str, Any]] = field(default_factory=list)
+    confirmed_at: float = 0.0
+    superseded_at: float = 0.0
+    reason: str = ""
+    status: str = PlanStatus.PENDING_CONFIRMATION.value
+
+    def to_payload(self) -> dict[str, Any]:
+        return {
+            "version": self.version,
+            "plan_hash": self.plan_hash,
+            "created_at": self.created_at,
+            "summary": self.summary,
+            "steps": [dict(item) for item in self.steps],
+            "confirmed_at": self.confirmed_at,
+            "superseded_at": self.superseded_at,
+            "reason": self.reason,
+            "status": self.status,
+        }
+
+    @classmethod
+    def from_payload(cls, payload: Mapping[str, Any]) -> PlanVersion:
+        raw_steps = payload.get("steps")
+        return cls(
+            version=int(payload.get("version") or 0),
+            plan_hash=str(payload.get("plan_hash") or ""),
+            created_at=float(payload.get("created_at") or 0.0),
+            summary=str(payload.get("summary") or ""),
+            steps=[dict(item) for item in (raw_steps or []) if isinstance(item, Mapping)],
+            confirmed_at=float(payload.get("confirmed_at") or 0.0),
+            superseded_at=float(payload.get("superseded_at") or 0.0),
+            reason=str(payload.get("reason") or ""),
+            status=str(payload.get("status") or PlanStatus.PENDING_CONFIRMATION.value),
+        )
+
+
+@dataclass
 class ExpectedFinalState:
     """Plan 定义的"最终应该看到什么"（§八十三）——用 SAFE 读重新验证，不看历史结果。"""
 
@@ -505,10 +597,16 @@ class TaskAuthorization:
     plan_hash: str
     approved_at: float
     expires_at: float
+    #: 这份授权批的是**第几版**计划（5A.1 §四十四：v1 的确认绝不能授权 v2）
+    plan_version: int = 0
 
     def valid(self, *, now: float | None = None) -> bool:
         moment = time.time() if now is None else now
         return moment < self.expires_at
+
+    def remaining_seconds(self, *, now: float | None = None) -> float:
+        moment = time.time() if now is None else now
+        return max(0.0, self.expires_at - moment)
 
     def to_payload(self) -> dict[str, Any]:
         return {
@@ -516,6 +614,7 @@ class TaskAuthorization:
             "user_id": self.user_id,
             "session_id": self.session_id,
             "plan_hash": self.plan_hash,
+            "plan_version": self.plan_version,
             "approved_at": self.approved_at,
             "expires_at": self.expires_at,
         }
@@ -531,6 +630,7 @@ class TaskAuthorization:
             plan_hash=str(payload.get("plan_hash") or ""),
             approved_at=float(payload.get("approved_at") or 0.0),
             expires_at=float(payload.get("expires_at") or 0.0),
+            plan_version=int(payload.get("plan_version") or 0),
         )
 
 
@@ -594,6 +694,17 @@ class TaskRecord:
     #: 暂停请求：有前台动作时先记下来，等它自然结束再真正 PAUSED（§二十九）
     pause_requested: bool = False
     expires_at: float = 0.0
+    # ---- Phase 5A.1：版本历史 / 重规划 / 恢复（§七/§八/§十五/§三十一）----
+    #: 每一版计划都留档（绝不覆盖旧 Plan）
+    plan_history: list[PlanVersion] = field(default_factory=list)
+    #: 为什么需要重新规划（ReplanReason；空 = 不需要）
+    replan_reason: str = ""
+    #: 需要重新规划（世界变了 / 重启后旧动作失效）：在重新确认前不许再动世界
+    replan_required: bool = False
+    #: 只读对账的结果与恢复审计（reason / outcome / at / detail / message）
+    recovery: dict[str, Any] = field(default_factory=dict)
+    #: 授权到期时刻（审计用；0 = 没到期过）
+    authorization_expired_at: float = 0.0
     #: §三十五/§三十六：本阶段**不提供**通用 rollback（世界修改不是事务）
     rollback_supported: bool = False
     resume_note: str = ""
@@ -605,6 +716,76 @@ class TaskRecord:
     @property
     def plan_hash(self) -> str:
         return self.plan.plan_hash
+
+    @property
+    def plan_version(self) -> int:
+        """当前是第几版计划（没有历史记录时算第 1 版）。"""
+        if self.plan_history:
+            return int(self.plan_history[-1].version)
+        return 1
+
+    @property
+    def plan_status(self) -> str:
+        if self.plan_history:
+            return str(self.plan_history[-1].status)
+        return PlanStatus.PENDING_CONFIRMATION.value
+
+    def plan_step_snapshot(self) -> list[dict[str, Any]]:
+        """审计用的逐步快照（不含运行时状态，只记"这一版计划是什么"）。"""
+        return [
+            {
+                "step_id": step.step_id,
+                "tool": step.tool,
+                "risk": step.risk,
+                "arguments": canonical_arguments(step.arguments),
+            }
+            for step in self.steps
+        ]
+
+    def record_plan(
+        self,
+        *,
+        now: float,
+        summary: str = "",
+        status: str = PlanStatus.PENDING_CONFIRMATION.value,
+        reason: str = "",
+    ) -> PlanVersion:
+        """给当前计划开一条历史记录（新版本）。"""
+        version = PlanVersion(
+            version=self.plan_version + 1 if self.plan_history else 1,
+            plan_hash=self.plan_hash,
+            created_at=now,
+            summary=summary,
+            steps=self.plan_step_snapshot(),
+            status=status,
+            reason=reason,
+        )
+        self.plan_history.append(version)
+        return version
+
+    def current_plan_version(self) -> PlanVersion | None:
+        return self.plan_history[-1] if self.plan_history else None
+
+    def mark_plan_confirmed(self, *, now: float) -> None:
+        version = self.current_plan_version()
+        if version is not None:
+            version.status = PlanStatus.ACTIVE.value
+            version.confirmed_at = now
+
+    def supersede_plan(self, *, now: float, reason: str) -> PlanVersion | None:
+        """把当前这版标成被取代（**不删除**，审计要看得见）。"""
+        version = self.current_plan_version()
+        if version is None:
+            return None
+        version.status = PlanStatus.SUPERSEDED.value
+        version.superseded_at = now
+        version.reason = str(reason or version.reason)
+        return version
+
+    def mark_plan_completed(self) -> None:
+        version = self.current_plan_version()
+        if version is not None:
+            version.status = PlanStatus.COMPLETED.value
 
     def step(self, step_id: str) -> TaskStep | None:
         return self.plan.step(step_id)
@@ -677,6 +858,11 @@ class TaskRecord:
             "expires_at": self.expires_at,
             "rollback_supported": self.rollback_supported,
             "resume_note": self.resume_note,
+            "plan_history": [item.to_payload() for item in self.plan_history],
+            "replan_reason": self.replan_reason,
+            "replan_required": self.replan_required,
+            "recovery": dict(self.recovery),
+            "authorization_expired_at": self.authorization_expired_at,
         }
 
     @classmethod
@@ -707,6 +893,15 @@ class TaskRecord:
             expires_at=float(payload.get("expires_at") or 0.0),
             rollback_supported=bool(payload.get("rollback_supported", False)),
             resume_note=str(payload.get("resume_note") or ""),
+            plan_history=[
+                PlanVersion.from_payload(item)
+                for item in (payload.get("plan_history") or [])
+                if isinstance(item, Mapping)
+            ],
+            replan_reason=str(payload.get("replan_reason") or ""),
+            replan_required=bool(payload.get("replan_required", False)),
+            recovery=dict(payload.get("recovery") or {}),
+            authorization_expired_at=float(payload.get("authorization_expired_at") or 0.0),
         )
 
 

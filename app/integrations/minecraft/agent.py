@@ -850,7 +850,12 @@ class MinecraftAgentBridge:
             step_id,
             risk or self.policy.risk_of(tool),
         )
-        return await self.invoke(tool, arguments, call, context=context)
+        try:
+            return await self.invoke(tool, arguments, call, context=context)
+        finally:
+            # 5A.1 §三十六 5/6：这张凭据是**一次性**的 —— 这一次调用用完立刻作废，
+            # 绝不允许在 30s TTL 内被拿去授权别的 task / 别的 step（哪怕进程内也不给）。
+            self._task_tokens.pop(token, None)
 
     def _sweep_task_tokens(self) -> None:
         now = self._clock()

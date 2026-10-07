@@ -97,6 +97,14 @@ function taskState(state: string): StatusState {
   return 'warn'
 }
 
+/** 计划版本状态 → 徽标语义色（v1 SUPERSEDED / v2 PENDING_CONFIRMATION 一眼能看出）。 */
+function planStatusState(status: string): StatusState {
+  if (status === 'ACTIVE') return 'ok'
+  if (status === 'COMPLETED') return 'ok'
+  if (status === 'SUPERSEDED') return 'idle'
+  return 'warn'
+}
+
 function taskStepState(state: string): StatusState {
   if (state === 'SUCCEEDED') return 'ok'
   if (state === 'FAILED') return 'error'
@@ -2585,8 +2593,38 @@ onUnmounted(stopPolling)
                 </dd>
               </div>
               <div>
+                <dt>Plan Version</dt>
+                <dd data-test="mc-task-plan-version">v{{ task.plan_version }}（{{ task.plan_status }}）</dd>
+              </div>
+              <div>
                 <dt>Plan Hash</dt>
                 <dd><code data-test="mc-task-plan-hash">{{ task.plan.plan_hash }}</code></dd>
+              </div>
+              <div>
+                <dt>Replans</dt>
+                <dd data-test="mc-task-replans">{{ task.replans }}</dd>
+              </div>
+              <div>
+                <dt>Authorization</dt>
+                <dd data-test="mc-task-authorization">
+                  {{
+                    task.authorization
+                      ? `${task.authorization.valid ? '有效' : '已过期'}（剩余 ${task.authorization.remaining_seconds}s，v${task.authorization.plan_version}）`
+                      : (task.authorization_expired_at ? '已过期，等重新确认' : '—')
+                  }}
+                </dd>
+              </div>
+              <div v-if="task.replan_required || task.replan_reason">
+                <dt>Replan Reason</dt>
+                <dd data-test="mc-task-replan-reason">
+                  {{ task.replan_reason ?? task.recovery?.reason ?? '—' }}
+                </dd>
+              </div>
+              <div v-if="task.recovery">
+                <dt>Recovery</dt>
+                <dd data-test="mc-task-recovery">
+                  {{ task.recovery.reason }} → {{ task.recovery.outcome }}
+                </dd>
               </div>
               <div>
                 <dt>Rollback</dt>
@@ -2613,6 +2651,35 @@ onUnmounted(stopPolling)
                   <td><code>{{ step.tool }}</code></td>
                   <td><StatusBadge :state="riskState(step.risk)" :label="step.risk" /></td>
                   <td><StatusBadge :state="taskStepState(step.state)" :label="step.state" /></td>
+                </tr>
+              </tbody>
+            </table>
+
+            <table
+              v-if="task.plan_history.length > 1"
+              class="minecraft__table"
+              data-test="mc-task-plan-history"
+            >
+              <thead>
+                <tr>
+                  <th scope="col">Version</th>
+                  <th scope="col">Status</th>
+                  <th scope="col">Plan Hash</th>
+                  <th scope="col">Reason</th>
+                  <th scope="col">Superseded</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr
+                  v-for="version in [...task.plan_history].reverse()"
+                  :key="version.version"
+                  :data-test="`mc-task-plan-v${version.version}`"
+                >
+                  <td>v{{ version.version }}</td>
+                  <td><StatusBadge :state="planStatusState(version.status)" :label="version.status" /></td>
+                  <td><code>{{ version.plan_hash }}</code></td>
+                  <td>{{ version.reason || '—' }}</td>
+                  <td>{{ version.superseded_at ? formatTime(version.superseded_at) : '—' }}</td>
                 </tr>
               </tbody>
             </table>

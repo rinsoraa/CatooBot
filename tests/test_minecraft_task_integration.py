@@ -452,8 +452,8 @@ async def test_medium_step_arguments_changed_after_confirmation_are_refused() ->
         await coordinator.stop()
 
 
-async def test_failed_medium_step_pauses_instead_of_retrying() -> None:
-    """MEDIUM 失败 → 暂停等用户，绝不偷偷再挖一次（§二十三）。"""
+async def test_failed_medium_step_never_retries_and_hands_off_to_replanning() -> None:
+    """MEDIUM 失败 → 绝不偷偷再挖一次；世界变了还要进入 REPLANNING 等新计划（5A.1 §四）。"""
     service = FakeService()
     runtime, coordinator, _ = await _build(service)
     try:
@@ -484,10 +484,12 @@ async def test_failed_medium_step_pauses_instead_of_retrying() -> None:
             code="block.changed",
         )
         await _settle()
-        paused = await runtime.get(record.task_id)
-        assert paused is not None
-        assert paused.state is TaskState.PAUSED
-        assert paused.failure == "WORLD_CHANGED", "代码要映射成稳定的失败分类"
+        handed_off = await runtime.get(record.task_id)
+        assert handed_off is not None
+        assert handed_off.state is TaskState.REPLANNING, "世界变了 → 旧计划作废，交回 Planner"
+        assert handed_off.failure == "WORLD_CHANGED", "代码要映射成稳定的失败分类"
+        assert handed_off.replan_required is True
+        assert handed_off.plan_status == "SUPERSEDED"
         assert [name for name, _ in service.calls].count("dig") == digs_before, "绝不自动重试"
     finally:
         await coordinator.stop()
@@ -538,6 +540,168 @@ def test_observations_are_recorded_for_audit() -> None:
     )
     assert plan.observations[0]["tool"] == "minecraft_find_blocks"
     assert plan.hash_payload()["objective"] == "找木头"
+
+
+async def test_world_change_hands_off_to_replanning_then_new_plan_runs_after_confirmation() -> None:
+    """§三十八：世界变了不是"失败"，而是"旧计划作废 → 新计划 → 新确认 → 继续"。"""
+    service = FakeService()
+    runtime, coordinator, _ = await _build(service)
+    try:
+        observe = _observe(service)
+        planned = await plan_resource_task(
+            "去附近找一棵橡木，挖一块原木并捡回来",
+            observe=observe,
+            block_name="minecraft:oak_log",
+            inventory={"items": [], "held_item": {"name": "stone_pickaxe", "count": 1}},
+        )
+        record = await runtime.create_task(
+            "去附近找一棵橡木，挖一块原木并捡回来",
+            session_id=SESSION,
+            user_id=USER,
+            origin="user",
+            plan=planned.plan,
+        )
+        record = await runtime.confirm_and_start(
+            record.task_id, user_id=USER, session_id=SESSION, origin="user"
+        )
+        assert record.state is TaskState.WAITING_ACTION
+        v1_hash = record.plan_hash
+        digs_before = [name for name, _ in service.calls].count("dig")
+
+        # 先走到目标（move_to 是持续型动作，终态靠事件回来）
+        await service.emit(
+            "minecraft.action.completed",
+            action_id="act_move_1",
+            status="SUCCEEDED",
+            result={"distance_to_target": 1.4},
+        )
+        await _settle()
+        walking = await runtime.get(record.task_id)
+        assert walking is not None and walking.steps[1].state is StepState.WAITING_ACTION
+        digs_before = [name for name, _ in service.calls].count("dig")
+        calls_before_failure = len(service.calls)
+
+        # 目标被别人挖掉了：dig 动作在运行时校验里失败
+        await service.emit(
+            "minecraft.action.failed",
+            action_id=walking.pending_action_id,
+            status="FAILED",
+            error="目标方块已经不是原来那个了",
+            code="minecraft.block_changed",
+        )
+        await _settle()
+        handed_off = await runtime.get(record.task_id)
+        assert handed_off is not None
+        assert handed_off.state is TaskState.REPLANNING
+        assert handed_off.replan_required is True
+        assert handed_off.replan_reason == "WORLD_CHANGED"
+        assert handed_off.plan_status == "SUPERSEDED"
+        # 对账结论来自**只读** SAFE 事实（假 Service 里那块方块还在 → RECONCILED；
+        # 「世界变了」这个判断来自运行时自己的失败分类 code=block.changed）
+        assert handed_off.recovery["outcome"] in {
+            "RECONCILED",
+            "WORLD_CHANGED",
+            "TARGET_ALREADY_DONE",
+            "TARGET_LOST",
+            "UNKNOWN",
+        }
+        assert handed_off.recovery["reason"] == "WORLD_CHANGED"
+        assert [name for name, _ in service.calls].count("dig") == digs_before, "绝不自动重挖"
+        # 失败之后只允许 SAFE 对账（dig_capability 这类只读），没有任何新的世界动作
+        tail = [name for name, _ in service.calls][calls_before_failure:]
+        assert "dig_capability" in tail
+        assert not [name for name in tail if name in {"dig", "move_to", "pickup_item", "equip"}]
+        # 重规划期间推进也没用：只允许 SAFE 观察，等新计划 + 新确认
+        assert (await runtime.drive(record.task_id)).state is TaskState.REPLANNING
+
+        # Planner 重新观察（新的目标在别处），给出 v2
+        plan_v2 = planned.plan
+        plan_v2.steps[0] = TaskStep(
+            step_id="step_1",
+            tool="minecraft_move_to",
+            arguments={"x": 200, "y": 64, "z": 200},
+            risk="LOW",
+        )
+        replanned = await runtime.replan(
+            plan_v2 and record.task_id, plan_v2, reason="WORLD_CHANGED"
+        )
+        assert replanned.plan_version == 2
+        assert replanned.plan_hash != v1_hash
+        assert replanned.state is TaskState.PENDING_CONFIRMATION
+        assert (await runtime.drive(record.task_id)).state is TaskState.PENDING_CONFIRMATION
+
+        # 用户确认新计划 → 才允许动世界
+        started = await runtime.confirm_and_start(
+            record.task_id, user_id=USER, session_id=SESSION, origin="user"
+        )
+        assert started.state is TaskState.WAITING_ACTION
+        move_calls = [args for name, args in service.calls if name == "move_to"]
+        assert move_calls[-1]["x"] == 200, "跑的是**新**计划的目标"
+
+        await service.emit(
+            "minecraft.action.completed",
+            action_id=started.pending_action_id,
+            status="SUCCEEDED",
+            result={"distance_to_target": 1.2},
+        )
+        await _settle()
+        after_move = await runtime.get(record.task_id)
+        assert after_move is not None
+        assert after_move.plan_version == 2
+        assert after_move.plan_history[0].status == "SUPERSEDED"
+    finally:
+        await coordinator.stop()
+
+
+async def test_recovery_from_persisted_waits_for_a_real_user_confirmation() -> None:
+    """重启恢复后：任务停在安全状态（PAUSED/REPLANNING），没有新确认就不再动世界。"""
+    service = FakeService()
+    store = InMemoryTaskStore()
+    runtime, coordinator, _ = await _build(service, store=store)
+    try:
+        plan = TaskPlan(
+            objective="挖一块木头",
+            steps=[
+                TaskStep(
+                    step_id="step_1",
+                    tool="minecraft_dig",
+                    arguments={"x": 1, "y": 64, "z": 1, "expected_block": "oak_log"},
+                    risk="MEDIUM",
+                )
+            ],
+            expected_final_state=ExpectedFinalState(),
+        )
+        record = await runtime.create_task(
+            "挖一块木头", session_id=SESSION, user_id=USER, origin="user", plan=plan
+        )
+        record = await runtime.confirm_and_start(
+            record.task_id, user_id=USER, session_id=SESSION, origin="user"
+        )
+        assert record.state is TaskState.WAITING_ACTION
+        actions_before = [name for name, _ in service.calls if name in {"dig", "move_to"}]
+
+        # 进程重启：新的 runtime 实例 + 同一个持久化存储
+        fresh, fresh_coordinator, _ = await _build(service, store=store)
+        try:
+            recovered = await fresh.recover_persisted_tasks()
+            assert len(recovered) == 1
+            after = recovered[0]
+            assert after.state in {TaskState.PAUSED, TaskState.REPLANNING}
+            assert after.recovery["reason"] == "RUNTIME_RESTART"
+            # 派出去过的那一步已经失效 → 旧确认一并作废，必须重新规划 + 新确认（§十七）
+            assert after.authorization is None
+            assert after.replan_required is True
+            assert after.replan_reason == "RUNTIME_RESTART"
+            # 没有新确认，推进也不会有任何世界动作
+            driven = await fresh.drive(record.task_id)
+            assert driven.state in {TaskState.PAUSED, TaskState.REPLANNING}
+            assert [
+                name for name, _ in service.calls if name in {"dig", "move_to"}
+            ] == actions_before, "重启恢复期间绝不重复世界动作"
+        finally:
+            await fresh_coordinator.stop()
+    finally:
+        await coordinator.stop()
 
 
 async def test_runtime_is_built_with_the_authorizer_installed() -> None:

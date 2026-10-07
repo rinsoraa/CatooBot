@@ -385,7 +385,8 @@ async def test_e_authorize_step_matrix() -> None:
 
 
 async def test_e_expired_authorization_stops_the_task() -> None:
-    runtime, _, _, _ = make_runtime(invoke=Recorder(minecraft_move_to="detached"))
+    """5A.1 §十二：授权到期 → 停在安全边界 → 回 PENDING_CONFIRMATION 等用户重新确认。"""
+    runtime, _, confirmations, _ = make_runtime(invoke=Recorder(minecraft_move_to="detached"))
     record = await create_confirmed(runtime)
     assert record.authorization is not None
     record.authorization.expires_at = 0.0  # 授权过期（手动，避免时钟精度抖动）
@@ -394,9 +395,17 @@ async def test_e_expired_authorization_stops_the_task() -> None:
     record.pending_step_id = ""
     record.state = TaskState.RUNNING
     await runtime._save(record)  # noqa: SLF001
+    before = len(confirmations.created)
     outcome = await runtime.drive(record.task_id)
-    assert outcome.state is TaskState.PAUSED
+    assert outcome.state is TaskState.PENDING_CONFIRMATION
     assert outcome.failure == TaskFailure.AUTHORIZATION.value
+    assert outcome.authorization is None, "过期授权必须被丢掉，绝不能留着复用"
+    assert outcome.authorization_expired_at > 0
+    assert len(confirmations.created) == before + 1, "过期后必须重新挂一条确认"
+    # 计划本身没变：这**不是**重规划
+    assert outcome.plan_hash == record.plan_hash
+    assert outcome.replans == 0
+    assert outcome.plan_status == "PENDING_CONFIRMATION"
 
 
 # ------------------------------------------------------------------ F/G/H/I：步骤调度与异步恢复
@@ -671,20 +680,25 @@ async def test_v_duplicate_task_in_one_session_is_rejected() -> None:
 
 
 async def test_w_resume_after_runtime_restart_requires_replanning() -> None:
+    """5A.1 §十七/§六十四：旧动作已经不在了 → 恢复必须重规划，绝不接着跑旧步骤。"""
     invoke = Recorder(minecraft_move_to="detached")
     runtime, _, _, _ = make_runtime(invoke=invoke)
     record = await create_confirmed(runtime)
-    # 模拟进程重启：action_id 早就失效了（旧动作不可能还在）
+    # 进程重启后的持久化形态：还写着 WAITING_ACTION + action_id，但没有任何事件会再来
     step = record.steps[1]
     step.state = StepState.WAITING_ACTION
     record.state = TaskState.PAUSED
     record.pause_requested = False
+    record.pending_action_id = ""
+    record.pending_step_id = ""
     await runtime._save(record)  # noqa: SLF001
     resumed = await runtime.resume(
         record.task_id, user_id="10001", session_id="private:10001", origin="user"
     )
     assert resumed.state is TaskState.REPLANNING
     assert resumed.steps[1].failure == TaskFailure.RUNTIME_RESTART.value
+    assert resumed.replan_required is True
+    assert resumed.failure == "WORLD_CHANGED"
 
 
 async def test_x_final_verification_uses_a_fresh_safe_read() -> None:

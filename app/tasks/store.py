@@ -21,7 +21,9 @@ from app.tasks.models import TaskRecord, TaskState
 class TaskStore(Protocol):
     """TaskRuntime 需要的最小存储面（测试用内存实现，生产用 SQLite）。"""
 
-    async def save(self, record: TaskRecord, *, event: str = "", step_id: str = "") -> None: ...
+    async def save(
+        self, record: TaskRecord, *, event: str = "", step_id: str = "", detail: str = ""
+    ) -> None: ...
 
     async def load(self, task_id: str) -> TaskRecord | None: ...
 
@@ -40,7 +42,9 @@ class InMemoryTaskStore:
         self._log: list[dict[str, Any]] = []
         self._clock = clock
 
-    async def save(self, record: TaskRecord, *, event: str = "", step_id: str = "") -> None:
+    async def save(
+        self, record: TaskRecord, *, event: str = "", step_id: str = "", detail: str = ""
+    ) -> None:
         # 存的是 payload 副本（与 SQLite 同语义）：如果直接存对象引用，load 会拿到调用方
         # 手里那个可变对象，"改了内存没落盘"这类次序 bug 在单测里就永远暴露不出来。
         self._records[record.task_id] = _copy(record)
@@ -50,6 +54,7 @@ class InMemoryTaskStore:
                 "state": record.state.value,
                 "step_id": step_id,
                 "event": event,
+                "detail": detail or record.message,
                 "created_at": self._clock(),
             }
         )
@@ -90,7 +95,9 @@ class SqliteTaskStore:
         self._db = database
         self._clock = clock
 
-    async def save(self, record: TaskRecord, *, event: str = "", step_id: str = "") -> None:
+    async def save(
+        self, record: TaskRecord, *, event: str = "", step_id: str = "", detail: str = ""
+    ) -> None:
         payload = json.dumps(record.to_payload(), ensure_ascii=False, default=str)
         await self._db.execute(
             "INSERT INTO agent_task_runs"
@@ -125,7 +132,7 @@ class SqliteTaskStore:
                     record.state.value,
                     step_id,
                     event,
-                    record.message[:400],
+                    (detail or record.message)[:400],
                     self._clock(),
                 ),
             )

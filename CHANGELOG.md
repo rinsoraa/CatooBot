@@ -3,6 +3,41 @@
 本文件记录 CatooBot 的版本演进。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号见 `pyproject.toml`；日期取自真实提交历史（本仓库 2026-09-30 起）。
 
+## Minecraft Phase 5A.1 — 任务韧性（Replanning / Authorization Expiry / Runtime Restart Recovery）
+
+* **不新增任何 Minecraft 工具**（19 个保持原样）、**不新增 ActionRuntime action**、
+  不新增 `minecraft_replan` / `minecraft_recover` / `minecraft_task` —— 只补 TaskRuntime 的可靠性。
+  四条底线写进文档与测试：旧 Plan 不授权新 Plan、旧 Action 不在重启后继续、
+  旧 Confirmation 不授权新 arguments、旧世界假设不驱动新的世界动作。
+* **真实重规划**：世界变了（`WORLD_CHANGED` / `TARGET_LOST`）→ 旧计划 `SUPERSEDED`
+  （不覆盖、留档）→ `REPLANNING`（只读对账 + 只允许 SAFE 查询，`drive()` 原地返回）→
+  Planner 出新计划 → `plan_version += 1`、新 `plan_hash`、清空授权 → `PENDING_CONFIRMATION`
+  → 用户确认后才继续动世界。确认摘要第一句就是事实（「目标已经发生了变化。原计划已停止。」
+  +「新的计划（第 2 版）：…」+「需要重新确认。」）。
+* **授权到期**：授权有效期独立于任务总时长（`TaskConfig.authorization_ttl_seconds`，生产取确认门 TTL），
+  到期时停在安全边界 → 清空 `authorization` → 回 `PENDING_CONFIRMATION` + 新确认条目 +
+  `task.authorization_expired` 事件；计划不变（不是重规划），但旧确认条目**不能复用**。
+  真机只等 1~2 秒（`SMOKE_AUTH_TTL`），绝不等 600 秒。
+* **进程重启恢复**：`recover_persisted_tasks()` 扫 SQLite 非终态任务 →
+  「WAITING_ACTION + action_id」的那一步判为失效（`RUNTIME_RESTART`，不查询、不猜、不重做），
+  **旧确认一并作废**（`authorization=None` + `replan_required=True`，`resume` 直接拒绝）→
+  只读对账（`RECONCILED` / `WORLD_CHANGED` / `TARGET_LOST` / `TARGET_ALREADY_DONE` /
+  `OFFLINE` / `UNKNOWN`，**世界事实优先于旧 action 状态**）→ 世界变了就 `REPLANNING`，
+  否则 `PAUSED`。恢复幂等，全程零世界动作（动作完成与 checkpoint 的竞态也走同一条）。
+* **Plan 版本历史**：`plan_history`（version / plan_hash / summary / steps / created_at /
+  confirmed_at / superseded_at / reason / status），WebUI 同时显示 v1 `SUPERSEDED` 与
+  v2 `PENDING_CONFIRMATION`；快照新增 `plan_version` / `plan_status` / `replan_required` /
+  `replan_reason` / `recovery` / `authorization{remaining_seconds, valid}` / `authorization_expired_at`。
+* **审计**：新增事件 `task.recovered` / `task.authorization_expired`；checkpoint 的 detail 显式记录
+  `RUNTIME_RESTART` / `RECONCILED` / `REPLANNING` / `AUTHORIZATION_EXPIRED`。
+* **状态机**只加一条转移：`PENDING_CONFIRMATION → REPLANNING`（未确认也可重规划）；
+  `REPLANNING → RUNNING` 仍不允许。
+* 验证：`tests/test_task_recovery.py`（19，含**真 SQLite** 持久化与假时钟 t0+ttl-1 / t0+ttl）、
+  `tests/test_task_replanning_security.py`（12，§三十六 8 条 + TASK 凭据一次性）、
+  `tests/test_minecraft_task_integration.py` 新增两例、WebUI vitest 新增计划版本历史用例。
+  真机：`scripts/task_smoke_real.py`（真实重规划 + 授权到期）与
+  `scripts/task_restart_smoke_real.py`（**两个进程**验证重启恢复）→ `REAL SERVER: PASS`。
+
 ## Minecraft Phase 5A — 多步骤任务运行时（Task Runtime）
 
 * 新增**通用编排层** `app/tasks/`（`TaskState`/`StepState` 显式枚举 + `ALLOWED_TASK_TRANSITIONS`）：

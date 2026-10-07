@@ -21,6 +21,7 @@ from typing import Any
 
 from app.character.turn import TurnOrigin
 from app.tasks.intent import TaskIntentDetector
+from app.tasks.models import ReplanReason, TaskState
 from app.tasks.planner import ObservationFailed, plan_resource_task
 from app.tasks.runtime import TaskAuthorizationError, TaskBusy, TaskRuntime
 
@@ -131,6 +132,9 @@ class TaskTurnHandler:
         runtime = self._runtime
         try:
             if command == "confirm":
+                if record.replan_required or record.state is TaskState.REPLANNING:
+                    # 5A.1 §三十二：世界变了 → 先重新观察、出新计划，让用户确认**新**计划
+                    return await self._replan(record)
                 updated = await runtime.confirm_and_start(
                     record.task_id,
                     user_id=user_id,
@@ -162,6 +166,11 @@ class TaskTurnHandler:
                     reply="好，我先停下。",
                 )
             if command == "resume":
+                if record.replan_required and record.state in {
+                    TaskState.PAUSED,
+                    TaskState.REPLANNING,
+                }:
+                    return await self._replan(record)
                 updated = await runtime.resume(
                     record.task_id,
                     user_id=user_id,
@@ -201,6 +210,72 @@ class TaskTurnHandler:
                 reply=f"这件事现在做不了（{getattr(exc, 'code', '') or exc}）。",
             )
         return TaskTurnOutcome(False)
+
+    # ------------------------------------------------------------ 重规划
+
+    async def _replan(self, record: Any) -> TaskTurnOutcome:
+        """用户按了「确认/继续」，但旧计划已经作废 → 先 SAFE 观察，再出新计划要他确认。
+
+        仍然**只做 SAFE 查询**（§五）：新计划里任何世界动作都要等这次的新确认。
+        """
+        block = block_for(record.objective)
+        if not block:
+            return TaskTurnOutcome(
+                True,
+                action="replan_failed",
+                task_id=record.task_id,
+                state=record.state.value,
+                reply="原来那件事的目标已经不在了，而且我没听出你想改做什么。再说一次要什么吧。",
+            )
+        drop = DROP_OVERRIDES.get(block, block)
+        try:
+            planned = await plan_resource_task(
+                record.objective,
+                observe=self._observe,
+                block_name=block,
+                drop_item=drop,
+            )
+        except ObservationFailed as exc:
+            return TaskTurnOutcome(
+                True,
+                action="replan_failed",
+                task_id=record.task_id,
+                state=record.state.value,
+                reply=f"我重新找了一圈，现在还是做不了：{exc}。",
+            )
+        except Exception:  # noqa: BLE001 - 规划失败不该让游戏内聊天没反应
+            log.exception("[Task] 重规划失败 task=%s", record.task_id)
+            return TaskTurnOutcome(
+                True,
+                action="replan_failed",
+                task_id=record.task_id,
+                state=record.state.value,
+                reply="我试着重新盘算了一下，但没排明白，等会儿再说吧。",
+            )
+        try:
+            updated = await self._runtime.replan(
+                record.task_id,
+                planned.plan,
+                reason=str(record.replan_reason or ReplanReason.USER_REQUEST.value),
+                observations=[item.to_payload() for item in planned.observations],
+            )
+        except (TaskAuthorizationError, TaskBusy) as exc:
+            return TaskTurnOutcome(
+                True,
+                action="replan_failed",
+                task_id=record.task_id,
+                state=record.state.value,
+                reply=f"这件事实在接不下去（{getattr(exc, 'code', '') or exc}）。",
+            )
+        return TaskTurnOutcome(
+            True,
+            action="replanned",
+            task_id=updated.task_id,
+            state=updated.state.value,
+            reply=self._runtime.replan_summary(
+                updated, reason=str(updated.replan_reason or record.replan_reason)
+            ),
+        )
 
     # ------------------------------------------------------------ 新任务
 

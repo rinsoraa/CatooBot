@@ -127,6 +127,7 @@ v0.4 行为引擎（回复延迟/分段/作息，规格不在 docs/specs/）标 
 | [MINECRAFT_PHASE4J.md](MINECRAFT_PHASE4J.md) | Minecraft 挖掘能力只读模型（Phase 4J）：`minecraft_dig_capability`（SAFE 只读，非独占；用运行时的 `canDigBlock`/`digTime` 回答「现在能不能挖、多久」；两种距离口径；不推荐工具） | 已实现（真实服务器三种状态 PASS） |
 | [MINECRAFT_PHASE4K.md](MINECRAFT_PHASE4K.md) | Minecraft 资源定位 + 单资源真实闭环（Phase 4K）：`minecraft_find_blocks`（SAFE 只读，非独占；`findBlocks` 按 block id 搜索、双距离口径、不推荐）；并用原子能力真机跑通 find → capability → equip → move → dig → dropped_items → pickup → inventory | 已实现（真实服务器天然橡木闭环 PASS） |
 | [MINECRAFT_PHASE5A.md](MINECRAFT_PHASE5A.md) | Minecraft 多步骤任务运行时（Phase 5A）：TaskState/StepState 状态机、两阶段计划（SAFE 观察 → 冻结动作计划）、一次确认整份计划、TaskAuthorization/TaskStepAuthorization（TASK ≠ USER）、checkpoint 持久化、pause/resume/cancel/expire、失败分类与 no-progress、最终背包复验、任务 API 与面板 | 已实现（真实服务器任务闭环 + pause/resume + cancel PASS） |
+| [MINECRAFT_PHASE5A1.md](MINECRAFT_PHASE5A1.md) | Minecraft 任务韧性（Phase 5A.1）：真实重规划（旧计划 superseded → SAFE 观察 → 新 plan_hash → 新确认）、授权到期（安全边界 → PENDING_CONFIRMATION → 重新确认）、进程重启恢复（SQLite 读回 → RUNTIME_RESTART → 只读对账 RECONCILED/WORLD_CHANGED/TARGET_LOST/TARGET_ALREADY_DONE/OFFLINE/UNKNOWN）、Plan 版本历史与审计 | 已实现（真实服务器重规划 + 授权到期 + 重启恢复 PASS） |
 | bible_source_罐头.txt | 内置角色的人物档案源文件（Bible 编译器输入） | **本地内容资产**：按「Character Bible 不得上传」约束，已移至 `config/bible_source_罐头.txt`（`config/` 不在发布镜像内） |
 
 ## 运维速查

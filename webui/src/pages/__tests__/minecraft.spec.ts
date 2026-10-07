@@ -169,6 +169,37 @@ const TASK_VIEW = {
   expires_at: 1700000000,
   rollback_supported: false,
   updated_at: 1700000000,
+  plan_version: 2,
+  plan_status: 'PENDING_CONFIRMATION',
+  plan_history: [
+    {
+      version: 1,
+      plan_hash: 'oldhash1',
+      created_at: 1700000000,
+      summary: '任务：去附近找一棵橡木',
+      steps: [],
+      confirmed_at: 1700000001,
+      superseded_at: 1700000002,
+      reason: 'WORLD_CHANGED',
+      status: 'SUPERSEDED',
+    },
+    {
+      version: 2,
+      plan_hash: 'abc123',
+      created_at: 1700000003,
+      summary: '任务：去附近找一棵橡木',
+      steps: [],
+      confirmed_at: 0,
+      superseded_at: 0,
+      reason: 'WORLD_CHANGED',
+      status: 'PENDING_CONFIRMATION',
+    },
+  ],
+  replan_required: false,
+  replan_reason: 'WORLD_CHANGED',
+  recovery: { reason: 'WORLD_CHANGED', outcome: 'TARGET_ALREADY_DONE', at: 1700000002, detail: {} },
+  authorization: null,
+  authorization_expired_at: 1700000002,
 }
 
 const DISABLED_OVERVIEW = {
@@ -2009,6 +2040,26 @@ describe('Minecraft 页 · follow_player（Phase 3D）', () => {
     expect(table).toContain('MEDIUM')
     // 面板里绝不出现 raw 世界状态
     expect(wrapper.get('[data-test="mc-task"]').text()).not.toContain('raw')
+  })
+
+  it('展示计划版本历史 / 恢复原因 / 重规划次数 / 授权状态（5A.1）', async () => {
+    const { wrapper } = await mountPage(
+      makeHandler({ task: ok({ task: TASK_VIEW, session_id: 's' }) }),
+    )
+    await flushAll()
+    expect(wrapper.get('[data-test="mc-task-plan-version"]').text()).toContain('v2')
+    expect(wrapper.get('[data-test="mc-task-plan-version"]').text()).toContain('PENDING_CONFIRMATION')
+    expect(wrapper.get('[data-test="mc-task-replans"]').text()).toBe('0')
+    expect(wrapper.get('[data-test="mc-task-replan-reason"]').text()).toContain('WORLD_CHANGED')
+    expect(wrapper.get('[data-test="mc-task-recovery"]').text()).toContain('TARGET_ALREADY_DONE')
+    expect(wrapper.get('[data-test="mc-task-authorization"]').text()).toContain('已过期')
+    // v1 SUPERSEDED 与 v2 PENDING_CONFIRMATION 同时看得见（不能只显示当前计划）
+    const history = wrapper.get('[data-test="mc-task-plan-history"]').text()
+    expect(history).toContain('v1')
+    expect(history).toContain('SUPERSEDED')
+    expect(history).toContain('v2')
+    expect(history).toContain('PENDING_CONFIRMATION')
+    expect(wrapper.get('[data-test="mc-task-plan-v1"]').text()).toContain('WORLD_CHANGED')
   })
 
   it('PAUSE 调任务端点并在面板上体现新状态', async () => {
