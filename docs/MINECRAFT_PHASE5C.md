@@ -281,3 +281,33 @@ UUID 尾号）+ 最近 50 条事实（kind / 内容 / 来源 / 置信度 / 新�
 不把整个 world snapshot 或原始聊天全文存进记忆；不复制整棵 Task checkpoint 树；
 不因为"关系是 trusted_companion / 历史上成功过 / 认识这个玩家"就降低 MEDIUM 确认要求；
 记忆永远不直接驱动 move_to / dig / place / follow / pickup。
+
+## 十一、已知偏差与后续（决策记录）
+
+### 1. 角色隔离键的写法与沙盒不同（**2026-10-08 决定：暂选 A —— 保持现状并标记**）
+
+| | 写法 |
+| --- | --- |
+| 沙盒 / 人格记忆（既有约定） | `character:<角色名>@<圣经哈希[:8]>`（`app/sandbox/runtime.py` 的 `character_id`） |
+| Phase 5C 的 Minecraft 记忆域 | `character:<角色名>:minecraft` |
+
+* **隔离性不受影响**：两者 `scope_key` 不同、`source="minecraft"` + `provenance.domain` 双重标记，
+  互不串味；跨服另有 `server_id` 过滤。
+* **代价（已知并接受）**：同一角色在共享列 `memories.character_id` 里会有两个值
+  （沙盒是 `罐头@1dae9716`，MC 是 `罐头`）；**改角色名或改圣经内容**时，沙盒那批因为带哈希不会散，
+  MC 那批会留在旧 scope（卡片上看不到旧记忆，数据仍在库里）。
+* **留待后续评估**：若要与之对齐，改成 `character:<角色名>@<圣经哈希>:minecraft` 即可
+  （同时要把已有的 MC 行 `character_id` 一起迁移）。在此之前**不迁移**已有数据。
+
+### 2. 生产写入点只有五类
+
+玩家上线（`PLAYER` + 首次见面 `EVENT`）、绑定成功（`RELATIONSHIP`）、任务终态（`TASK`）、
+任务成功且有 `minecraft_dig` 步骤（`RESOURCE`）。`LOCATION` 与 `PREFERENCE` 目前**没有**生产写入点
+（写入 API 与测试都在，只是没有调用方）—— 真机上不会看到这两类事实。
+
+### 3. 继承自既有引擎的行为
+
+"内容近似 → 旧条 `superseded`"是引擎 v0.5 就有的合并策略：两个玩家各自的
+「第一次在这个世界里见到 X」文本很像，后写的那条会把先写的置为 `SUPERSEDED`
+（行保留、默认检索不再返回）。这是引擎行为，本阶段没有改动它。
+
