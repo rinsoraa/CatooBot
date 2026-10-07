@@ -68,6 +68,26 @@ class _QuietLog:
     def exception(self, *args: Any, **kwargs: Any) -> None: ...
 
 
+def _bot_with_medium(enabled: bool) -> FakeBot:
+    """带 Minecraft 配置面的假 Bot（入口只读 allow_medium 这一个开关）。"""
+    bot = FakeBot()
+
+    class _Tools:
+        allow_medium = enabled
+
+    class _Agent:
+        tools = _Tools()
+
+    class _MinecraftConfig:
+        agent = _Agent()
+
+    class _Minecraft:
+        config = _MinecraftConfig()
+
+    bot.minecraft = _Minecraft()  # type: ignore[attr-defined]
+    return bot
+
+
 def private_event(text: str, *, user_id: str = USER_A, self_id: int = SELF_ID) -> Any:
     return parse_event(
         {
@@ -157,14 +177,12 @@ class Stack:
         return observe
 
     def _record(self, event: str, payload: dict[str, Any]) -> None:
-        """与生产同形：记录下来，并像 Bot 那样把通知调度成后台任务。"""
-        import asyncio
-
+        """与生产同形：记录下来，并**同步**交给入口（它自己决定排队还是后台发送）。"""
         self.events.rows.append((event, dict(payload)))
         entry = getattr(self, "entry", None)
         if entry is None:
             return
-        asyncio.create_task(entry.on_task_event(event, dict(payload)))
+        entry.publish(event, dict(payload))
 
     async def say(self, event: Any) -> bool:
         claimed = await self.entry.on_message(event)
@@ -209,9 +227,12 @@ async def test_a_qq_private_request_creates_a_task_and_shows_the_plan() -> None:
     assert record.session_id == f"private:{USER_A}"
     assert record.source == "qq", "§二十九/§三十：来源要记成 qq"
     assert len(stack.invoke.world_actions) == 0, "计划阶段只能 SAFE 观察，绝不改世界"
-    reply = stack.bot.api.last()
+    reply = stack.bot.api.texts()[-1]
     assert "罐头准备这样做" in reply and "回复「确认」开始" in reply
     assert record.task_id not in reply and "plan_hash" not in reply, "内部信息绝不发给用户"
+    assert sum("罐头准备这样做" in text for text in stack.bot.api.texts()) == 1, (
+        "同一份计划绝不能发两遍（入口回复 + 事件通知只留一条）"
+    )
     assert any(name == "task.created" for name, _ in stack.events.rows)
 
 
@@ -243,7 +264,7 @@ async def test_c_qq_confirmation_starts_the_task() -> None:
     assert record is not None
     assert record.state.value == "WAITING_ACTION", "确认后真的开始执行第一步"
     assert record.authorization is not None
-    assert "开始处理" in stack.bot.api.last()
+    assert any("开始处理" in text for text in stack.bot.api.texts())
 
 
 # ------------------------------------------------------------------ D/E：归属与来源
@@ -281,6 +302,53 @@ async def test_e_system_origins_cannot_confirm_a_qq_task(origin: str) -> None:
     assert "not_user_turn" in str(getattr(excinfo.value, "code", ""))
     still = await current(stack)
     assert still is not None and still.authorization is None
+
+
+async def test_plan_hint_warns_when_medium_is_disabled() -> None:
+    """§十九：MEDIUM 开关关着时，建任务那一刻就把话说清楚（真机上这一条最容易困惑）。"""
+
+    stack = Stack()
+    stack.entry.bot = _bot_with_medium(False)
+    stack.entry.bot.api = stack.bot.api
+    await stack.say(private_event("帮我找附近的一块橡木"))
+    reply = stack.bot.api.last()
+    assert "允许 MEDIUM 动作" in reply and "开关现在是关着的" in reply
+
+    # 打开之后就不该再啰嗦
+    other = Stack()
+    other.entry.bot = _bot_with_medium(True)
+    other.entry.bot.api = other.bot.api
+    await other.say(private_event("帮我找附近的一块橡木"))
+    assert "允许 MEDIUM 动作" not in other.bot.api.last()
+
+
+async def test_authorization_failure_explains_the_medium_gate() -> None:
+    """被 MEDIUM 总闸挡住时，QQ 的话必须指向那个开关（而不是含糊的"再确认一次"）。"""
+
+    stack = Stack()
+    await stack.say(private_event("帮我找附近的一块橡木"))
+    await stack.say(private_event("确认"))
+    record = await current(stack)
+    assert record is not None
+    # 模拟 Policy 的拒绝（真机上就是 allow_medium=false 的结果）
+    record.failed_step = "step_1"
+    record.failure = "AUTHORIZATION"
+    step = record.step("step_1")
+    assert step is not None
+    step.message = "MEDIUM 级动作未获允许"
+    await stack.runtime._save(record)  # noqa: SLF001
+    await stack.notify(
+        "task.failed",
+        {
+            "task_id": record.task_id,
+            "event_seq": record.event_seq + 20,
+            "session_id": record.session_id,
+            "state": "PAUSED",
+            "failure": "AUTHORIZATION",
+        },
+    )
+    reply = stack.bot.api.last()
+    assert "允许 MEDIUM 动作" in reply and "一步都没动手" in reply
 
 
 async def test_identity_uses_the_stable_id_not_the_nickname() -> None:

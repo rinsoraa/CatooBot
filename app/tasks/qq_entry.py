@@ -84,6 +84,20 @@ FAILURE_TEXTS: dict[str, str] = {
 #: 状态 → QQ 用的一句短话（事件映射里的补充）
 _NOTIFY_SKIP = frozenset({TASK_CREATED, TASK_PLAN_READY, TASK_STEP_WAITING, TASK_STEP_SUCCEEDED})
 
+#: 入口的**同步回复**已经说清楚的事件（其余事件照发）—— 既不去重也不漏发：
+#: 只有"回复本身就是这条事件"的才跳过（§十四/§十五）。
+ACTION_COVERS: dict[str, frozenset[str]] = {
+    "created": frozenset({TASK_CREATED, TASK_PLAN_READY, TASK_CONFIRMATION_REQUIRED}),
+    "replanned": frozenset(
+        {TASK_CREATED, TASK_PLAN_READY, TASK_REPLANNING, TASK_CONFIRMATION_REQUIRED}
+    ),
+    "replan_failed": frozenset({TASK_CREATED, TASK_PLAN_READY, TASK_CONFIRMATION_REQUIRED}),
+    "confirmed": frozenset({TASK_STARTED}),
+    "paused": frozenset({TASK_PAUSED}),
+    "resumed": frozenset({TASK_RESUMED}),
+    "cancelled": frozenset({TASK_CANCELLED}),
+}
+
 
 @dataclass(frozen=True)
 class QQIdentity:
@@ -176,8 +190,12 @@ class QQTaskEntry:
         self._reported: OrderedDict[str, int] = OrderedDict()
         #: 事件重放/竞态兜底：同一个 (task_id, seq) 绝不发两次
         self._seen: set[tuple[str, int]] = set()
-        #: 正在同步处理（这些事件由入口自己的回复代表，不再单独推送）
-        self._suppress_all = False
+        #: 正在同步处理用户消息（这期间产生的事件先排队，回复发出去之后再处理：
+        #: 既不与入口回复重复，也不会漏掉"确认后立刻失败"这种坏消息）
+        self._handling = 0
+        self._queued: list[tuple[str, dict[str, Any]]] = []
+        #: 后台通知任务（asyncio 只持弱引用，必须自己留一份）
+        self._tasks: set[Any] = set()
         self._max_memory = 512
 
     # ------------------------------------------------------------ 消息入口
@@ -217,7 +235,7 @@ class QQTaskEntry:
                 )
                 return True
 
-        self._suppress_all = True
+        self._handling += 1
         try:
             outcome = await self.handler.handle(
                 session_id=identity.session_id,
@@ -225,14 +243,17 @@ class QQTaskEntry:
                 text=text,
             )
         finally:
-            self._suppress_all = False
+            self._handling -= 1
+            self._handling = max(0, self._handling)
         if not outcome.handled or not outcome.reply:
+            await self._drain(outcome=None)
             return False
         if outcome.task_id:
             record = await self.runtime.get(outcome.task_id)
             if record is not None:
                 self._mark_reported(record.task_id, int(getattr(record, "event_seq", 0) or 0))
-        await self._say(identity, outcome.reply)
+        await self._say(identity, outcome.reply + await self._plan_hint(outcome))
+        await self._drain(outcome=outcome)
         self._log.info(
             "[Task/QQ] action=%s task=%s state=%s user=%s session=%s",
             outcome.action,
@@ -294,6 +315,40 @@ class QQTaskEntry:
             return None
         return record
 
+    def _failed_step_message(self, record: Any) -> str:
+        if record is None:
+            return ""
+        step_id = str(getattr(record, "failed_step", "") or "")
+        step = record.step(step_id) if step_id else None
+        return str(getattr(step, "message", "") or "") if step is not None else ""
+
+    def _allow_medium_enabled(self) -> bool:
+        """MEDIUM 总闸（默认关；QQ 绝不绕过它，只是提前把话说清楚）。"""
+        try:
+            return bool(self.bot.minecraft.config.agent.tools.allow_medium)
+        except Exception:  # noqa: BLE001 - 拿不到就按"关着"处理（保守）
+            return False
+
+    async def _plan_hint(self, outcome: Any) -> str:
+        """计划里有 MEDIUM 步骤、而 MEDIUM 开关是关的 → 建任务时就提醒（§十九/§三十二）。"""
+        if str(getattr(outcome, "action", "")) != "created" or not outcome.task_id:
+            return ""
+        if self._allow_medium_enabled():
+            return ""
+        try:
+            record = await self.runtime.get(outcome.task_id)
+        except Exception:  # noqa: BLE001
+            return ""
+        if record is None:
+            return ""
+        risky = [step for step in record.steps if str(getattr(step, "risk", "")) == "MEDIUM"]
+        if not risky:
+            return ""
+        return (
+            f"\n\n（提醒：里面 {len(risky)} 步需要「允许 MEDIUM 动作」，这个开关现在是关着的 —— "
+            "确认后我会在动手那一步停下，一步也不会动世界。要真挖得先在设置里打开它。）"
+        )
+
     # ------------------------------------------------------------ 发送
 
     async def _say(self, identity: QQIdentity, text: str) -> None:
@@ -326,12 +381,49 @@ class QQTaskEntry:
 
     # ------------------------------------------------------------ 任务事件 → QQ
 
+    def publish(self, event: str, payload: dict[str, Any]) -> None:
+        """**同步**事件钩子（TaskRuntime/Bot 直接调它）。
+
+        判定必须在同步时刻做：用户消息正在被处理时把事件排进队列（既不会与入口回复
+        重复，也不会漏掉"确认后立刻失败"这种坏消息）；否则丢给后台任务去发。
+        """
+        name, data = str(event), dict(payload or {})
+        if self._handling > 0:
+            self._queued.append((name, data))
+            return
+        self._spawn(self.on_task_event(name, data))
+
+    def _spawn(self, coro: Any) -> None:
+        import asyncio
+
+        try:
+            task = asyncio.create_task(coro)
+        except RuntimeError:  # pragma: no cover - 没有事件循环时安静放弃
+            return
+        self._tasks.add(task)
+        task.add_done_callback(self._tasks.discard)
+
     async def on_task_event(self, event: str, payload: dict[str, Any]) -> None:
-        """TaskRuntime 的事件钩子（§十三：订阅现有事件，不自己轮询）。"""
+        """异步发送一条任务事件通知（§十三：订阅现有事件，不自己轮询）。"""
         try:
             await self._notify(event, dict(payload or {}))
         except Exception:  # noqa: BLE001 - 通知失败绝不影响任务
             self._log.exception("[Task/QQ] 事件通知失败 event=%s", event)
+
+    async def _drain(self, *, outcome: Any) -> None:
+        """把同步处理期间排队的事件发出去（跳过入口回复已经说明的那几条）。"""
+        queued, self._queued = self._queued, []
+        covered = ACTION_COVERS.get(str(getattr(outcome, "action", "") or ""), frozenset())
+        for event, payload in queued:
+            if event in covered:
+                self._mark_reported(
+                    str(payload.get("task_id") or ""), int(payload.get("event_seq") or 0)
+                )
+                continue
+            try:
+                await self._notify(event, payload)
+            except Exception:  # noqa: BLE001
+                self._log.exception("[Task/QQ] 事件通知失败 event=%s", event)
 
     async def _notify(self, event: str, payload: dict[str, Any]) -> None:
         name = str(event or "")
@@ -340,10 +432,6 @@ class QQTaskEntry:
         task_id = str(payload.get("task_id") or "")
         seq = int(payload.get("event_seq") or 0)
         if not task_id:
-            return
-        if self._suppress_all and name == TASK_CONFIRMATION_REQUIRED:
-            # 用户自己刚说「确认」/刚创建任务 → 入口的回复已经说清了，不重复
-            self._mark_reported(task_id, seq)
             return
         if not self._claim(task_id, seq):
             return
@@ -399,6 +487,14 @@ class QQTaskEntry:
             return self._success_text(record)
         if event == TASK_FAILED:
             failure = str(payload.get("failure") or (record.failure if record is not None else ""))
+            step_message = self._failed_step_message(record)
+            if "未获允许" in step_message:
+                # §十九：QQ 不是 MEDIUM 白名单 —— 这里要说清"是那个开关挡的"，
+                # 而不是含糊地说"许可不够、再确认一次"（再确认也不会放行）。
+                return (
+                    "这个任务里有需要「允许 MEDIUM 动作」的步骤，而那个开关现在是关的，"
+                    "所以我一步都没动手。要真做的话，先在设置里打开它。"
+                )
             reason = FAILURE_TEXTS.get(failure, "这次没做成。")
             return f"这件事没成：{reason}"
         if event == TASK_STEP_FAILED:

@@ -321,9 +321,8 @@ class Bot:
         self.tasks: Any = None
         self.task_coordinator: Any = None
         self.task_turns: Any = None
-        #: Phase 5B：QQ 任务入口（任务运行时装配好之后才存在）+ 后台通知任务
+        #: Phase 5B：QQ 任务入口（任务运行时装配好之后才存在）
         self.task_entry: Any = None
-        self._task_notify_tasks: set[Any] = set()
         if config.minecraft.enabled:
             try:
                 from app.integrations.minecraft.service import MinecraftService
@@ -965,16 +964,14 @@ class Bot:
         return bool(await entry.on_message(event))
 
     def _publish_task_event(self, event: str, payload: dict[str, Any]) -> None:
-        """TaskRuntime → 事件总线（同步钩子）：QQ 通知在后台任务里发，绝不阻塞任务。"""
+        """TaskRuntime → 任务入口（同步钩子）：入口自己决定排队还是后台发送。"""
         entry = getattr(self, "task_entry", None)
         if entry is None:
             return
         try:
-            task = asyncio.create_task(entry.on_task_event(event, dict(payload)))
-        except RuntimeError:  # pragma: no cover - 没有事件循环时安静放弃
-            return
-        self._task_notify_tasks.add(task)
-        task.add_done_callback(self._task_notify_tasks.discard)
+            entry.publish(event, dict(payload))
+        except Exception:  # noqa: BLE001 - 通知出问题绝不影响任务
+            self.log.exception("[Task] publish failed event=%s", event)
 
     async def shutdown(self) -> None:
         """Graceful stop: schedulers, plugins, web, adapter, database."""
