@@ -412,3 +412,63 @@ class TestRestartPersistence:
         await tasks.recover_persisted_tasks()
         assert tasks.recovered
         assert bridge.store.degraded_reason  # 记忆如实降级，任务照常
+
+
+class TestContextInjection:
+    """记忆块接进角色回合：只**追加**一段上下文，不改任何权限输入。"""
+
+    def _runtime(self, bridge: Any) -> Any:
+        from app.character.runtime import CharacterRuntime
+
+        runtime = CharacterRuntime.__new__(CharacterRuntime)
+        runtime._log = logging.getLogger("test.character")
+        runtime.minecraft_memory = bridge
+        return runtime
+
+    @pytest.mark.parametrize(
+        ("session_id", "platform"),
+        [
+            ("private:2731431246", "qq"),
+            ("group:987654", "qq"),
+            ("minecraft:127.0.0.1:25565:空凛", "minecraft_chat"),
+        ],
+    )
+    def test_platform_follows_the_session(self, session_id: str, platform: str) -> None:
+        from app.character.runtime import CharacterRuntime
+
+        assert CharacterRuntime._memory_platform(session_id) == platform
+
+    async def test_block_is_appended_for_the_turn(self, tmp_path) -> None:
+        bridge, database, _manager, service = await build_bridge(tmp_path)
+        service.set_block({"x": 100, "y": 64, "z": 100}, "minecraft:oak_log")
+        await bridge.writer.resource_seen(
+            server_id=bridge.server_id(),
+            block_name="minecraft:oak_log",
+            position={"x": 100, "y": 64, "z": 100},
+        )
+        runtime = self._runtime(bridge)
+        block = await runtime._minecraft_memory_context(
+            session_id="private:2731431246", user_id=2731431246, text="我刚才挖木头的地方在哪"
+        )
+        assert block.startswith("相关 Minecraft 记忆：")
+        assert "oak_log" in block
+        await database.close()
+
+    async def test_no_bridge_means_no_block(self, tmp_path) -> None:
+        runtime = self._runtime(None)
+        runtime._log = logging.getLogger("test.character")
+        assert (
+            await runtime._minecraft_memory_context(session_id="private:1", user_id=1, text="在吗")
+            == ""
+        )
+
+    async def test_broken_bridge_is_silent(self, tmp_path) -> None:
+        class Broken:
+            async def context_block(self, **_kwargs: Any) -> str:
+                raise RuntimeError("memory exploded")
+
+        runtime = self._runtime(Broken())
+        assert (
+            await runtime._minecraft_memory_context(session_id="private:1", user_id=1, text="在吗")
+            == ""
+        )
