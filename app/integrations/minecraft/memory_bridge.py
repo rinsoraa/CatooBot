@@ -281,6 +281,36 @@ class MinecraftMemoryBridge:
             gained=gained,
             reason=str(getattr(record, "message", "") or "")[:60],
         )
+        if state == "SUCCEEDED":
+            await self._remember_task_target(server_id, record)
+
+    async def _remember_task_target(self, server_id: str, record: Any) -> None:
+        """任务成功时，把她**亲手处理过的那一格**记成一条世界事实（§三十：重要的世界事实）。
+
+        只写第一条带完整坐标的 ``minecraft_dig`` 步骤，来源是 ``TASK_RESULT``
+        （"她亲手挖到过"，不是"她亲眼看见"）。世界随后变了也没关系：这条事实带坐标，
+        对账与检索都会用**当前世界**去复核它，该失效就失效（§二十二/§二十七）。
+
+        这样"刚才那棵树在哪里"才有可复核的素材 —— 否则任务只留下一条 TASK 事实，
+        而 TASK 事实本来就是"做过什么"，不是"世界里有什么"。
+        """
+        for step in getattr(record, "steps", None) or []:
+            if str(getattr(step, "tool", "") or "") != "minecraft_dig":
+                continue
+            arguments = getattr(step, "effective_arguments", None) or {}
+            if not isinstance(arguments, Mapping):
+                continue
+            block = str(arguments.get("expected_block") or "").strip()
+            position = {axis: arguments.get(axis) for axis in ("x", "y", "z")}
+            if not block or any(position.get(axis) is None for axis in ("x", "y", "z")):
+                continue
+            await self.writer.resource_seen(
+                server_id=server_id,
+                block_name=block,
+                position=position,
+                source=FactSource.TASK_RESULT,
+            )
+            return
 
     @staticmethod
     def _task_position(record: Any) -> dict[str, Any]:

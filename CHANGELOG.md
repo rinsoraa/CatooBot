@@ -26,7 +26,10 @@
   **过期不删历史**）。
 * **写入策略**：只在任务收尾（SUCCEEDED/FAILED/EXPIRED）、玩家出现、重要地点/资源观察、
   用户明确说过的事、关系变化时写；`moved 1 block` / `look_at` / 路径更新 / 每 tick 一律不写
-  （域里根本没有这类 API）。任务结果只留语义摘要，不留 action_id / 超时 / pathfinder 调试 /
+  （域里根本没有这类 API）。**任务成功**时额外写**一条**世界事实：取第一条带完整坐标的
+  `minecraft_dig` 步骤 → 「(x,y,z) 附近有一块 \<expected_block\>」（`RESOURCE` / `TASK_RESULT`），
+  同一 16 格按语义身份强化 —— 这是"刚才那棵树在哪里"能被检索、也能被当前世界复核的基础。
+  任务结果只留语义摘要，不留 action_id / 超时 / pathfinder 调试 /
   checkpoint 树；失败任务写成"当时的情况"（`temporary`），不下永久结论。
 * **去重与冲突**：`dedupe_key = sha256(domain|server_id|kind|subject)` 作为语义身份 ——
   同一件事反复观察只强化那一条（观察次数 +1、置信度 +0.05 且不超上限）；矛盾内容保留冲突

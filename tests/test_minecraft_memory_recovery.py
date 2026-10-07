@@ -21,7 +21,8 @@ import pytest
 from app.core.bot import Bot
 from app.core.event_bus import EventBus
 from app.integrations.minecraft.events import MinecraftBridgeEvent
-from app.memory.minecraft.model import MinecraftMemoryKind
+from app.memory.minecraft.model import FactSource, MinecraftMemoryKind
+from app.tasks.models import TaskStep
 from tests.minecraft_memory_fakes import (
     UUID_KONGLING,
     FakeMinecraftService,
@@ -517,4 +518,96 @@ class TestTaskEventHook:
         bot.tasks = None  # 没有任务运行时 → 记忆那一步安静跳过
         bot._publish_task_event("task.created", {"task_id": "task_abc", "objective": "砍树"})
         assert seen == [("task.created", {"task_id": "task_abc", "objective": "砍树"})]
+        await database.close()
+
+
+def dig_step(
+    step_id: str,
+    *,
+    x: int | None = 100,
+    y: int | None = 64,
+    z: int | None = 100,
+    block: str = "minecraft:oak_log",
+) -> Any:
+    """一个真实的 dig 步骤（`effective_arguments` 就是执行时真正用的参数）。"""
+    arguments: dict[str, Any] = {"expected_block": block}
+    for axis, value in (("x", x), ("y", y), ("z", z)):
+        if value is not None:
+            arguments[axis] = value
+    return TaskStep(step_id=step_id, tool="minecraft_dig", arguments=arguments, risk="MEDIUM")
+
+
+def task_record(*, state: str = "SUCCEEDED", steps: list[Any] | None = None) -> Any:
+    return SimpleNamespace(
+        task_id="task_abc",
+        state=SimpleNamespace(value=state),
+        objective="去附近找一棵橡木，挖一块原木并捡回来",
+        verification={},
+        steps=list(steps or []),
+        plan_version=1,
+        user_id="2731431246",
+        message="",
+    )
+
+
+class TestTaskTargetMemory:
+    """§三十：任务成功时把"她亲手挖的那一格"记成一条世界事实（TASK_RESULT 来源）。"""
+
+    async def test_successful_dig_leaves_a_verifiable_world_fact(self, tmp_path) -> None:
+        bridge, database, _manager, _service = await build_bridge(tmp_path)
+        await bridge.on_task_finished(task_record(steps=[dig_step("step_1")]))
+
+        facts = await bridge.store.all_facts(server_id=bridge.server_id())
+        assert {fact.kind for fact in facts} == {
+            MinecraftMemoryKind.TASK,
+            MinecraftMemoryKind.RESOURCE,
+        }
+        resource = [f for f in facts if f.kind is MinecraftMemoryKind.RESOURCE][0]
+        assert resource.source is FactSource.TASK_RESULT
+        assert resource.position == {"x": 100, "y": 64, "z": 100}
+        assert "oak_log" in resource.content
+        # 有坐标 → 可被世界复核（这正是"刚才那棵树在哪里"能答的基础）
+        outcome, _detail = await bridge.verify_fact(resource)
+        assert outcome in {"present", "absent", "unknown"}
+        await database.close()
+
+    async def test_failed_task_does_not_claim_a_world_fact(self, tmp_path) -> None:
+        bridge, database, _manager, _service = await build_bridge(tmp_path)
+        await bridge.on_task_finished(task_record(state="FAILED", steps=[dig_step("step_1")]))
+        facts = await bridge.store.all_facts(server_id=bridge.server_id())
+        assert [fact.kind for fact in facts] == [MinecraftMemoryKind.TASK]
+        await database.close()
+
+    async def test_task_without_dig_leaves_only_the_experience(self, tmp_path) -> None:
+        bridge, database, _manager, _service = await build_bridge(tmp_path)
+        await bridge.on_task_finished(task_record(steps=[]))
+        facts = await bridge.store.all_facts(server_id=bridge.server_id())
+        assert [fact.kind for fact in facts] == [MinecraftMemoryKind.TASK]
+        await database.close()
+
+    async def test_incomplete_coordinates_are_skipped(self, tmp_path) -> None:
+        bridge, database, _manager, _service = await build_bridge(tmp_path)
+        await bridge.on_task_finished(task_record(steps=[dig_step("step_1", y=None)]))
+        facts = await bridge.store.all_facts(server_id=bridge.server_id())
+        assert [fact.kind for fact in facts] == [MinecraftMemoryKind.TASK]
+        await database.close()
+
+    async def test_same_cell_is_not_duplicated_across_tasks(self, tmp_path) -> None:
+        bridge, database, _manager, _service = await build_bridge(tmp_path)
+        for _ in range(3):
+            await bridge.on_task_finished(task_record(steps=[dig_step("step_1")]))
+        resources = await bridge.store.facts(
+            server_id=bridge.server_id(), kinds=[MinecraftMemoryKind.RESOURCE]
+        )
+        assert len(resources) == 1  # 同一个 16 格 → 强化那一条
+        assert resources[0].observation_count >= 2
+        await database.close()
+
+    async def test_world_change_invalidates_what_the_task_remembered(self, tmp_path) -> None:
+        """挖过之后那一格是空气 → 对账把它标成 INVALIDATED（当前世界优先）。"""
+        bridge, database, _manager, service = await build_bridge(tmp_path)
+        await bridge.on_task_finished(task_record(steps=[dig_step("step_1")]))
+        service.set_block({"x": 100, "y": 64, "z": 100}, None)
+        report = await bridge.reconciler.reconcile(server_id=bridge.server_id())
+        assert report.invalidated == 1
         await database.close()

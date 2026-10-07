@@ -128,6 +128,12 @@ QQ 流程（`app/integrations/minecraft/identity_commands.py`，认领式订阅�
 `bot moved 1 block` / `look_at` / 路径更新 / 背包轮询 / 每个 tick —— **域里根本没有这种 API**
 （`MinecraftMemoryWriter` 没有 `moved/step/tick` 之类的方法，测试里有断言守着）。
 
+**任务成功**时额外写一条世界事实：取任务里第一条带完整坐标的 `minecraft_dig` 步骤，
+把「(x,y,z) 附近 有一块 \<expected_block\>」记成 `RESOURCE`，来源 `TASK_RESULT`
+（"她亲手挖到过"，不是"她亲眼看见"）。每条任务**最多一条**，同一 16 格按语义身份强化。
+这是"刚才那棵树在哪里"能回答、并且能被当前世界复核的基础：那条事实带坐标，
+她后来把方块挖走了，对账/检索就会把它标成已失效 —— 回答自然变成"那儿现在没有了"。
+
 任务结果只留语义摘要（objective / 结果 / 拿到什么 / 当时的位置），
 **不留** action_id、超时、pathfinder 调试、Node 事件、checkpoint 树（§三十一/§三十二）。
 失败的任务写成"当时的情况，未必一直如此"并标 `temporary`，不做"这里永远不能走"这种永久结论。
