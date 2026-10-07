@@ -148,9 +148,23 @@ class MinecraftMemoryBridge:
     def server_id(self) -> str:
         return self.server().server_id
 
+    def self_username(self) -> str:
+        """罐头**自己**的 MC 名字（镜像里的 ``connection.username``）。
+
+        真机踩到过：mineflayer 连自己 spawn 也会推 ``player_joined``，于是她把
+        「Catodayo 在这个服务器里活动过」记成了别人的 PLAYER 事实。自己的名字也必须
+        从身份与记忆里排除掉（她不该把自己当"一个玩家"）。
+        """
+        try:
+            connection = dict(self.service.snapshot().get("connection") or {})
+        except Exception:  # noqa: BLE001 - 拿不到名字就不排除（宁可多记，不要认错人）
+            return ""
+        return str(connection.get("username") or "").strip()
+
     def online_players(self) -> list[MinecraftIdentity]:
-        """当前在线的玩家（uuid 来自运行时；username 只是显示名）。"""
+        """当前在线的玩家（uuid 来自运行时；username 只是显示名；**不含她自己**）。"""
         server_id = self.server_id()
+        mine = self.self_username().lower()
         try:
             semantic = (self.service.world_view() or {}).get("semantic") or {}
         except Exception:  # noqa: BLE001
@@ -164,8 +178,11 @@ class MinecraftMemoryBridge:
                 player_uuid=canonical_uuid(row.get("uuid")),
                 username=str(row.get("name") or ""),
             )
-            if found.player_uuid:
-                out.append(found)
+            if not found.player_uuid:
+                continue
+            if mine and found.username.strip().lower() == mine:
+                continue
+            out.append(found)
         return out
 
     def player_named(self, username: str) -> MinecraftIdentity | None:
@@ -235,11 +252,18 @@ class MinecraftMemoryBridge:
     # ------------------------------------------------------------ 观察 → 记忆
 
     async def on_player_joined(self, data: Mapping[str, Any]) -> None:
-        """玩家上线 → 记一条 PLAYER 事实（第一次见面额外记一条 EVENT，§十二/§十五）。"""
+        """玩家上线 → 记一条 PLAYER 事实（第一次见面额外记一条 EVENT，§十二/§十五）。
+
+        **她自己不算"一个玩家"**：mineflayer 连自己 spawn 也会推 player_joined，
+        真机上曾因此记出「Catodayo 在这个服务器里活动过」。
+        """
         server_id = self.server_id()
         player_uuid = canonical_uuid(data.get("uuid"))
         username = str(data.get("username") or "").strip()
         if not server_id or not player_uuid:
+            return
+        mine = self.self_username().lower()
+        if mine and username.lower() == mine:
             return
         existed = await self.store.facts(
             server_id=server_id,

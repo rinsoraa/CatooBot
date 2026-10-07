@@ -342,7 +342,8 @@ class Bot:
                 self.minecraft.chat_bridge = MinecraftChatBridge(self, self.minecraft)
                 # Agent Bridge 暴露给工具上下文 / 每轮 prompt 上下文
                 self.character.minecraft_agent = self.minecraft.agent
-                self._setup_minecraft_memory()
+                # Phase 5C 的记忆桥**不在这里**装配：它要用角色名做记忆 scope，
+                # 而人设是 start() 里才从磁盘读进来的（放在这里会得到 "default"）。
             except Exception:  # noqa: BLE001 - minecraft trouble must not stop startup
                 self.log.exception("Minecraft bridge initialization failed; continuing without it")
                 self.minecraft = None
@@ -545,7 +546,6 @@ class Bot:
         # Phase 5B §二十二/§二十三：QQ 任务入口排在**人格插件之前** —— 只有确认是任务
         # 请求（或任务控制命令）时它才认领这条消息；否则原样交给正常对话管线。
         self.event_bus.on("message", self._dispatch_task_message)
-        self._start_memory_reconcile()
 
         await self.plugins.load_all()
         loaded = list(self.plugins.loaded)
@@ -806,6 +806,13 @@ class Bot:
                 self.log.exception("Minecraft bridge failed to start; continuing without it")
                 self.minecraft = None
                 story.boot_step("Minecraft 桥启动失败（QQ 聊天不受影响）", ok=False)
+        if self.minecraft is not None:
+            # Phase 5C：身份桥 + 记忆。放在**这里**有两个原因：
+            # 1) 记忆 scope 用角色名，而人设是这一轮 start() 里才读进来的
+            #    （放 __init__ 会拿到 "default" —— 真机上就这么错过一次）；
+            # 2) 连接层真的起来了才有记忆能力（起不来就干脆没有，不留半死对象）。
+            self._setup_minecraft_memory()
+            self._start_memory_reconcile()
         if self.minecraft_memory is not None:
             # Phase 5C §六 优先级 2：运维显式配置的 QQ → 玩家名。
             # 玩家当时不在线就留着 —— 每次周期对账前会再试一次。

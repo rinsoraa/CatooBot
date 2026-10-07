@@ -22,6 +22,8 @@ UUID_KONGLING = "1111111122223333444455555555" + "9f2c"
 UUID_OTHER = "aaaabbbbccccddddeeeeffff0000" + "1234"
 HOST = "127.0.0.1"
 PORT = 25565
+#: 罐头自己的 MC 账号名（真机上 mineflayer 连自己 spawn 也会推 player_joined）
+SELF_USERNAME = "Catodayo"
 
 
 class FakeMinecraftService:
@@ -34,10 +36,12 @@ class FakeMinecraftService:
         port: int = PORT,
         players: list[dict[str, Any]] | None = None,
         self_position: dict[str, Any] | None = None,
+        username: str = SELF_USERNAME,
     ) -> None:
         self.enabled = True
         self._host = host
         self._port = port
+        self._username = username
         self._players = list(players if players is not None else [])
         self._self_position = dict(self_position or {"x": 100.0, "y": 64.0, "z": 100.0})
         #: 复核用的世界事实：坐标 → {"name": ..., "reason": ...}
@@ -71,7 +75,13 @@ class FakeMinecraftService:
 
     def snapshot(self) -> dict[str, Any]:
         return {
-            "connection": {"host": self._host, "port": self._port, "status": "ONLINE"},
+            "connection": {
+                "host": self._host,
+                "port": self._port,
+                "status": "ONLINE",
+                # 与真机镜像同口径：她自己的 MC 名字（用来把她自己排除在记忆之外）
+                "username": self._username,
+            },
             "runtime": {"status": "READY"},
         }
 

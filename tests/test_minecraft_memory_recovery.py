@@ -25,6 +25,7 @@ from app.memory.minecraft.model import FactSource, MinecraftMemoryKind
 from app.tasks.models import TaskStep
 from tests.minecraft_memory_fakes import (
     UUID_KONGLING,
+    UUID_OTHER,
     FakeMinecraftService,
     build_bridge,
 )
@@ -611,3 +612,70 @@ class TestTaskTargetMemory:
         report = await bridge.reconciler.reconcile(server_id=bridge.server_id())
         assert report.invalidated == 1
         await database.close()
+
+
+class TestSelfIsNotAPlayer:
+    """真机踩到过：mineflayer 连自己 spawn 也会推 player_joined，
+    于是她把「Catodayo 在这个服务器里活动过」记成了别人的 PLAYER 事实。"""
+
+    async def test_own_join_is_not_remembered(self, tmp_path) -> None:
+        bridge, database, _manager, service = await build_bridge(tmp_path)
+        await bridge.on_player_joined({"uuid": UUID_OTHER, "username": service._username})
+        assert await bridge.store.all_facts(server_id=bridge.server_id()) == []
+        await database.close()
+
+    async def test_other_players_are_still_remembered(self, tmp_path) -> None:
+        bridge, database, _manager, _service = await build_bridge(tmp_path)
+        await bridge.on_player_joined({"uuid": UUID_KONGLING, "username": "空凛"})
+        assert await bridge.store.facts(server_id=bridge.server_id())
+        await database.close()
+
+    async def test_online_players_exclude_self(self, tmp_path) -> None:
+        bridge, database, _manager, service = await build_bridge(tmp_path)
+        service.add_player("空凛", UUID_KONGLING)
+        service.add_player(service._username, UUID_OTHER)
+        names = [player.username for player in bridge.online_players()]
+        assert names == ["空凛"]
+        await database.close()
+
+    async def test_cannot_bind_her_to_herself(self, tmp_path) -> None:
+        bridge, database, _manager, service = await build_bridge(tmp_path)
+        service.add_player(service._username, UUID_OTHER)
+        assert bridge.player_named(service._username) is None
+        assert (
+            await bridge.bind(platform="qq", user_id="2731431246", username=service._username)
+            is None
+        )
+        assert await bridge.identities.all_links() == []
+        await database.close()
+
+    async def test_unknown_own_name_does_not_break_memory(self, tmp_path) -> None:
+        """拿不到自己的名字时不排除（宁可多记一条，也不要认错人）。"""
+        bridge, database, _manager, _service = await build_bridge(tmp_path)
+        bridge.service._username = ""
+        await bridge.on_player_joined({"uuid": UUID_KONGLING, "username": "空凛"})
+        assert await bridge.store.facts(server_id=bridge.server_id())
+        await database.close()
+
+
+class TestCharacterScope:
+    """记忆 scope 必须跟着**角色名**走（真机上曾经落到 default）。"""
+
+    async def test_bridge_uses_the_character_key(self, tmp_path) -> None:
+        bridge, database, _manager, _service = await build_bridge(tmp_path, character_key="空凛")
+        assert bridge.character_key == "空凛"
+        assert bridge.store.scope_key == "character:空凛:minecraft"
+        await database.close()
+
+    async def test_setup_is_not_called_before_the_persona_is_loaded(self, tmp_path) -> None:
+        """装配点必须在 `character.start()` 之后：放在 `__init__` 里会拿到 "default"。"""
+        import inspect
+
+        from app.core.bot import Bot
+
+        source = inspect.getsource(Bot.start)
+        assert "_setup_minecraft_memory()" in source
+        assert "character.start()" in source
+        assert source.index("character.start()") < source.index("_setup_minecraft_memory()")
+        init_source = inspect.getsource(Bot.__init__)
+        assert "_setup_minecraft_memory()" not in init_source
