@@ -181,8 +181,8 @@ Task resumed = PASS（SUCCEEDED）/ Final verification = PASS（{'oak_log': 1}�
 所以后面几段能不能跑取决于"她当下站的地方附近有没有够得到的橡木"。跑单段最稳：
 
 ```powershell
-.venv\Scripts\python.exe scripts	ask_smoke_real.py --sections replan
-.venv\Scripts\python.exe scripts	ask_smoke_real.py --sections expiry
+.venv\Scripts\python.exe scripts\task_smoke_real.py --sections replan
+.venv\Scripts\python.exe scripts\task_smoke_real.py --sections expiry
 ```
 
 `--anchor x,z` 可以让脚本先把她放到指定那一列的地面（x/z 用真实数字，PowerShell 里别写尖括号）。
