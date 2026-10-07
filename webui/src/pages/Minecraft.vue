@@ -123,6 +123,8 @@ const taskProgress = computed(() => task.value?.progress ?? { completed: 0, tota
 const memoryStatus = computed(() => memory.value?.status ?? null)
 const memoryFacts = computed(() => memory.value?.facts ?? [])
 const memoryLinks = computed(() => memory.value?.links ?? [])
+/** 历史（缺限期）scope 的只读审计行：**不参与检索**，只是留证据给人看。 */
+const memoryLegacy = computed(() => memory.value?.legacy ?? [])
 /** 记忆层降级原因（有值就是**降级**：绝不假装检索成功）。 */
 const memoryDegraded = computed(
   () => memoryStatus.value?.memory_degraded || memoryStatus.value?.identity_degraded || '',
@@ -2808,6 +2810,13 @@ onUnmounted(stopPolling)
               </dd>
             </div>
             <div>
+              <dt>Legacy (audit only)</dt>
+              <dd data-test="mc-memory-legacy">
+                {{ memoryStatus?.legacy ?? 0 }}
+                （缺陷期间写下的旧 scope，保留作证据：不检索、不对账、不删）
+              </dd>
+            </div>
+            <div>
               <dt>Last Reconcile</dt>
               <dd data-test="mc-memory-reconcile">
                 {{
@@ -2855,6 +2864,30 @@ onUnmounted(stopPolling)
             还没有绑定。在 QQ 里对罐头说「把我和 Minecraft 里的 &lt;玩家名&gt; 绑定」，
             她会先报出服务器 + 玩家名 + UUID 尾号，要你回一句「确认绑定」才真的记住。
           </p>
+
+          <template v-if="memoryLegacy.length">
+            <h4 class="cb-caption">历史 scope（审计用，不参与检索）</h4>
+            <table class="minecraft__table" data-test="mc-memory-legacy-table">
+              <thead>
+                <tr>
+                  <th>Kind</th>
+                  <th>Content</th>
+                  <th>Source</th>
+                  <th>Freshness</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr v-for="fact in memoryLegacy" :key="`legacy:${fact.kind}:${fact.subject}`">
+                  <td>{{ fact.kind }}</td>
+                  <td>{{ fact.content }}</td>
+                  <td>{{ fact.source }}</td>
+                  <td>
+                    <StatusBadge :state="freshnessState(fact.fresh)" :label="fact.fresh" />
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </template>
 
           <h4 class="cb-caption">记住的事（最近 50 条）</h4>
           <table v-if="memoryFacts.length" class="minecraft__table" data-test="mc-memory-table">

@@ -75,6 +75,8 @@ class MemoryBridgeStatus:
     stale: int = 0
     invalidated: int = 0
     links: dict[str, int] = field(default_factory=dict)
+    #: 缺陷期间留下的 legacy scope 事实数（**只作审计**：不参与检索/对账，也不删）
+    legacy: int = 0
     memory_degraded: str = ""
     identity_degraded: str = ""
     last_reconcile: dict[str, Any] = field(default_factory=dict)
@@ -89,6 +91,7 @@ class MemoryBridgeStatus:
             "stale": self.stale,
             "invalidated": self.invalidated,
             "links": dict(self.links),
+            "legacy": int(self.legacy),
             "memory_degraded": self.memory_degraded,
             "identity_degraded": self.identity_degraded,
             "last_reconcile": dict(self.last_reconcile),
@@ -502,6 +505,8 @@ class MinecraftMemoryBridge:
         status.facts = len(facts)
         status.stale = sum(1 for fact in facts if fact.fresh is Freshness.STALE)
         status.invalidated = sum(1 for fact in facts if fact.fresh is Freshness.INVALIDATED)
+        # 历史 scope 只数一下、给人看：它不参与检索/对账（§十一 决策记录）
+        status.legacy = len(await self.store.legacy_facts(limit=200))
         if self.identities is not None:
             status.links = await self.identities.counts()
         return status
@@ -512,6 +517,14 @@ class MinecraftMemoryBridge:
         if not server_id:
             return []
         facts = await self.store.all_facts(server_id=server_id, limit=max(1, min(int(limit), 200)))
+        return [fact.to_payload() for fact in facts]
+
+    async def legacy_view(self, *, limit: int = 50) -> list[dict[str, Any]]:
+        """历史（缺限期）scope 的**只读**审计视图：每条都带 ``legacy_scope: true``。
+
+        2026-10-08 决定：保留这批数据当证据，不删、不盲迁；这里只是让人看得见它。
+        """
+        facts = await self.store.legacy_facts(limit=max(1, min(int(limit), 200)))
         return [fact.to_payload() for fact in facts]
 
     async def links_view(self, *, limit: int = 50) -> list[dict[str, Any]]:

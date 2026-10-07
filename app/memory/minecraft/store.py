@@ -36,6 +36,27 @@ CONFLICT_KINDS = frozenset(
 )
 
 
+#: 角色名拿不到时的兜底 key —— **故意不叫 "default"**：`character:default:minecraft`
+#: 是 Phase 5C 装配点缺陷期间写下的历史 scope（见 LEGACY_SCOPE_KEYS），
+#: 兜底值绝不能落进那个审计抽屉里。
+FALLBACK_CHARACTER_KEY = "unscoped"
+
+#: **历史（legacy）scope：只作审计，不删、不迁移、默认排除**（2026-10-08 决定）。
+#:
+#: 成因：Phase 5C 第一版把记忆桥装配在 `__init__`（角色名那时还没从库里读出来），
+#: 于是 scope 落成了 `character:default:minecraft`。修好装配点之后，新数据走
+#: `character:<角色名>:minecraft`；旧数据**原样保留**在这两个 scope 里当证据，
+#: 默认读路径（`facts` / 检索 / 对账 / 状态计数）一律不含它们 ——
+#: 只有显式调用 :meth:`MinecraftMemoryStore.legacy_facts` 才读得到，且每条都带
+#: ``extra={"legacy_scope": True}`` 标记，绝不混进正常检索。
+LEGACY_SCOPE_KEYS: tuple[str, ...] = ("character:default:minecraft",)
+
+
+def is_legacy_scope(scope_key: str) -> bool:
+    """这个 scope 是不是"缺陷期间留下的审计抽屉"。"""
+    return str(scope_key or "") in LEGACY_SCOPE_KEYS
+
+
 #: ``provenance`` 里"结构化字段"的名字（其余键都属于域内附加标记 ``extra``）
 _PROVENANCE_RESERVED = frozenset(
     {
@@ -64,7 +85,7 @@ _PROVENANCE_RESERVED = frozenset(
 
 def minecraft_scope_key(character_key: str) -> str:
     """Minecraft 记忆的专用 scope（与普通聊天记忆彻底分开）。"""
-    key = str(character_key or "default").strip() or "default"
+    key = str(character_key or FALLBACK_CHARACTER_KEY).strip() or FALLBACK_CHARACTER_KEY
     return f"character:{key}:minecraft"
 
 
@@ -263,6 +284,33 @@ class MinecraftMemoryStore:
         self, *, server_id: str = "", limit: int = 200
     ) -> list[MinecraftMemoryFact]:
         return await self.facts(server_id=server_id, include_inactive=True, limit=limit)
+
+    async def legacy_facts(self, *, limit: int = 200) -> list[MinecraftMemoryFact]:
+        """**只读**盘点历史（缺限期）scope 里的事实：审计用，**绝不参与检索/对账**。
+
+        2026-10-08 的决定：那批数据保留证据、不删除、不盲迁；这里给它们一个明确的
+        读出口，并且每条都标 ``legacy_scope=True``（调用方据此展示"这是审计遗留"）。
+        默认路径（`facts` / `retriever` / `reconciler` / 状态计数）看不到这些行。
+        """
+        out: list[MinecraftMemoryFact] = []
+        for scope_key in LEGACY_SCOPE_KEYS:
+            if scope_key == self.scope_key:
+                continue  # 兜底 key 万一撞上也不自读（FALLBACK 已避免这种情况）
+            try:
+                rows = await self._manager.repository.search(
+                    scope_key=scope_key, source="minecraft", limit=max(1, int(limit))
+                )
+            except Exception as exc:  # noqa: BLE001 - 审计读失败也只降级
+                self.degraded_reason = f"{type(exc).__name__}"
+                self._warn("legacy read failed (degraded)", exc)
+                continue
+            for memory in rows:
+                fact = self.to_fact(memory)
+                if fact is None:
+                    continue
+                fact.extra["legacy_scope"] = True
+                out.append(fact)
+        return out[: max(1, int(limit))]
 
     def to_fact(self, memory: Any) -> MinecraftMemoryFact | None:
         """把一行记忆还原成域事实（非本域/坏数据 → None，绝不猜）。"""

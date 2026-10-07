@@ -126,6 +126,7 @@ const MEMORY_STATUS = {
   stale: 1,
   invalidated: 1,
   links: { VERIFIED: 1, REVOKED: 0, CONFLICT: 0 },
+  legacy: 0,
   memory_degraded: '',
   identity_degraded: '',
   last_reconcile: { invalidated: 1, staled: 1, confirmed: 0 },
@@ -2215,6 +2216,51 @@ describe('Minecraft 页 · follow_player（Phase 3D）', () => {
     expect(links).toContain('…9f2c')
     expect(links).not.toContain('11111111-2222')
     expect(links).toContain('VERIFIED')
+  })
+
+  it('历史 scope 单独一栏展示，且不混进"记住的事"', async () => {
+    const legacyRow = {
+      ...MEMORY_FACTS[0],
+      content: '缺陷期间写下的旧事实。',
+      extra: { legacy_scope: true },
+    }
+    const { wrapper } = await mountPage(
+      makeHandler({
+        memory: ok({
+          ok: true,
+          enabled: true,
+          status: { ...MEMORY_STATUS, facts: 2, legacy: 1 },
+          facts: MEMORY_FACTS,
+          links: MEMORY_LINKS,
+          legacy: [legacyRow],
+        }),
+      }),
+    )
+    await flushAll()
+    expect(wrapper.get('[data-test="mc-memory-legacy"]').text()).toContain('1')
+    expect(wrapper.get('[data-test="mc-memory-legacy"]').text()).toContain('不检索')
+    const legacyTable = wrapper.get('[data-test="mc-memory-legacy-table"]').text()
+    expect(legacyTable).toContain('缺陷期间写下的旧事实')
+    // 审计行**不能**混进正常的事实表（那是"她真的记得的事"）
+    expect(wrapper.get('[data-test="mc-memory-table"]').text()).not.toContain('缺陷期间写下')
+  })
+
+  it('没有历史 scope 时不渲染那张审计表', async () => {
+    const { wrapper } = await mountPage(
+      makeHandler({
+        memory: ok({
+          ok: true,
+          enabled: true,
+          status: MEMORY_STATUS,
+          facts: MEMORY_FACTS,
+          links: MEMORY_LINKS,
+          legacy: [],
+        }),
+      }),
+    )
+    await flushAll()
+    expect(wrapper.find('[data-test="mc-memory-legacy-table"]').exists()).toBe(false)
+    expect(wrapper.get('[data-test="mc-memory-legacy"]').text()).toContain('0')
   })
 
   it('记忆层降级时如实展示（绝不假装检索成功）', async () => {

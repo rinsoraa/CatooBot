@@ -1001,7 +1001,9 @@ class Bot:
                 self.minecraft,
                 memory_manager=self.memory,
                 database=self.database,
-                character_key=persona_name or "default",
+                # 兜底 key **故意不叫 default**：`character:default:minecraft` 是
+                # 缺陷期间留下的历史 scope（只作审计），兜底值绝不能落进那个抽屉。
+                character_key=persona_name or "unscoped",
                 character_label=persona_name or "罐头",
                 logger=self.log,
             )

@@ -61,6 +61,12 @@
   最近 50 条事实）。
 * **配置**：新增 `minecraft.memory`（`enabled` / `reconcile_interval_seconds` / `context_items` /
   `linked_players`）—— **`allow_medium` 默认值没有变化**，记忆也不会降低任何动作的确认要求。
+* **历史数据（缺陷期间）的处理**：第一版装配点缺陷写下的 `character:default:minecraft` 那批事实
+  **保留、不删除、不盲迁**（2026-10-08 决定）：代码里显式登记为 `LEGACY_SCOPE_KEYS` +
+  `is_legacy_scope()`，默认读路径（检索 / 对账 / 状态计数）一律排除，只留只读审计出口
+  `store.legacy_facts()` / `bridge.legacy_view()` / WebUI 的 `Legacy (audit only)` 一栏 /
+  API 的 `legacy` 数组（每条带 `legacy_scope: true`）；角色名拿不到时的兜底 key 从
+  `default` 改为 `unscoped`，保证新数据不会再落进那个审计抽屉。
 * **真机取证**：新增 `scripts/memory_smoke_real.py`（identity / memory / world / setblock /
   retrieval / restart 六段，含 `/setblock` 交互段与跨进程持久化子进程取证）；
   新增 `tests/test_minecraft_identity.py`、`test_minecraft_memory.py`、

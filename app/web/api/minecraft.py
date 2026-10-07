@@ -955,6 +955,7 @@ class MinecraftApiRoutes(WebContext):
                     "enabled": False,
                     "facts": [],
                     "links": [],
+                    "legacy": [],
                     "status": {"enabled": False},
                 },
                 request=request,
@@ -963,6 +964,8 @@ class MinecraftApiRoutes(WebContext):
             status = await bridge.status()
             facts = await bridge.facts_view(limit=50)
             links = await bridge.links_view(limit=50)
+            # 历史（缺限期）scope：只作审计，**不参与检索/对账**（每条带 legacy_scope 标记）
+            legacy = await bridge.legacy_view(limit=50)
         except Exception as exc:  # noqa: BLE001 - 记忆读失败只降级，不变成 5xx
             return ok(
                 {"ok": True, "enabled": False, "degraded": type(exc).__name__},
@@ -975,6 +978,7 @@ class MinecraftApiRoutes(WebContext):
                 "status": status.to_payload(),
                 "facts": facts,
                 "links": links,
+                "legacy": legacy,
             },
             request=request,
         )

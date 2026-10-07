@@ -654,6 +654,8 @@ export interface MinecraftMemoryStatusView {
   stale: number
   invalidated: number
   links: Record<string, number>
+  /** 缺陷期间留下的历史 scope 事实数（只作审计：不参与检索/对账） */
+  legacy: number
   /** 非空 = 记忆层降级（绝不假装检索成功） */
   memory_degraded: string
   identity_degraded: string
@@ -666,5 +668,7 @@ export interface MinecraftMemoryResponse {
   status?: MinecraftMemoryStatusView
   facts?: MinecraftMemoryFactView[]
   links?: MinecraftIdentityLinkView[]
+  /** 历史（缺限期）scope：只读审计，每条带 legacy_scope 标记 */
+  legacy?: MinecraftMemoryFactView[]
   degraded?: string
 }

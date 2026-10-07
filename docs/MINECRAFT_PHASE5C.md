@@ -284,6 +284,22 @@ UUID 尾号）+ 最近 50 条事实（kind / 内容 / 来源 / 置信度 / 新�
 
 ## 十一、已知偏差与后续（决策记录）
 
+### 0. 历史 scope（缺陷期间的数据）：**保留、不删、不盲迁 + 审计标记 + 默认排除**
+（**2026-10-08 决定**）
+
+第一版把记忆桥装配在 `__init__`（那时角色名还没从库里读出来），于是有一批事实落进了
+`character:default:minecraft`。修好装配点之后这批数据**原样保留**，处理方式：
+
+* **不删除、不盲迁**：它们是那次缺陷的证据，改数据会让证据消失；
+* **代码里显式登记**：`app/memory/minecraft/store.py::LEGACY_SCOPE_KEYS = ("character:default:minecraft",)`
+  + `is_legacy_scope()`，并写明成因；
+* **默认排除**：`facts()` / 检索 / 对账 / 状态里的 `facts` 计数**都不含**它（`scope_key` 只匹配当前角色）；
+* **只读审计出口**：`store.legacy_facts()` / `bridge.legacy_view()` / WebUI 卡片上的
+  `Legacy (audit only)` 一栏 + `GET /api/v1/minecraft/memory` 的 `legacy` 数组；
+  每条审计行都带 `legacy_scope: true`，一眼能看出"这不是她现在记得的事"；
+* **兜底 key 改名**：角色名拿不到时的兜底从 `default` 改成 `unscoped`
+  （`FALLBACK_CHARACTER_KEY`），保证新数据**永远不会**写进那个审计抽屉。
+
 ### 1. 角色隔离键的写法与沙盒不同（**2026-10-08 决定：暂选 A —— 保持现状并标记**）
 
 | | 写法 |

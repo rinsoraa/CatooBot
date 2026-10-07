@@ -104,6 +104,35 @@ async function waitFor(predicate, label, timeoutMs = 30000) {
   throw new Error(`timeout waiting for: ${label}`)
 }
 
+/**
+ * 把观察者放到指定位置，并**在等待期间重复补发那条幂等的 /tp**。
+ *
+ * follow 系列检查曾在 CI 上偶发失败（`runtime 看见 Followee` / `目标第 2 次移动后罐头跟上`）：
+ * 机器繁忙时实体包与区块加载滞后，等待窗口用完了人还没出现 —— 断言本身没错
+ * （她必须**真的**看见玩家、必须**真的**跟到附近），错的是把"某一条 /tp 必须一次成功"
+ * 当成了前提。重发同一句指令不改变断言强度，只是不再依赖单条指令的时序运气。
+ */
+async function placeAndWait({ tp, x, y, z, label, timeoutMs, predicate, retpEveryMs = 2500 }) {
+  const deadline = Date.now() + timeoutMs
+  let lastError = null
+  while (Date.now() < deadline) {
+    tp(x, y, z)
+    const sliceDeadline = Math.min(deadline, Date.now() + retpEveryMs)
+    while (Date.now() < sliceDeadline) {
+      try {
+        if (await predicate()) return
+      } catch (error) {
+        // 轮询期间的瞬时错误（例如 status 还没就绪）不算失败：窗口没到就继续等
+        lastError = error
+      }
+      await sleep(150)
+    }
+  }
+  throw new Error(
+    `timeout waiting for: ${label}${lastError ? ` (last poll error: ${lastError.message})` : ''}`,
+  )
+}
+
 // ------------------------------------------------------------------ main
 
 /** 把小数组转成可比对的字符串集合（Phase 4K 的 e2e 用它检查投影字段）。 */
@@ -1779,16 +1808,21 @@ async function main() {
           // ---- Test A：follow + 目标移动 → 继续跟随（目标移动 ≠ action 结束） ----
           const beforeFollow = await botPosNow()
           // 目标先站到罐头旁边（3 格内，进入 chase 上限）
-          tpTarget(followee, beforeFollow.x + 3, beforeFollow.y, beforeFollow.z)
-
           // flying-squid 的实体包有延迟：先等 runtime 真的"看见"这个玩家再跟随，
-          // 否则 bot.players[name].entity 还不存在 → player.not_found（机器繁忙时必现）
-          await waitFor(async () => {
-            const snap = await request(runtimePort, 'GET', '/minecraft/world/snapshot?layers=near')
-            return (snap.body.players || []).some((p) => p.username === 'Followee')
-            // 机器繁忙时实体包可能来得慢（尤其前面几段刚做过 setblock/搬运）→ 给足 20s；
-            // 断言本身没变（必须真的看见）。
-          }, 'runtime 看见 Followee', 20000)
+          // 否则 bot.players[name].entity 还不存在 → player.not_found（机器繁忙时必现）。
+          // 断言没变（必须真的看见），只是等待期间会重发 /tp。
+          await placeAndWait({
+            tp: (x, y, z) => tpTarget(followee, x, y, z),
+            x: beforeFollow.x + 3,
+            y: beforeFollow.y,
+            z: beforeFollow.z,
+            label: 'runtime 看见 Followee',
+            timeoutMs: 30000,
+            predicate: async () => {
+              const snap = await request(runtimePort, 'GET', '/minecraft/world/snapshot?layers=near')
+              return (snap.body.players || []).some((p) => p.username === 'Followee')
+            },
+          })
 
           const followStart = await request(runtimePort, 'POST', '/minecraft/follow_player', {
             username: 'Followee',
@@ -1830,16 +1864,23 @@ async function main() {
             let reached = false
             for (const [ox, oz] of hopOffsets.slice(0, 3)) {
               const botPos = await botPosNow()
-              tpTarget(followee, botPos.x + ox, botPos.y, botPos.z + oz)
               try {
-                await waitFor(async () => {
-                  const s = await request(runtimePort, 'GET', '/minecraft/status')
-                  const me = s.body.position
-                  const targetPosition = s.body.pathfinder && s.body.pathfinder.target
-                  if (!me || !targetPosition) return false
-                  const gap = Math.hypot(me.x - targetPosition.x, me.z - targetPosition.z)
-                  return gap <= 4
-                }, `第 ${hop} 跳后跟到目标附近`, 9000)
+                await placeAndWait({
+                  tp: (x, y, z) => tpTarget(followee, x, y, z),
+                  x: botPos.x + ox,
+                  y: botPos.y,
+                  z: botPos.z + oz,
+                  label: `第 ${hop} 跳后跟到目标附近`,
+                  timeoutMs: 15000,
+                  predicate: async () => {
+                    const s = await request(runtimePort, 'GET', '/minecraft/status')
+                    const me = s.body.position
+                    const targetPosition = s.body.pathfinder && s.body.pathfinder.target
+                    if (!me || !targetPosition) return false
+                    const gap = Math.hypot(me.x - targetPosition.x, me.z - targetPosition.z)
+                    return gap <= 4
+                  },
+                })
                 reached = true
                 await trackMoved()
                 break
@@ -1888,8 +1929,18 @@ async function main() {
         // ---- Test C：玩家消失 → 3s grace → FAILED player_lost（goal 清空） ----
         const ghost = await fake.spawnObserver('Ghost')
         const botForGhost = await botPosNow()
-        tpTarget(ghost, botForGhost.x + 3, botForGhost.y, botForGhost.z)
-        await sleep(500)
+        await placeAndWait({
+          tp: (x, y, z) => tpTarget(ghost, x, y, z),
+          x: botForGhost.x + 3,
+          y: botForGhost.y,
+          z: botForGhost.z,
+          label: 'runtime 看见 Ghost',
+          timeoutMs: 20000,
+          predicate: async () => {
+            const snap = await request(runtimePort, 'GET', '/minecraft/world/snapshot?layers=near')
+            return (snap.body.players || []).some((p) => p.username === 'Ghost')
+          },
+        })
         const lostPromise = request(runtimePort, 'POST', '/minecraft/follow_player', { username: 'Ghost' })
         await waitFor(async () => {
           const s = await request(runtimePort, 'GET', '/minecraft/status')
@@ -1915,8 +1966,25 @@ async function main() {
         const farTarget = await fake.spawnObserver('FarTarget')
         try {
           const botForFar = await botPosNow()
-          tpTarget(farTarget, botForFar.x + 30, botForFar.y, botForFar.z) // 30 > E2E 的 chase 上限 16
-          await sleep(500)
+          // 目标解析要求 bot.players[name].entity 真的存在（runtime §五），而**远处**的实体
+          // 追踪本身就不稳（mineflayer 只跟视野内的实体）——所以分两步：
+          // 1) 先在近处等"真的看见他"（近处追踪可靠，这才是可靠的前置）；
+          // 2) 再把他传送到 30 格外（> E2E 的 chase 上限 16）立刻启动跟随。
+          // 断言完全没变：必须因为**太远**而失败（follow.target_too_far）。
+          await placeAndWait({
+            tp: (x, y, z) => tpTarget(farTarget, x, y, z),
+            x: botForFar.x + 3,
+            y: botForFar.y,
+            z: botForFar.z,
+            label: 'runtime 看见 FarTarget',
+            timeoutMs: 20000,
+            predicate: async () => {
+              const snap = await request(runtimePort, 'GET', '/minecraft/world/snapshot?layers=near')
+              return (snap.body.players || []).some((p) => p.username === 'FarTarget')
+            },
+          })
+          tpTarget(farTarget, botForFar.x + 30, botForFar.y, botForFar.z)
+          await sleep(600)
           const farResp = await request(runtimePort, 'POST', '/minecraft/follow_player', { username: 'FarTarget' })
           assert(
             farResp.status === 200 && farResp.body.status === 'RUNNING',
@@ -1942,11 +2010,18 @@ async function main() {
         const slowTarget = await fake.spawnObserver('SlowTarget')
         try {
           const botForSlow = await botPosNow()
-          tpTarget(slowTarget, botForSlow.x + 3, botForSlow.y, botForSlow.z)
-          await waitFor(async () => {
-            const snap = await request(runtimePort, 'GET', '/minecraft/world/snapshot?layers=near')
-            return (snap.body.players || []).some((p) => p.username === 'SlowTarget')
-          }, 'runtime 看见 SlowTarget', 10000)
+          await placeAndWait({
+            tp: (x, y, z) => tpTarget(slowTarget, x, y, z),
+            x: botForSlow.x + 3,
+            y: botForSlow.y,
+            z: botForSlow.z,
+            label: 'runtime 看见 SlowTarget',
+            timeoutMs: 20000,
+            predicate: async () => {
+              const snap = await request(runtimePort, 'GET', '/minecraft/world/snapshot?layers=near')
+              return (snap.body.players || []).some((p) => p.username === 'SlowTarget')
+            },
+          })
           const timeoutResp = await request(runtimePort, 'POST', '/minecraft/follow_player', {
             username: 'SlowTarget',
           })

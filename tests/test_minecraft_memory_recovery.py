@@ -296,7 +296,9 @@ class TestBootWiring:
 
         bot._setup_minecraft_memory()
         assert bot.minecraft_memory is not None
-        assert bot.minecraft_memory.character_key == "default"  # 拿不到名字就用默认 scope
+        # 拿不到角色名 → 兜底 key **不是** default（那是历史审计 scope，见 store 里的决策记录）
+        assert bot.minecraft_memory.character_key == "unscoped"
+        assert bot.minecraft_memory.store.scope_key == "character:unscoped:minecraft"
         assert bot.minecraft_identity is not None
         assert bot._on_minecraft_memory_event in service.listeners
         await database.close()

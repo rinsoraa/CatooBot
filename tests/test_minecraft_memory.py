@@ -409,3 +409,84 @@ class TestReadFailuresDegrade:
         await database.close()  # 记忆 DB 挂了
         assert await bridge.store.facts(server_id=bridge.server_id()) == []
         assert bridge.store.degraded_reason  # §四十：如实降级，绝不假装检索成功
+
+
+class TestLegacyScopeIsAuditOnly:
+    """2026-10-08 决定：缺陷期间写下的历史 scope **保留作证据**（不删、不盲迁），
+    但默认读路径一律不含它 —— 只有显式的审计读口才看得到，且每条带标记。"""
+
+    async def test_legacy_rows_are_invisible_to_normal_reads(self, tmp_path) -> None:
+        from app.memory.minecraft.store import LEGACY_SCOPE_KEYS, is_legacy_scope
+
+        assert is_legacy_scope(LEGACY_SCOPE_KEYS[0])
+        assert not is_legacy_scope("character:罐头:minecraft")
+        bridge, database, manager, _service = await build_bridge(tmp_path)
+        # 直接在历史 scope 里造一条（模拟缺陷期间写下的数据）
+        await manager.remember(
+            "character",
+            "default:minecraft",
+            "缺陷期间写下的旧事实。",
+            source="minecraft",
+            provenance={
+                "domain": "minecraft",
+                "kind": "PLAYER",
+                "server_id": bridge.server_id(),
+                "subject": "player:legacy",
+                "fact_source": "OBSERVED",
+                "observed_at": 1.0,
+                "last_verified_at": 1.0,
+            },
+        )
+        # 正常读路径：看不见
+        assert await bridge.store.facts(server_id=bridge.server_id()) == []
+        assert await bridge.store.all_facts(server_id=bridge.server_id()) == []
+        context = await bridge.retriever.retrieve(server_id=bridge.server_id())
+        assert context.empty
+        report = await bridge.reconciler.reconcile(server_id=bridge.server_id())
+        assert report.checked == 0  # 对账也碰不到它
+        assert (await bridge.status()).facts == 0
+        # 审计读口：看得见，而且带标记
+        legacy = await bridge.store.legacy_facts()
+        assert len(legacy) == 1
+        assert legacy[0].content == "缺陷期间写下的旧事实。"
+        assert legacy[0].extra.get("legacy_scope") is True
+        assert [row["kind"] for row in await bridge.legacy_view()] == ["PLAYER"]
+        await database.close()
+
+    async def test_status_counts_legacy_separately(self, tmp_path) -> None:
+        bridge, database, manager, _service = await build_bridge(tmp_path)
+        await manager.remember(
+            "character",
+            "default:minecraft",
+            "旧事实一。",
+            source="minecraft",
+            provenance={
+                "domain": "minecraft",
+                "kind": "PLAYER",
+                "server_id": bridge.server_id(),
+                "subject": "player:legacy",
+                "fact_source": "OBSERVED",
+            },
+        )
+        await bridge.writer.event(
+            server_id=bridge.server_id(), subject="live", content="现在的事实。"
+        )
+        status = await bridge.status()
+        assert status.facts == 1  # 只数当前 scope
+        assert status.legacy == 1  # 历史单独数
+        assert status.to_payload()["legacy"] == 1
+        # 审计行本身不能进检索块
+        block = await bridge.context_block(text="任何问题")
+        assert "旧事实" not in block
+
+    async def test_fallback_key_never_lands_in_the_legacy_scope(self, tmp_path) -> None:
+        """兜底 key（角色名拿不到时）**不是** default，所以不会写进历史审计抽屉。"""
+        from app.memory.minecraft.store import (
+            FALLBACK_CHARACTER_KEY,
+            LEGACY_SCOPE_KEYS,
+            minecraft_scope_key,
+        )
+
+        assert FALLBACK_CHARACTER_KEY != "default"
+        assert minecraft_scope_key(FALLBACK_CHARACTER_KEY) not in LEGACY_SCOPE_KEYS
+        assert minecraft_scope_key("") not in LEGACY_SCOPE_KEYS
