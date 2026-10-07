@@ -28,15 +28,19 @@
   重规划/授权到期/重启恢复分别有对应说法（"原计划已经作废" / "授权过期，计划没变" / "我重启过…"）。
 * **启动恢复**：Bot 装配任务运行时后调用 `recover_persisted_tasks()`，
   重启过的任务旧动作作废、旧确认作废、并通过 QQ 通知发起人。
-* 真机实测（2026-10-07，真实 QQ 私聊 + 真实 Java 服务器）：QQ 建任务 → 确认 → `dig`/`pickup` 两个
-  MEDIUM 真动作 → `FINAL INVENTORY VERIFIED {'oak_log': 1}`；暂停、授权到期（过期后重新确认才继续）、
-  任务 TTL 过期都在真机上跑过（详见 `docs/MINECRAFT_PHASE5B.md` §9.1）。
+* 真机实测（2026-10-07/08 两轮，真实 QQ 私聊 + 群聊 + 真实 Java 服务器）：
+  **REAL QQ: PASS（24/24 项）** —— QQ 建任务 → 确认 → `dig`/`pickup` 两个 MEDIUM 真动作 →
+  `FINAL INVENTORY VERIFIED {'oak_log': 1}`；暂停 / 继续 / 取消 / 授权到期（过期后重新确认才继续）/
+  重规划（v2 新 hash + 重新确认）/ 非发起人被拒（零副作用）/ 重启恢复（等确认的任务留在等确认）/
+  任务 TTL 过期全部在真机上跑过（详见 `docs/MINECRAFT_PHASE5B.md` §9）。
   另修掉两个真机暴露的 bug：
   ① 入口回复与 `task.confirmation_required` 事件会让**同一份计划发两遍** → 改成同步 publish +
      处理期排队 + 只跳过「回复已说明」的事件；
   ② 重启恢复遇到**停在 PENDING_CONFIRMATION** 的任务会尝试非法转移（`→ PAUSED`）→ 异常冒到
      Bot 装配块 → 整块任务能力被关掉。现在按任务所处状态归位（等确认的继续等确认并重挂确认条目）、
-     逐条隔离、恢复失败只降级恢复。
+     逐条隔离、恢复失败只降级恢复；
+  ③ 重启时的恢复通知会在 **NapCat 还没重连**时发出而丢失 → 发送路径改成有界重试
+     （直接回复 1 次短退避、通知 3 次退避，失败日志带 attempt/error）。
 * 验证：`tests/test_qq_task_entry.py`（25，§三十一 A–L + 认领语义 + 去重 + MEDIUM 提示）+
   WebUI vitest 面板显示 `source`；真机 QQ 门禁用 `scripts/task_qq_smoke.py` 逐阶段取证
   （NapCat + 真实 QQ 消息由操作者发送，判定从 SQLite checkpoint + 日志）。

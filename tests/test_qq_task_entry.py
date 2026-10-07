@@ -607,3 +607,73 @@ async def test_event_bus_claim_stops_later_handlers() -> None:
     bus.on("message", second)
     claimed = await bus.emit(private_event("帮我找附近的一块橡木"))
     assert claimed is True and seen == ["first"], "认领后后面的处理器不再跑"
+
+
+# ------------------------------------------------------------------ 发送韧性
+
+
+async def test_notification_retries_while_the_qq_channel_is_down() -> None:
+    """真机踩到：重启时 NapCat 还没连回来，恢复通知会丢。通知路径要有界重试。"""
+
+    class FlakyDelivery(FakeDelivery):
+        def __init__(self, failures: int) -> None:
+            super().__init__()
+            self.failures = failures
+            self.attempts = 0
+
+        async def send_group_msg(self, group_id: int, message: str) -> int:
+            self.attempts += 1
+            if self.attempts <= self.failures:
+                raise RuntimeError("OneBot 未连接")
+            return await super().send_group_msg(group_id, message)
+
+    stack = Stack()
+    api = FlakyDelivery(failures=2)
+    stack.entry.bot = stack.bot
+    stack.bot.api = api
+    stack.entry._send = stack.entry._send  # noqa: SLF001 - 保持真实实现
+    # 通知路径：两次失败之后第 3 次成功（退避被压成 0 以免测试变慢）
+    import app.tasks.qq_entry as qq_entry
+
+    original = qq_entry.NOTIFY_RETRY_DELAYS
+    qq_entry.NOTIFY_RETRY_DELAYS = (0.0, 0.0, 0.0)
+    try:
+        ok = await stack.entry._send(  # noqa: SLF001
+            QQIdentity(user_id="", session_id=f"group:{GROUP}", conversation_id=str(GROUP)),
+            "我重启过，之前那一步已经作废了。",
+            delays=qq_entry.NOTIFY_RETRY_DELAYS,
+        )
+    finally:
+        qq_entry.NOTIFY_RETRY_DELAYS = original
+    assert ok is True
+    assert api.attempts == 3, "必须真的重试到通道回来为止（有界）"
+    assert api.texts()[0].startswith("我重启过")
+
+
+async def test_reply_gives_up_after_a_bounded_retry() -> None:
+    class DeadDelivery(FakeDelivery):
+        def __init__(self) -> None:
+            super().__init__()
+            self.attempts = 0
+
+        async def send_private_msg(self, user_id: int, message: str) -> int:
+            self.attempts += 1
+            raise RuntimeError("OneBot 未连接")
+
+    import app.tasks.qq_entry as qq_entry
+
+    stack = Stack()
+    dead = DeadDelivery()
+    stack.bot.api = dead
+    original = qq_entry.REPLY_RETRY_DELAYS
+    qq_entry.REPLY_RETRY_DELAYS = (0.0,)
+    try:
+        ok = await stack.entry._send(  # noqa: SLF001
+            QQIdentity(user_id=USER_A, session_id=f"private:{USER_A}"),
+            "你好",
+            delays=qq_entry.REPLY_RETRY_DELAYS,
+        )
+    finally:
+        qq_entry.REPLY_RETRY_DELAYS = original
+    assert ok is False, "发不出去就如实返回 False（绝不假装成功）"
+    assert dead.attempts == 2, "只补试一次，不无限重试"

@@ -19,6 +19,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
 from collections import OrderedDict
@@ -80,6 +81,11 @@ FAILURE_TEXTS: dict[str, str] = {
     "VERIFICATION": "最后检查背包时没对上，我不敢说做完了。",
     "INTERNAL": "我这边出了点问题。",
 }
+
+#: 直接回复的重试退避（用户正等着，只补一次短的）
+REPLY_RETRY_DELAYS: tuple[float, ...] = (1.5,)
+#: 通知的重试退避（后台发，NapCat 重连通常几秒；有界，绝不无限重试）
+NOTIFY_RETRY_DELAYS: tuple[float, ...] = (1.0, 3.0, 8.0)
 
 #: 状态 → QQ 用的一句短话（事件映射里的补充）
 _NOTIFY_SKIP = frozenset({TASK_CREATED, TASK_PLAN_READY, TASK_STEP_WAITING, TASK_STEP_SUCCEEDED})
@@ -352,19 +358,42 @@ class QQTaskEntry:
     # ------------------------------------------------------------ 发送
 
     async def _say(self, identity: QQIdentity, text: str) -> None:
+        """用户消息的直接回复：失败就再试一次（短退避），仍失败只记账。"""
+        await self._send(identity, text, delays=REPLY_RETRY_DELAYS)
+
+    async def _send(self, identity: QQIdentity, text: str, *, delays: tuple[float, ...]) -> bool:
+        """把一句话发到 QQ。``delays`` = 每次失败之后等多久再试（有界，绝不无限重试）。
+
+        真机踩到过：重启 CatooBot 时，内存里的恢复通知会在 **NapCat 还没重连**的时候就发出去
+        （启动日志：`Connection closed → 发送失败 → NapCat connected`），于是"我重启过…"这条
+        就永久丢了。通知路径因此带一段有界重试（QQ 通道通常几秒内就回来）。
+        """
         message = str(text or "").strip()
         if not message:
-            return
-        try:
-            api = getattr(self.bot, "api", None)
-            if api is None:
-                return
-            if identity.is_group and identity.group_id is not None:
-                await api.send_group_msg(identity.group_id, message)
-            else:
-                await api.send_private_msg(int(identity.user_id), message)
-        except Exception:  # noqa: BLE001 - 发不出去只记账（她还在跑）
-            self._log.warning("[Task/QQ] 发送失败 session=%s", identity.session_id)
+            return False
+        api = getattr(self.bot, "api", None)
+        if api is None:
+            return False
+        attempts = (0.0, *tuple(delays))
+        for index, delay in enumerate(attempts):
+            if delay:
+                await asyncio.sleep(delay)
+            try:
+                if identity.is_group and identity.group_id is not None:
+                    await api.send_group_msg(identity.group_id, message)
+                else:
+                    await api.send_private_msg(int(identity.user_id or 0), message)
+                return True
+            except Exception as exc:  # noqa: BLE001 - 发不出去只记账（她还在跑）
+                self._log.warning(
+                    "[Task/QQ] 发送失败 session=%s attempt=%d/%d error=%s",
+                    identity.session_id,
+                    index + 1,
+                    len(attempts),
+                    exc,
+                )
+        self._log.error("[Task/QQ] 发送放弃 session=%s", identity.session_id)
+        return False
 
     async def notify(self, session_id: str, text: str) -> None:
         """按会话身份把通知发回去（任务事件用）。"""
@@ -377,7 +406,7 @@ class QQTaskEntry:
             if kind == "group"
             else QQIdentity(user_id=str(raw), session_id=session_id)
         )
-        await self._say(identity, text)
+        await self._send(identity, text, delays=NOTIFY_RETRY_DELAYS)
 
     # ------------------------------------------------------------ 任务事件 → QQ
 

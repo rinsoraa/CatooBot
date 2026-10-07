@@ -129,39 +129,58 @@ Bot 装配任务运行时之后会调用 `recover_persisted_tasks()`（Phase 5A.
 | 群聊任务 | **PASS** | `session=group:909363632`：群内 @她建任务 → 确认 → 跑完（`task_d160f64dc70d` SUCCEEDED）；另一个 QQ 号（2017426379）自己发起的那条也 SUCCEEDED |
 | Cancel（停止） | **PASS** | `task_e6f4b1128cb0` / `task_c492e5abc1fa` 的 checkpoint 里有 `task.cancelled`，任务终态 `CANCELLED`，无泄漏前台动作 |
 | Replanning | **PASS** | `task_02490041e828`：`replans=1`、`plan_version=2`、v1 `SUPERSEDED` / v2 新 hash、重规划后必须重新确认，最终 SUCCEEDED |
+| Ownership（非发起人被拒） | **PASS** | 群里另一个 QQ 号（2017426379）对 A 的任务发控制命令 → 日志 `[Task/QQ] action=not_owner task=task_d4b02df21e92 … user=2017426379`，任务仍 `PENDING_CONFIRMATION`（拒绝零副作用） |
+| Runtime Restart（QQ 任务） | **PASS** | 重启 CatooBot 后 `recover_persisted_tasks()`：那条"等确认"的任务**留在 `PENDING_CONFIRMATION`**、重挂确认条目、`authorization=None`、checkpoint 记 `task.recovered reason=RUNTIME_RESTART outcome=OFFLINE`，且没有重复任何世界动作 |
 | 世界动作 | **PASS** | 打开 `allow_medium` 之前：MEDIUM 被 Policy 拒绝（`MEDIUM 级动作未获允许` → `PAUSED`，零世界动作）；打开之后：真挖 + 真捡，`oak_log ×1` 入包 |
 
-判定脚本 `--phase report` 的汇总：**22 项通过 / 2 项待做**（`entry`·`confirm`·`control(pause,resume)`·
+判定脚本 `--phase report` 的汇总：**24 项通过**（`entry`·`confirm`·`control(pause,resume)`·
 `expiry` 全 PASS；待做的正好是 9.2 里的 cancel / ownership / replan / restart）。
 按 §三十三「任意一项真实 QQ 硬门禁失败 = BLOCKED」，在 9.2 那四条跑完之前 Phase 5B 记 **BLOCKED**。
 
-### 9.2 还没在真实 QQ 上做的（需要操作者再发几条消息）
+### 9.2 真实门禁结论（2026-10-07 / 10-08 两轮）
 
-| 门禁 | 状态 | 怎么做 |
-| --- | --- | --- |
-| Ownership（非发起人被拒） | 自动化 PASS，真实 QQ 待做 | 让**另一个 QQ 号**在 A 还有活动任务的**同一个群**里发「确认 / 暂停 / 继续 / 停止」，再跑 `--phase ownership`（日志里应出现 `action=not_owner`，且任务状态不变） |
-| Runtime Restart（QQ 任务） | **第一次真机复验踩到一个真 bug，已修**（见 9.2.1），用新代码重启即可验 | 建任务（确认或停在等确认都行）→**重启 CatooBot**→ 跑 `--phase restart` |
-| Normal chat isolation | 自动化 PASS，真实 QQ 未专门留证 | 在 QQ 里发几句闲聊，确认没建任务（`--phase entry` 应仍指向同一条任务） |
+判定脚本 `--phase report` 的汇总：**24 项通过 / 0 项待做 → REAL QQ: PASS**。
 
-#### 9.2.1 重启复验里发现并修掉的 bug（真机日志）
+两轮真机共暴露并修掉 3 个问题（都不是 mock 能发现的）：
+
+#### 9.2.1 重启恢复：等确认的任务触发非法状态转移
 
 ```
 21:52:10 [ERROR] CatooBot  Task runtime initialization failed; continuing without it
          app.tasks.runtime.TaskAuthorizationError: 非法状态转移：PENDING_CONFIRMATION → PAUSED
 ```
 
-* 根因：重启时 `recover_persisted_tasks()` 扫到一条**刚建但还没确认**的任务（`PENDING_CONFIRMATION`），
-  对账时"她还没进世界"→ 想切成 `PAUSED` —— 而状态机里 `PENDING_CONFIRMATION → PAUSED` 是非法转移
-  → 异常冒到 Bot 的装配块 → **整块任务能力被关掉**（tasks/coordinator/entry 全置 None），
-  直到下一次干净重启才恢复。
-* 修复（三处）：
-  1. 恢复逻辑按"任务现在停在哪"归位：`PENDING_CONFIRMATION` 的任务**继续等确认**（状态不变），
-     只是内存里的确认条目已随进程消失 → **重新挂一条确认**并发 `task.confirmation_required`；
-     `PAUSED` 保持不动；`RUNNING`/`WAITING_ACTION`/`WAITING_USER`/`REPLANNING` 才落 `PAUSED`。
-  2. `recover_persisted_tasks()` **逐条隔离**：某一条数据坏了只记日志，不影响其它任务。
-  3. Bot 装配里恢复调用单独 try/except：恢复失败**只降级恢复**，绝不再把任务运行时整个关掉。
-* 回归测试：`tests/test_task_recovery.py::test_recovery_of_a_task_waiting_for_confirmation_does_not_crash`、
-  `::test_one_broken_task_does_not_stop_the_others`（都在真机复现的形态上钉死）。
+* 根因：`recover_persisted_tasks()` 扫到一条**刚建但还没确认**的任务，对账时"她还没进世界"→
+  想切成 `PAUSED` —— 状态机里 `PENDING_CONFIRMATION → PAUSED` 是非法转移 → 异常冒到 Bot 的装配块
+  → **整块任务能力被关掉**（tasks/coordinator/entry 全置 None）。
+* 修复：按"任务停在哪"归位（等确认的**继续等确认**并重挂确认条目；`PAUSED` 不动；只有
+  `RUNNING`/`WAITING_ACTION`/`WAITING_USER`/`REPLANNING` 才落 `PAUSED`）+ `recover_persisted_tasks()`
+  **逐条隔离** + Bot 里恢复调用单独 try/except（恢复失败只降级恢复）。
+* 回归：`tests/test_task_recovery.py::test_recovery_of_a_task_waiting_for_confirmation_does_not_crash`、
+  `::test_one_broken_task_does_not_stop_the_others`。
+
+#### 9.2.2 启动期通知丢失（NapCat 还没重连）
+
+```
+[00:07:47] OneBot Connection closed, waiting for NapCat to reconnect...
+[00:07:54] Starting CatooBot v2.0
+[00:07:59] [WARNING] [Task/QQ] 发送失败 session=group:909363632   ×2
+[00:08:02] NapCat connected
+```
+
+* 根因：重启时的恢复通知在 QQ 通道**还没连上**时发出 → 直接失败 → "我重启过…"那条永久丢失
+  （原来的实现失败只记一行不带原因的 warning）。
+* 修复：发送路径分两种退避 —— 直接回复 `REPLY_RETRY_DELAYS=(1.5s)`、通知
+  `NOTIFY_RETRY_DELAYS=(1s,3s,8s)`（有界，绝不无限重试），失败日志带上 `attempt=n/m error=…`。
+* 回归：`tests/test_qq_task_entry.py::test_notification_retries_while_the_qq_channel_is_down`、
+  `::test_reply_gives_up_after_a_bounded_retry`。
+
+#### 9.2.3 同一份计划发两遍
+
+入口回复里已经有一份计划，紧接着 `task.confirmation_required` 事件又发了一份。
+根因是事件发布是异步调度、而抑制判断是异步做的（"处理中"的窗口早关了），且 runtime 里
+`_save` 先于 `_publish`（序号落后一格）。修复：**同步 publish** + 处理期排队 + 只跳过
+"回复已说明"的事件（`ACTION_COVERS`）。
 
 ### 9.3 命令（判定脚本）：
 
