@@ -126,9 +126,12 @@ Bot 装配任务运行时之后会调用 `recover_persisted_tasks()`（Phase 5A.
 | Resume（含「到期→重新确认」） | **PASS** | 同一条任务：`task.authorization_expired` → 用户「继续」→ 回 `PENDING_CONFIRMATION` → 「确认」→ `task.started`（`approved_at=1791377985 > expired_at=1791377975`，即过期之后重新签的授权） |
 | Authorization Expiry | **PASS** | `task.authorization_expired` + `task.confirmation_required` + `replans=0`（计划没变，不是重规划）；旧授权条目不可复用由 `tests/test_qq_task_entry.py` 钉住 |
 | 任务 TTL 过期 | **PASS** | `task_e5bd84a0aa7d` 最终 `EXPIRED`（超时按设计收尾，不再动世界） |
+| 群聊任务 | **PASS** | `session=group:909363632`：群内 @她建任务 → 确认 → 跑完（`task_d160f64dc70d` SUCCEEDED）；另一个 QQ 号（2017426379）自己发起的那条也 SUCCEEDED |
+| Cancel（停止） | **PASS** | `task_e6f4b1128cb0` / `task_c492e5abc1fa` 的 checkpoint 里有 `task.cancelled`，任务终态 `CANCELLED`，无泄漏前台动作 |
+| Replanning | **PASS** | `task_02490041e828`：`replans=1`、`plan_version=2`、v1 `SUPERSEDED` / v2 新 hash、重规划后必须重新确认，最终 SUCCEEDED |
 | 世界动作 | **PASS** | 打开 `allow_medium` 之前：MEDIUM 被 Policy 拒绝（`MEDIUM 级动作未获允许` → `PAUSED`，零世界动作）；打开之后：真挖 + 真捡，`oak_log ×1` 入包 |
 
-判定脚本 `--phase report` 的汇总：**17 项通过 / 4 项待做**（`entry`·`confirm`·`control(pause,resume)`·
+判定脚本 `--phase report` 的汇总：**22 项通过 / 2 项待做**（`entry`·`confirm`·`control(pause,resume)`·
 `expiry` 全 PASS；待做的正好是 9.2 里的 cancel / ownership / replan / restart）。
 按 §三十三「任意一项真实 QQ 硬门禁失败 = BLOCKED」，在 9.2 那四条跑完之前 Phase 5B 记 **BLOCKED**。
 
@@ -136,11 +139,29 @@ Bot 装配任务运行时之后会调用 `recover_persisted_tasks()`（Phase 5A.
 
 | 门禁 | 状态 | 怎么做 |
 | --- | --- | --- |
-| Cancel（停止） | 自动化 PASS，真实 QQ 待做 | 建任务确认后发「停止」，再跑 `--phase control` |
-| Ownership（非发起人被拒） | 自动化 PASS，真实 QQ 待做 | 换另一个 QQ 号在**同一个群**里发「确认/暂停/继续/停止」，再跑 `--phase ownership` |
-| Replanning | 自动化 + 5A.1 真机 smoke PASS，真实 QQ 待做 | 建任务确认后用 op 把目标 `/setblock … air`，再跑 `--phase replan` |
-| Runtime Restart（QQ 任务） | 恢复代码在真机跑过（启动日志 `[Task] task recovered … RUNTIME_RESTART`，但那条任务不是 QQ 创建的），QQ 任务待做 | 建任务确认后**重启 CatooBot**，再跑 `--phase restart` |
+| Ownership（非发起人被拒） | 自动化 PASS，真实 QQ 待做 | 让**另一个 QQ 号**在 A 还有活动任务的**同一个群**里发「确认 / 暂停 / 继续 / 停止」，再跑 `--phase ownership`（日志里应出现 `action=not_owner`，且任务状态不变） |
+| Runtime Restart（QQ 任务） | **第一次真机复验踩到一个真 bug，已修**（见 9.2.1），用新代码重启即可验 | 建任务（确认或停在等确认都行）→**重启 CatooBot**→ 跑 `--phase restart` |
 | Normal chat isolation | 自动化 PASS，真实 QQ 未专门留证 | 在 QQ 里发几句闲聊，确认没建任务（`--phase entry` 应仍指向同一条任务） |
+
+#### 9.2.1 重启复验里发现并修掉的 bug（真机日志）
+
+```
+21:52:10 [ERROR] CatooBot  Task runtime initialization failed; continuing without it
+         app.tasks.runtime.TaskAuthorizationError: 非法状态转移：PENDING_CONFIRMATION → PAUSED
+```
+
+* 根因：重启时 `recover_persisted_tasks()` 扫到一条**刚建但还没确认**的任务（`PENDING_CONFIRMATION`），
+  对账时"她还没进世界"→ 想切成 `PAUSED` —— 而状态机里 `PENDING_CONFIRMATION → PAUSED` 是非法转移
+  → 异常冒到 Bot 的装配块 → **整块任务能力被关掉**（tasks/coordinator/entry 全置 None），
+  直到下一次干净重启才恢复。
+* 修复（三处）：
+  1. 恢复逻辑按"任务现在停在哪"归位：`PENDING_CONFIRMATION` 的任务**继续等确认**（状态不变），
+     只是内存里的确认条目已随进程消失 → **重新挂一条确认**并发 `task.confirmation_required`；
+     `PAUSED` 保持不动；`RUNNING`/`WAITING_ACTION`/`WAITING_USER`/`REPLANNING` 才落 `PAUSED`。
+  2. `recover_persisted_tasks()` **逐条隔离**：某一条数据坏了只记日志，不影响其它任务。
+  3. Bot 装配里恢复调用单独 try/except：恢复失败**只降级恢复**，绝不再把任务运行时整个关掉。
+* 回归测试：`tests/test_task_recovery.py::test_recovery_of_a_task_waiting_for_confirmation_does_not_crash`、
+  `::test_one_broken_task_does_not_stop_the_others`（都在真机复现的形态上钉死）。
 
 ### 9.3 命令（判定脚本）：
 

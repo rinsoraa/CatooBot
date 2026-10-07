@@ -826,12 +826,16 @@ class Bot:
                 # 两个入口共用**同一个** TaskRuntime（§十八）：QQ / 游戏内聊天
                 self.task_entry = QQTaskEntry(self, runtime=self.tasks, observe=observe)
                 self.task_turns = TaskTurnHandler(self.tasks, observe=observe)
-                # Phase 5A.1 §十三：进程重启过的任务在这里做安全恢复（旧动作一律作废）
-                recovered = await self.tasks.recover_persisted_tasks()
-                if recovered:
-                    self.log.info(
-                        "[Task] recovered %d persisted task(s) after restart", len(recovered)
-                    )
+                # Phase 5A.1 §十三：进程重启过的任务在这里做安全恢复（旧动作一律作废）。
+                # 恢复失败**只降级恢复**，绝不把整个任务能力关掉（真机上踩过一次）。
+                try:
+                    recovered = await self.tasks.recover_persisted_tasks()
+                    if recovered:
+                        self.log.info(
+                            "[Task] recovered %d persisted task(s) after restart", len(recovered)
+                        )
+                except Exception:  # noqa: BLE001 - 恢复失败不拖垮任务运行时
+                    self.log.exception("Task recovery failed; keeping the runtime up")
                 story.boot_step(
                     "多步骤任务运行时已就绪",
                     detail=(

@@ -31,8 +31,12 @@
 * 真机实测（2026-10-07，真实 QQ 私聊 + 真实 Java 服务器）：QQ 建任务 → 确认 → `dig`/`pickup` 两个
   MEDIUM 真动作 → `FINAL INVENTORY VERIFIED {'oak_log': 1}`；暂停、授权到期（过期后重新确认才继续）、
   任务 TTL 过期都在真机上跑过（详见 `docs/MINECRAFT_PHASE5B.md` §9.1）。
-  另修掉一个真机暴露的 bug：入口回复与 `task.confirmation_required` 事件会让**同一份计划发两遍** ——
-  改成同步 publish + 处理期排队 + 只跳过"回复已说明"的事件。
+  另修掉两个真机暴露的 bug：
+  ① 入口回复与 `task.confirmation_required` 事件会让**同一份计划发两遍** → 改成同步 publish +
+     处理期排队 + 只跳过「回复已说明」的事件；
+  ② 重启恢复遇到**停在 PENDING_CONFIRMATION** 的任务会尝试非法转移（`→ PAUSED`）→ 异常冒到
+     Bot 装配块 → 整块任务能力被关掉。现在按任务所处状态归位（等确认的继续等确认并重挂确认条目）、
+     逐条隔离、恢复失败只降级恢复。
 * 验证：`tests/test_qq_task_entry.py`（25，§三十一 A–L + 认领语义 + 去重 + MEDIUM 提示）+
   WebUI vitest 面板显示 `source`；真机 QQ 门禁用 `scripts/task_qq_smoke.py` 逐阶段取证
   （NapCat + 真实 QQ 消息由操作者发送，判定从 SQLite checkpoint + 日志）。

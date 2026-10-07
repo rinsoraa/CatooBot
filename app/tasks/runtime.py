@@ -22,6 +22,7 @@ Confirmation → Service → ActionRuntime → Mineflayer。TaskRuntime **绝不
 
 from __future__ import annotations
 
+import logging
 import time
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, field
@@ -68,6 +69,8 @@ from app.tasks.validation import (
     summarize_plan,
     validate_plan,
 )
+
+log = logging.getLogger("CatooBot.Tasks")
 
 SAFE_RISKS = frozenset({"SAFE"})
 
@@ -963,10 +966,28 @@ class TaskRuntime:
                 message=self.recovery_message(outcome),
             )
         else:
-            await self._enter(record, TaskState.PAUSED)
-            record.failure = TaskFailure.RUNTIME_RESTART.value
-            record.failed_step = stale_step.step_id if stale_step is not None else ""
-            record.message = self.recovery_message(outcome)[:400]
+            # 世界事实没变（或者现在读不到世界）：按"这条任务现在停在哪"归位。
+            # 注意 **不能**一律切成 PAUSED —— 状态机里 PENDING_CONFIRMATION → PAUSED 是非法
+            # 转移；而且语义上"还在等用户确认"的任务重启后本来就该继续等确认，
+            # 只是内存里的确认条目已经没了，需要**重新挂一条**（§十一/§六十二）。
+            if record.state is TaskState.PENDING_CONFIRMATION:
+                record.confirmation_id = await self._confirmations.request(
+                    task_id=record.task_id,
+                    session_id=record.session_id,
+                    user_id=record.user_id,
+                    risk=self._plan_risk(record.plan),
+                    plan_hash=record.plan_hash,
+                    arguments=self._confirmation_arguments(record),
+                    summary=self.summary_of(record),
+                )
+                record.message = "罐头重启过，之前那条确认已经失效了，请重新确认计划。"
+                await self._publish(TASK_CONFIRMATION_REQUIRED, self._event_payload(record))
+            elif record.state is not TaskState.PAUSED:
+                await self._enter(record, TaskState.PAUSED)
+            if record.state is TaskState.PAUSED:
+                record.failure = TaskFailure.RUNTIME_RESTART.value
+                record.failed_step = stale_step.step_id if stale_step is not None else ""
+                record.message = self.recovery_message(outcome)[:400]
             record.recovery["message"] = record.message
         await self._publish(TASK_RECOVERED, self._event_payload(record, stale_step))
         await self._save(
@@ -985,12 +1006,25 @@ class TaskRuntime:
         return record
 
     async def recover_persisted_tasks(self, *, limit: int = 50) -> list[TaskRecord]:
-        """启动时扫描持久化的非终态任务并逐个安全恢复（§十三）。"""
+        """启动时扫描持久化的非终态任务并逐个安全恢复（§十三）。
+
+        **逐条隔离**：某一条任务的数据让恢复炸了，也绝不影响其它任务，更不能让
+        "启动恢复"这件事把整个任务能力带下去（真机上踩过：一条"等确认"的任务
+        触发了非法转移，结果 Bot 启动时把 task runtime 整块关掉了）。
+        """
         recovered: list[TaskRecord] = []
         for record in await self._store.list_recent(int(limit)):
             if record.state.terminal:
                 continue
-            recovered.append(await self.recover(record.task_id))
+            try:
+                recovered.append(await self.recover(record.task_id))
+            except Exception:  # noqa: BLE001 - 单条任务恢复失败不拖垮启动
+                if self._log is not None:
+                    self._log.exception(
+                        "[Task] recovery failed for task=%s (ignored)", record.task_id
+                    )
+                else:  # pragma: no cover - 没有 logger 时也别炸
+                    log.warning("task recovery failed task=%s", record.task_id)
         return recovered
 
     @staticmethod

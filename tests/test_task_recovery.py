@@ -672,3 +672,93 @@ def test_reconcile_outcomes_are_a_closed_set() -> None:
         "AUTHORIZATION_EXPIRED",
     }
     assert Mapping is not None
+
+
+# ------------------------------------------------- 5B：真机踩到的"重启恢复" 两个坑
+
+
+async def test_recovery_of_a_task_waiting_for_confirmation_does_not_crash() -> None:
+    """真机 bug：持久化的任务停在 PENDING_CONFIRMATION 时，恢复**不能**切成 PAUSED
+    （状态机里那是非法转移，会把整个任务能力带下去）。它应该继续等用户确认，
+    只是内存里的确认条目没了 → 重新挂一条。"""
+    store = InMemoryTaskStore()
+    invoke = FakeInvoke(online=False)  # 重启后还没进世界：对账读不到世界
+    clock = Clock()
+    runtime, _, confirmations, events = make_runtime(invoke=invoke, store=store, clock=clock)
+    record = await runtime.create_task(
+        "挖一块橡木原木并捡回来",
+        session_id=SESSION,
+        user_id=USER,
+        origin="user",
+        plan=dig_plan(),
+    )
+    assert record.state is TaskState.PENDING_CONFIRMATION
+    before = len(confirmations.created)
+
+    fresh, _, fresh_confirmations, fresh_events = make_runtime(
+        invoke=invoke, store=store, clock=clock, events=Events()
+    )
+    recovered = await fresh.recover_persisted_tasks()
+    assert len(recovered) == 1
+    after = recovered[0]
+    assert after.state is TaskState.PENDING_CONFIRMATION, "等确认的任务重启后仍然等确认"
+    assert after.recovery["reason"] == ReplanReason.RUNTIME_RESTART.value
+    assert after.recovery["outcome"] == ReconcileOutcome.OFFLINE.value
+    # 内存里的确认条目没了 → 新进程必须**重新挂一条**（旧条目不可能跨进程存活）
+    assert len(fresh_confirmations.created) == 1, "重启后要重新挂一条确认"
+    assert fresh_confirmations.created[0]["plan_hash"] == after.plan_hash
+    assert before == 1  # 创建时本来就挂过一条（旧进程里的那条已经随进程没了）
+    assert "task.confirmation_required" in fresh_events.names()
+    assert "task.recovered" in fresh_events.names()
+    assert invoke.world_actions == []
+
+
+async def test_one_broken_task_does_not_stop_the_others() -> None:
+    """逐条隔离：一条任务恢复失败，其它的照常恢复，启动恢复本身绝不整体抛异常。"""
+    store = InMemoryTaskStore()
+    invoke = FakeInvoke(dig_reason="too_far")
+    clock = Clock()
+    runtime, _, _, _ = make_runtime(invoke=invoke, store=store, clock=clock)
+    good = await create_confirmed(runtime)
+    other = await runtime.create_task(
+        "挖一块橡木原木并捡回来",
+        session_id=SESSION + "-b",
+        user_id=USER,
+        origin="user",
+        plan=dig_plan(x=77, z=77),
+    )
+    broken = await runtime.confirm_and_start(
+        other.task_id, user_id=USER, session_id=SESSION + "-b", origin="user"
+    )
+
+    class Exploding:
+        def __init__(self, store: Any) -> None:
+            self._store = store
+
+        async def list_recent(self, limit: int = 20) -> list[Any]:
+            return await self._store.list_recent(limit)
+
+        async def load(self, task_id: str) -> Any:
+            if task_id == broken.task_id:
+                raise RuntimeError("bad row")
+            return await self._store.load(task_id)
+
+        async def save(self, *args: Any, **kwargs: Any) -> None:
+            return await self._store.save(*args, **kwargs)
+
+        async def active(self, session_id: str) -> Any:
+            return await self._store.active(session_id)
+
+        async def checkpoints(self, task_id: str, limit: int = 50) -> list[Any]:
+            return await self._store.checkpoints(task_id, limit)
+
+    fresh, _, _, _ = make_runtime(invoke=invoke, store=Exploding(store), clock=clock)
+    recovered = await fresh.recover_persisted_tasks()
+    ids = [item.task_id for item in recovered]
+    assert good.task_id in ids, "坏的那条不能挡住好的那条"
+    assert broken.task_id not in ids
+
+
+def test_recovery_outcome_names_are_stable() -> None:
+    assert ReconcileOutcome.OFFLINE.value == "OFFLINE"
+    assert ReplanReason.RUNTIME_RESTART.value == "RUNTIME_RESTART"
