@@ -110,7 +110,39 @@ Bot 装配任务运行时之后会调用 `recover_persisted_tasks()`（Phase 5A.
 ## 九、真实 QQ 门禁（§三十二/§三十三）
 
 **必须真的跑 NapCat + QQ**，判定脚本是 `scripts/task_qq_smoke.py`（它不代替你发消息，
-只从跑着的 CatooBot 的 SQLite checkpoint 与日志取证）：
+只从跑着的 CatooBot 的 SQLite checkpoint 与日志取证）。
+
+### 9.1 已实测（2026-10-07，真实 QQ 私聊 + 真实 Java 服务器）
+
+操作者在 QQ 私聊里发了「帮我找附近的一块橡木」→「确认」，判定脚本逐条核过：
+
+| 门禁 | 结果 | 证据（真实落盘） |
+| --- | --- | --- |
+| QQ task entry | **PASS** | `task_de3f8cbf14ea` `source=qq` `user_id=2731431246` `session_id=private:2731431246`；checkpoint 顺序 `task.created → task.confirmation_required → task.started`（确认之前一步都没动世界） |
+| Confirmation | **PASS** | 用户在 QQ 说「确认」→ `task.started`，授权签出（`authorization.plan_hash` + `plan_version`） |
+| Task execution | **PASS** | 4 步全 `SUCCEEDED`：`dig`(MEDIUM，`oak_log → air`)、`dropped_items`(找到新掉落的 Item Entity)、`pickup_item`(MEDIUM，`collected`)、`inventory` |
+| Final inventory | **PASS** | `verification = {"checked": true, "ok": true, "inventory_delta": {"oak_log": 1}}` |
+| Pause | **PASS** | 前一条 QQ 任务 `task_e5bd84a0aa7d` 的 checkpoint 里有 `task.paused`（当时 MEDIUM 开关还关着，任务是按设计停在 Policy 门外的） |
+| Resume（含「到期→重新确认」） | **PASS** | 同一条任务：`task.authorization_expired` → 用户「继续」→ 回 `PENDING_CONFIRMATION` → 「确认」→ `task.started`（`approved_at=1791377985 > expired_at=1791377975`，即过期之后重新签的授权） |
+| Authorization Expiry | **PASS** | `task.authorization_expired` + `task.confirmation_required` + `replans=0`（计划没变，不是重规划）；旧授权条目不可复用由 `tests/test_qq_task_entry.py` 钉住 |
+| 任务 TTL 过期 | **PASS** | `task_e5bd84a0aa7d` 最终 `EXPIRED`（超时按设计收尾，不再动世界） |
+| 世界动作 | **PASS** | 打开 `allow_medium` 之前：MEDIUM 被 Policy 拒绝（`MEDIUM 级动作未获允许` → `PAUSED`，零世界动作）；打开之后：真挖 + 真捡，`oak_log ×1` 入包 |
+
+判定脚本 `--phase report` 的汇总：**17 项通过 / 4 项待做**（`entry`·`confirm`·`control(pause,resume)`·
+`expiry` 全 PASS；待做的正好是 9.2 里的 cancel / ownership / replan / restart）。
+按 §三十三「任意一项真实 QQ 硬门禁失败 = BLOCKED」，在 9.2 那四条跑完之前 Phase 5B 记 **BLOCKED**。
+
+### 9.2 还没在真实 QQ 上做的（需要操作者再发几条消息）
+
+| 门禁 | 状态 | 怎么做 |
+| --- | --- | --- |
+| Cancel（停止） | 自动化 PASS，真实 QQ 待做 | 建任务确认后发「停止」，再跑 `--phase control` |
+| Ownership（非发起人被拒） | 自动化 PASS，真实 QQ 待做 | 换另一个 QQ 号在**同一个群**里发「确认/暂停/继续/停止」，再跑 `--phase ownership` |
+| Replanning | 自动化 + 5A.1 真机 smoke PASS，真实 QQ 待做 | 建任务确认后用 op 把目标 `/setblock … air`，再跑 `--phase replan` |
+| Runtime Restart（QQ 任务） | 恢复代码在真机跑过（启动日志 `[Task] task recovered … RUNTIME_RESTART`，但那条任务不是 QQ 创建的），QQ 任务待做 | 建任务确认后**重启 CatooBot**，再跑 `--phase restart` |
+| Normal chat isolation | 自动化 PASS，真实 QQ 未专门留证 | 在 QQ 里发几句闲聊，确认没建任务（`--phase entry` 应仍指向同一条任务） |
+
+### 9.3 命令（判定脚本）：
 
 ```powershell
 # 0) 先让 CatooBot + NapCat 跑起来（NapCat 连到 ws://127.0.0.1:8080/onebot/v11/ws）
@@ -130,7 +162,9 @@ Bot 装配任务运行时之后会调用 `recover_persisted_tasks()`（Phase 5A.
 .venv\Scripts\python.exe scripts\task_qq_smoke.py --phase report --save .qq_smoke.json
 ```
 
-`--phase` 还支持 `restart`（重启一次 CatooBot 后判定）与 `notify`（检查通知里不泄漏内部信息）。
+`--phase` 还支持 `restart`（重启一次 CatooBot 后判定）与 `notify`（检查通知里不泄漏内部信息）；
+`--task <id>` 可以把判定钉在某一条任务上（一条门禁的证据可能在不同任务里），
+`--since <分钟>` 控制回溯窗口（默认 30），`--save <json>` 累积结果、`--phase report` 汇总成表。
 **单元测试 / mock QQ / WebUI E2E 都不能算 Real QQ PASS**（§三十七）。
 
 ## 十、本阶段不做（§三十四）

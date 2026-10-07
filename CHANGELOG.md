@@ -28,7 +28,12 @@
   重规划/授权到期/重启恢复分别有对应说法（"原计划已经作废" / "授权过期，计划没变" / "我重启过…"）。
 * **启动恢复**：Bot 装配任务运行时后调用 `recover_persisted_tasks()`，
   重启过的任务旧动作作废、旧确认作废、并通过 QQ 通知发起人。
-* 验证：`tests/test_qq_task_entry.py`（23，§三十一 A–L + 认领语义 + 去重）+
+* 真机实测（2026-10-07，真实 QQ 私聊 + 真实 Java 服务器）：QQ 建任务 → 确认 → `dig`/`pickup` 两个
+  MEDIUM 真动作 → `FINAL INVENTORY VERIFIED {'oak_log': 1}`；暂停、授权到期（过期后重新确认才继续）、
+  任务 TTL 过期都在真机上跑过（详见 `docs/MINECRAFT_PHASE5B.md` §9.1）。
+  另修掉一个真机暴露的 bug：入口回复与 `task.confirmation_required` 事件会让**同一份计划发两遍** ——
+  改成同步 publish + 处理期排队 + 只跳过"回复已说明"的事件。
+* 验证：`tests/test_qq_task_entry.py`（25，§三十一 A–L + 认领语义 + 去重 + MEDIUM 提示）+
   WebUI vitest 面板显示 `source`；真机 QQ 门禁用 `scripts/task_qq_smoke.py` 逐阶段取证
   （NapCat + 真实 QQ 消息由操作者发送，判定从 SQLite checkpoint + 日志）。
 
