@@ -2561,6 +2561,10 @@ onUnmounted(stopPolling)
           <template v-if="task">
             <dl class="minecraft__facts" data-test="mc-task-facts">
               <div>
+                <dt>Source</dt>
+                <dd data-test="mc-task-source">{{ task.source || '—' }}</dd>
+              </div>
+              <div>
                 <dt>Objective</dt>
                 <dd data-test="mc-task-objective">{{ task.objective }}</dd>
               </div>

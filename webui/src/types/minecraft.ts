@@ -560,6 +560,8 @@ export interface MinecraftTaskView {
   task_id: string
   session_id: string
   origin: string
+  /** Phase 5B：任务从哪个入口进来（qq / minecraft_chat / webui） */
+  source: string
   objective: string
   state: string
   progress: { completed: number; total: number }

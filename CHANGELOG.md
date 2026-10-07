@@ -3,6 +3,35 @@
 本文件记录 CatooBot 的版本演进。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号见 `pyproject.toml`；日期取自真实提交历史（本仓库 2026-09-30 起）。
 
+## Minecraft Phase 5B — QQ 任务入口与统一任务控制
+
+* **QQ 只是入口，不是执行器**：新增 `app/tasks/qq_entry.py`（QQ Task Entry），只做
+  "身份规范化 → 意图判断 → 调用现有 Planner/TaskRuntime → 展示现有 Plan summary / 翻译现有
+  Task 事件"。**不新增任何 Minecraft 工具**（仍是 19 个）、不新增 TaskRuntime 状态、
+  不新增 ActionRuntime action、QQ 不做第二套确认令牌、不维护平行状态机。
+* **入口顺序与认领**：事件总线新增最小认领语义（处理器返回真值 = 认领，后续处理器跳过；
+  返回 `None` 的旧行为不变）；任务入口在 Bot 装配时注册并**排在人格插件之前**，
+  只有确认是任务请求/控制命令时才认领 —— 普通聊天照旧走人格回复（"我想吃蛋糕"不建任务）。
+* **身份**：`QQIdentity(platform=qq, user_id=<稳定QQ号>, session_id=private:<uid>|group:<gid>)`，
+  复用项目既有会话身份；昵称/群名片只用于措辞。任务记录新增 `source`（qq / minecraft_chat /
+  webui），WebUI 面板与 checkpoint detail 都带上（不记任何凭据）。
+* **统一控制**：确认（真实 USER 回合 + 现有 ConfirmationStore，绑 task_id/user_id/session_id/
+  plan_hash/plan_version/arguments）、暂停、继续、停止全部调用现有 TaskRuntime 方法；
+  QQ 层不自己 `minecraft_stop`、不强行 resume（`replan_required`/授权过期/plan_hash 不符都由
+  TaskRuntime 判）。状态查询（"任务怎么样了"）返回 objective/状态/第 N/M 步/当前一步。
+* **归属隔离**：只有发起人能控制；别人（含同群成员）一律「你不是这个任务的发起人…」，
+  且**拒绝不改任务状态**（在调用任何 runtime 方法之前返回）；跨会话互不可见；
+  一个 user/session 最多一个任务（跨会话用 `active_for_user` 挡）。
+* **事件 → QQ**：任务事件走现有事件流（补上了 `task.created` / `task.confirmation_required` 的
+  publish —— 原来只写 checkpoint）；消息短、不带 `action_id`/`plan_hash`/checkpoint/raw snapshot；
+  事件载荷新增单调递增的 `event_seq`，QQ 侧按 `(task_id, event_seq)` 幂等去重，同一件事只发一次。
+  重规划/授权到期/重启恢复分别有对应说法（"原计划已经作废" / "授权过期，计划没变" / "我重启过…"）。
+* **启动恢复**：Bot 装配任务运行时后调用 `recover_persisted_tasks()`，
+  重启过的任务旧动作作废、旧确认作废、并通过 QQ 通知发起人。
+* 验证：`tests/test_qq_task_entry.py`（23，§三十一 A–L + 认领语义 + 去重）+
+  WebUI vitest 面板显示 `source`；真机 QQ 门禁用 `scripts/task_qq_smoke.py` 逐阶段取证
+  （NapCat + 真实 QQ 消息由操作者发送，判定从 SQLite checkpoint + 日志）。
+
 ## Minecraft Phase 5A.1 — 任务韧性（Replanning / Authorization Expiry / Runtime Restart Recovery）
 
 * **不新增任何 Minecraft 工具**（19 个保持原样）、**不新增 ActionRuntime action**、

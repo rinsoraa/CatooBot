@@ -120,6 +120,7 @@ const TASK_VIEW = {
   task_id: 'task_abc',
   session_id: 'minecraft:127.0.0.1:25565:空凛',
   origin: 'user',
+  source: 'qq',
   objective: '去附近找一棵橡木，挖一块原木并捡回来',
   state: 'RUNNING',
   progress: { completed: 1, total: 3 },
@@ -2027,6 +2028,7 @@ describe('Minecraft 页 · follow_player（Phase 3D）', () => {
     const { wrapper } = await mountPage(makeHandler({ task: ok({ task: TASK_VIEW, session_id: 's' }) }))
     await flushAll()
     expect(wrapper.get('[data-test="mc-task-objective"]').text()).toContain('橡木')
+    expect(wrapper.get('[data-test="mc-task-source"]').text()).toBe('qq')
     expect(wrapper.get('[data-test="mc-task-state"]').text()).toContain('RUNNING')
     expect(wrapper.get('[data-test="mc-task-progress"]').text()).toContain('1 / 3')
     expect(wrapper.get('[data-test="mc-task-current"]').text()).toContain('minecraft_dig')

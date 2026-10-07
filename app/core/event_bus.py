@@ -8,6 +8,11 @@ Subscriptions can be keyed by event class or by dotted string names::
 
 Handlers run sequentially in registration order. One handler raising never
 blocks the others and never propagates to the caller of :meth:`emit`.
+
+Phase 5B: a handler may **claim** an event by returning a truthy value — dispatch
+then stops and no later handler sees it. This is how the QQ Task Entry takes a
+message out of the ordinary chat pipeline ("这条消息归任务管"). Handlers that
+return ``None`` (all pre-existing ones) behave exactly as before.
 """
 
 from __future__ import annotations
@@ -26,7 +31,9 @@ from app.message.event import (
 
 # Handlers declare the event subtype they care about (e.g. MessageEvent);
 # typing as Callable[[Any], ...] keeps that contravariance simple for v0.1.
-Handler = Callable[[Any], Awaitable[None]]
+# 返回真值 = 认领该事件（Phase 5B：任务入口把消息从普通聊天管线里拿走）；返回 None
+# 就是原来的行为。
+Handler = Callable[[Any], Awaitable[Any]]
 SubscriptionKey = type[Event] | str
 
 
@@ -102,20 +109,33 @@ class EventBus:
             return sub.key in names
         return isinstance(event, sub.key)
 
-    async def emit(self, event: Event) -> None:
-        """Dispatch to all matching handlers; never raises."""
+    async def emit(self, event: Event) -> bool:
+        """Dispatch to all matching handlers; never raises.
+
+        Returns ``True`` when a handler **claimed** the event (returned truthy),
+        meaning later subscribers were intentionally skipped.
+        """
         names = event_names(event)
         for sub in list(self._subscriptions):  # copy: handlers may subscribe
             if not self._matches(sub, event, names):
                 continue
             try:
-                await sub.handler(event)
+                claimed = await sub.handler(event)
             except Exception:  # noqa: BLE001 - isolate handler failures
                 self._log.exception(
                     "Event handler %r failed for %s",
                     getattr(sub.handler, "__name__", sub.handler),
                     names[-1],
                 )
+                continue
+            if claimed:
+                self._log.debug(
+                    "Event claimed by %r (%s)",
+                    getattr(sub.handler, "__name__", sub.handler),
+                    names[-1],
+                )
+                return True
+        return False
 
     def subscriber_count(self) -> int:
         return len(self._subscriptions)

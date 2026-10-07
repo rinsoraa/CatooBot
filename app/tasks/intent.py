@@ -26,6 +26,9 @@ _ACTION_VERBS = (
     "收集",
     "走到",
     "过去",
+    # Phase 5B：QQ 上"帮我找附近的橡木"这种请求里动词就是"找"
+    # （纯查询仍会先在 _QUERY_PATTERNS 被挡掉，不会变成任务）
+    "找",
 )
 
 #: 表示"多个阶段"的连接词/收尾要求
@@ -42,6 +45,17 @@ _MULTI_STEP_MARKERS = (
     "挖下来",
     "挖一块",
     "挖一个",
+    # Phase 5B：QQ 上常见的说法（"帮我把那边的木头挖掉"）
+    "挖掉",
+    "砍掉",
+    "捡回来",
+    "采回来",
+    "取回来",
+    "弄回来",
+    # Phase 5B：QQ 上"帮我找附近的一块橡木"这类请求 —— "帮我"本身就是
+    # "请你去动手"的请求语气（没有它就只是在聊天）
+    "帮我",
+    "帮忙",
     "get",
     "and then",
 )
@@ -81,7 +95,26 @@ _QUERY_PATTERNS = (
 CONFIRM_COMMANDS = ("确认", "好的", "可以", "开始吧", "执行", "同意", "yes", "ok")
 PAUSE_COMMANDS = ("暂停", "先停一下", "停一下", "等一下")
 RESUME_COMMANDS = ("继续", "接着做", "恢复", "resume")
-CANCEL_COMMANDS = ("停止这个任务", "取消任务", "别做了", "不做了", "停止任务", "cancel")
+CANCEL_COMMANDS = (
+    "停止这个任务",
+    "取消任务",
+    "别做了",
+    "不做了",
+    "停止任务",
+    # Phase 5B §九：QQ 上"停止"单独说也算（只在当前会话确实有任务时才生效）
+    "停止",
+    "停下",
+    "不用做了",
+    "cancel",
+)
+
+#: §二十七：任务状态查询（只有当前会话确实有任务时才会被当成查询）
+_STATUS_PATTERNS = (
+    re.compile(r"(怎么样|咋样|怎么样啦|如何了)"),
+    re.compile(r"(到哪了|到哪儿了|做到哪|进行到|第几步)"),
+    re.compile(r"(还在做|还在忙|在做了吗|做完了吗|好了没|好了吗|完成了吗)"),
+    re.compile(r"(任务|进度|状态)(呢|啦|如何)?$"),
+)
 
 
 @dataclass
@@ -127,6 +160,13 @@ class TaskIntentDetector:
         if len(verbs) >= 1 and markers and resources:
             return TaskIntent(True, tuple(reasons), message)
         return TaskIntent(False, tuple(reasons))
+
+    def status_query(self, text: str) -> bool:
+        """这句话是不是在问"任务怎么样了"（§二十七）。"""
+        message = str(text or "").strip()
+        if not message or len(message) > 60:
+            return False
+        return any(pattern.search(message) for pattern in _STATUS_PATTERNS)
 
     def control_command(self, text: str) -> str:
         """用户对当前任务的控制命令（§六十）：confirm / pause / resume / cancel / ''。"""

@@ -306,6 +306,16 @@ class TaskRuntime:
     async def active(self, session_id: str) -> TaskRecord | None:
         return await self._store.active(session_id)
 
+    async def active_for_user(self, user_id: str, *, limit: int = 20) -> TaskRecord | None:
+        """这个用户在**任意会话**里还有没有没结束的任务（Phase 5B §十七：先别开第二个）。"""
+        wanted = str(user_id)
+        for record in await self._store.list_recent(int(limit)):
+            if record.state.terminal:
+                continue
+            if str(record.user_id) == wanted:
+                return record
+        return None
+
     async def current(self, session_id: str | None = None) -> TaskRecord | None:
         """当前的活动任务（WebUI/聊天用）：给了会话就按会话找，没给就找最近那个没结束的。
 
@@ -332,6 +342,7 @@ class TaskRuntime:
         origin: str,
         plan: TaskPlan,
         observations: list[dict[str, Any]] | None = None,
+        source: str = "",
     ) -> TaskRecord:
         """创建一个 Task（PLANNING → 校验 → PENDING_CONFIRMATION + 请求计划确认）。
 
@@ -350,6 +361,7 @@ class TaskRuntime:
             objective=objective,
             plan=plan,
             state=TaskState.PLANNING,
+            source=str(source or ""),
             expires_at=self._clock() + float(self.config.ttl_seconds),
         )
         # 5A.1 §七：计划版本历史从第 1 版开始（旧计划永不覆盖，只 mark superseded）
@@ -359,7 +371,15 @@ class TaskRuntime:
             status=PlanStatus.PENDING_CONFIRMATION.value,
             reason="",
         )
-        await self._save(record, event=TASK_CREATED)
+        await self._save(
+            record,
+            event=TASK_CREATED,
+            detail=(
+                f"source={record.source or '-'} user_id={record.user_id}"
+                f" session_id={record.session_id} plan_version={record.plan_version}"
+            ),
+        )
+        await self._publish(TASK_CREATED, self._event_payload(record))
         problems = self._validate_plan(record.plan)
         if problems:
             record.state = TaskState.FAILED
@@ -379,6 +399,7 @@ class TaskRuntime:
             summary=self.summary_of(record),
         )
         await self._save(record, event=TASK_CONFIRMATION_REQUIRED)
+        await self._publish(TASK_CONFIRMATION_REQUIRED, self._event_payload(record))
         return record
 
     async def confirm_and_start(
@@ -425,6 +446,7 @@ class TaskRuntime:
                     summary=self.summary_of(record),
                 )
                 await self._save(record, event=TASK_CONFIRMATION_REQUIRED)
+                await self._publish(TASK_CONFIRMATION_REQUIRED, self._event_payload(record))
             return record
         now = self._clock()
         # 5A.1 §十/§十一：授权有效期独立于任务总时长（expires_at 记的是任务上限，不覆盖它）
@@ -770,6 +792,7 @@ class TaskRuntime:
             step_id=step.step_id if step is not None else "",
             detail=f"authorization expired at {now} plan_version={record.plan_version}",
         )
+        await self._publish(TASK_CONFIRMATION_REQUIRED, self._event_payload(record))
         return record
 
     # ------------------------------------------------------------ 只读对账（§二十一）
@@ -1420,6 +1443,7 @@ class TaskRuntime:
             "task_id": record.task_id,
             "session_id": record.session_id,
             "origin": record.origin,
+            "source": record.source,
             "objective": record.objective,
             "state": record.state.value,
             "progress": progress,
@@ -1604,6 +1628,7 @@ class TaskRuntime:
         )
         record.message = f"已重新规划（第 {version.version} 版，{reason}），等用户确认新计划"
         await self._save(record, event=TASK_CONFIRMATION_REQUIRED)
+        await self._publish(TASK_CONFIRMATION_REQUIRED, self._event_payload(record))
         self._log_info(
             "task replanned",
             task_id=record.task_id,
@@ -1643,9 +1668,17 @@ class TaskRuntime:
         )
 
     def _event_payload(self, record: TaskRecord, step: TaskStep | None = None) -> dict[str, Any]:
-        """Task 事件载荷（§五十一：task_id / step_id / state / timestamp，不含 raw 世界状态）。"""
+        """Task 事件载荷（§五十一：task_id / step_id / state / timestamp，不含 raw 世界状态）。
+
+        ``event_seq`` 是**单调递增**的序号（跟着 checkpoint 一起落盘）：订阅方
+        （QQ / WebUI / 插件）按 ``(task_id, event_seq)`` 幂等去重，绝不靠「这一轮
+        应该只有一个事件」这种假设（Phase 5B §十五）。
+        """
+        record.event_seq = int(record.event_seq) + 1
         return {
             "task_id": record.task_id,
+            "event_seq": record.event_seq,
+            "source": record.source,
             "session_id": record.session_id,
             "step_id": step.step_id if step is not None else record.pending_step_id,
             "state": record.state.value,

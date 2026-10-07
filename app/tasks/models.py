@@ -705,6 +705,10 @@ class TaskRecord:
     recovery: dict[str, Any] = field(default_factory=dict)
     #: 授权到期时刻（审计用；0 = 没到期过）
     authorization_expired_at: float = 0.0
+    #: Phase 5B §十五：单调递增的事件序号（事件载荷里带出去，订阅方按它幂等去重）
+    event_seq: int = 0
+    #: Phase 5B §二十九/§三十：任务从哪个入口进来（qq / minecraft_chat / webui / smoke）
+    source: str = ""
     #: §三十五/§三十六：本阶段**不提供**通用 rollback（世界修改不是事务）
     rollback_supported: bool = False
     resume_note: str = ""
@@ -863,6 +867,8 @@ class TaskRecord:
             "replan_required": self.replan_required,
             "recovery": dict(self.recovery),
             "authorization_expired_at": self.authorization_expired_at,
+            "event_seq": self.event_seq,
+            "source": self.source,
         }
 
     @classmethod
@@ -902,6 +908,8 @@ class TaskRecord:
             replan_required=bool(payload.get("replan_required", False)),
             recovery=dict(payload.get("recovery") or {}),
             authorization_expired_at=float(payload.get("authorization_expired_at") or 0.0),
+            event_seq=int(payload.get("event_seq") or 0),
+            source=str(payload.get("source") or ""),
         )
 
 

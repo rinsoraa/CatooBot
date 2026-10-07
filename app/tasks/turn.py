@@ -52,6 +52,102 @@ DROP_OVERRIDES: dict[str, str] = {
 }
 
 
+STATE_LABELS: dict[str, str] = {
+    "PLANNING": "正在盘算",
+    "PENDING_CONFIRMATION": "等你确认",
+    "RUNNING": "进行中",
+    "WAITING_ACTION": "进行中",
+    "WAITING_USER": "等你说话",
+    "PAUSED": "已暂停",
+    "REPLANNING": "需要重新确认新计划",
+    "SUCCEEDED": "已完成",
+    "FAILED": "没做成",
+    "CANCELLED": "已取消",
+    "EXPIRED": "已过期",
+}
+
+
+@dataclass(frozen=True)
+class TaskReplies:
+    """同一套语义的两种说法（游戏内 vs QQ）—— 语义只有一处，措辞可以各说各的。"""
+
+    created: str = "我打算这么做，你看行不行：\n{summary}\n{hint}"
+    created_hint: str = "想让我开始就说「确认」；改主意了就说「停止这个任务」。"
+    confirmed: str = "好，我这就去。"
+    paused: str = "好，我先停下。"
+    resumed: str = "好，接着做。"
+    cancelled: str = "好，不做了。"
+    busy: str = "我手上还有一个没做完的事（{objective}）。先说「停止这个任务」，我再来做新的。"
+    plan_failed: str = "我看了一圈，现在做不了：{reason}。"
+    plan_failed_unknown: str = "我试着盘算了一下，但没排明白，等会儿再说吧。"
+    replan_failed_unknown: str = (
+        "原来那件事的目标已经不在了，而且我没听出你想改做什么。再说一次要什么吧。"
+    )
+    replan_failed: str = "我重新找了一圈，现在还是做不了：{reason}。"
+    replan_failed_retry: str = "我试着重新盘算了一下，但没排明白，等会儿再说吧。"
+    not_owner: str = "这个任务不是你发起的，控制不了。"
+    confirm_failed: str = "这次确认没生效（{reason}）。想让我做的话再说一次「确认」。"
+    resume_needs_confirmation: str = (
+        "刚才那份许可过期了，我重新说一遍要做的事，你说「确认」我就继续。"
+    )
+    action_failed: str = "这件事现在做不了（{reason}）。"
+    status: str = "任务：{objective}\n状态：{state}\n第 {done}/{total} 步\n当前：{current}"
+    status_idle: str = "（这一步还没开始）"
+
+
+#: 游戏内聊天（Phase 5A 的原话，保持兼容）
+IN_GAME_REPLIES = TaskReplies()
+
+#: QQ（Phase 5B §八/§十四/§二十八/§三十二）
+QQ_REPLIES = TaskReplies(
+    created=(
+        "罐头准备这样做：\n\n{summary}\n\n这是第 {version} 版计划。\n\n"
+        "需要你确认后我才会动手。\n回复「确认」开始。"
+    ),
+    created_hint="",
+    confirmed="🌱 我开始处理了。",
+    paused="先停这里了。",
+    resumed="好，接着做。",
+    cancelled="好，不做了。",
+    busy="你还有一个任务正在处理中。\n\n当前：{objective}\n\n请先：暂停 / 停止 / 继续",
+    plan_failed="我找了一圈，现在做不了：{reason}。",
+    plan_failed_unknown="我试着盘算了一下，但没排明白，等会儿再说吧。",
+    replan_failed_unknown="原来那件事的目标已经不在了，而且我没听出你想改做什么。再说一次要什么吧。",
+    replan_failed="我重新找了一圈，现在还是做不了：{reason}。",
+    replan_failed_retry="我试着重新盘算了一下，但没排明白，等会儿再说吧。",
+    not_owner="你不是这个任务的发起人，这个任务由 @{owner} 创建。",
+    confirm_failed="这次确认没生效（{reason}）。想让我做的话再说一次「确认」。",
+    resume_needs_confirmation="刚才那份许可过期了，计划没有变，需要你重新确认一次。",
+    action_failed="这件事现在做不了（{reason}）。",
+    status="任务：{objective}\n\n状态：{state}\n第 {done}/{total} 步\n\n当前：\n{current}",
+    status_idle="（这一步还没开始）",
+)
+
+
+@dataclass
+class TaskIntent:
+    """规范化的任务意图（§二十五）：QQ 原始消息绝不进 TaskRuntime。
+
+    ``source`` 是入口标签（``qq`` / ``minecraft_chat`` / ``webui``），
+    只用于审计与 UI 展示（§二十九/§三十）；TaskRuntime 收到的是规范化身份与目标。
+    """
+
+    objective: str
+    source: str
+    user_id: str
+    session_id: str
+    conversation_id: str | None = None
+
+    def to_payload(self) -> dict[str, Any]:
+        return {
+            "objective": self.objective,
+            "source": self.source,
+            "user_id": self.user_id,
+            "session_id": self.session_id,
+            "conversation_id": self.conversation_id,
+        }
+
+
 @dataclass
 class TaskTurnOutcome:
     """一次用户回合的任务侧结果（``reply`` 直接发回给用户）。"""
@@ -82,11 +178,15 @@ class TaskTurnHandler:
         *,
         observe: Any,
         detector: TaskIntentDetector | None = None,
+        replies: TaskReplies | None = None,
+        source: str = "minecraft_chat",
         objective_limit: int = 120,
     ) -> None:
         self._runtime = runtime
         self._observe = observe
         self._detector = detector or TaskIntentDetector()
+        self._replies = replies or IN_GAME_REPLIES
+        self._source = str(source or "minecraft_chat")
         self._limit = max(20, int(objective_limit))
 
     # ------------------------------------------------------------ 入口
@@ -110,6 +210,9 @@ class TaskTurnHandler:
                 # 没有任务时的"确认/继续"是普通聊天（用户可能在聊别的）
                 return TaskTurnOutcome(False)
             return await self._control(command, current, user_id=user_id, session_id=session_id)
+        if current is not None and self._detector.status_query(message):
+            # §二十七：先看当前会话里那个**唯一**的活动任务，不猜、不挑历史任务
+            return self._status(current)
         intent = self._detector.detect(message)
         if not intent.is_task:
             return TaskTurnOutcome(False)
@@ -120,7 +223,9 @@ class TaskTurnHandler:
                 action="busy",
                 task_id=current.task_id,
                 state=current.state.value,
-                reply=f"我手上还有一个没做完的事（{current.objective}）。先说「停止这个任务」，我再来做新的。",
+                reply=self._replies.busy.format(
+                    objective=current.objective, state=STATE_LABELS.get(current.state.value, "")
+                ),
             )
         return await self._create(session_id, user_id, message)
 
@@ -130,6 +235,17 @@ class TaskTurnHandler:
         self, command: str, record: Any, *, user_id: str, session_id: str
     ) -> TaskTurnOutcome:
         runtime = self._runtime
+        # §十六：任何控制入口都要重新验证归属 —— 别人（哪怕是同群成员）碰不到这个任务，
+        # 而且**拒绝不得改变任务状态**（这里在调用任何 runtime 方法之前就返回）。
+        owner = str(record.user_id)
+        if str(user_id) != owner:
+            return TaskTurnOutcome(
+                True,
+                action="not_owner",
+                task_id=record.task_id,
+                state=record.state.value,
+                reply=self._replies.not_owner.format(owner=owner, objective=record.objective),
+            )
         try:
             if command == "confirm":
                 if record.replan_required or record.state is TaskState.REPLANNING:
@@ -147,14 +263,14 @@ class TaskTurnHandler:
                         action="confirm_failed",
                         task_id=record.task_id,
                         state=updated.state.value,
-                        reply=f"这次确认没生效（{updated.message}）。想让我做的话再说一次「确认」。",
+                        reply=self._replies.confirm_failed.format(reason=updated.message),
                     )
                 return TaskTurnOutcome(
                     True,
                     action="confirmed",
                     task_id=record.task_id,
                     state=updated.state.value,
-                    reply="好，我这就去。",
+                    reply=self._replies.confirmed,
                 )
             if command == "pause":
                 updated = await runtime.pause(record.task_id, reason="用户说暂停")
@@ -163,7 +279,7 @@ class TaskTurnHandler:
                     action="paused",
                     task_id=record.task_id,
                     state=updated.state.value,
-                    reply="好，我先停下。",
+                    reply=self._replies.paused,
                 )
             if command == "resume":
                 if record.replan_required and record.state in {
@@ -183,14 +299,14 @@ class TaskTurnHandler:
                         action="resume_needs_confirmation",
                         task_id=record.task_id,
                         state=updated.state.value,
-                        reply="刚才那份许可过期了，我重新说一遍要做的事，你说「确认」我就继续。",
+                        reply=self._replies.resume_needs_confirmation,
                     )
                 return TaskTurnOutcome(
                     True,
                     action="resumed",
                     task_id=record.task_id,
                     state=updated.state.value,
-                    reply="好，接着做。",
+                    reply=self._replies.resumed,
                 )
             if command == "cancel":
                 updated = await runtime.cancel(record.task_id, reason="用户取消")
@@ -199,7 +315,7 @@ class TaskTurnHandler:
                     action="cancelled",
                     task_id=record.task_id,
                     state=updated.state.value,
-                    reply="好，不做了。",
+                    reply=self._replies.cancelled,
                 )
         except (TaskAuthorizationError, TaskBusy) as exc:
             return TaskTurnOutcome(
@@ -207,9 +323,36 @@ class TaskTurnHandler:
                 action=f"{command}_failed",
                 task_id=record.task_id,
                 state=record.state.value,
-                reply=f"这件事现在做不了（{getattr(exc, 'code', '') or exc}）。",
+                reply=self._replies.action_failed.format(reason=getattr(exc, "code", "") or exc),
             )
         return TaskTurnOutcome(False)
+
+    # ------------------------------------------------------------ 状态查询
+
+    def _status(self, record: Any) -> TaskTurnOutcome:
+        """§二十八：给用户看的状态摘要（绝不直接返回完整 TaskRecord）。"""
+        snapshot = self._runtime.snapshot_payload(record)
+        current = snapshot.get("current_step") or {}
+        label = ""
+        for row in (snapshot.get("plan") or {}).get("steps") or []:
+            if isinstance(row, dict) and row.get("step_id") == current.get("step_id"):
+                label = str(row.get("label") or "")
+                break
+        progress = snapshot.get("progress") or {}
+        reply = self._replies.status.format(
+            objective=record.objective,
+            state=STATE_LABELS.get(record.state.value, record.state.value),
+            done=int(progress.get("completed") or 0),
+            total=int(progress.get("total") or 0),
+            current=label or self._replies.status_idle,
+        )
+        return TaskTurnOutcome(
+            True,
+            action="status",
+            task_id=record.task_id,
+            state=record.state.value,
+            reply=reply,
+        )
 
     # ------------------------------------------------------------ 重规划
 
@@ -309,17 +452,23 @@ class TaskTurnHandler:
                 user_id=user_id,
                 origin=TurnOrigin.USER.value,
                 plan=planned.plan,
+                source=self._source,
             )
         except TaskBusy:
             return TaskTurnOutcome(
                 True, action="busy", reply="我手上还有一件事没做完，先做完这个再说。"
             )
         summary = self._runtime.summary_of(record)
+        reply = self._replies.created.format(
+            summary=summary,
+            version=record.plan_version,
+            hint=self._replies.created_hint,
+        ).strip()
         return TaskTurnOutcome(
             True,
             action="created",
             task_id=record.task_id,
             state=record.state.value,
-            reply=f"我打算这么做，你看行不行：\n{summary}\n想让我开始就说「确认」；改主意了就说「停止这个任务」。",
-            detail={"plan_hash": record.plan_hash},
+            reply=reply,
+            detail={"plan_hash": record.plan_hash, "plan_version": record.plan_version},
         )

@@ -41,7 +41,7 @@ from app.memory.embedding import EmbeddingService
 from app.memory.extraction import MemoryExtractor
 from app.memory.manager import MemoryManager
 from app.memory.outbox import Outbox, outbox_path_for
-from app.message.event import Event
+from app.message.event import Event, MessageEvent
 from app.permissions.manager import PermissionManager
 from app.plugins.loader import PluginLoader
 from app.response.delivery import MessageDelivery
@@ -321,6 +321,9 @@ class Bot:
         self.tasks: Any = None
         self.task_coordinator: Any = None
         self.task_turns: Any = None
+        #: Phase 5B：QQ 任务入口（任务运行时装配好之后才存在）+ 后台通知任务
+        self.task_entry: Any = None
+        self._task_notify_tasks: set[Any] = set()
         if config.minecraft.enabled:
             try:
                 from app.integrations.minecraft.service import MinecraftService
@@ -532,6 +535,9 @@ class Bot:
 
         # QQ surface: message recording + character chat. No command dispatch.
         self.event_bus.on("message", self.core_router.on_message)
+        # Phase 5B §二十二/§二十三：QQ 任务入口排在**人格插件之前** —— 只有确认是任务
+        # 请求（或任务控制命令）时它才认领这条消息；否则原样交给正常对话管线。
+        self.event_bus.on("message", self._dispatch_task_message)
 
         await self.plugins.load_all()
         loaded = list(self.plugins.loaded)
@@ -801,6 +807,7 @@ class Bot:
                     build_minecraft_task_runtime,
                 )
                 from app.integrations.minecraft.task_coordinator import MinecraftTaskCoordinator
+                from app.tasks.qq_entry import QQTaskEntry
                 from app.tasks.turn import TaskTurnHandler
 
                 self.tasks = await build_minecraft_task_runtime(
@@ -808,16 +815,24 @@ class Bot:
                     tools_config=self.config.tools,
                     database=self.database,
                     config=self.config.task,
+                    # §十三：任务事件走现有事件流；QQ 侧订阅它，而不是自己轮询
+                    publish=self._publish_task_event,
                     logger=self.log,
                 )
                 self.task_coordinator = MinecraftTaskCoordinator(self.tasks, self.minecraft)
                 self.task_coordinator.start()
                 # 观察与执行走同一条既有工具通道（TaskRuntime 绝不认识 Mineflayer）
                 invoker = MinecraftTaskInvoker(self.minecraft.agent)
-                self.task_turns = TaskTurnHandler(
-                    self.tasks,
-                    observe=lambda tool, arguments: invoker(tool, dict(arguments)),
-                )
+                observe = lambda tool, arguments: invoker(tool, dict(arguments))  # noqa: E731
+                # 两个入口共用**同一个** TaskRuntime（§十八）：QQ / 游戏内聊天
+                self.task_entry = QQTaskEntry(self, runtime=self.tasks, observe=observe)
+                self.task_turns = TaskTurnHandler(self.tasks, observe=observe)
+                # Phase 5A.1 §十三：进程重启过的任务在这里做安全恢复（旧动作一律作废）
+                recovered = await self.tasks.recover_persisted_tasks()
+                if recovered:
+                    self.log.info(
+                        "[Task] recovered %d persisted task(s) after restart", len(recovered)
+                    )
                 story.boot_step(
                     "多步骤任务运行时已就绪",
                     detail=(
@@ -830,6 +845,7 @@ class Bot:
                 self.tasks = None
                 self.task_coordinator = None
                 self.task_turns = None
+                self.task_entry = None
         await self.adapter.start()
         story.boot_step("OneBot 适配器已监听", detail=self.config.onebot.url)
         if self.watchdog is not None:
@@ -938,6 +954,27 @@ class Bot:
             "+".join(sandbox.modes.ids()) or "-",
             sandbox.character.location,
         )
+
+    # ------------------------------------------------- Phase 5B：任务入口/事件
+
+    async def _dispatch_task_message(self, event: MessageEvent) -> bool:
+        """把消息先交给 QQ 任务入口；返回 True = 它认领了（人格插件不再处理）。"""
+        entry = getattr(self, "task_entry", None)
+        if entry is None:
+            return False
+        return bool(await entry.on_message(event))
+
+    def _publish_task_event(self, event: str, payload: dict[str, Any]) -> None:
+        """TaskRuntime → 事件总线（同步钩子）：QQ 通知在后台任务里发，绝不阻塞任务。"""
+        entry = getattr(self, "task_entry", None)
+        if entry is None:
+            return
+        try:
+            task = asyncio.create_task(entry.on_task_event(event, dict(payload)))
+        except RuntimeError:  # pragma: no cover - 没有事件循环时安静放弃
+            return
+        self._task_notify_tasks.add(task)
+        task.add_done_callback(self._task_notify_tasks.discard)
 
     async def shutdown(self) -> None:
         """Graceful stop: schedulers, plugins, web, adapter, database."""
