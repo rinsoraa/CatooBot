@@ -1143,15 +1143,17 @@ class Bot:
 
     def _publish_task_event(self, event: str, payload: dict[str, Any]) -> None:
         """TaskRuntime → 任务入口（同步钩子）：入口自己决定排队还是后台发送。"""
+        payload = dict(payload)
+        # Phase 5C §三十一/§三十二：任务收尾 → 一条语义经验（后台写）。
+        # 与 QQ 通知**互不影响**：任务入口装配失败也不该让"记住这件事"跟着失效。
+        self._remember_task_outcome(event, payload)
         entry = getattr(self, "task_entry", None)
         if entry is None:
             return
         try:
-            entry.publish(event, dict(payload))
+            entry.publish(event, payload)
         except Exception:  # noqa: BLE001 - 通知出问题绝不影响任务
             self.log.exception("[Task] publish failed event=%s", event)
-        # Phase 5C §三十一/§三十二：任务收尾 → 一条语义经验（后台写）
-        self._remember_task_outcome(event, dict(payload))
 
     async def shutdown(self) -> None:
         """Graceful stop: schedulers, plugins, web, adapter, database."""

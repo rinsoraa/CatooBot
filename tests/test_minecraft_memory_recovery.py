@@ -472,3 +472,49 @@ class TestContextInjection:
             await runtime._minecraft_memory_context(session_id="private:1", user_id=1, text="在吗")
             == ""
         )
+
+
+class TestTaskEventHook:
+    """``_publish_task_event`` 的两条路径互不影响（QQ 通知 ↔ 记忆）。"""
+
+    async def test_memory_hook_runs_even_without_a_task_entry(self, tmp_path) -> None:
+        bridge, database, _manager, _service = await build_bridge(tmp_path)
+        bot = wire_bot(memory=bridge)
+        bot.task_entry = None  # 任务入口没装配起来
+        written: list[tuple[str, dict[str, Any]]] = []
+        bot._remember_task_outcome = lambda event, payload: written.append((event, payload))  # type: ignore[method-assign]
+
+        bot._publish_task_event("task.succeeded", {"task_id": "task_abc"})
+        assert written == [("task.succeeded", {"task_id": "task_abc"})]
+        await database.close()
+
+    async def test_entry_publish_failure_does_not_stop_memory(self, tmp_path) -> None:
+        bridge, database, _manager, _service = await build_bridge(tmp_path)
+        bot = wire_bot(memory=bridge)
+
+        class BrokenEntry:
+            def publish(self, _event: str, _payload: dict[str, Any]) -> None:
+                raise RuntimeError("qq exploded")
+
+        bot.task_entry = BrokenEntry()
+        written: list[str] = []
+        bot._remember_task_outcome = lambda event, payload: written.append(event)  # type: ignore[method-assign]
+
+        bot._publish_task_event("task.failed", {"task_id": "task_abc"})
+        assert written == ["task.failed"]  # 通知炸了也不影响"记住结果"
+        await database.close()
+
+    async def test_entry_receives_the_full_payload(self, tmp_path) -> None:
+        bridge, database, _manager, _service = await build_bridge(tmp_path)
+        bot = wire_bot(memory=bridge)
+        seen: list[tuple[str, dict[str, Any]]] = []
+
+        class Entry:
+            def publish(self, event: str, payload: dict[str, Any]) -> None:
+                seen.append((event, dict(payload)))
+
+        bot.task_entry = Entry()
+        bot.tasks = None  # 没有任务运行时 → 记忆那一步安静跳过
+        bot._publish_task_event("task.created", {"task_id": "task_abc", "objective": "砍树"})
+        assert seen == [("task.created", {"task_id": "task_abc", "objective": "砍树"})]
+        await database.close()
