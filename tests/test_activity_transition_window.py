@@ -100,9 +100,9 @@ class TestWindowTimeline:
 
     async def test_window_is_configurable(self) -> None:
         wide = Rig(window=30 * 60.0)  # 半小时窗口
-        await wide.start()
+        wide_episode = await wide.start()
         wide.clock.advance_minutes(31)
-        view = wide.runtime.decision_view(episode, now=wide.clock.now())
+        view = wide.runtime.decision_view(wide_episode, now=wide.clock.now())
         assert view["transition_pending"] is True
         narrow = Rig(window=60.0)  # 一分钟窗口
         episode2 = await narrow.start()
@@ -121,7 +121,7 @@ class TestWindowTimeline:
         assert view["transition_window_seconds"] == 0.0
 
     async def test_pending_is_only_for_live_episodes(self, rig: Rig) -> None:
-        episode = await rig.start()
+        await rig.start()
         rig.clock.advance_minutes(61)
         await rig.runtime.complete(now=rig.clock.now())
         assert rig.runtime.decision_view(None, now=rig.clock.now())["transition_pending"] is False
