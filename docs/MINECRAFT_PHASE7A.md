@@ -53,13 +53,28 @@ Initiative → LLM → Minecraft action      ✗
 
 ```python
 LifeIntent(
-    intent_id, character_id,
-    intent_type, title, description,
-    source, origin, priority,
-    created_at, expires_at,
-    related_activity, related_goal, related_memory, related_player, related_task,
-    status, suppression_reason, resolution_reason,
-    confidence, fingerprint, execution_class, tags,
+    intent_id,
+    character_id,
+    intent_type,
+    title,
+    description,
+    source,
+    origin,
+    priority,
+    created_at,
+    expires_at,
+    related_activity,
+    related_goal,
+    related_memory,
+    related_player,
+    related_task,
+    status,
+    suppression_reason,
+    resolution_reason,
+    confidence,
+    fingerprint,
+    execution_class,
+    tags,
 )
 ```
 
