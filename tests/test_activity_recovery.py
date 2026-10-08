@@ -100,8 +100,25 @@ class TestPersistence:
         assert result["action"] == "resumed"
         assert result["episode_id"] == episode.episode_id
         assert ACTIVITY_RECOVERED in [name for name, _payload in events]
+        # §五十五：数据库里也要能回答"重启后是不是同一个 Episode"（审计行，可重复）
+        rows = await second.recent_transitions(episode.episode_id, limit=10)
+        recovered = [row for row in rows if row["transition"] == "RECOVERED"]
+        assert recovered and recovered[0]["reason"] == TransitionReason.RECOVERY.value
         current = await second.current()
         assert current is not None and current.episode_id == episode.episode_id
+        await database.close()
+
+    async def test_repeated_restarts_keep_auditing_each_takeover(self, tmp_path: Any) -> None:
+        database = await make_db(tmp_path)
+        clock = FakeClock()
+        first = build(database, clock=clock)
+        episode = await first.start(activity_name="reading", now=clock.now())
+        assert episode is not None
+        for _ in range(3):  # 连续三次重启
+            again = build(database, clock=clock)
+            await again.recover()
+        rows = await first.recent_transitions(episode.episode_id, limit=10)
+        assert len([row for row in rows if row["transition"] == "RECOVERED"]) == 3
         await database.close()
 
     async def test_case_a_within_the_window_stays_active(self, tmp_path: Any) -> None:

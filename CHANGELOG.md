@@ -48,6 +48,11 @@
 * **API / WebUI**：`GET /api/v1/world/activity?limit=10`（只读、恒 200）；World 页新增只读卡片
   「当前活动（Phase 6A）」（Episode ID/状态/开始/计划结束/时长/来源/关联任务/原因/延长次数 +
   最近 ≤10 条），**没有任何** start/cancel/extend 入口。
+* **真机取证后的两处修正**：①`recover()` 现在往 `activity_transitions` 写一行
+  `RECOVERED / reason=RECOVERY`（原先只记日志、`audit=False`）—— 数据库要能自己回答
+  "重启后是不是同一个 Episode"，连续重启会有多行；②真机 smoke 的 `pause` 阶段加了**前置条件**
+  （live 的那条必须是 `source=TASK` 且 ACTIVE），否则如实 SKIP 并打印最近的 Episode ——
+  真机上 live 的是她的日常 Episode 时，"先开个任务再暂停"验到的是**抢占**而不是暂停。
 * **测试与文档**：新增 `tests/test_activity_episode.py`、`test_activity_runtime.py`、
   `test_activity_recovery.py`、`test_activity_projection.py`、`test_activity_events.py`、
   `test_activity_minecraft_adapter.py`（覆盖任务书 A–P 矩阵，含幂等/主唯一/假时钟/恢复/

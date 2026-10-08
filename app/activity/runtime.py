@@ -429,7 +429,21 @@ class ActivityRuntime:
             # 合法状态：没有 Episode 就不假装有（§五十二）。她"现在做什么"交给下一次 tick。
             return {"action": "none", "episode_id": "", "reason": "no_episode"}
 
-        # 先把"我重启过"如实记下来（不是伪造活动，只是说明这条 Episode 被重新接管）
+        # 先把"我重启过"如实记下来（不是伪造活动，只是说明这条 Episode 被重新接管）。
+        # **同时落一行转移审计**：§五十五 要求能回答"重启后是不是同一个 Episode"，
+        # 只写日志不够 —— 但 RECOVERED 不在一次性索引里，多次重启会有多行（这是对的）。
+        if hasattr(self.store, "log_transition"):
+            try:
+                await self.store.log_transition(
+                    episode_id=current.episode_id,
+                    transition="RECOVERED",
+                    reason=TransitionReason.RECOVERY.value,
+                    source=current.source.value,
+                    at=moment,
+                )
+            except Exception:  # noqa: BLE001 - 审计失败只降级，不影响接管
+                if self._log is not None:
+                    self._log.debug("[World.Activity] 接管审计落盘失败（忽略）", exc_info=True)
         await self.publisher.publish(
             ACTIVITY_RECOVERED,
             current,

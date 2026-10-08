@@ -117,6 +117,12 @@ SCHEDULED ──→ ACTIVE ──┬─→ EXTENDED ──┬─→ EXTENDED（�
 * 每一次转移都追加一行审计（`activity_transitions`），并带
   **标准化原因**（`TIME_EXPIRED` / `TASK_STARTED` / `TASK_COMPLETED` / `TASK_FAILED` /
   `USER_INTERACTION` / `WORLD_EVENT` / `SCHEDULED` / `RECOVERY` / `MANUAL`）。
+* **被抢占而结束的 Episode，它的 `transition_reason` 是"引起抢占的那件事"**：
+  她正在 `eating`（ROUTINE）时来一个真实任务 → 那条 `eating` 以
+  `COMPLETED / reason=TASK_STARTED` 收尾，新的任务 Episode 以 `ACTIVE / reason=TASK_STARTED` 开始。
+  这是刻意的（§三十一 的原因要能回答"**为什么结束**"，这里的答案正是"因为有任务开始了"）。
+  真机记录如 `ACT-…-001 eating COMPLETED TASK_STARTED`；想一眼分辨"谁抢占谁"看 `source`：
+  被抢占的是 `ROUTINE`，抢过来的是 `TASK`。
 
 ## 四、persistence（§二十三/§二十五/§二十六）
 
@@ -141,6 +147,9 @@ SCHEDULED ──→ ACTIVE ──┬─→ EXTENDED ──┬─→ EXTENDED（�
 | C | `now > max_end` | `EXPIRED`（绝不无限延长），再由 Planner 排一个新的 |
 
 * **宽限**：`recovery_grace_seconds`（默认 30s）—— 刚过期几秒不算过期，免得每次重启都强行转移。
+* **接管留痕**：每次恢复都会往 `activity_transitions` 写一行 `RECOVERED / reason=RECOVERY`
+  （它**不在**一次性索引里，所以连续重启会有多行 —— 这是对的：数据库要能回答
+  §五十五 的"重启后是不是同一个 Episode？"，光有日志不够）。
 * **绝不伪造活动**（§二十八）：离线 8 小时之后不会出现"她这 8 小时一直在砍树"。
   旧 Episode 只会被**终结**（`ended_at = 现在`），新的活动只有 `started_at = 现在` 的那条；
   测试里断言"没有任何 Episode 的时间窗覆盖离线区间"。
@@ -226,8 +235,15 @@ MinecraftObservation(
 | A | 在 QQ 里让她做一个 Minecraft 任务并「确认」 | 出现 `source=TASK` + `related_task_id` 非空的 live Episode，`reason=TASK_STARTED` |
 | B | 等任务真的跑完（挖到 + 捡到） | 那条 Episode → `COMPLETED` + `TASK_COMPLETED`，且有 `ended_at` |
 | C | 任务进行中在 QQ 里说「暂停」 | 活动**不是** ACTIVE → `INTERRUPTED`（`reason=USER_INTERACTION`） |
-| D | 活动 ACTIVE 时重启 CatooBot，再重新进服 | 同一个 `episode_id` 仍然 live、`started_at` 没被重置、没有第二条 live |
+| D | 活动 ACTIVE 时重启 CatooBot，再重新进服 | 同一个 `episode_id` 仍然 live、`started_at` 没被重置、审计里有 `RECOVERY` 行、没有第二条 live |
 | E | 让 Minecraft 掉线 | 表里没有凭空出现的 `minecraft_*` 活动 |
+
+**C 阶段的前置条件（真机踩过）**：脚本会先检查 live 的那条是不是**任务型 ACTIVE**
+（`source=TASK`）。如果 live 的是她的日常 Episode（例如 `out`/`reading`，`source=ROUTINE`），
+脚本会**如实 SKIP 并打印最近的 Episode**，而不是让你去"暂停"一个不存在的任务 —— 因为那时
+"先开一个任务再暂停"会变成验"抢占"（旧 Episode 被 `TASK_STARTED` 收尾），不是验"暂停"。
+正确顺序：`--phase task-start`（建任务并确认）→ 确认报告里那条是 `minecraft_task / ACTIVE / TASK`
+→ 再 `--phase pause`（可带 `--episode ACT-…`）→ 在 QQ 里说「暂停」。
 
 WebUI：**World 页**新增只读卡片「当前活动（Phase 6A）」——
 Episode ID / Activity / Status / Started / Planned End / Duration / Source / Related Task /
