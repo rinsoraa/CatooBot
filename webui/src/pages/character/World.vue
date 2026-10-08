@@ -24,7 +24,11 @@ import NeedList from '@/components/domain/NeedList.vue'
 import WorldStateCard from '@/components/domain/WorldStateCard.vue'
 import { toast } from '@/composables/toast'
 import { useWorldStore } from '@/stores/world'
-import type { WorldActivityPlanView, WorldActivityView } from '@/types/domain'
+import type {
+  WorldActivityAdvisorView,
+  WorldActivityPlanView,
+  WorldActivityView,
+} from '@/types/domain'
 import type {
   BehaviorPreviewInput,
   BehaviorPreviewResult,
@@ -134,10 +138,38 @@ function planStateText(view: { stale?: boolean; dirty?: boolean }): string {
   return '计划有效'
 }
 
+// Phase 6D §八十九/§九十：模型顾问的**只读**回执（没有"让模型再想一次"这种入口）。
+const advisor = ref<WorldActivityAdvisorView | null>(null)
+const advisorError = ref('')
+
+async function loadAdvisor(): Promise<void> {
+  try {
+    advisor.value = await worldApi.activityAdvisor()
+    advisorError.value = ''
+  } catch (caught) {
+    advisorError.value = errorMessage(caught)
+  }
+}
+
+function advisorStateText(view: WorldActivityAdvisorView | null): string {
+  if (!view || !view.enabled) return '未启用（纯规则）'
+  return view.available ? '已启用' : '已启用但不可用（退回规则）'
+}
+
+function receiptText(view: WorldActivityAdvisorView | null): string {
+  const receipt = view?.last_receipt
+  if (!receipt || !receipt.attempted) return '还没问过'
+  const proposal = receipt.proposal?.decision || '-'
+  if (receipt.accepted) return `${proposal} → 已采纳`
+  if (receipt.fallback_used) return `${proposal} → 规则回退（${receipt.rejection_reason || receipt.failure || '?'}）`
+  return proposal
+}
+
 onMounted(() => {
   if (!store.world && !store.loading) void store.loadWorld()
   void loadActivity()
   void loadPlan()
+  void loadAdvisor()
 })
 
 function reload(): void {
@@ -860,6 +892,51 @@ function previewMoodText(): string {
         </template>
         <p v-else class="cb-world__readonly" data-test="world-plan-empty">
           现在没有生效计划（她还没排过未来一段，或活动层未启用）。
+        </p>
+      </section>
+
+      <!-- Phase 6D §九十：模型顾问（**只读**）—— 没有强制采纳 / 否决 / 再问一次 -->
+      <section class="cb-card cb-world__section" data-test="world-advisor">
+        <SectionHeader
+          title="模型顾问（软判断的参谋）"
+          description="规则永远优先：顾问只能建议，越权一律被规则拒绝并回退"
+        />
+        <p v-if="advisorError" class="cb-world__readonly" data-test="world-advisor-error">
+          顾问状态读取失败：{{ advisorError }}
+        </p>
+        <dl v-if="advisor" class="cb-world__facts" data-test="world-advisor-facts">
+          <div>
+            <dt>状态</dt>
+            <dd data-test="world-advisor-enabled">{{ advisorStateText(advisor) }}</dd>
+          </div>
+          <div>
+            <dt>Provider / 模型</dt>
+            <dd data-test="world-advisor-model">
+              {{ text(advisor.provider) }} / {{ text(advisor.model) }}
+            </dd>
+          </div>
+          <div>
+            <dt>超时</dt>
+            <dd data-test="world-advisor-timeout">{{ advisor.timeout_ms }} ms</dd>
+          </div>
+          <div>
+            <dt>最近一次</dt>
+            <dd data-test="world-advisor-receipt">{{ receiptText(advisor) }}</dd>
+          </div>
+          <div>
+            <dt>延迟 / 调用数</dt>
+            <dd data-test="world-advisor-latency">
+              {{ advisor.last_latency_ms }} ms · 共 {{ advisor.calls }} 次
+            </dd>
+          </div>
+          <div>
+            <dt>已问过的 cycle</dt>
+            <dd data-test="world-advisor-cycles">{{ advisor.attempted_cycles }}</dd>
+          </div>
+        </dl>
+        <p class="cb-world__readonly" data-test="world-advisor-readonly">
+          只读：模型只给「继续 / 延长 / 切换」的建议，硬约束（最短最长时长、锚点、撞车、候选资格）
+          一律由规则校验；这里不能强制采纳，也不能让模型再想一次。
         </p>
       </section>
 

@@ -222,6 +222,41 @@ export interface WorldActivityPlanView {
   degraded?: string
 }
 
+/** Phase 6D §八十九：模型顾问的只读视图（**没有**"让模型再想一次"的入口）。 */
+export interface WorldActivityAdvisorView {
+  enabled: boolean
+  available: boolean
+  provider: string
+  model: string
+  timeout_ms: number
+  calls: number
+  last_failure: string
+  last_latency_ms: number
+  attempted_cycles: number
+  /** 最近一次回执（不含 prompt / 思维链 / 凭据） */
+  last_receipt: {
+    episode_id?: string
+    cycle_id?: string
+    attempted?: boolean
+    provider?: string
+    model?: string
+    latency_ms?: number
+    proposal?: {
+      decision?: string
+      extension_seconds?: number
+      next_hint?: string
+      reason_code?: string
+      state_explanation?: string
+    }
+    accepted?: boolean
+    rejection_reason?: string
+    fallback_used?: boolean
+    failure?: string
+    skipped_reason?: string
+  }
+  degraded?: string
+}
+
 /** 一致性检查结果（只报不修）。 */
 export interface WorldConsistencyReport {
   ok: boolean

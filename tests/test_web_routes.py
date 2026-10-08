@@ -83,6 +83,7 @@ ROUTES = [
     "GET /api/v1/tools/{name}",
     "GET /api/v1/world",
     "GET /api/v1/world/activity",
+    "GET /api/v1/world/activity/advisor",
     "GET /api/v1/world/activity/decision",
     "GET /api/v1/world/activity/plan",
     "GET /api/v1/world/timeline",

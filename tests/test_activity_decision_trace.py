@@ -139,6 +139,8 @@ class TestReadOnlyViews:
             "max_extensions",
             "last_decision",
             "guard",
+            # Phase 6D §八十九：顾问回执（只读；没有顾问时是空对象）
+            "model",
         } == set(view)
         assert view["last_decision"]["decision"] == "EXTEND"
         assert view["elapsed_seconds"] >= 20 * 60

@@ -308,10 +308,12 @@ class TestFallbacks:
 
 
 class TestFrequencyAndIdempotency:
-    def test_t_no_model_entry_points_anywhere_in_the_package(self) -> None:
-        """T（§三四/§三七）：普通 tick 只做规则，**没有任何**模型入口（AST 级核对）。"""
+    def test_t_no_model_entry_points_outside_the_advisor_seam(self) -> None:
+        """T（§三四/§三七 + 6D §一/§四十四）：普通 tick 只做规则；模型入口**只**允许出现在
+        `app/activity/model_advisor.py` 这一条缝里 —— 其他文件不许 import `app.ai`、
+        不许调 chat/complete/generate，也不许自己建 HTTP 客户端（AST 级核对）。"""
         engine = ActivityDecisionEngine(clock=FakeClock(), planner=ActivityPlanner())
-        assert engine.advisor is None  # 6B 永远是 None（§三 硬约束）
+        assert engine.advisor is None  # 默认纯规则（6D §四十：advisor=None 完全合法）
 
         def imported(path: pathlib.Path) -> set[str]:
             tree = ast.parse(path.read_text(encoding="utf-8"), str(path))
@@ -331,12 +333,26 @@ class TestFrequencyAndIdempotency:
                 if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
             }
 
+        allowed = {"model_advisor.py"}  # 6D 唯一允许的模型缝
         for path in sorted(ACTIVITY_PACKAGE.glob("*.py")):
             modules = imported(path)
-            assert not any(name.startswith("app.ai") for name in modules), path.name
-            assert "AIEngine" not in path.read_text(encoding="utf-8"), path.name
             calls = called(path)
-            for forbidden in ("complete", "completion", "chat", "generate", "respond"):
+            source = path.read_text(encoding="utf-8")
+            if path.name in allowed:
+                # 缝里也不许自建模型客户端 / 写死供应商 SDK（6D §四/§七十九）
+                for forbidden in ("httpx", "requests", "openai", "aiohttp", "urllib.request"):
+                    assert f"import {forbidden}" not in source, f"{path.name} 自建了模型客户端"
+                continue
+            assert not any(name.startswith("app.ai") for name in modules), path.name
+            assert "AIEngine(" not in source, path.name  # 允许 re-export，不许真的实例化
+            for forbidden in (
+                "complete",
+                "completion",
+                "chat",
+                "generate",
+                "respond",
+                "complete_json",
+            ):
                 assert forbidden not in calls, f"{path.name} 调用了模型入口 {forbidden}()"
 
     def test_no_randomness_in_the_whole_package(self) -> None:

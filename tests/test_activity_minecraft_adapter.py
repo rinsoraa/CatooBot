@@ -283,7 +283,12 @@ class TestSecurityGuards:
         )
         for path in sorted(ACTIVITY_PACKAGE.glob("*.py")):
             modules = imported_modules(path)
+            # Phase 6D §四十四/§七十九：`model_advisor.py` 是**唯一**被批准的模型缝 ——
+            # 它只允许引用 provider 抽象（app.ai），工具/任务/世界动作仍然一律禁止。
+            seam = path.name == "model_advisor.py"
             for module in modules:
+                if seam and module.startswith("app.ai"):
+                    continue  # Phase 6D §四十四/§七十九：模型缝允许引用 provider 抽象
                 assert not any(module.startswith(bad) for bad in forbidden_modules), (
                     f"{path.name} import 了 {module}"
                 )
@@ -312,6 +317,8 @@ class TestSecurityGuards:
             for module in modules:
                 assert not module.startswith("app.integrations"), f"{path.name} import {module}"
                 assert not module.startswith("app.tools"), f"{path.name} import {module}"
+                if path.name == "model_advisor.py" and module.startswith("app.ai"):
+                    continue  # Phase 6D §四十四：唯一被批准的模型缝
                 assert not module.startswith("app.ai"), f"{path.name} import {module}"
                 assert not module.startswith("app.character"), f"{path.name} import {module}"
             calls = called_attributes(path)

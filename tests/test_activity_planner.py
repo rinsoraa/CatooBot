@@ -312,6 +312,8 @@ class TestNoLlmNoWorld:
                         assert not alias.name.startswith(forbidden), (path, alias.name)
                 elif isinstance(node, ast.ImportFrom):
                     module = str(node.module or "")
+                    if path.name == "model_advisor.py" and module.startswith("app.ai"):
+                        continue  # Phase 6D §四十四/§七十九：唯一被批准的模型缝
                     assert not module.startswith(forbidden), (path, module)
 
     def test_y_planner_layer_has_no_world_entry_points(self) -> None:

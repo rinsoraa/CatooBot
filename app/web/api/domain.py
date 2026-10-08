@@ -267,6 +267,33 @@ class DomainApiRoutes(SocialApiRoutes, WebContext):
             )
         return ok(view, request=request)
 
+    async def _v1_world_activity_advisor(self, request: web.Request) -> web.Response:
+        """Phase 6D §八十九：模型顾问的**只读**回执视图。
+
+        返回 enabled / provider / model / timeout / latency / proposal / accepted / fallback，
+        **绝不返回 prompt、思维链、凭据**；也**没有**任何"让模型再想一次 / 强制采纳"的入口。
+        """
+        runtime = getattr(self._bot, "activity", None)
+        if runtime is None:
+            return ok(
+                {
+                    "enabled": False,
+                    "available": False,
+                    "provider": "",
+                    "model": "",
+                    "last_receipt": {},
+                },
+                request=request,
+            )
+        try:
+            view = runtime.advisor_view()
+        except Exception as exc:  # noqa: BLE001 - 只读失败不变成 5xx（如实降级）
+            return ok(
+                {"enabled": False, "degraded": type(exc).__name__, "last_receipt": {}},
+                request=request,
+            )
+        return ok(view, request=request)
+
     async def _v1_world_trace(self, request: web.Request) -> web.Response:
         limit = read_query_int(request, "limit", default=120, minimum=1, maximum=500)
         return ok(await self._read().world_trace(limit=limit), request=request)
@@ -613,6 +640,10 @@ class DomainApiRoutes(SocialApiRoutes, WebContext):
         )
         # Phase 6C：计划只读视图（§五八；**只读** —— 没有 force select，也没有重排按钮）
         app.router.add_get(f"{API_PREFIX}/world/activity/plan", wrap(self._v1_world_activity_plan))
+        # Phase 6D：模型顾问只读回执（§八九；没有"让模型再想一次"这类入口）
+        app.router.add_get(
+            f"{API_PREFIX}/world/activity/advisor", wrap(self._v1_world_activity_advisor)
+        )
         app.router.add_get(f"{API_PREFIX}/world/trace", wrap(self._v1_world_trace))
         app.router.add_get(f"{API_PREFIX}/world/timeline", wrap(self._v1_world_timeline))
         app.router.add_get(f"{API_PREFIX}/world/topics", wrap(self._v1_world_topics))

@@ -190,6 +190,9 @@ class TestNoLlmIsolation:
             "send_group_msg",
         )
         for path in sorted(ACTIVITY_PACKAGE.glob("*.py")):
+            if path.name == "model_advisor.py":
+                # Phase 6D §四十四/§七十九：唯一被批准的模型缝（只引用 provider 抽象）
+                continue
             source = path.read_text(encoding="utf-8")
             for needle in forbidden:
                 assert needle not in source, f"{path.name} 不应出现 {needle}"

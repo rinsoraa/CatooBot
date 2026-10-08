@@ -92,6 +92,10 @@ DEFAULT_MAX_FUTURE_EPISODES = 6
 #: 计划"快耗尽"的判定余量：覆盖不到这么久之后就重新规划（§八 触发点 2）
 PLAN_COVERAGE_LEAD_SECONDS = 10 * 60.0
 
+#: Phase 6D §七/§三十八：顾问调用留痕用的审计 transition 名（复用既有 append-only 审计表，
+#: **不加表、不加迁移**；它不在一次性索引里，所以可以重复记）。
+ADVISORY_AUDIT_TRANSITION = "MODEL_ADVISED"
+
 #: Phase 6C.1 §三：continuation 边界与现实的容差（秒）。
 #: 小于它就认为"已经对齐"—— 免得浮点/取整差异被当成"计划脏了"。
 RECONCILE_TOLERANCE_SECONDS = 1.0
@@ -155,6 +159,8 @@ class ActivityRuntime:
         plan_store: Any = None,
         state_provider: Any = None,
         goal_source: Any = None,
+        # ---- Phase 6D：模型顾问（缺省 None = 纯规则，§四十）
+        advisor: Any = None,
         logger: Any = None,
     ) -> None:
         self.store = store
@@ -179,6 +185,11 @@ class ActivityRuntime:
             transition_window_seconds=transition_window_seconds,
             max_extensions=max_extensions_per_episode,
             bounce_cooldown_seconds=bounce_cooldown_seconds,
+            # Phase 6D：顾问 + 两条只读钩子（重启守卫靠既有审计行；minecraft 只给观察切片）
+            advisor=advisor,
+            advisory_probe=self._advisory_attempted,
+            advisory_note=self._advisory_note,
+            minecraft_context=self._minecraft_advice_context,
             logger=logger,
         )
         #: 一致性检查器（只报不修，§二一）；status()/recover() 都会跑一次并如实展示
@@ -247,7 +258,11 @@ class ActivityRuntime:
         episode = await self.current()
         if episode is None:
             return ""
-        transitions = await self.recent_transitions(episode.episode_id)
+        # 顾问的审计行（MODEL_ADVISED）不是"她的活动变化"，别让它挤掉真正的生命周期行
+        rows = await self.recent_transitions(episode.episode_id, limit=6)
+        transitions = [
+            row for row in rows if str(row.get("transition")) != ADVISORY_AUDIT_TRANSITION
+        ][-3:]
         return activity_context_block(
             episode,
             transitions,
@@ -276,6 +291,8 @@ class ActivityRuntime:
             "consistency": report,
             # Phase 6C：计划只读视图（§五十八：同样**没有** force select）
             "plan": self.plan_view(now=now),
+            # Phase 6D：顾问回执与开关状态（只读；没有顾问就如实说 disabled）
+            "advisor": self.advisor_view(),
             # 展示层时间线：按"从旧到新"给（recent 本身是新→旧），原始 id 全保留
             "merged_timeline": merge_adjacent(list(reversed(recent))),
         }
@@ -784,6 +801,81 @@ class ActivityRuntime:
             plan_id=plan.plan_id,
             plan_version=int(plan.plan_version),
         )
+
+    # ------------------------------------------------------------ Phase 6D：模型顾问
+
+    @property
+    def advisor(self) -> Any:
+        """装配进来的模型顾问（``None`` = 纯规则模式）。"""
+        return getattr(self.engine, "advisor", None)
+
+    def advisor_view(self) -> dict[str, Any]:
+        """§八十九：只读顾问视图。
+
+        字段：enabled / provider / model / timeout / calls / latency / proposal / 采纳与回退。
+        """
+        payload: dict[str, Any] = {
+            "enabled": False,
+            "available": False,
+            "provider": "",
+            "model": "",
+            "timeout_ms": 0,
+            "calls": 0,
+            "last_failure": "",
+            "last_latency_ms": 0,
+            "attempted_cycles": 0,
+            "last_receipt": {},
+        }
+        advisor = self.advisor
+        if advisor is not None:
+            payload.update(advisor.view())
+            payload["enabled"] = True
+        payload["last_receipt"] = dict(getattr(self.engine, "last_receipt", {}) or {})
+        return payload
+
+    async def _advisory_attempted(self, episode: ActivityEpisode, cycle_key: str) -> bool:
+        """§三十八：重启之后也不许对同一个 transition cycle 再问一次。
+
+        内存里的守卫在重启后就没了，所以这里查**既有**的 append-only 审计
+        （``activity_transitions`` 里的 ``MODEL_ADVISED`` 行，reason 就是 cycle key）——
+        复用现有结构，不新增表、不新增迁移（§七十三）。
+        """
+        try:
+            rows = await self.store.recent_transitions(episode.episode_id, limit=50)
+        except Exception:  # noqa: BLE001 - 查不到就只靠内存守卫（绝不阻塞决策）
+            return False
+        return any(
+            str(row.get("transition")) == ADVISORY_AUDIT_TRANSITION
+            and str(row.get("reason")) == str(cycle_key)
+            for row in rows
+        )
+
+    async def _advisory_note(self, episode: ActivityEpisode, cycle_key: str) -> None:
+        """把"问过了"写进既有审计（§七/§三十八）。写失败只降级，绝不影响决策。"""
+        if not hasattr(self.store, "log_transition"):
+            return
+        await self.store.log_transition(
+            episode_id=episode.episode_id,
+            transition=ADVISORY_AUDIT_TRANSITION,
+            reason=str(cycle_key),
+            source="MODEL",
+            at=self._now(None),
+        )
+
+    def _minecraft_advice_context(self) -> dict[str, Any]:
+        """§十：给顾问的**只读**观察切片（在线 / 当前任务 / 状态）。
+
+        绝不含工具 schema、参数、执行接口 —— 顾问只能"知道"，不能"做"。
+        """
+        observation = dict(self.last_observation or {})
+        current = getattr(self, "_plausible_episode", None)
+        task = current if (current is not None and current.related_task_id) else None
+        return {
+            "online": bool(observation.get("online")),
+            "world": str(observation.get("world") or ""),
+            "current_task": str(task.activity_name) if task is not None else "",
+            "task_status": str(task.status.value) if task is not None else "",
+        }
 
     # ------------------------------------------------------------ 写：创建 / 转移
 

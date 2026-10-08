@@ -578,6 +578,12 @@ world:
     planning_horizon_minutes: 240      # 规划视野（60~720）：只保证未来 1~12 小时有计划，绝不排满全天
     planner_refresh_min_minutes: 5     # 软触发重新规划的最短间隔（0 = 不设冷却）
     max_future_episodes: 6             # 计划里最多排几条 future proposal（1~6）
+    # ---- Phase 6D：模型顾问（软判断的"参谋"；**关着 = 纯规则**，行为与 6B/6C 完全一致）
+    model_advisor:
+      enabled: false                   # 想试就改成 true，并填上下面的 provider / model
+      timeout_ms: 1500                 # 500~5000：单次顾问调用的墙钟上限
+      provider: null                   # 供应商标签（只出现在日志/trace 里）
+      model: null                      # 用哪个模型（既有 router 里的模型名）
 
 # ============================================================
 # Minecraft 连接层（Phase 1）

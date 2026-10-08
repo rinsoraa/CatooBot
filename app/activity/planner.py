@@ -984,6 +984,32 @@ class ActivityPlanner:
         payload["weights"] = {key: float(value) for key, value in sorted(self.weights.items())}
         return payload
 
+    def preview_plan(
+        self,
+        *,
+        episode: ActivityEpisode | None = None,
+        now: float,
+        clock: Any,
+        started_today: int = 0,
+    ) -> ActivityPlan:
+        """只读预览一份计划（**不落盘**）—— 给 6D 顾问看候选与未来安排。
+
+        Planner 负责候选生成 / 资格 / 排序（§二十五），顾问只拿到摘要；这里不产生任何副作用。
+        """
+        return self.plan_next(
+            self._state(),
+            episode,
+            now=float(now),
+            context=self._context(
+                clock, float(now), started_today=int(started_today), episode=episode
+            ),
+        )
+
+    @property
+    def routine_table(self) -> dict[str, tuple[str, ...]]:
+        """时段 → 候选活动的**只读**快照（顾问的 routine_candidates 用它）。"""
+        return {period: tuple(names) for period, names in self._routine.items()}
+
     # ------------------------------------------------------------ 内部
 
     def _can_extend(self, episode: ActivityEpisode) -> bool:

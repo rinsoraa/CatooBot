@@ -10,6 +10,7 @@ import type {
   InterruptedInfo,
   TopicRow,
   WorldActivityDecisionView,
+  WorldActivityAdvisorView,
   WorldActivityPlanView,
   WorldActivityView,
   WorldData,
@@ -69,6 +70,14 @@ export const worldApi = {
    */
   activityPlan() {
     return api.get<WorldActivityPlanView>('/world/activity/plan')
+  },
+
+  /**
+   * Phase 6D §八十九：模型顾问只读回执。
+   * 只读：**没有**"让模型再想一次"，也没有强制采纳/否决（§九十）。
+   */
+  activityAdvisor() {
+    return api.get<WorldActivityAdvisorView>('/world/activity/advisor')
   },
 
   timeline(limit = 100) {

@@ -1045,6 +1045,10 @@ class Bot:
             ),
             state_provider=self._activity_state,
         )
+        # Phase 6D §四十一/§四十二：模型顾问默认关闭；开了但没配好 → 只告警 + 退回纯规则
+        from app.activity.model_advisor import build_advisor
+
+        advisor = build_advisor(getattr(config, "model_advisor", None), self.ai, logger=self.log)
         runtime = ActivityRuntime(
             store=SqliteActivityStore(self.database, logger=self.log),
             clock=self.activity_clock,
@@ -1077,6 +1081,8 @@ class Bot:
             * 60.0,
             max_future_episodes=int(getattr(config, "max_future_episodes", 6) or 6),
             state_provider=self._activity_state,
+            # Phase 6D：模型顾问（None = 纯规则，行为与 6B/6C 逐字一致）
+            advisor=advisor,
             logger=self.log,
         )
         self.activity = runtime

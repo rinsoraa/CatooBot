@@ -884,6 +884,12 @@ _NOTES: dict[str, str] = {
     ),
     "world.activity.planner_refresh_min_minutes": "软触发重新规划的最短间隔（分钟）",
     "world.activity.max_future_episodes": "计划里最多排几条 future proposal（默认 6）",
+    "world.activity.model_advisor.enabled": (
+        "模型顾问（默认关：关着就是纯规则，行为与 6B/6C 逐字一致）"
+    ),
+    "world.activity.model_advisor.timeout_ms": "单次顾问调用的墙钟上限：500~5000ms，默认 1500",
+    "world.activity.model_advisor.provider": "供应商标签：只写进日志与 trace，不参与选路",
+    "world.activity.model_advisor.model": "用哪个模型：既有 router 里的模型名",
     "minecraft.memory.enabled": "Minecraft 身份桥 + 世界记忆（关掉只是「不记得」，权限照旧）",
     "minecraft.memory.reconcile_interval_seconds": "多久拿当前世界核对一次记忆（对账）",
     "minecraft.memory.context_items": "每次对话最多带几条 Minecraft 记忆（≤5）",
@@ -1003,6 +1009,7 @@ _SECTION_LABELS: dict[str, str] = {
     "conversation.debounce": "消息合并",
     "world": "角色世界（世界时钟 · 活动）",
     "world.activity": "世界活动（Activity Episode · Phase 6A）",
+    "world.activity.model_advisor": "模型顾问（软判断的参谋 · Phase 6D）",
     "minecraft": "Minecraft 集成",
     "minecraft.agent": "Minecraft 智能体（LLM 工具）",
     "minecraft.agent.tools": "模型可以做什么（风险分级）",

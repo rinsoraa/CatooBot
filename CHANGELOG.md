@@ -3,6 +3,40 @@
 本文件记录 CatooBot 的版本演进。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号见 `pyproject.toml`；日期取自真实提交历史（本仓库 2026-09-30 起）。
 
+## Minecraft Phase 6D — 模型辅助活动决策（Model Advisor）
+
+* **模型第一次进入世界运行时，但仍然只是"参谋"**（§零）：`RULE > MODEL`、`MODEL = ADVISOR`、
+  `MODEL != AUTHORITY`。新增 `app/activity/model_advisor.py`，只做
+  `prepare input → call model → parse output → return proposal`；
+  不碰 policy / Episode / 任务执行 / Minecraft / 记忆 / 目标。
+* **复用既有模型基础设施**（§四/§七十九/§八十）：模块只定义 `StructuredModelProvider` 协议，
+  `AIEngineStructuredProvider` 薄薄套在既有 `AIEngine.chat(AIRequest)` 上
+  （`metadata={"purpose": "activity_advisor"}` 进既有 `ai_usage`）；
+  429/退避/冷却全交给既有 router。**没有第二套模型客户端**（AST guard 守着）。
+* **模型只在"到期做软决策"那一刻说话**（§二十六 第 8-14 步）：最短/最长时长、硬中断、锚点在它之前；
+  到硬上限时**连问都不问**（比"问了再否"更强）。窗口内"待命"阶段不问（6B §十一 的硬规则不让提前动）。
+* **结构化输入输出**（§八-§十八）：输入 bounded（候选 ≤6 / 计划 ≤6 / 近期 ≤5 / 目标 ≤3 / 记忆 ≤5），
+  且**结构上就没有**聊天历史 / 记忆库 / 世界快照 / checkpoint / 原始 QQ 对象 / 凭据 / 路径 / 堆栈；
+  输出只有五个字段，严格规范化（`" Extend "` → `extend`，`EXTEND_AND_DIG` 直接拒），
+  `next_hint` 必须在既有活动注册表里（Minecraft 活动名一律拒），解释 ≤160 字符，**不许思维链**。
+* **规则再验证**（§十九-§二十五/§三十一）：越额度、覆盖硬锚点、撞车冷却、候选不合格、不存在的活动
+  —— 一律**整条拒绝**并回退规则（绝不偷偷 clamp）；被拒/失败都走原样的 6B/6C 路径。
+* **频率守卫与重启**（§六/§七/§三十八）：调用键 `activity:{episode_id}:{planned_end_at}`（确定性推导），
+  一个 cycle 最多一次调用；内存集合 + **既有 append-only 审计行**（`MODEL_ADVISED`）双守卫，
+  重启也不会重复问同一个 cycle —— **没有新表、没有新迁移**（仍 30）。
+* **默认关闭**（§四十一/§七十四）：`world.activity.model_advisor.{enabled:false, timeout_ms:1500,
+  provider, model}`；关着时行为与 6B/6C **逐字一致**（有"纯规则等价"测试守着）；
+  开了但没配好 → 启动告警 + 退回纯规则（不让 Bot 起不来，§四十二）。
+* **可观测**（§三十二/§七十一/§八十九/§九十）：`DecisionTrace` 新增 model_* 七个字段；
+  `ActivityModelReceipt`（不含 prompt/思维链）；日志一行 `[Activity.Model] …`（绝不打印 prompt）；
+  只读端点 `GET /api/v1/world/activity/advisor`；WebUI 世界页新增只读「模型顾问」卡片
+  （**没有**强制采纳 / 否决 / 再问一次）。
+* **测试与文档**：新增 7 个文件、**93 项**（advisor 20 / schema 22 / fallback 14 / guard 10 /
+  frequency 11 / injection 9 / recovery 7），覆盖任务书 A–X 矩阵 + 纯规则等价 + AST 安全 guard；
+  文档 `docs/MINECRAFT_PHASE6D.md` + `docs/README.md` 索引。
+* 顺手把 6B 的包级守卫更新为 6D 语义：**模型入口只允许存在于 `model_advisor.py` 这一条缝里**
+  （其他文件不许 import `app.ai`、不许调 chat/complete/generate）。
+
 ## Minecraft Phase 6C.1 — Episode 延长后的计划对齐（Schedule Reconciliation）
 
 * **问题**：Episode 被 6B `EXTEND` 之后，计划里那条 `CONTINUATION` 仍写着**旧**的结束时间，

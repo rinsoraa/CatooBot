@@ -37,6 +37,13 @@ from app.activity.model import (
     looks_like_minecraft_activity,
 )
 
+# Phase 6D：模型顾问（软判断）—— 只在这里用它，而且只在 §二十六 的第 8-14 步
+from app.activity.model_advisor import (
+    ActivityDecisionProposal,
+    ModelFailureCode,
+    advisory_cycle_key,
+)
+
 # ---------------------------------------------------------------- 枚举
 
 
@@ -183,6 +190,14 @@ class DecisionTrace:
     extension_seconds: float = 0.0
     guard_results: dict[str, Any] = field(default_factory=dict)
     decided_at: float = 0.0
+    # ---- Phase 6D §三十二：模型这一半的结构化事实（**绝不含 prompt / 思维链 / 凭据**）
+    model_attempted: bool = False
+    model_provider: str = ""
+    model_latency_ms: int = 0
+    model_result: dict[str, Any] = field(default_factory=dict)
+    model_rejected: bool = False
+    model_reject_reason: str = ""
+    fallback_used: bool = False
 
     def to_payload(self) -> dict[str, Any]:
         return {
@@ -205,6 +220,13 @@ class DecisionTrace:
             "extension_seconds": float(self.extension_seconds),
             "guard_results": dict(self.guard_results),
             "decided_at": float(self.decided_at),
+            "model_attempted": bool(self.model_attempted),
+            "model_provider": self.model_provider,
+            "model_latency_ms": int(self.model_latency_ms),
+            "model_result": dict(self.model_result),
+            "model_rejected": bool(self.model_rejected),
+            "model_reject_reason": self.model_reject_reason,
+            "fallback_used": bool(self.fallback_used),
         }
 
 
@@ -518,6 +540,9 @@ class ActivityDecisionEngine:
         bounce: ActivityBounceGuard | None = None,
         checker: WorldConsistencyChecker | None = None,
         advisor: Any = None,
+        advisory_probe: Any = None,
+        advisory_note: Any = None,
+        minecraft_context: Any = None,
         logger: Any = None,
     ) -> None:
         self.clock = clock
@@ -528,8 +553,16 @@ class ActivityDecisionEngine:
             cooldown_seconds=bounce_cooldown_seconds, clock=clock
         )
         self.checker = checker or WorldConsistencyChecker()
-        #: v1.0 §22 的"模型那一半"接口：**6B 永远是 None**（§三 硬约束）
+        #: v1.0 §22 的"模型那一半"接口（Phase 6D 起真的会说话；`None` = 纯规则模式，§四十）
         self.advisor = advisor
+        #: §三十八：持久侧的"这个 cycle 问过没"探针（异步，由 runtime 注入；缺省只用内存）
+        self.advisory_probe = advisory_probe
+        #: §七/§三十八：把"问过了"写进既有审计（异步；缺省只记内存）
+        self.advisory_note = advisory_note
+        #: §十：给顾问看的**只读** minecraft 观察切片（同步可调用 → dict；缺省没有）
+        self.minecraft_context = minecraft_context
+        #: 最近一次顾问回执（只读展示；持久事实在审计行与 trace 里）
+        self.last_receipt: dict[str, Any] = {}
         self._log = logger
         #: 最近几次决策的 trace（内存里、只读展示；持久事实在 Episode 行上）
         self.traces: list[DecisionTrace] = []
@@ -569,6 +602,8 @@ class ActivityDecisionEngine:
             "extension_count": int(episode.extension_count or 0) if episode else 0,
             "max_extensions": self.guard.max_extensions,
             "last_decision": trace.to_payload() if trace is not None else None,
+            # Phase 6D §八十九：顾问回执（只读；没有就空对象）
+            "model": dict(self.last_receipt),
             "guard": {
                 "max_extensions": self.guard.max_extensions,
                 "transition_window_seconds": self.transition_window_seconds,
@@ -685,9 +720,32 @@ class ActivityDecisionEngine:
         extension_seconds = float(episode.typical_duration or 0.0)
         allowed = self.guard.extension(episode, now=now, extension_seconds=extension_seconds)
         guards["extension"] = allowed.to_payload()
+        # 9b. Phase 6D：硬约束已经算完（§十九）→ 在**软空间**里问一次顾问
+        # （§二十/§二十六 第 8-14 步）。
+        # 顾问说不上话 / 失败 / 被规则拒 → 什么都不改，直接落到下面原样的规则路径（§二十七/§三十）。
+        advised, receipt = await self._maybe_advise(
+            episode,
+            now=now,
+            period=period,
+            guards=guards,
+            extension=allowed,
+            started_today=started_today,
+            history=history,
+        )
+        if advised is not None:
+            return self._finish(
+                episode,
+                advised,
+                now=now,
+                trigger=trigger,
+                period=period,
+                guards=guards,
+                transition_pending=True,
+                receipt=receipt,
+            )
         if allowed.ok and self._extendable(episode):
             seconds = float(allowed.detail.get("extension_seconds") or 0.0)
-            return self._finish(
+            decision, trace = self._finish(
                 episode,
                 ActivityDecision(
                     ActivityDecisionKind.EXTEND,
@@ -700,8 +758,10 @@ class ActivityDecisionEngine:
                 guards=guards,
                 transition_pending=True,
             )
+            self._attach_receipt(trace, receipt)
+            return decision, trace
         # 10. 换活动（过撞车护栏）
-        return await self._transition(
+        decision, trace = await self._transition(
             episode,
             now=now,
             trigger=trigger,
@@ -711,6 +771,380 @@ class ActivityDecisionEngine:
             started_today=started_today,
             history=history,
         )
+        self._attach_receipt(trace, receipt)
+        return decision, trace
+
+    # ------------------------------------------------------------ Phase 6D：模型顾问
+
+    async def _maybe_advise(
+        self,
+        episode: ActivityEpisode,
+        *,
+        now: float,
+        period: str,
+        guards: dict[str, Any],
+        extension: GuardVerdict,
+        started_today: int,
+        history: Sequence[ActivityEpisode],
+    ) -> tuple[ActivityDecision | None, dict[str, Any] | None]:
+        """在软空间里问一次顾问（§二十/§二十六）。返回 ``(被采纳的决策, 回执)``。
+
+        ``决策 is None`` = **规则说了算**（顾问没装配 / 已经问过 / 失败 / 被规则拒）——
+        调用方立刻走原样的规则路径，什么都不用管。
+        """
+        cycle_key = advisory_cycle_key(episode)
+        receipt: dict[str, Any] = {
+            "episode_id": episode.episode_id,
+            "cycle_id": cycle_key,
+            "attempted": False,
+            "accepted": False,
+            "fallback_used": False,
+        }
+        advisor = self.advisor
+        if advisor is None or not getattr(advisor, "available", False):
+            receipt["skipped_reason"] = "disabled"
+            self.last_receipt = receipt
+            return None, receipt
+        # §六/§七/§三十八：一个 cycle 只问一次（内存 + 持久审计两侧都查）
+        if advisor.has_attempted(cycle_key) or await self._advisory_attempted(episode, cycle_key):
+            receipt["skipped_reason"] = "already_attempted"
+            self.last_receipt = receipt
+            return None, receipt
+        receipt["provider"] = str(getattr(advisor, "provider_name", "") or "")
+        receipt["model"] = str(getattr(advisor, "model", "") or "")
+        context = self._advice_context(
+            episode,
+            now=now,
+            period=period,
+            extension=extension,
+            started_today=started_today,
+            history=history,
+        )
+        candidates = self._advice_candidates(
+            episode, now=now, started_today=started_today, context=context
+        )
+        guards["model"] = {
+            "attempted": True,
+            "cycle": cycle_key,
+            "extension_allowed": bool(extension.ok and self._extendable(episode)),
+        }
+        # 先记"问过"再问：超时/崩溃都不会让同一个 cycle 被问第二次（§七）
+        advisor.mark_attempted(cycle_key)
+        await self._advisory_note(episode, cycle_key)
+        receipt["attempted"] = True
+        try:
+            proposal = await advisor.advise(context=context, candidates=candidates)
+        except Exception as exc:  # noqa: BLE001 - 任何失败都只回退规则（§二十七/§三十九）
+            code = str(getattr(exc, "code", "") or ModelFailureCode.PROVIDER_ERROR)
+            receipt["failure"] = code
+            receipt["fallback_used"] = True
+            guards["model"].update({"failure": code, "fallback": True})
+            self._log_advisory(episode, cycle_key, advisor, receipt, period=period)
+            self.last_receipt = receipt
+            return None, receipt
+        receipt["latency_ms"] = int(getattr(advisor, "last_latency_ms", 0) or 0)
+        receipt["proposal"] = proposal.to_payload()
+        receipt["proposal_decision"] = proposal.decision
+        receipt["proposal_extension_seconds"] = proposal.extension_seconds
+        receipt["proposal_next_hint"] = proposal.next_hint or ""
+        receipt["reason_code"] = proposal.reason_code
+        receipt["explanation"] = proposal.state_explanation
+        # §二十一-§二十四：规则**再验一遍** —— 模型只能落在软空间里，越权就整条拒绝
+        rejection = self._reject_proposal(
+            proposal,
+            episode=episode,
+            extension=extension,
+            candidates=candidates,
+            now=now,
+            history=history,
+        )
+        if rejection:
+            receipt["rejection_reason"] = rejection
+            receipt["fallback_used"] = True
+            guards["model"].update({"rejected": True, "reason": rejection, "fallback": True})
+            self._log_advisory(episode, cycle_key, advisor, receipt, period=period)
+            self.last_receipt = receipt
+            return None, receipt
+        receipt["accepted"] = True
+        guards["model"]["accepted"] = True
+        self._log_advisory(episode, cycle_key, advisor, receipt, period=period)
+        self.last_receipt = receipt
+        return self._decision_from_proposal(proposal), receipt
+
+    @staticmethod
+    def _attach_receipt(trace: DecisionTrace, receipt: dict[str, Any] | None) -> None:
+        """把回执盖到 trace 上（规则赢了也要看得见"模型说了什么、为什么没采纳"）。"""
+        if not receipt:
+            return
+        trace.model_attempted = bool(receipt.get("attempted"))
+        trace.model_provider = str(receipt.get("provider") or "")
+        trace.model_latency_ms = int(receipt.get("latency_ms") or 0)
+        trace.model_result = dict(receipt.get("proposal") or {})
+        trace.model_reject_reason = str(receipt.get("rejection_reason") or "")
+        trace.model_rejected = bool(trace.model_reject_reason)
+        trace.fallback_used = bool(receipt.get("fallback_used"))
+
+    def _advice_context(
+        self,
+        episode: ActivityEpisode,
+        *,
+        now: float,
+        period: str,
+        extension: GuardVerdict,
+        started_today: int,
+        history: Sequence[ActivityEpisode] = (),
+    ) -> dict[str, Any]:
+        """给顾问的只读 context（§八/§十九/§五十六/§五十七）—— 全是 bounded 的最小事实。"""
+        state = self._state_fields()
+        book = getattr(self.planner, "anchors", None)
+        due_hard = [
+            anchor.anchor_id
+            for anchor in (book.all() if book is not None else ())
+            if anchor.hard and anchor.is_due(self.clock, now)
+        ]
+        allowed = ["continue"]
+        if bool(extension.ok and self._extendable(episode)):
+            allowed.append("extend")
+        allowed.append("transition")
+        return {
+            "current_activity": str(episode.activity_name or ""),
+            "elapsed_minutes": int(max(0.0, episode.elapsed(now)) // 60),
+            "planned_remaining_minutes": int(
+                max(0.0, float(episode.planned_end_at or 0.0) - float(now)) // 60
+            ),
+            "time_period": period,
+            "energy": float(state.get("energy") or 0.0),
+            "focus": float(state.get("focus") or 0.0),
+            "mood": str(state.get("mood") or ""),
+            "hard_constraints": {
+                "min_duration_satisfied": True,
+                "max_duration_reached": False,
+                "extension_count": int(episode.extension_count or 0),
+                "max_extensions": int(self.guard.max_extensions),
+                "extension_budget_seconds": round(
+                    float(extension.detail.get("extension_seconds") or 0.0), 1
+                ),
+                "hard_anchor_due": due_hard,
+            },
+            "allowed_decisions": allowed,
+            "routine_candidates": list(self._routine_for(period)),
+            "goal_candidates": list(self._goal_names()),
+            "recent_activities": [str(item.activity_name) for item in list(history)[-5:]],
+            "memory_evidence": [],
+            "minecraft": self._minecraft_context(),
+            "started_today": int(started_today),
+        }
+
+    def _advice_candidates(
+        self,
+        episode: ActivityEpisode,
+        *,
+        now: float,
+        started_today: int,
+        context: dict[str, Any],
+    ) -> list[dict[str, Any]]:
+        """候选摘要（§二十五：生成/资格/排序都是 Planner 的活，顾问只拿到摘要）。"""
+        plan = None
+        try:
+            plan = self.planner.preview_plan(
+                episode=episode, now=now, clock=self.clock, started_today=started_today
+            )
+        except Exception:  # noqa: BLE001 - 拿不到候选就退回"没有候选"，顾问照样可以 continue
+            plan = None
+        if plan is not None:
+            context["future_plan"] = [
+                {
+                    "activity": item.activity,
+                    "planned_start_at": float(item.planned_start),
+                    "planned_end_at": float(item.planned_end),
+                    "reason": item.reason,
+                }
+                for item in plan.items[:6]
+            ]
+        return [
+            {
+                "activity": candidate.activity,
+                "eligible": bool(candidate.eligible),
+                "reason": str(candidate.reason or ""),
+                "score": round(float(candidate.score), 3),
+            }
+            for candidate in (plan.candidates if plan is not None else ())
+        ]
+
+    def _reject_proposal(
+        self,
+        proposal: ActivityDecisionProposal,
+        *,
+        episode: ActivityEpisode,
+        extension: GuardVerdict,
+        candidates: list[dict[str, Any]],
+        now: float,
+        history: Sequence[ActivityEpisode] = (),
+    ) -> str:
+        """§二十一-§二十四：规则对模型提案的**再验证**。返回非空 = 拒绝原因。"""
+        if proposal.decision == "continue":
+            return ""
+        if proposal.decision == "extend":
+            if not (extension.ok and self._extendable(episode)):
+                return ModelFailureCode.RULE_REJECTED
+            budget = float(extension.detail.get("extension_seconds") or 0.0)
+            if budget <= 0.0 or proposal.extension_seconds > budget:
+                # §二十一：超出剩余延长额度 → **拒绝**（不偷偷 clamp，§三十一）
+                return ModelFailureCode.RULE_REJECTED
+            # §二十二：不得让延长跨过正在窗口里的**硬**锚点
+            book = getattr(self.planner, "anchors", None)
+            if book is not None:
+                end = float(episode.planned_end_at or now) + proposal.extension_seconds
+                for anchor in book.all():
+                    if not anchor.hard or anchor.activity == episode.activity_name:
+                        continue
+                    if not (anchor.is_due(self.clock, now) or anchor.upcoming(self.clock, now)):
+                        continue
+                    # §二十二：延长不得**覆盖**锚点窗口（模型比规则更严 —— 只可能更安全）
+                    if float(anchor.window(self.clock, now)[0]) <= end:
+                        return ModelFailureCode.RULE_REJECTED
+            return ""
+        hint = str(proposal.next_hint or "")
+        if not hint or hint == str(episode.activity_name):
+            return ModelFailureCode.RULE_REJECTED
+        eligible = {str(item.get("activity")): bool(item.get("eligible")) for item in candidates}
+        if hint not in eligible:
+            # 候选表里根本没有它 → 与"不合格"同样处理（§二十四/§五十一）
+            return ModelFailureCode.RULE_REJECTED
+        if not eligible.get(hint):
+            return ModelFailureCode.RULE_REJECTED
+        verdict = self.bounce.check(current=episode, candidate=hint, history=list(history), now=now)
+        if not verdict.ok:
+            # §二十三：撞车护栏是模型越不过去的
+            return ModelFailureCode.RULE_REJECTED
+        return ""
+
+    @staticmethod
+    def _decision_from_proposal(proposal: ActivityDecisionProposal) -> ActivityDecision:
+        """把被采纳的提案翻成既有决策形状（原因码仍然走规则词表，来源在 trace 的 model_* 里）。
+
+        ``confidence`` 刻意低于硬规则（0.6）：它是**启发式**采纳，不是规则裁决（§二三）。
+        """
+        if proposal.decision == "extend":
+            return ActivityDecision(
+                ActivityDecisionKind.EXTEND,
+                DecisionReason.TRANSITION_WINDOW,
+                extension_seconds=proposal.extension_seconds,
+                confidence=0.6,
+            )
+        if proposal.decision == "transition":
+            return ActivityDecision(
+                ActivityDecisionKind.TRANSITION,
+                DecisionReason.TRANSITION_WINDOW,
+                next_activity_hint=str(proposal.next_hint or ""),
+                confidence=0.6,
+            )
+        return ActivityDecision(
+            ActivityDecisionKind.CONTINUE, DecisionReason.TRANSITION_WINDOW, confidence=0.6
+        )
+
+    async def _advisory_attempted(self, episode: ActivityEpisode, cycle_key: str) -> bool:
+        """持久侧的 invocation guard（§三十八：重启也不许对同一个 cycle 再问一次）。"""
+        probe = self.advisory_probe
+        if probe is None:
+            return False
+        try:
+            return bool(await probe(episode, cycle_key))
+        except Exception:  # noqa: BLE001 - 探针坏了就只靠内存（绝不阻塞决策）
+            return False
+
+    async def _advisory_note(self, episode: ActivityEpisode, cycle_key: str) -> None:
+        note = self.advisory_note
+        if note is None:
+            return
+        try:
+            await note(episode, cycle_key)
+        except Exception:  # noqa: BLE001 - 审计写失败只降级
+            if self._log is not None:
+                self._log.debug("[World.Activity] 顾问审计落盘失败（忽略）", exc_info=True)
+
+    def _log_advisory(
+        self,
+        episode: ActivityEpisode,
+        cycle_key: str,
+        advisor: Any,
+        receipt: dict[str, Any],
+        *,
+        period: str,
+    ) -> None:
+        """§七十一：INFO 一行够用 —— **绝不**打印 prompt 或完整模型输出。"""
+        if self._log is None:
+            return
+        proposal = receipt.get("proposal") or {}
+        self._log.info(
+            "[Activity.Model] episode=%s cycle=%s provider=%s model=%s latency_ms=%d"
+            " proposal=%s accepted=%s fallback=%s reason=%s period=%s",
+            episode.episode_id,
+            cycle_key,
+            str(receipt.get("provider") or ""),
+            str(receipt.get("model") or ""),
+            int(receipt.get("latency_ms") or 0),
+            str(proposal.get("decision") or receipt.get("failure") or ""),
+            bool(receipt.get("accepted")),
+            bool(receipt.get("fallback_used")),
+            str(receipt.get("rejection_reason") or receipt.get("failure") or ""),
+            period,
+        )
+
+    # ---- 顾问用到的只读输入（拿不到就返回安全默认值，绝不让顾问拖垮决策） ----
+
+    def _state_fields(self) -> dict[str, Any]:
+        provider = getattr(self.planner, "state_provider", None)
+        state = None
+        if provider is not None:
+            try:
+                state = provider()
+            except Exception:  # noqa: BLE001
+                state = None
+        if state is None:
+            return {}
+
+        def get(key: str, default: Any = None) -> Any:
+            if isinstance(state, dict):
+                return state.get(key, default)
+            return getattr(state, key, default)
+
+        energy = get("energy", 0.8) or 0.0
+        focus_raw = get("current_focus", "")
+        try:
+            focus = float(focus_raw) if focus_raw not in ("", None) else 0.5
+        except (TypeError, ValueError):
+            focus = 0.5
+        return {
+            "energy": float(energy),
+            "focus": max(0.0, min(1.0, float(focus))),
+            "mood": str(get("mood", "") or ""),
+        }
+
+    def _routine_for(self, period: str) -> tuple[str, ...]:
+        table = getattr(self.planner, "routine_table", {}) or {}
+        return tuple(table.get(period) or ())
+
+    def _goal_names(self) -> tuple[str, ...]:
+        source = getattr(self.planner, "goal_source", None)
+        if source is None:
+            return ()
+        try:
+            snapshot = source.snapshot()
+        except Exception:  # noqa: BLE001
+            return ()
+        return tuple(goal.title for goal in snapshot.open_goals[:3])
+
+    def _minecraft_context(self) -> dict[str, Any]:
+        """§十：只给**观察事实**（在线 / 当前任务 / 状态），绝不给工具 schema 或执行接口。"""
+        provider = self.minecraft_context
+        if provider is None:
+            return {}
+        try:
+            payload = provider()
+        except Exception:  # noqa: BLE001 - 观察拿不到就当没有
+            return {}
+        return dict(payload) if isinstance(payload, dict) else {}
 
     # ------------------------------------------------------------ 内部
 
@@ -879,6 +1313,7 @@ class ActivityDecisionEngine:
         period: str,
         guards: dict[str, Any],
         transition_pending: bool = False,
+        receipt: dict[str, Any] | None = None,
     ) -> tuple[ActivityDecision, DecisionTrace]:
         trace = DecisionTrace(
             trace_id=f"dec_{uuid.uuid4().hex[:12]}",
@@ -900,6 +1335,13 @@ class ActivityDecisionEngine:
             extension_seconds=float(decision.extension_seconds),
             guard_results=dict(guards),
             decided_at=float(now),
+            model_attempted=bool((receipt or {}).get("attempted")),
+            model_provider=str((receipt or {}).get("provider") or ""),
+            model_latency_ms=int((receipt or {}).get("latency_ms") or 0),
+            model_result=dict((receipt or {}).get("proposal") or {}),
+            model_rejected=bool((receipt or {}).get("rejection_reason")),
+            model_reject_reason=str((receipt or {}).get("rejection_reason") or ""),
+            fallback_used=bool((receipt or {}).get("fallback_used")),
         )
         decided = ActivityDecision(
             decision.decision,

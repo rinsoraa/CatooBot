@@ -1024,6 +1024,22 @@ class MinecraftAgentConfig(BaseModel):
     trusted_players: list[str] = Field(default_factory=list)
 
 
+class ModelAdvisorConfig(BaseModel):
+    """Phase 6D §四十一：活动决策的**模型顾问**（软判断的参谋，永远没有最终决定权）。
+
+    **默认关闭**：关着的时候整条决策链与 6B/6C 逐字一致（纯规则、可复现、CI 不依赖模型）。
+    开启但没配好（引擎不可用 / 没写 model）→ 只告警 + 退回纯规则（§四十二，绝不让 Bot 起不来）。
+    """
+
+    enabled: bool = False
+    #: §二十八：单次顾问调用的墙钟上限（500~5000ms；默认 1500，绝不默认等十几秒）
+    timeout_ms: int = Field(default=1500, ge=500, le=5000)
+    #: 供应商标签（只用于日志/trace，**不参与选路** —— 真正的路在既有 router 里，§七十九）
+    provider: str | None = None
+    #: 用哪个模型（既有 router 里的模型名）；留空 = 没配好 → 退回纯规则
+    model: str | None = None
+
+
 class WorldActivityConfig(BaseModel):
     """Phase 6A：世界活动（Activity Episode）—— 只暴露真正需要的四个旋钮（§五十三）。"""
 
@@ -1050,6 +1066,8 @@ class WorldActivityConfig(BaseModel):
     planner_refresh_min_minutes: float = Field(default=5.0, ge=0.0, le=120.0)
     #: horizon 里最多排几条 future proposal（§六十八：默认 6，不要更多）
     max_future_episodes: int = Field(default=6, ge=1, le=6)
+    # ---- Phase 6D：模型顾问（默认关闭 → 纯规则，§七十四）
+    model_advisor: ModelAdvisorConfig = Field(default_factory=ModelAdvisorConfig)
 
 
 class WorldConfig(BaseModel):
