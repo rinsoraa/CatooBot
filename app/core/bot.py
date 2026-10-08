@@ -1021,8 +1021,10 @@ class Bot:
             ActivityPlanner,
             ActivityProjection,
             ActivityRuntime,
+            AnchorBook,
             MinecraftObservationAdapter,
             SandboxActivityAdapter,
+            SandboxGoalSource,
             SqliteActivityStore,
             TaskActivityAdapter,
             UserInteractionAdapter,
@@ -1033,11 +1035,21 @@ class Bot:
         timezone = str(getattr(world_config, "timezone", "") or "Asia/Singapore")
         self.activity_clock = WorldClock(timezone)
         character_id = self._activity_character_id()
+        # Phase 6C：Planner 的输入全部是**只读**的 —— 日程锚点（代码里的默认一天，§十二）、
+        # 角色状态（能量/专注），以及**复用**既有沙盒目标层（§二：不另造第二套 Goal 系统）。
+        sandbox_goals = getattr(self.sandbox, "goals", None)
+        planner = ActivityPlanner(
+            anchors=AnchorBook(),
+            goal_source=(
+                SandboxGoalSource(manager=sandbox_goals) if sandbox_goals is not None else None
+            ),
+            state_provider=self._activity_state,
+        )
         runtime = ActivityRuntime(
             store=SqliteActivityStore(self.database, logger=self.log),
             clock=self.activity_clock,
             character_id=character_id,
-            planner=ActivityPlanner(),
+            planner=planner,
             publisher=ActivityEventPublisher(logger=self.log),
             projection=ActivityProjection(self.character.states, logger=self.log),
             recent_episode_limit=int(getattr(config, "recent_episode_limit", 5) or 5),
@@ -1055,6 +1067,16 @@ class Bot:
             max_extensions_per_episode=int(getattr(config, "max_extensions_per_episode", 2) or 0),
             bounce_cooldown_seconds=float(getattr(config, "bounce_cooldown_minutes", 10.0) or 0.0)
             * 60.0,
+            # Phase 6C：rolling horizon 的三个旋钮（§六十八）+ 只读状态输入
+            planning_horizon_seconds=float(
+                getattr(config, "planning_horizon_minutes", 240.0) or 240.0
+            )
+            * 60.0,
+            # 注意：0 是合法值（"不要冷却"），这里**不能**用 ``or`` 兜底
+            planner_refresh_min_seconds=float(getattr(config, "planner_refresh_min_minutes", 5.0))
+            * 60.0,
+            max_future_episodes=int(getattr(config, "max_future_episodes", 6) or 6),
+            state_provider=self._activity_state,
             logger=self.log,
         )
         self.activity = runtime
@@ -1103,6 +1125,19 @@ class Bot:
             return str(self.character.personas.persona.identity.name or "") or "unscoped"
         except Exception:  # noqa: BLE001 - 拿不到名字就用兜底 id
             return "unscoped"
+
+    def _activity_state(self) -> Any:
+        """只读角色状态（给 Planner 读能量/专注/作息）。
+
+        Phase 6C §二十六：**适配既有字段**（``energy`` / ``current_focus`` /
+        ``schedule_state`` / ``social_state`` / ``mood``），绝不新建一套并行的状态。
+        拿不到就返回 ``None`` —— Planner 会当中性状态，绝不因为读不到状态就不规划。
+        """
+        try:
+            states = getattr(getattr(self, "character", None), "states", None)
+            return states.state if states is not None else None
+        except Exception:  # noqa: BLE001 - 只读输入，失败即中性
+            return None
 
     def _observe_activity_task_event(self, event: str, payload: dict[str, Any]) -> None:
         """任务事件 → Episode（后台执行；活动层故障绝不影响任务）。"""

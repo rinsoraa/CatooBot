@@ -1042,6 +1042,14 @@ class WorldActivityConfig(BaseModel):
     max_extensions_per_episode: int = Field(default=2, ge=0, le=5)
     #: 撞车冷却（分钟）：刚做过的活动在这么久内不许立刻回来（防 A→B→A，§十七）
     bounce_cooldown_minutes: float = Field(default=10.0, ge=0.0, le=240.0)
+    # ---- Phase 6C：rolling horizon（只加这三个，§六十八：别加几十个 tuning knobs）
+    #: 规划视野（分钟）：只保证"未来 1~4 小时"有计划，绝不排满一整天（§六）。
+    #: 范围 60~720（1~12 小时）；超出直接是 config validation error（§七）。
+    planning_horizon_minutes: float = Field(default=240.0, ge=60.0, le=720.0)
+    #: 两次"软触发"重新规划之间的最短间隔（分钟，§九）；重大触发可以突破它
+    planner_refresh_min_minutes: float = Field(default=5.0, ge=0.0, le=120.0)
+    #: horizon 里最多排几条 future proposal（§六十八：默认 6，不要更多）
+    max_future_episodes: int = Field(default=6, ge=1, le=6)
 
 
 class WorldConfig(BaseModel):

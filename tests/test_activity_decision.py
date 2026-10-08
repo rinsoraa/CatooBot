@@ -443,3 +443,31 @@ class TestFastForward:
             await rig.runtime.advance()
         elapsed = time.perf_counter() - started
         assert elapsed < 2.0, f"50 次 tick 用了 {elapsed:.3f}s"
+
+
+# ---------------------------------------------------------------- Phase 6C：计划不许绕过护栏
+
+
+class TestPlanDoesNotBypassGuards:
+    """§三十二：Planner 说"下一步换活动"**不等于**现在就能换 —— 6B 的护栏永远优先。"""
+
+    async def test_plan_cannot_shorten_the_min_duration(self, rig: Rig) -> None:
+        from app.activity import PlanTrigger
+
+        episode = await rig.runtime.start(
+            activity_name="gaming",
+            duration=(20 * 60.0, 60 * 60.0, 180 * 60.0),
+            now=rig.clock.now(),
+        )
+        assert episode is not None
+        # 计划里写着"接下来是别的活动"（例如午饭）
+        await rig.runtime.refresh_plan(
+            trigger=PlanTrigger.EPISODE_ENDED, now=rig.clock.now(), force=True
+        )
+        rig.clock.advance_minutes(5)  # 离 min_duration（20 分钟）还早
+        current = await rig.runtime.advance()
+        assert current is not None
+        assert current.episode_id == episode.episode_id  # 没被计划拽走
+        view = rig.runtime.decision_view(current)
+        assert view["last_decision"]["decision"] == "CONTINUE"
+        assert view["last_decision"]["reason_code"] == "MIN_DURATION_GUARD"

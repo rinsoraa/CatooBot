@@ -75,6 +75,7 @@ def activity_context_block(
     transitions: list[dict[str, Any]] | None = None,
     *,
     related_task: str = "",
+    clock: Any = None,
 ) -> str:
     """给一次 LLM turn 的"她现在在做什么"（≤1 条 + 最近 ≤3 条转移）。
 
@@ -85,7 +86,7 @@ def activity_context_block(
     lines = [
         f"现在的活动：{activity_label(episode.activity_name)}"
         f"（{episode.activity_name}，{episode.status.value}，来源 {episode.source.value}"
-        f"，计划 {_clock_text(episode.planned_end_at)} 结束）"
+        f"，计划 {_clock_text(episode.planned_end_at, clock)} 结束）"
     ]
     if related_task:
         lines.append(f"对应的任务：{related_task}")
@@ -98,9 +99,69 @@ def activity_context_block(
     return "\n".join(lines)
 
 
-def _clock_text(timestamp: float) -> str:
+#: 给模型的计划块最多写几条（§五十九：只要"接下来大致干嘛"，不是行程单）
+PLAN_ITEM_BUDGET = 3
+
+
+def plan_context_block(
+    plan: Any,
+    *,
+    episode: ActivityEpisode | None = None,
+    now: float = 0.0,
+    clock: Any = None,
+) -> str:
+    """给一次 LLM turn 的"接下来打算做什么"（§五十九/§七十二）。
+
+    措辞上**必须**把"计划"和"现在"分开写清楚，并且明确写出"计划不是现状"
+    —— §七十二 要求"我现在还在处理 Minecraft 任务"与"计划完成后休息一下"是两个答案，
+    绝不能混成"我现在正在休息"。所以这里：
+
+    * 标题写"（计划，不是现在正在做的事）"；
+    * 最后一行固定提醒"以现状为准"；
+    * **当前 Episode 在干什么**由 :func:`activity_context_block` 单独给（两块上下文并存）。
+
+    没有计划（或计划里没有未来项）就返回空串 —— 绝不编一个计划出来。
+    """
+    items = list(getattr(plan, "items", ()) or ())
+    if not items:
+        return ""
+    current_name = str(getattr(episode, "activity_name", "") or "")
+    upcoming = [item for item in items if float(item.planned_end) > float(now)]
+    # 跳过"现状本身"那一条（CONTINUATION）与和现状同名的第一条：那说的是现在，不是计划
+    planned: list[Any] = []
+    for item in upcoming:
+        if str(item.reason) == "CONTINUATION":
+            continue
+        if not planned and current_name and str(item.activity) == current_name:
+            continue
+        planned.append(item)
+        if len(planned) >= PLAN_ITEM_BUDGET:
+            break
+    if not planned:
+        return ""
+    lines = ["接下来的打算（这是**计划**，不是现在正在做的事）："]
+    for item in planned:
+        lines.append(
+            f"- {_clock_text(item.planned_start, clock)} 起 {activity_label(item.activity)}"
+            f"（约 {max(1, int(round(item.duration / 60.0)))} 分钟）"
+        )
+    lines.append("如果计划和现状不一致，**以现状为准**；计划随时可能被重新安排。")
+    return "\n".join(lines)
+
+
+def _clock_text(timestamp: float, clock: Any = None) -> str:
+    """时间戳 → ``HH:MM``。
+
+    ``clock`` 给了就用**配置时区**（与 Episode/锚点/时段同一个口径）；
+    没给才退回机器本地时区（只为了不破坏既有调用点）。
+    """
     if not timestamp:
         return "未定"
+    if clock is not None:
+        try:
+            return clock.local(float(timestamp)).strftime("%H:%M")
+        except Exception:  # noqa: BLE001 - 时钟坏了不该打断上下文
+            pass
     import datetime as _dt
 
     return _dt.datetime.fromtimestamp(float(timestamp)).strftime("%H:%M")

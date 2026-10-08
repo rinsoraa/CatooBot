@@ -176,6 +176,8 @@ class CharacterRuntime:
         )
         # Phase 6A §四十：她"现在在做什么"（活动上下文；预算 1 条 + ≤3 条变化）
         activity_context = await self._activity_context()
+        # Phase 6C §五十九：她"接下来打算做什么"（计划上下文；≤3 条，措辞上明确"不是现状"）
+        plan_context = await self._plan_context()
         if memory_block:
             minecraft_context = (
                 f"{minecraft_context}\n{memory_block}" if minecraft_context else memory_block
@@ -195,6 +197,7 @@ class CharacterRuntime:
             world=await self._world_context(),
             minecraft=minecraft_context,
             activity=activity_context,
+            plan=plan_context,
             media_context=media_context,
             facts=facts,
             expressions=expressions,
@@ -603,6 +606,22 @@ class CharacterRuntime:
             return str(await runtime.context_block())
         except Exception:  # noqa: BLE001 - 活动上下文只是上下文
             self._log.debug("Activity context unavailable", exc_info=True)
+            return ""
+
+    async def _plan_context(self) -> str:
+        """她"接下来打算做什么"（Phase 6C §五十九）——**计划**，不是现状。
+
+        与 :meth:`_activity_context` 分开取：§七十二 要求"我现在还在处理 Minecraft 任务"
+        和"计划完成后休息一下"是两个答案，所以两块上下文各自成型、绝不合写。
+        拿不到（没有计划/活动层关了）就什么都不加，绝不拖垮对话。
+        """
+        runtime = getattr(self, "activity", None)
+        if runtime is None:
+            return ""
+        try:
+            return str(await runtime.plan_context_block())
+        except Exception:  # noqa: BLE001 - 计划上下文只是上下文
+            self._log.debug("Plan context unavailable", exc_info=True)
             return ""
 
     def _minecraft_context(self) -> str:

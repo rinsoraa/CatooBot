@@ -118,6 +118,108 @@ export interface WorldActivityDecisionView {
   guard?: Record<string, unknown>
 }
 
+/** Phase 6C：计划条目 —— 一条"打算做的事"（**不是** Episode，没有 id/状态机）。 */
+export interface WorldPlanItem {
+  activity: string
+  planned_start: number
+  planned_end: number
+  duration: number
+  reason: string
+  priority: number
+  anchor_id: string
+  goal_id: string
+  score: number
+}
+
+/** Phase 6C：一个候选（含资格、拒绝原因与打分明细；score **不是**概率）。 */
+export interface WorldPlanCandidate {
+  activity: string
+  eligible: boolean
+  reason: string
+  score: number
+  breakdown: Record<string, number>
+  anchor_id: string
+  goal_id: string
+  order: number
+}
+
+/** Phase 6C：日程锚点（§十二）的只读形状。 */
+export interface WorldScheduleAnchor {
+  anchor_id: string
+  activity: string
+  target_time: string
+  window_before: number
+  window_after: number
+  priority: string
+  hard: boolean
+  days: number[] | null
+  note: string
+  phase?: string
+  fit?: number
+  window_start?: number
+  window_end?: number
+  target_at?: number
+}
+
+/** Phase 6C：持久目标（只读；来自既有沙盒目标层，§二）。 */
+export interface WorldPersistentGoal {
+  goal_id: string
+  title: string
+  description: string
+  priority: number
+  progress: number
+  status: string
+  kind: string
+  source: string
+  affinity: string[]
+}
+
+/** Phase 6C §五十八：计划只读视图（**没有** force select，也没有思维链）。 */
+export interface WorldActivityPlanView {
+  enabled: boolean
+  plan: {
+    plan_id: string
+    character_id: string
+    plan_version: number
+    status: string
+    generated_at: number
+    horizon_start: number
+    horizon_end: number
+    horizon_seconds: number
+    source: string
+    trigger: string
+    content_hash: string
+    superseded_by: string
+    items: WorldPlanItem[]
+    candidates: WorldPlanCandidate[]
+    rejected: WorldPlanCandidate[]
+    constraints: Record<string, unknown>
+  } | null
+  planning_horizon_seconds: number
+  refresh_min_seconds: number
+  max_future_episodes: number
+  refresh_count: number
+  last_refresh_at: number
+  last_result?: { refreshed: boolean; reason: string; trigger: string }
+  plan_id?: string
+  plan_version?: number
+  status?: string
+  source?: string
+  trigger?: string
+  current_item: WorldPlanItem | null
+  next: WorldPlanItem | null
+  upcoming: WorldPlanItem[]
+  candidates: WorldPlanCandidate[]
+  rejected: WorldPlanCandidate[]
+  selected: WorldPlanCandidate | null
+  anchors: WorldScheduleAnchor[]
+  goals?: { source: string; goals: WorldPersistentGoal[]; open_count: number } | null
+  stale?: boolean
+  coverage_left_seconds?: number
+  seconds_since_last_refresh?: number
+  degraded?: string
+}
+
 /** 一致性检查结果（只报不修）。 */
 export interface WorldConsistencyReport {
   ok: boolean

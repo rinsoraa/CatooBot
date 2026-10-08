@@ -175,3 +175,42 @@ class TestDetectOnly:
         current = await runtime.current()
         assert current is not None and current.status is ActivityStatus.ACTIVE
         assert current.typical_duration == 600.0
+
+
+# ---------------------------------------------------------------- Phase 6C：计划不是现实
+
+
+class TestPlansAreNotReality:
+    """§四十六：计划只是 intent —— 它过期/为空都**不是** Episode 的不一致。"""
+
+    async def test_stale_plan_never_shows_up_as_a_consistency_error(self) -> None:
+        from app.activity import (
+            ActivityPlanner,
+            ActivityRuntime,
+            FakeClock,
+            InMemoryActivityStore,
+            PlanTrigger,
+        )
+
+        clock = FakeClock(1_700_000_000.0)
+        runtime = ActivityRuntime(
+            store=InMemoryActivityStore(),
+            clock=clock,
+            character_id="罐头@deadbeef",
+            planner=ActivityPlanner(),
+        )
+        await runtime.refresh_plan(trigger=PlanTrigger.MANUAL, now=clock.now(), force=True)
+        clock.advance_hours(12)  # 计划整段过去了
+        report = runtime.run_consistency_check(None, now=clock.now())
+        assert report["ok"] is True, report
+        assert runtime.plan_view()["stale"] is True
+
+    async def test_no_plan_is_not_an_episode_error(self) -> None:
+        from app.activity import ActivityRuntime, FakeClock, InMemoryActivityStore
+
+        runtime = ActivityRuntime(
+            store=InMemoryActivityStore(), clock=FakeClock(1_700_000_000.0), character_id="c"
+        )
+        report = runtime.run_consistency_check(None, now=runtime._now(None))  # noqa: SLF001
+        assert report["ok"] is True
+        assert runtime.plan_view()["enabled"] is False

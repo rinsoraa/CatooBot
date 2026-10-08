@@ -237,6 +237,36 @@ class DomainApiRoutes(SocialApiRoutes, WebContext):
         payload["reason"] = str(trace.get("reason_code") or "")
         return ok(payload, request=request)
 
+    async def _v1_world_activity_plan(self, request: web.Request) -> web.Response:
+        """Phase 6C：rolling horizon **计划**的只读视图（§五十八）。
+
+        返回 Current / Candidates / Rejected（含原因）/ Scores / Constraints /
+        Goal Relevance / Routine Preference / Anchor / Selected / Plan Horizon / Plan Version。
+
+        三条"没有"和 6B 的决策视图一样硬：**没有**思维链、**没有** force select、
+        **没有**任何能改计划的入口（计划只能由 Runtime 按 §八 的触发点重排）。
+        """
+        runtime = getattr(self._bot, "activity", None)
+        if runtime is None:
+            return ok(
+                {
+                    "enabled": False,
+                    "plan": None,
+                    "next": None,
+                    "candidates": [],
+                    "rejected": [],
+                },
+                request=request,
+            )
+        try:
+            view = runtime.plan_view(now=None)
+        except Exception as exc:  # noqa: BLE001 - 只读失败不变成 5xx（如实降级）
+            return ok(
+                {"enabled": False, "degraded": type(exc).__name__, "plan": None},
+                request=request,
+            )
+        return ok(view, request=request)
+
     async def _v1_world_trace(self, request: web.Request) -> web.Response:
         limit = read_query_int(request, "limit", default=120, minimum=1, maximum=500)
         return ok(await self._read().world_trace(limit=limit), request=request)
@@ -581,6 +611,8 @@ class DomainApiRoutes(SocialApiRoutes, WebContext):
         app.router.add_get(
             f"{API_PREFIX}/world/activity/decision", wrap(self._v1_world_activity_decision)
         )
+        # Phase 6C：计划只读视图（§五八；**只读** —— 没有 force select，也没有重排按钮）
+        app.router.add_get(f"{API_PREFIX}/world/activity/plan", wrap(self._v1_world_activity_plan))
         app.router.add_get(f"{API_PREFIX}/world/trace", wrap(self._v1_world_trace))
         app.router.add_get(f"{API_PREFIX}/world/timeline", wrap(self._v1_world_timeline))
         app.router.add_get(f"{API_PREFIX}/world/topics", wrap(self._v1_world_topics))

@@ -10,6 +10,7 @@ import type {
   InterruptedInfo,
   TopicRow,
   WorldActivityDecisionView,
+  WorldActivityPlanView,
   WorldActivityView,
   WorldData,
   WorldTimelineRow,
@@ -60,6 +61,14 @@ export const worldApi = {
   /** Phase 6B：活动决策只读视图（decision / reason / transition_pending / …）。 */
   activityDecision() {
     return api.get<WorldActivityDecisionView>('/world/activity/decision')
+  },
+
+  /**
+   * Phase 6C §五十八：计划（Rolling Horizon）只读视图。
+   * 计划是"打算"、不是"现状"；这里**没有** force select，也没有重排按钮。
+   */
+  activityPlan() {
+    return api.get<WorldActivityPlanView>('/world/activity/plan')
   },
 
   timeline(limit = 100) {

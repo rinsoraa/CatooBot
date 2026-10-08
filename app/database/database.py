@@ -1342,6 +1342,56 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_activity_transitions_once
     WHERE transition IN ('ACTIVE', 'COMPLETED', 'INTERRUPTED', 'CANCELLED', 'EXPIRED');
 """,
     ),
+    (
+        30,
+        "world activity: plans + plan items (Phase 6C)",
+        """
+-- Phase 6C §四十五：Rolling Horizon 的**计划**存储。先查过现有库：v1.x 的 agent_plans 是
+-- 工具执行规划、sandbox_goals 是目标层，都**不是**这个 —— 日程计划此前没有存储，故新建。
+-- 语义边界（§四十六）：计划只是 intent，**不是** reality；现实永远只有 activity_episodes。
+CREATE TABLE IF NOT EXISTS activity_plans (
+    plan_id         TEXT PRIMARY KEY,
+    character_id    TEXT NOT NULL,
+    plan_version    INTEGER NOT NULL DEFAULT 0,
+    status          TEXT NOT NULL DEFAULT 'ACTIVE_PLAN',
+    generated_at    REAL NOT NULL DEFAULT 0,
+    horizon_start   REAL NOT NULL DEFAULT 0,
+    horizon_end     REAL NOT NULL DEFAULT 0,
+    source          TEXT NOT NULL DEFAULT '',
+    trigger         TEXT NOT NULL DEFAULT '',
+    content_hash    TEXT NOT NULL DEFAULT '',
+    superseded_by   TEXT NOT NULL DEFAULT '',
+    constraints     TEXT NOT NULL DEFAULT '{}',
+    candidates      TEXT NOT NULL DEFAULT '[]',
+    created_at      REAL NOT NULL,
+    updated_at      REAL NOT NULL
+);
+-- §四十四 + §十二（同一个角色同时最多一份生效计划）：数据库层兜住"两份 ACTIVE_PLAN"。
+-- 旧计划不删除，只把 status 改成 SUPERSEDED（历史与审计永远保留）。
+CREATE UNIQUE INDEX IF NOT EXISTS idx_activity_plans_active
+    ON activity_plans(character_id)
+    WHERE status = 'ACTIVE_PLAN';
+CREATE INDEX IF NOT EXISTS idx_activity_plans_character
+    ON activity_plans(character_id, created_at DESC);
+
+-- 计划条目：一条"打算做的事"（§四）。它**不是** Episode，没有状态机、没有 id。
+CREATE TABLE IF NOT EXISTS activity_plan_items (
+    plan_id        TEXT NOT NULL,
+    sequence       INTEGER NOT NULL,
+    activity       TEXT NOT NULL,
+    planned_start  REAL NOT NULL DEFAULT 0,
+    planned_end    REAL NOT NULL DEFAULT 0,
+    reason         TEXT NOT NULL DEFAULT '',
+    priority       REAL NOT NULL DEFAULT 0,
+    anchor_id      TEXT NOT NULL DEFAULT '',
+    goal_id        TEXT NOT NULL DEFAULT '',
+    score          REAL NOT NULL DEFAULT 0,
+    PRIMARY KEY (plan_id, sequence)
+);
+CREATE INDEX IF NOT EXISTS idx_activity_plan_items_plan
+    ON activity_plan_items(plan_id, sequence);
+""",
+    ),
 ]
 
 

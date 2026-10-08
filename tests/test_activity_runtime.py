@@ -372,3 +372,34 @@ class TestConcurrency:
             if name in {ACTIVITY_COMPLETED, ACTIVITY_EXPIRED, ACTIVITY_INTERRUPTED}
         ]
         assert len(terminal_events) == 1
+
+
+# ---------------------------------------------------------------- Phase 6C：计划驱动的活动
+
+
+class TestPlanDrivenActivity:
+    """6C 起"下一个活动"来自**计划**（§十七：Planner 的选择具有 Episode 连续性）。"""
+
+    async def test_episode_matches_the_plans_first_item(self, rig: Rig) -> None:
+        first = await rig.runtime.advance()
+        assert first is not None
+        plan = rig.runtime.active_plan
+        assert plan is not None and plan.items
+        planned = [item.activity for item in plan.items if item.reason != "CONTINUATION"]
+        assert planned, "计划里必须有一条下一步"
+        assert first.activity_name == planned[0]
+
+    async def test_plan_is_persisted_when_an_episode_starts(self, rig: Rig) -> None:
+        await rig.runtime.advance()
+        stored = await rig.runtime.plan_store.active_plan(rig.runtime.character_id)
+        assert stored is not None
+        assert stored.plan_id.startswith("PLAN-")
+        assert stored.character_id == rig.runtime.character_id
+
+    async def test_status_exposes_the_plan_section(self, rig: Rig) -> None:
+        """只读投影里同时有 6B 的决策与 6C 的计划（同一份事实，不另开口径）。"""
+        await rig.runtime.advance()
+        status = await rig.runtime.status()
+        assert status["decision"]
+        assert status["plan"]["enabled"] is True
+        assert status["plan"]["plan"]["items"]

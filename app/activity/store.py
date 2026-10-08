@@ -1,4 +1,4 @@
-"""Phase 6A §二十五/§二十六/§三十三/§四十四：Episode 的持久化与并发守卫。
+"""Phase 6A §二十五/§二十六/§三十三/§四十四 + Phase 6C §四十三-§四十七：持久化与并发守卫。
 
 两个实现，语义完全一致：
 
@@ -7,6 +7,13 @@
 * :class:`SqliteActivityStore` —— 生产用；**每个转移都是一次事务 + compare-and-set**，
   并靠 partial unique index 在数据库层保证"每个角色最多一个 live primary Episode"
   与"同一个 Episode 的同一个一次性转移只落一次"（§二十六/§三十三/§四十四）。
+
+Phase 6C 在同一层加**计划存储**（§四十五：``activity_plans`` + ``activity_plan_items``）：
+
+* 每个角色同一时间**最多一份** ``ACTIVE_PLAN``（partial unique index，和 Episode 同一套思路）；
+* 写新计划 = **一个事务**里"把旧计划标 SUPERSEDED + 插入新计划与它的条目"（§六十七：事务性）；
+* 旧计划**永不删除**（§四十四：历史保留），因此同一份内容重复写也不会产生新行
+  （§六十七：幂等由 ``content_hash`` + 调用方判重保证）。
 """
 
 from __future__ import annotations
@@ -24,6 +31,13 @@ from app.activity.model import (
     TransitionReason,
     episode_id_for,
     parse_episode_id,
+)
+from app.activity.plan import (
+    ActivityPlan,
+    Candidate,
+    PlanItem,
+    PlanStatus,
+    plan_id_for,
 )
 
 
@@ -69,6 +83,18 @@ class ActivityStore(Protocol):
 
     async def recent_transitions(self, episode_id: str, limit: int = 3) -> list[dict[str, Any]]: ...
 
+    # ---- Phase 6C：计划（§四十三-§四十七） ----
+
+    async def next_plan_id(self, day: str) -> str: ...
+
+    async def create_plan(self, plan: ActivityPlan) -> ActivityPlan: ...
+
+    async def active_plan(self, character_id: str) -> ActivityPlan | None: ...
+
+    async def get_plan(self, plan_id: str) -> ActivityPlan | None: ...
+
+    async def recent_plans(self, character_id: str, limit: int = 5) -> list[ActivityPlan]: ...
+
 
 # ---------------------------------------------------------------- InMemory
 
@@ -81,6 +107,10 @@ class InMemoryActivityStore:
         self._order: list[str] = []
         self._transitions: dict[str, list[dict[str, Any]]] = {}
         self._sequence: dict[str, int] = {}
+        #: Phase 6C：计划（内容 + 顺序 + 每天的计划号序列）
+        self._plans: dict[str, ActivityPlan] = {}
+        self._plan_order: list[str] = []
+        self._plan_sequence: dict[str, int] = {}
 
     # ------------------------------------------------------------ 读
 
@@ -182,6 +212,47 @@ class InMemoryActivityStore:
         )
         return True
 
+    # ------------------------------------------------------------ 计划（Phase 6C）
+
+    async def next_plan_id(self, day: str) -> str:
+        seq = int(self._plan_sequence.get(str(day), 0)) + 1
+        self._plan_sequence[str(day)] = seq
+        return plan_id_for(day, seq)
+
+    async def create_plan(self, plan: ActivityPlan) -> ActivityPlan:
+        """落一份新计划（旧 ACTIVE_PLAN 标 SUPERSEDED，历史保留，§四十四）。"""
+        stored = ActivityPlan.from_payload(plan.to_payload())  # JSON 往返：模拟真落盘
+        for existing in self._plans.values():
+            if existing.character_id == stored.character_id and existing.active:
+                existing.status = PlanStatus.SUPERSEDED
+                existing.superseded_by = stored.plan_id
+        self._plans[stored.plan_id] = ActivityPlan.from_payload(stored.to_payload())
+        self._plan_order.append(stored.plan_id)
+        return ActivityPlan.from_payload(stored.to_payload())
+
+    async def get_plan(self, plan_id: str) -> ActivityPlan | None:
+        raw = self._plans.get(str(plan_id))
+        return ActivityPlan.from_payload(raw.to_payload()) if raw is not None else None
+
+    async def active_plan(self, character_id: str) -> ActivityPlan | None:
+        found = [
+            plan
+            for plan in self._plans.values()
+            if plan.character_id == str(character_id) and plan.active
+        ]
+        if not found:
+            return None
+        # 版本最高的那份（同一角色理论上只有一份 active，这里仍然取稳定的那一份）
+        chosen = max(found, key=lambda item: (int(item.plan_version), str(item.plan_id)))
+        return ActivityPlan.from_payload(chosen.to_payload())
+
+    async def recent_plans(self, character_id: str, limit: int = 5) -> list[ActivityPlan]:
+        found = [plan for plan in self._plans.values() if plan.character_id == str(character_id)]
+        found.sort(key=lambda item: (float(item.generated_at), str(item.plan_id)), reverse=True)
+        return [
+            ActivityPlan.from_payload(plan.to_payload()) for plan in found[: max(1, int(limit))]
+        ]
+
     # ------------------------------------------------------------ 内部
 
     def _ordered(self) -> list[ActivityEpisode]:
@@ -245,6 +316,115 @@ class SqliteActivityStore:
             (str(episode_id), max(1, int(limit))),
         )
         return list(reversed([dict(row) for row in rows]))
+
+    # ------------------------------------------------------------ 计划（Phase 6C）
+
+    async def next_plan_id(self, day: str) -> str:
+        prefix = f"PLAN-{str(day)}-"
+        row = await self._db.fetchone(
+            "SELECT MAX(CAST(SUBSTR(plan_id, ?) AS INTEGER)) AS seq"
+            " FROM activity_plans WHERE plan_id LIKE ?",
+            (len(prefix) + 1, f"{prefix}%"),
+        )
+        current = int((row or {}).get("seq") or 0)
+        return plan_id_for(day, current + 1)
+
+    async def active_plan(self, character_id: str) -> ActivityPlan | None:
+        row = await self._db.fetchone(
+            "SELECT * FROM activity_plans WHERE character_id = ? AND status = ?"
+            " ORDER BY plan_version DESC, created_at DESC LIMIT 1",
+            (str(character_id), PlanStatus.ACTIVE_PLAN.value),
+        )
+        if row is None:
+            return None
+        return await self._load_plan(row)
+
+    async def get_plan(self, plan_id: str) -> ActivityPlan | None:
+        row = await self._db.fetchone(
+            "SELECT * FROM activity_plans WHERE plan_id = ?", (str(plan_id),)
+        )
+        if row is None:
+            return None
+        return await self._load_plan(row)
+
+    async def recent_plans(self, character_id: str, limit: int = 5) -> list[ActivityPlan]:
+        rows = await self._db.fetchall(
+            "SELECT * FROM activity_plans WHERE character_id = ?"
+            " ORDER BY created_at DESC, plan_id DESC LIMIT ?",
+            (str(character_id), max(1, int(limit))),
+        )
+        return [await self._load_plan(row) for row in rows]
+
+    async def _load_plan(self, row: dict[str, Any]) -> ActivityPlan:
+        items = await self._db.fetchall(
+            "SELECT * FROM activity_plan_items WHERE plan_id = ? ORDER BY sequence ASC",
+            (str(row["plan_id"]),),
+        )
+        return _plan_from_row(row, items)
+
+    async def create_plan(self, plan: ActivityPlan) -> ActivityPlan:
+        """一个事务里"作废旧计划 + 插入新计划与条目"（§六十七：事务性、可重放）。
+
+        §四十四：旧计划只标 SUPERSEDED，**绝不删**。
+        """
+
+        def _run(conn: Any) -> None:
+            conn.execute(
+                "UPDATE activity_plans SET status = ?, superseded_by = ?, updated_at = ?"
+                " WHERE character_id = ? AND status = ?",
+                (
+                    PlanStatus.SUPERSEDED.value,
+                    str(plan.plan_id),
+                    float(plan.generated_at),
+                    str(plan.character_id),
+                    PlanStatus.ACTIVE_PLAN.value,
+                ),
+            )
+            conn.execute(
+                "INSERT OR REPLACE INTO activity_plans (plan_id, character_id, plan_version,"
+                " status, generated_at, horizon_start, horizon_end, source, trigger,"
+                " content_hash, superseded_by, constraints, candidates, created_at, updated_at)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    str(plan.plan_id),
+                    str(plan.character_id),
+                    int(plan.plan_version),
+                    plan.status.value,
+                    float(plan.generated_at),
+                    float(plan.horizon_start),
+                    float(plan.horizon_end),
+                    str(plan.source),
+                    str(plan.trigger),
+                    str(plan.content_hash),
+                    str(plan.superseded_by),
+                    json.dumps(plan.constraints, ensure_ascii=False),
+                    json.dumps([item.to_payload() for item in plan.candidates], ensure_ascii=False),
+                    float(plan.generated_at),
+                    float(plan.generated_at),
+                ),
+            )
+            for sequence, item in enumerate(plan.items):
+                payload = item.to_payload()
+                conn.execute(
+                    "INSERT OR REPLACE INTO activity_plan_items (plan_id, sequence, activity,"
+                    " planned_start, planned_end, reason, priority, anchor_id, goal_id, score)"
+                    " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    (
+                        str(plan.plan_id),
+                        int(sequence),
+                        payload["activity"],
+                        payload["planned_start"],
+                        payload["planned_end"],
+                        payload["reason"],
+                        payload["priority"],
+                        payload["anchor_id"],
+                        payload["goal_id"],
+                        payload["score"],
+                    ),
+                )
+
+        await self._db.run_in_transaction(_run)
+        return plan
 
     # ------------------------------------------------------------ 写
 
@@ -380,3 +560,57 @@ def _from_row(row: dict[str, Any]) -> ActivityEpisode:
 #: 便捷：把 TransitionReason 枚举转成字符串（调用方常写 reason=TransitionReason.X）
 def reason_value(reason: TransitionReason | str) -> str:
     return reason.value if isinstance(reason, TransitionReason) else str(reason)
+
+
+def _plan_from_row(row: dict[str, Any], items: list[dict[str, Any]]) -> ActivityPlan:
+    """数据库行 → 计划（条目来自 ``activity_plan_items``，候选来自 JSON 列；坏数据不猜）。"""
+    payload = dict(row)
+    for key in ("constraints", "candidates"):
+        raw = payload.get(key)
+        if isinstance(raw, str):
+            try:
+                payload[key] = json.loads(raw)
+            except (TypeError, ValueError):
+                payload[key] = {} if key == "constraints" else []
+    return ActivityPlan(
+        plan_id=str(payload.get("plan_id") or ""),
+        character_id=str(payload.get("character_id") or ""),
+        plan_version=int(payload.get("plan_version") or 0),
+        generated_at=float(payload.get("generated_at") or 0.0),
+        horizon_start=float(payload.get("horizon_start") or 0.0),
+        horizon_end=float(payload.get("horizon_end") or 0.0),
+        status=PlanStatus(str(payload.get("status") or PlanStatus.ACTIVE_PLAN.value)),
+        items=tuple(
+            PlanItem(
+                activity=str(item.get("activity") or ""),
+                planned_start=float(item.get("planned_start") or 0.0),
+                planned_end=float(item.get("planned_end") or 0.0),
+                reason=str(item.get("reason") or ""),
+                priority=float(item.get("priority") or 0.0),
+                anchor_id=str(item.get("anchor_id") or ""),
+                goal_id=str(item.get("goal_id") or ""),
+                score=float(item.get("score") or 0.0),
+            )
+            for item in items
+        ),
+        candidates=tuple(
+            Candidate(
+                activity=str(item.get("activity") or ""),
+                eligible=bool(item.get("eligible")),
+                reason=str(item.get("reason") or ""),
+                score=float(item.get("score") or 0.0),
+                breakdown={
+                    str(key): float(value) for key, value in (item.get("breakdown") or {}).items()
+                },
+                anchor_id=str(item.get("anchor_id") or ""),
+                goal_id=str(item.get("goal_id") or ""),
+                order=int(item.get("order") or 0),
+            )
+            for item in (payload.get("candidates") or [])
+        ),
+        constraints=dict(payload.get("constraints") or {}),
+        source=str(payload.get("source") or ""),
+        trigger=str(payload.get("trigger") or ""),
+        content_hash=str(payload.get("content_hash") or ""),
+        superseded_by=str(payload.get("superseded_by") or ""),
+    )

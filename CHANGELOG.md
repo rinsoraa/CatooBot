@@ -3,6 +3,64 @@
 本文件记录 CatooBot 的版本演进。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号见 `pyproject.toml`；日期取自真实提交历史（本仓库 2026-09-30 起）。
 
+## Minecraft Phase 6C — 活动规划（Rolling Horizon / 日程锚点 / 持久目标）
+
+* **ActivityPlanner 升级（§三）**：`app/activity/planner.py` 现在产出 `plan_next(...) -> ActivityPlan`
+  （纯函数：无数据库、无沙盒、无 Minecraft、无模型、无随机）。6A 的 `initial()` / `next_after()`
+  **签名与语义一字未改**，但它们改为从同一份计划里取"下一步" —— Planner 的选择与计划里的下一步
+  永远是同一个东西（§十七）。新增 `PlannerContext` 承载一次规划的全部只读输入。
+* **Rolling Horizon（§六-§九）**：新增配置 `world.activity.planning_horizon_minutes`（默认 240，
+  范围 60~720，超范围直接 validation error）与 `max_future_episodes`（默认 6，1~6）。
+  铺计划四步循环：现实优先（`CONTINUATION`）→ 锚点窗口 → "装不下就先别开始" → 相邻不同名。
+  **普通 tick 不重算**：只做一次廉价检查（内存计划 + 一次只读状态/目标签名）；
+  真的重排只发生在 §八 的八个触发点上，软触发还要过 `planner_refresh_min_minutes`（默认 5 分钟）。
+* **日程锚点（§十二-§十五）**：新增 `app/activity/anchors.py` —— `ScheduleAnchor`
+  （本地钟面 `HH:MM` + 弹性窗口 + 五档优先级 + `hard`）与默认的一天（睡觉 + 三餐）。
+  硬锚点**不**强制整点切活动：窗口里它顶到候选前面，换不换仍由 6B 的护栏决定（有测试）。
+  弹性锚点解决"游戏玩到一小时前被打断"与"gaming → 午饭 → gaming"两种烂排法。附带
+  `anchor_adherence(...)`（3 天模拟的锚点遵守度）。
+* **活动画像与三分类（§十八/§十九）**：新增 `app/activity/profiles.py` —— 18 个活动的
+  `ActivityProfile`（`fixed` / `flexible` / `free` + 弹性/能耗/专注/社会偏好/可服务的锚点类别），
+  时长档**直接读** 6A 的 `VIRTUAL_DURATIONS`（不复制第二份时长表）。
+* **候选生成与确定性排名（§三十三-§三十九）**：候选 3~6 个、逐条带 `eligible`/`reason`
+  （`ENERGY_TOO_LOW` / `PERIOD_ILLEGAL` / `ANCHOR_CONFLICT` / `NOT_MOVEABLE` / `UNKNOWN_ACTIVITY`），
+  打分是**八项加权和**（锚点 3.0 / 习惯 2.0 / 能量 0.96 / 专注 0.64 / 目标 1.2 / 重复惩罚 −1.8 /
+  弹性 0.5 / 时段 1.0），tie-break 严格按 §三十七 的四道（锚点 → 目标 → 习惯 → 稳定的活动名）。
+  **score 不是概率**：没有阈值、没有随机。
+* **持久目标（§二十-§二十五）**：新增 `app/activity/goals.py`。**不建第二套目标系统**：
+  `PersistentGoal` 是既有沙盒目标层（`sandbox_goals`，migration 23）的**只读投影**
+  （`progress` 本来就是 0.0~1.0，正是 §二十四 推荐的口径）。目标只影响排名
+  （`goal_relevance`），能量极低时也排不出项目活动（§二十三），
+  且 `goals.py` 里不出现 `allow_medium` / `Policy`（§五十四）。
+* **能量与专注（§二十六-§二十九）**：适配既有 `CharacterState` 字段（`energy` /
+  `current_focus` / `schedule_state` / `social_state` / `mood`），**不新建**并行状态。
+  能量是硬的（`energy < 0.25` 只允许 `LOW_ENERGY_SAFE`，豁免清单 `LOW_ENERGY_EXEMPT` 默认空），
+  专注是软的（只进打分、从不拒绝）。
+* **计划持久化（§四十三-§四十五/§六十七）**：迁移 **30** 建 `activity_plans` +
+  `activity_plan_items`（partial unique index 保证每角色最多一份 `ACTIVE_PLAN`）。
+  写新计划是一个事务（作废旧计划 + 插入新计划），**旧计划永不删除**（只标 `SUPERSEDED`），
+  版本只在**内容真的变了**时才 +1（签名用相对偏移，不看绝对时刻）。计划项**不是** Episode。
+* **恢复与兜底（§四十七-§四十九）**：重启后先认现实（当前 Episode）、再认计划，
+  `recover()` 结果带上 `plan`（`none`/`loaded`/`stale`）；计划过期就重排。
+  Planner 失败保住现有活动、绝不让活动变空；连 `planner.initial()` 都炸了还有最后兜底
+  （`idle`／夜里 `resting`，且**不经过 Planner 对象**）。计划存储坏了只在内存里用并如实降级。
+* **只读暴露（§五十八）**：`GET /api/v1/world/activity/plan`（候选 / 被拒原因 / 分数 /
+  约束 / 目标 / 锚点 / 选中 / 视野 / 版本）；`GET /api/v1/world/activity` 新增 `plan` 段；
+  WebUI World 页新增"接下来的打算"卡片（**只读**：没有 force select、没有重排按钮、没有思维链）。
+  手动重排只在进程内（`refresh_plan(trigger=MANUAL)`），不对外开放写入口。
+* **QQ 上下文（§五十九/§七十二）**：新增 `plan_context_block()`，与"现在在做什么"**分两块**注入，
+  计划块自带「这是计划，不是现在正在做的事」「以现状为准」——保证"你接下来准备干嘛？"与
+  "你现在在干嘛？"必然是两个答案。§六十 的 6B 遗留门禁（QQ 问当前活动）在本阶段一并真机验证。
+* **顺手修掉的真缺陷**：①`WorldClock.local_hour` 用**机器本地时区**（与 `period()`/`day_key()`
+  的配置时区不一致）且全项目零调用 —— 直接删除，改为统一的 `local()/local_minute()/
+  local_weekday()/day_start()`（一律配置时区）；②`activity_context_block` 的时刻也统一按配置时区；
+  ③补上 `free_time` / `resting` 等 6 个活动名的时长档与人话标签（6B 的兜底集合里有裸 token）。
+* **测试与文档**：新增 `tests/test_activity_planner.py`、`test_activity_planning_horizon.py`、
+  `test_activity_goals.py`、`test_activity_anchors.py`、`test_activity_candidate_ranking.py`、
+  `test_activity_plan_persistence.py`、`test_activity_plan_recovery.py`（含 AST 安全 guard、
+  3 天快进、确定性矩阵），并更新 runtime / decision / recovery / consistency 四个既有文件；
+  文档 `docs/MINECRAFT_PHASE6C.md` + `docs/README.md` 索引。
+
 ## Minecraft Phase 6B — 活动决策引擎（Continue / Extend / Transition）
 
 * **决策引擎（规则优先）**：新增 `app/activity/decision.py` —— `ActivityDecisionEngine` 按任务书 §二四

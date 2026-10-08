@@ -879,6 +879,11 @@ _NOTES: dict[str, str] = {
     ),
     "world.activity.max_extensions_per_episode": "一条活动最多自动延长几次（防无限续命）",
     "world.activity.bounce_cooldown_minutes": "刚做过的活动多久内不许立刻回来（防来回跳）",
+    "world.activity.planning_horizon_minutes": (
+        "规划视野（分钟，60~720）：只保证未来 1~12 小时有计划，绝不排满全天"
+    ),
+    "world.activity.planner_refresh_min_minutes": "软触发重新规划的最短间隔（分钟）",
+    "world.activity.max_future_episodes": "计划里最多排几条 future proposal（默认 6）",
     "minecraft.memory.enabled": "Minecraft 身份桥 + 世界记忆（关掉只是「不记得」，权限照旧）",
     "minecraft.memory.reconcile_interval_seconds": "多久拿当前世界核对一次记忆（对账）",
     "minecraft.memory.context_items": "每次对话最多带几条 Minecraft 记忆（≤5）",

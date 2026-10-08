@@ -169,11 +169,20 @@ class TestPersistence:
         await database.close()
 
     async def test_fifty_two_no_episode_is_a_legal_state(self, tmp_path: Any) -> None:
-        """§五十二：旧数据没有 Episode 就不许凭空造一个。"""
+        """§五十二：旧数据没有 Episode 就不许凭空造一个。
+
+        Phase 6C 起 recover() 顺带上报**计划**的状态（§四十七：重启后先认现实、再看计划），
+        所以结果字典多了 ``plan`` 一项 —— ``none`` 表示库里没有生效计划。
+        """
         database = await make_db(tmp_path)
         runtime = build(database)
         result = await runtime.recover()
-        assert result == {"action": "none", "episode_id": "", "reason": "no_episode"}
+        assert result == {
+            "action": "none",
+            "episode_id": "",
+            "reason": "no_episode",
+            "plan": "none",
+        }
         assert await runtime.current() is None
         assert await runtime.recent(10) == []
         await database.close()
@@ -515,3 +524,34 @@ class TestBotForwardsTaskPause:
         bot.tasks = None
         bot.task_entry = None
         bot._publish_task_event("task.paused", {"task_id": "task_real"})  # 不抛异常
+
+
+# ---------------------------------------------------------------- Phase 6C：计划的恢复上报
+
+
+class TestPlanRecoveryReporting:
+    """§四十七：重启后要能回答"计划还在不在、过没过期"。"""
+
+    async def test_recover_reports_the_plan_state(self, tmp_path: Any) -> None:
+        from app.activity import PlanTrigger
+
+        database = await make_db(tmp_path)
+        runtime = build(database)
+        await runtime.refresh_plan(
+            trigger=PlanTrigger.MANUAL,
+            now=runtime._now(None),
+            force=True,  # noqa: SLF001
+        )
+        result = await runtime.recover()
+        assert result["action"] == "none"  # 没有 Episode 就不造（§五十二）
+        assert result["plan"] in {"loaded", "stale"}
+        assert runtime.active_plan is not None
+        await database.close()
+
+    async def test_recover_says_none_when_there_is_no_plan(self, tmp_path: Any) -> None:
+        database = await make_db(tmp_path)
+        runtime = build(database)
+        result = await runtime.recover()
+        assert result["plan"] == "none"
+        assert runtime.active_plan is None
+        await database.close()

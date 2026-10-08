@@ -9,6 +9,9 @@
 * ``elapsed_since(ts)`` —— 从某个时间戳到现在过了多久
 * ``period()`` —— 一天里的语义时段（morning / afternoon / evening / night）
 * ``timezone()`` —— 可配置时区（默认 ``Asia/Singapore``）
+* ``local()/local_minute()/local_weekday()/day_start()`` —— Phase 6C 的日程锚点要用
+  **本地钟面**时间（12:00 就是本地 12:00）；换算只有 ``local()`` 一处，
+  一律按**配置时区**，绝不混用机器本地时区。
 
 它**不认识**活动、Episode、数据库 —— 上层拿 ``now()`` 去算生命周期。
 测试用 :class:`FakeClock` 直接 ``advance(...)``，**绝不** ``sleep(3600)``（§二十四）。
@@ -16,6 +19,7 @@
 
 from __future__ import annotations
 
+import datetime as _dt
 import time
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -76,33 +80,37 @@ class WorldClock:
             return 0.0
         return max(0.0, self.now() - start)
 
-    def local_hour(self, at: float | None = None) -> int:
-        """本地小时（0-23）。"""
+    def local(self, at: float | None = None) -> _dt.datetime:
+        """按**配置时区**换算的本地时间（唯一换算口，绝不用机器本地时区）。"""
         moment = self.now() if at is None else float(at)
-        return time.localtime(moment).tm_hour
+        return _dt.datetime.fromtimestamp(moment, tz=self._tz)
+
+    def local_minute(self, at: float | None = None) -> int:
+        """本地钟面分钟 0-1439（Phase 6C 的日程锚点按它定位）。"""
+        local = self.local(at)
+        return int(local.hour) * 60 + int(local.minute)
+
+    def local_weekday(self, at: float | None = None) -> int:
+        """本地星期（0=周一 … 6=周日），锚点用它做"哪些天生效"。"""
+        return int(self.local(at).weekday())
+
+    def day_start(self, at: float | None = None) -> float:
+        """本地当天 00:00 的时间戳（锚点窗口的基准点）。"""
+        local = self.local(at)
+        midnight = local.replace(hour=0, minute=0, second=0, microsecond=0)
+        return float(midnight.timestamp())
 
     def period(self, at: float | None = None) -> str:
         """语义时段（按**配置时区**换算，而不是机器本地时区）。"""
-        moment = self.now() if at is None else float(at)
-        import datetime as _dt
-
-        local = _dt.datetime.fromtimestamp(moment, tz=self._tz)
-        return period_of(local.hour)
+        return period_of(self.local(at).hour)
 
     def day_key(self, at: float | None = None) -> str:
         """本地日期 ``YYYYMMDD``（Episode ID 的日期段用它）。"""
-        moment = self.now() if at is None else float(at)
-        import datetime as _dt
-
-        local = _dt.datetime.fromtimestamp(moment, tz=self._tz)
-        return local.strftime("%Y%m%d")
+        return self.local(at).strftime("%Y%m%d")
 
     def isoformat(self, at: float | None = None) -> str:
         """本地时间字符串（日志与审计用）。"""
-        moment = self.now() if at is None else float(at)
-        import datetime as _dt
-
-        return _dt.datetime.fromtimestamp(moment, tz=self._tz).isoformat(timespec="seconds")
+        return self.local(at).isoformat(timespec="seconds")
 
 
 class FakeClock(WorldClock):

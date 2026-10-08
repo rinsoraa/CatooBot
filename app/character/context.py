@@ -127,6 +127,9 @@ class CharacterContextBuilder:
         # Phase 6A §四十：她**现在在做什么**（来自 ActivityEpisode；≤1 条 + ≤3 条最近变化）。
         # 只是上下文（§四十一 的优先级里排在"当前任务"之后），**不是**权限（§五十）。
         activity: str = "",
+        # Phase 6C §五十九：她**接下来打算**做什么（来自 ActivityPlan；≤3 条）。
+        # 与 `activity` 是两件事 —— 计划永远不能冒充现状（§七十二）。
+        plan: str = "",
         media_context: str = "",
         facts: str = "",
         expressions: str = "",
@@ -201,6 +204,13 @@ class CharacterContextBuilder:
         if activity:
             system_parts.append(activity)
         trace("activity", bool(activity), "no current episode")
+
+        # 3b'''. 接下来的打算（Phase 6C §五十九）：**计划**，不是现状。刻意紧跟活动块，
+        # 但措辞上分开（块内自带"这是计划、以现状为准"）—— §七十二 要求她不能把
+        # "计划里要休息"说成"我现在正在休息"。没有计划就什么都不加。
+        if plan:
+            system_parts.append(plan)
+        trace("plan", bool(plan), "no active plan")
 
         # 3c. Character continuity (v1.2): the short-timescale "same person"
         # state — current interest, unfinished things, last exchange (v1.2 §52-§54).

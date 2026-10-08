@@ -254,7 +254,11 @@ class TestMemoryIsolation:
         assert second is not None
         await runtime.complete(now=clock.now())
         recent = await runtime.recent(10)
-        assert len(recent) >= 2  # 只有 Episode 表里有东西
+        # 只有 Episode 表里有东西。Phase 6C 起计划可能挑到**可延长**的活动（例如 reading），
+        # 于是 2 小时后是 EXTEND 而不是换新 Episode —— 所以断言"生命周期真的推进过"，
+        # 而不是钉死条数（这个用例关心的是**记忆隔离**，条数只是脚手架）。
+        assert len(recent) >= 1
+        assert recent[0].extension_count >= 1 or recent[0].status.terminal or len(recent) >= 2
 
 
 class TestSecurityGuards:

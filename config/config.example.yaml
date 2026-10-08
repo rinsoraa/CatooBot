@@ -574,6 +574,10 @@ world:
     transition_window_minutes: 5       # 结束前多久进入"准备换活动"窗口（窗口内只待命，不提前切）
     max_extensions_per_episode: 2      # 一条活动最多自动延长几次（0~5；防无限续命）
     bounce_cooldown_minutes: 10        # 刚做过的活动多久内不许立刻回来（防 A→B→A）
+    # ---- Phase 6C：未来一小段的规划（Rolling Horizon）
+    planning_horizon_minutes: 240      # 规划视野（60~720）：只保证未来 1~12 小时有计划，绝不排满全天
+    planner_refresh_min_minutes: 5     # 软触发重新规划的最短间隔（0 = 不设冷却）
+    max_future_episodes: 6             # 计划里最多排几条 future proposal（1~6）
 
 # ============================================================
 # Minecraft 连接层（Phase 1）

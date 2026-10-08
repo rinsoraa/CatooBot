@@ -24,7 +24,7 @@ import NeedList from '@/components/domain/NeedList.vue'
 import WorldStateCard from '@/components/domain/WorldStateCard.vue'
 import { toast } from '@/composables/toast'
 import { useWorldStore } from '@/stores/world'
-import type { WorldActivityView } from '@/types/domain'
+import type { WorldActivityPlanView, WorldActivityView } from '@/types/domain'
 import type {
   BehaviorPreviewInput,
   BehaviorPreviewResult,
@@ -75,9 +75,59 @@ function activityClock(seconds: number): string {
   return new Date(seconds * 1000).toLocaleTimeString()
 }
 
+// Phase 6C §五十八：计划（Rolling Horizon）的**只读**视图。
+// 计划是"打算"，不是"现状"——页面上必须与"当前活动"分开显示，且没有任何强制选择入口。
+const plan = ref<WorldActivityPlanView | null>(null)
+const planError = ref('')
+
+async function loadPlan(): Promise<void> {
+  try {
+    plan.value = await worldApi.activityPlan()
+    planError.value = ''
+  } catch (caught) {
+    planError.value = errorMessage(caught)
+  }
+}
+
+function horizonText(seconds: number | undefined): string {
+  if (!seconds || seconds <= 0) return '—'
+  return `未来 ${Math.round(seconds / 60)} 分钟`
+}
+
+function minutesText(seconds: number | undefined): string {
+  if (!seconds || seconds <= 0) return '—'
+  return `${Math.max(1, Math.round(seconds / 60))} 分钟`
+}
+
+function agoText(seconds: number | undefined): string {
+  if (!seconds || seconds <= 0) return '刚刚'
+  return `${Math.round(seconds / 60)} 分钟前`
+}
+
+function breakdownText(breakdown: Record<string, number> | undefined): string {
+  if (!breakdown) return '—'
+  return Object.entries(breakdown)
+    .filter(([, value]) => value !== 0)
+    .map(([key, value]) => `${key} ${value.toFixed(2)}`)
+    .join('、')
+}
+
+function anchorLabel(anchor: {
+  anchor_id: string
+  activity: string
+  target_time: string
+  hard?: boolean
+  phase?: string
+}): string {
+  const hardness = anchor.hard ? '硬' : '软'
+  const phase = anchor.phase ? `/${anchor.phase}` : ''
+  return `${anchor.anchor_id} ${anchor.target_time} ${anchor.activity}(${hardness}${phase})`
+}
+
 onMounted(() => {
   if (!store.world && !store.loading) void store.loadWorld()
   void loadActivity()
+  void loadPlan()
 })
 
 function reload(): void {
@@ -673,6 +723,133 @@ function previewMoodText(): string {
             </tbody>
           </table>
         </template>
+      </section>
+
+      <!-- Phase 6C §五十八：Planner Debug —— **只读**。计划是"打算"，不是"现状"；
+           这里没有 force select，也没有重排按钮（那只有 Runtime 按 §八 的触发点才做）。 -->
+      <section class="cb-card cb-world__section" data-test="world-plan">
+        <SectionHeader
+          title="接下来的打算（计划，不是现状）"
+          description="Rolling horizon 的只读视图：候选、被拒原因、分数与锚点；不改任何东西"
+        />
+        <p v-if="planError" class="cb-world__readonly" data-test="world-plan-error">
+          计划读取失败：{{ planError }}
+        </p>
+        <template v-if="plan && plan.plan">
+          <dl class="cb-world__facts" data-test="world-plan-facts">
+            <div>
+              <dt>Plan</dt>
+              <dd data-test="world-plan-id">{{ plan.plan.plan_id }}</dd>
+            </div>
+            <div>
+              <dt>版本</dt>
+              <dd data-test="world-plan-version">v{{ plan.plan_version }}</dd>
+            </div>
+            <div>
+              <dt>视野</dt>
+              <dd data-test="world-plan-horizon">{{ horizonText(plan.planning_horizon_seconds) }}</dd>
+            </div>
+            <div>
+              <dt>来源 / 触发</dt>
+              <dd data-test="world-plan-source">{{ plan.source }} · {{ text(plan.trigger) }}</dd>
+            </div>
+            <div>
+              <dt>下一步</dt>
+              <dd data-test="world-plan-next">
+                {{ plan.next ? plan.next.activity : '—' }}
+              </dd>
+            </div>
+            <div>
+              <dt>被选中</dt>
+              <dd data-test="world-plan-selected">
+                {{ plan.selected ? `${plan.selected.activity} ${plan.selected.score.toFixed(2)}` : '—' }}
+              </dd>
+            </div>
+            <div>
+              <dt>刷新</dt>
+              <dd data-test="world-plan-refresh">
+                共 {{ plan.refresh_count }} 次 · 上次 {{ agoText(plan.seconds_since_last_refresh) }}
+                （{{ text(plan.last_result?.reason) }}）
+              </dd>
+            </div>
+            <div>
+              <dt>一致性</dt>
+              <dd data-test="world-plan-stale">{{ plan.stale ? '计划已过期' : '计划有效' }}</dd>
+            </div>
+          </dl>
+
+          <h4 class="cb-world__subtitle">未来安排（最多 {{ plan.upcoming.length }} 条）</h4>
+          <table class="cb-world__table" data-test="world-plan-upcoming">
+            <thead>
+              <tr>
+                <th>开始</th>
+                <th>Activity</th>
+                <th>时长</th>
+                <th>理由</th>
+                <th>锚点 / 目标</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-for="(row, index) in plan.upcoming" :key="`${index}-${row.activity}`">
+                <td>{{ activityClock(row.planned_start) }}</td>
+                <td>{{ row.activity }}</td>
+                <td>{{ minutesText(row.duration) }}</td>
+                <td>{{ row.reason }}</td>
+                <td>{{ text(row.anchor_id) }} {{ text(row.goal_id) }}</td>
+              </tr>
+            </tbody>
+          </table>
+
+          <h4 class="cb-world__subtitle">候选与打分（{{ plan.candidates.length }} 个可用）</h4>
+          <table class="cb-world__table" data-test="world-plan-candidates">
+            <thead>
+              <tr>
+                <th>Activity</th>
+                <th>Score</th>
+                <th>锚点</th>
+                <th>目标</th>
+                <th>分项</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-for="row in plan.candidates" :key="`ok-${row.activity}`">
+                <td>{{ row.activity }}</td>
+                <td>{{ row.score.toFixed(2) }}</td>
+                <td>{{ text(row.anchor_id) }}</td>
+                <td>{{ text(row.goal_id) }}</td>
+                <td class="cb-world__readonly">{{ breakdownText(row.breakdown) }}</td>
+              </tr>
+            </tbody>
+          </table>
+
+          <h4 class="cb-world__subtitle">被拒的候选（{{ plan.rejected.length }} 个）</h4>
+          <table class="cb-world__table" data-test="world-plan-rejected">
+            <thead>
+              <tr>
+                <th>Activity</th>
+                <th>原因</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-for="row in plan.rejected" :key="`no-${row.activity}`">
+                <td>{{ row.activity }}</td>
+                <td>{{ row.reason }}</td>
+              </tr>
+            </tbody>
+          </table>
+
+          <p v-if="plan.anchors && plan.anchors.length > 0" class="cb-world__readonly">
+            <span data-test="world-plan-anchors">
+              锚点：{{ plan.anchors.map((anchor) => anchorLabel(anchor)).join(' · ') }}
+            </span>
+          </p>
+          <p class="cb-world__readonly" data-test="world-plan-readonly">
+            只读视图：计划由运行时按触发点重排，这里既不能强制选择，也不会产生任何世界动作。
+          </p>
+        </template>
+        <p v-else class="cb-world__readonly" data-test="world-plan-empty">
+          现在没有生效计划（她还没排过未来一段，或活动层未启用）。
+        </p>
       </section>
 
       <section class="cb-world__section" data-test="world-goals">

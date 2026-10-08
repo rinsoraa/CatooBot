@@ -24,6 +24,8 @@ interrupt / cancel / expire / recover
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import json
 from typing import Any
 
 from app.activity.decision import (
@@ -41,6 +43,7 @@ from app.activity.events import (
     EVENT_BY_STATUS,
     ActivityEventPublisher,
 )
+from app.activity.goals import GoalSnapshot
 from app.activity.model import (
     TASK_STATE_OUTCOME,
     ActivityEpisode,
@@ -52,7 +55,19 @@ from app.activity.model import (
     duration_profile,
     looks_like_minecraft_activity,
 )
-from app.activity.planner import ActivityDecision, ActivityPlanner
+from app.activity.plan import (
+    HARD_PLAN_TRIGGERS,
+    ActivityPlan,
+    ItemReason,
+    PlanTrigger,
+    as_plan_trigger,
+)
+from app.activity.planner import (
+    FALLBACK_ACTIVITIES,
+    ActivityDecision,
+    ActivityPlanner,
+    PlannerContext,
+)
 from app.activity.projection import ActivityProjection
 from app.activity.store import (
     ActivityConflict,
@@ -63,6 +78,48 @@ from app.activity.store import (
 
 #: 观察缓冲写盘的默认间隔（§二十三：禁止每秒写数据库；30~60 秒一次）
 DEFAULT_PERSISTENCE_INTERVAL_SECONDS = 60.0
+
+#: rolling horizon 的默认长度（§六：4 小时；真实取值由配置注入）
+DEFAULT_PLANNING_HORIZON_SECONDS = 240 * 60.0
+
+#: 两次"软触发"重新规划之间的最短间隔（§九：默认 5 分钟；真实取值由配置注入）
+DEFAULT_PLANNER_REFRESH_MIN_SECONDS = 5 * 60.0
+
+#: horizon 里最多排几条（§六十八：默认 6，绝不排满一整天）
+DEFAULT_MAX_FUTURE_EPISODES = 6
+
+#: 计划"快耗尽"的判定余量：覆盖不到这么久之后就重新规划（§八 触发点 2）
+PLAN_COVERAGE_LEAD_SECONDS = 10 * 60.0
+
+#: 状态签名只看这几个字段（Planner 真正用到的输入）
+STATE_SIGNATURE_FIELDS: tuple[str, ...] = (
+    "energy",
+    "current_focus",
+    "mood",
+    "schedule_state",
+    "social_state",
+)
+
+
+def state_signature(state: Any) -> str:
+    """角色状态的**内容签名**（§八 触发点 5 靠它判"状态是不是真的变了"）。
+
+    连续量（能量/专注）四舍五入到 0.01 再签名 —— 否则每 tick 的一点点抖动都会
+    被当成"重大变化"，那就等于每个 tick 都重新规划（§九 明确禁止）。
+    """
+    if state is None:
+        return ""
+    payload: dict[str, Any] = {}
+    for name in STATE_SIGNATURE_FIELDS:
+        if isinstance(state, dict):
+            value = state.get(name, "")
+        else:
+            value = getattr(state, name, "")
+        if isinstance(value, int | float) and not isinstance(value, bool):
+            value = round(float(value), 2)
+        payload[name] = value
+    blob = json.dumps(payload, sort_keys=True, ensure_ascii=False)
+    return hashlib.sha256(blob.encode("utf-8")).hexdigest()[:16]
 
 
 class ActivityRuntime:
@@ -86,6 +143,13 @@ class ActivityRuntime:
         max_extensions_per_episode: int = 2,
         bounce_cooldown_seconds: float = 600.0,
         decision_engine: Any = None,
+        # ---- Phase 6C：rolling horizon 的三个旋钮（§六十八）
+        planning_horizon_seconds: float = DEFAULT_PLANNING_HORIZON_SECONDS,
+        planner_refresh_min_seconds: float = DEFAULT_PLANNER_REFRESH_MIN_SECONDS,
+        max_future_episodes: int = DEFAULT_MAX_FUTURE_EPISODES,
+        plan_store: Any = None,
+        state_provider: Any = None,
+        goal_source: Any = None,
         logger: Any = None,
     ) -> None:
         self.store = store
@@ -124,6 +188,23 @@ class ActivityRuntime:
         self.degraded_reason = ""
         #: 观测到的世界事实（只读；用于判断"这个 Episode 还合理吗"，§十六）
         self.last_observation: dict[str, Any] = {}
+        # ---- Phase 6C：rolling horizon（§六/§八/§九/§四十七）
+        #: 计划存储（默认就用 episode 那个 store —— 它已经实现了计划接口）
+        self.plan_store = plan_store if plan_store is not None else store
+        self.planning_horizon_seconds = max(60.0, float(planning_horizon_seconds))
+        self.planner_refresh_min_seconds = max(0.0, float(planner_refresh_min_seconds))
+        self.max_future_episodes = max(1, int(max_future_episodes))
+        #: 同步的只读角色状态（``() -> CharacterState``）—— Planner 的能量/专注/时段输入
+        self.state_provider = state_provider
+        #: 只读目标来源（缺省沿用 Planner 上的那个）
+        if goal_source is not None:
+            self.planner.goal_source = goal_source
+        #: 生效计划的**内存缓存**（§六十五：普通 tick 不做数据库/全表扫描）
+        self._active_plan: ActivityPlan | None = None
+        self._last_planned_at = 0.0
+        self._plan_signature = ""
+        self._plan_refresh_count = 0
+        self.last_plan_result: dict[str, Any] = {}
 
     # ------------------------------------------------------------ 读
 
@@ -159,10 +240,15 @@ class ActivityRuntime:
         if episode is None:
             return ""
         transitions = await self.recent_transitions(episode.episode_id)
-        return activity_context_block(episode, transitions, related_task=episode.related_task_id)
+        return activity_context_block(
+            episode,
+            transitions,
+            related_task=episode.related_task_id,
+            clock=self.clock,
+        )
 
     async def status(self) -> dict[str, Any]:
-        """WebUI/API 的只读投影（含最近 Episode 与决策视图，§三六/§四七/§四八）。"""
+        """WebUI/API 的只读投影（含最近 Episode、决策视图与计划，§三六/§四七/§四八/§五八）。"""
         episode = await self.current()
         recent = await self.recent(self.recent_episode_limit)
         now = self._now(None)
@@ -178,6 +264,8 @@ class ActivityRuntime:
             # Phase 6B：决策只读视图（**没有**任何 force/extend/cancel 入口）
             "decision": self.decision_view(episode, now=now),
             "consistency": report,
+            # Phase 6C：计划只读视图（§五十八：同样**没有** force select）
+            "plan": self.plan_view(now=now),
             # 展示层时间线：按"从旧到新"给（recent 本身是新→旧），原始 id 全保留
             "merged_timeline": merge_adjacent(list(reversed(recent))),
         }
@@ -212,6 +300,295 @@ class ActivityRuntime:
         episode = await self.current()
         self.last_decision_view = self.decision_view(episode, now=self._now(None))
         return self.last_decision_view
+
+    # ------------------------------------------------------------ 计划（Phase 6C）
+
+    async def load_plan(self) -> ActivityPlan | None:
+        """读出生效计划（进程内缓存；读失败只降级，§四十八）。"""
+        try:
+            plan = await self.plan_store.active_plan(self.character_id)
+        except Exception as exc:  # noqa: BLE001 - 计划读不出来不影响"她在做什么"
+            self.degraded_reason = f"plan_{type(exc).__name__}"
+            if self._log is not None:
+                self._log.warning("[World.Activity] 读取生效计划失败（降级）：%s", exc)
+            return None
+        self._active_plan = plan
+        if plan is not None:
+            self._last_planned_at = max(self._last_planned_at, float(plan.generated_at or 0.0))
+        return plan
+
+    @property
+    def active_plan(self) -> ActivityPlan | None:
+        """内存里的生效计划（普通 tick 只读它，不查库，§六十五）。"""
+        return self._active_plan
+
+    async def refresh_plan(
+        self,
+        *,
+        trigger: Any = PlanTrigger.MANUAL,
+        now: float | None = None,
+        force: bool = False,
+        current: ActivityEpisode | None = None,
+    ) -> dict[str, Any]:
+        """重新规划 rolling horizon（§八 的触发点；**普通 tick 绝不调它**）。
+
+        四道门，按成本从低到高排：
+
+        1. **冷却**（§九）：软触发在 ``planner_refresh_min_seconds`` 之内直接跳过；
+        2. **内容签名**（§四十三）：和生效计划一模一样 → 不生成新版本、不写库；
+        3. **真的规划**：纯计算（≤6 候选 × ≤6 条目），不碰世界、不调模型；
+        4. **落盘**：一个事务里把旧计划标 SUPERSEDED + 新计划标 ACTIVE_PLAN（§四十四/§六十七）。
+
+        任何一步失败都只降级 —— 计划没了顶多是"没预习"，绝不能影响她正在做的事（§四十八）。
+        """
+        moment = self._now(now)
+        trigger_enum = as_plan_trigger(trigger)
+        if not force and trigger_enum not in HARD_PLAN_TRIGGERS:
+            since_last = moment - self._last_planned_at if self._last_planned_at else 0.0
+            if self._last_planned_at and since_last < self.planner_refresh_min_seconds:
+                return self._plan_result(
+                    refreshed=False,
+                    reason="cooldown",
+                    trigger=trigger_enum,
+                    seconds_since_last=since_last,
+                )
+        episode = current if current is not None else await self.current()
+        state = self._state()
+        try:
+            plan = self.planner.plan_next(
+                state,
+                episode,
+                now=moment,
+                horizon=self.planning_horizon_seconds,
+                context=PlannerContext(
+                    clock=self.clock,
+                    now=moment,
+                    character_state=state,
+                    current_episode=episode,
+                    history=tuple(await self.recent(max(self.recent_episode_limit, 6))),
+                    goals=self._goals(),
+                    anchors=self.planner.anchors,
+                    started_today=await self._started_today(moment),
+                    horizon_seconds=self.planning_horizon_seconds,
+                    max_items=self.max_future_episodes,
+                    trigger=trigger_enum.value,
+                ),
+            )
+        except Exception as exc:  # noqa: BLE001 - §四十八：Planner 失败只降级
+            self.degraded_reason = "planner_failed"
+            if self._log is not None:
+                self._log.warning("[World.Activity] 规划失败（保留现有活动与旧计划）：%s", exc)
+            return self._plan_result(refreshed=False, reason="planner_failed", trigger=trigger_enum)
+        previous = self._active_plan
+        signature = plan.content_signature()
+        if (
+            previous is not None
+            and previous.content_hash == signature
+            and not previous.stale(moment)
+        ):
+            self._last_planned_at = moment
+            return self._plan_result(
+                refreshed=False,
+                reason="unchanged",
+                trigger=trigger_enum,
+                plan_id=previous.plan_id,
+                plan_version=int(previous.plan_version),
+            )
+        try:
+            plan.plan_id = await self.plan_store.next_plan_id(str(self.clock.day_key(moment)))
+            # 角色归属以 **Runtime** 为准（Planner 是纯函数，拿不到就留空 —— 但计划是
+            # "这个角色的计划"，落盘前必须盖成运行时的 character_id，与 Episode 同一口径）
+            plan.character_id = self.character_id
+            plan.plan_version = (int(previous.plan_version) + 1) if previous is not None else 1
+            plan.trigger = trigger_enum.value
+            plan.content_hash = signature
+            await self.plan_store.create_plan(plan)
+        except Exception as exc:  # noqa: BLE001 - 落盘失败也只在内存里用（只降级）
+            self.degraded_reason = f"plan_{type(exc).__name__}"
+            if self._log is not None:
+                self._log.warning("[World.Activity] 计划落盘失败（仅在内存中使用）：%s", exc)
+        self._active_plan = plan
+        self._last_planned_at = moment
+        self._plan_refresh_count += 1
+        if self._log is not None:
+            self._log.info(
+                "[World.Activity] 重新规划 plan=%s v%s trigger=%s 条目=%d 覆盖到 %s",
+                plan.plan_id or "(未落盘)",
+                plan.plan_version,
+                trigger_enum.value,
+                len(plan.items),
+                self.clock.isoformat(plan.horizon_end),
+            )
+        return self._plan_result(
+            refreshed=True,
+            reason="planned",
+            trigger=trigger_enum,
+            plan_id=plan.plan_id,
+            plan_version=int(plan.plan_version),
+        )
+
+    def _plan_result(
+        self,
+        *,
+        refreshed: bool,
+        reason: str,
+        trigger: PlanTrigger,
+        plan_id: str = "",
+        plan_version: int = 0,
+        seconds_since_last: float = 0.0,
+    ) -> dict[str, Any]:
+        result = {
+            "refreshed": bool(refreshed),
+            "reason": str(reason),
+            "trigger": trigger.value,
+            "plan_id": str(plan_id),
+            "plan_version": int(plan_version),
+            "seconds_since_last": round(float(seconds_since_last), 1),
+            "refreshed_at": self._now(None),
+        }
+        self.last_plan_result = result
+        return result
+
+    async def _maybe_refresh_plan(
+        self, *, now: float, current: ActivityEpisode | None = None
+    ) -> dict[str, Any]:
+        """普通 tick 的**廉价检查**（§六十五）：只有真该规划时才规划。
+
+        三个条件（全部只看内存 + 一次只读状态/目标快照，无数据库、无全表扫描）：
+
+        1. 计划不存在或已经过期 / 快覆盖不到了（§八 触发点 2）；
+        2. 目标变了（§八 触发点 4）；
+        3. 角色状态变了（§八 触发点 5）。
+
+        冷却（§九）挡在真正规划之前 —— 所以"每分钟重算整段 horizon"不会发生。
+        """
+        moment = float(now)
+        plan = self._active_plan
+        exhausted = plan is None or plan.stale(moment) or self._plan_coverage_left(moment) <= 0.0
+        signature = self._context_signature()
+        changed = bool(signature) and signature != self._plan_signature
+        if not exhausted and not changed:
+            return {"refreshed": False, "reason": "not_needed", "trigger": ""}
+        trigger = PlanTrigger.PLAN_EXHAUSTED if exhausted else PlanTrigger.STATE_CHANGED
+        result = await self.refresh_plan(trigger=trigger, now=moment, current=current)
+        if result.get("refreshed"):
+            self._plan_signature = signature
+        return result
+
+    def _plan_coverage_left(self, now: float) -> float:
+        """现有计划还能覆盖多久（秒）。没有计划 / 已经过期就是 0。"""
+        plan = self._active_plan
+        if plan is None or plan.stale(now):
+            return 0.0
+        farthest = max((float(item.planned_end) for item in plan.items), default=0.0)
+        return max(0.0, farthest - float(now) - PLAN_COVERAGE_LEAD_SECONDS)
+
+    def _context_signature(self) -> str:
+        """(目标 + 状态 + 时段) 的内容签名 —— 变了才值得重新规划（§八 触发点 4/5）。"""
+        goals = self._goals()
+        payload = {
+            "goals": goals.signature() if goals is not None else "",
+            "state": state_signature(self._state()),
+            "period": str(self.clock.period(self._now(None))),
+        }
+        blob = json.dumps(payload, sort_keys=True, ensure_ascii=False)
+        return hashlib.sha256(blob.encode("utf-8")).hexdigest()[:16]
+
+    def _state(self) -> Any:
+        """同步读一次角色状态（只读；失败返回 None，Planner 会当中性状态）。"""
+        provider = self.state_provider or getattr(self.planner, "state_provider", None)
+        if provider is None:
+            return None
+        try:
+            return provider()
+        except Exception:  # noqa: BLE001 - 状态读不到不该影响规划
+            return None
+
+    def _goals(self) -> GoalSnapshot | None:
+        try:
+            return self.planner.goals_snapshot()
+        except Exception:  # noqa: BLE001
+            return GoalSnapshot(source="error", degraded_reason="snapshot_failed")
+
+    def plan_view(self, *, now: float | None = None) -> dict[str, Any]:
+        """计划只读视图（§五十八 的字段：Current / Candidates / Rejected / Scores /
+        Constraints / Goal Relevance / Routine Preference / Anchor / Selected /
+        Plan Horizon / Plan Version —— **没有**思维链，也**没有** force select）。"""
+        moment = self._now(now)
+        plan = self._active_plan
+        base: dict[str, Any] = {
+            "enabled": plan is not None,
+            "planning_horizon_seconds": self.planning_horizon_seconds,
+            "refresh_min_seconds": self.planner_refresh_min_seconds,
+            "max_future_episodes": self.max_future_episodes,
+            "refresh_count": self._plan_refresh_count,
+            "last_refresh_at": self._last_planned_at,
+            "last_result": dict(self.last_plan_result),
+        }
+        if plan is None:
+            # 形态统一：没有计划时这些字段是**空**，而不是缺席 —— 前端/QQ 都不必判 undefined
+            base.update(
+                {
+                    "plan": None,
+                    "next": None,
+                    "current_item": None,
+                    "upcoming": [],
+                    "candidates": [],
+                    "rejected": [],
+                    "selected": None,
+                    "anchors": [
+                        anchor.to_payload(self.clock, moment)
+                        for anchor in self.planner.anchors.all()
+                    ],
+                    "goals": None,
+                    "stale": True,
+                    "coverage_left_seconds": 0.0,
+                    "seconds_since_last_refresh": 0.0,
+                }
+            )
+            return base
+        covering = plan.covers(moment)
+        nxt = plan.next_item(moment)
+        selected = plan.selected()
+        goals = self._goals()
+        base.update(
+            {
+                "plan": plan.to_payload(),
+                "plan_id": plan.plan_id,
+                "plan_version": int(plan.plan_version),
+                "status": plan.status.value,
+                "horizon_start": float(plan.horizon_start),
+                "horizon_end": float(plan.horizon_end),
+                "source": plan.source,
+                "trigger": plan.trigger,
+                "current_item": covering.to_payload() if covering is not None else None,
+                "next": nxt.to_payload() if nxt is not None else None,
+                "upcoming": [item.to_payload() for item in plan.upcoming(moment, 3)],
+                "candidates": [item.to_payload() for item in plan.eligible()],
+                "rejected": [item.to_payload() for item in plan.rejected()],
+                "selected": selected.to_payload() if selected is not None else None,
+                "anchors": [
+                    anchor.to_payload(self.clock, moment) for anchor in self.planner.anchors.all()
+                ],
+                "goals": goals.to_payload() if goals is not None else None,
+                "stale": plan.stale(moment),
+                "coverage_left_seconds": round(self._plan_coverage_left(moment), 1),
+                "seconds_since_last_refresh": (
+                    round(moment - self._last_planned_at, 1) if self._last_planned_at else 0.0
+                ),
+            }
+        )
+        return base
+
+    async def plan_context_block(self) -> str:
+        """给一次 LLM turn 的"接下来打算做什么"（§五十九：计划，不是现状）。"""
+        from app.activity.projection import plan_context_block as build_block
+
+        plan = self._active_plan
+        if plan is None:
+            return ""
+        episode = await self.current()
+        return build_block(plan, episode=episode, now=self._now(None), clock=self.clock)
 
     # ------------------------------------------------------------ 写：创建 / 转移
 
@@ -338,7 +715,7 @@ class ActivityRuntime:
                 now=moment,
                 publish=True,
             )
-        return await self.start(
+        created = await self.start(
             activity_name=activity_name,
             activity_type=activity_type,
             source=source,
@@ -353,6 +730,10 @@ class ActivityRuntime:
             now=moment,
             activation_reason=reason,
         )
+        # 现实变了 → 未来的计划要跟着重排（§八 触发点 1：Episode 边界；这是硬触发，
+        # 冷却挡不住它 —— 因为它正是"计划的前提已经没了"）
+        await self.refresh_plan(trigger=PlanTrigger.EPISODE_ENDED, now=moment, current=created)
+        return created
 
     async def extend(
         self,
@@ -450,20 +831,26 @@ class ActivityRuntime:
     # ------------------------------------------------------------ 世界 tick（只推进，不决策）
 
     async def advance(self, *, now: float | None = None) -> ActivityEpisode | None:
-        """世界时钟推进一次：**只**推进时间与生命周期（§八）。
+        """世界时钟推进一次：**只**推进时间与生命周期（§六/§八）。
 
         决策**只**发生在：她空着（没有任何 Episode）、或当前 Episode 已经到期/超过硬上限。
+
+        Phase 6C：这里**不**重新规划 —— 只做一次廉价检查（内存里的计划 + 一次只读状态/目标
+        快照签名）。真的重算整段 horizon 只会发生在 §八 的触发点上，而且软触发还要过冷却（§九）。
         """
         moment = self._now(now)
         current = await self.current()
         if current is None:
-            # 决策点：她空着（启动/上一个 Episode 收尾之后）→ 让 Planner 排下一个
+            # 决策点：她空着（启动/上一个 Episode 收尾之后）→ 计划先重排，再排下一个 Episode
+            await self._maybe_refresh_plan(now=moment, current=None)
             return await self._plan_next(now=moment, parent_episode_id="")
         if current.status is ActivityStatus.SCHEDULED:
             if current.beyond_max(moment):
                 return await self._finish_and_replan(current, to=ActivityStatus.EXPIRED, now=moment)
             return await self._activate(current, reason=TransitionReason.SCHEDULED, now=moment)
         if current.status in {ActivityStatus.ACTIVE, ActivityStatus.EXTENDED}:
+            # §八/§九：普通 tick 的规划侧只做"该不该重排"的廉价判断（冷却挡在真正规划之前）
+            await self._maybe_refresh_plan(now=moment, current=current)
             # Phase 6B：普通 tick 只问"要不要做决策"（§十：没进 window 就什么都不做）。
             # 真正的决定由决策引擎按 §二四 的流水线给出（最短/最长时长 → window → 延长 → 撞车）。
             trigger = (
@@ -577,18 +964,31 @@ class ActivityRuntime:
     async def recover(self) -> dict[str, Any]:
         """进程重启后的对账：**只**处理已存在的 Episode，绝不凭空造一个（§二十八/§五十二）。
 
-        返回审计用的结果字典（``action`` / ``episode_id`` / ``reason``）。
+        Phase 6C 加了计划的恢复（§四十七）：**先**认现实（当前 Episode），再认计划；
+        计划过期（``stale``）就重新规划 —— **绝不**盲目接着跑一份未来的时间表。
+
+        返回审计用的结果字典（``action`` / ``episode_id`` / ``reason`` / ``plan``）。
         """
         moment = self._now(None)
+        plan = await self.load_plan()
+        plan_action = "none"
+        if plan is not None:
+            plan_action = "stale" if plan.stale(moment) else "loaded"
         current = await self.current()
         if current is None:
             # 合法状态：没有 Episode 就不假装有（§五十二）。她"现在做什么"交给下一次 tick。
-            return {"action": "none", "episode_id": "", "reason": "no_episode"}
+            return {
+                "action": "none",
+                "episode_id": "",
+                "reason": "no_episode",
+                "plan": plan_action,
+            }
 
         # 先与**任务的权威状态**对齐（§四十二）：重启之前任务就已经 PAUSED / 已经结束的情况，
         # 事件早就发过了（那时活动层可能还没装配），只能在这里用只读事实校正。
         aligned = await self._align_with_task(current, now=moment)
         if aligned is not None:
+            aligned.setdefault("plan", plan_action)
             return aligned
 
         # 再把"我重启过"如实记下来（不是伪造活动，只是说明这条 Episode 被重新接管）。
@@ -628,6 +1028,7 @@ class ActivityRuntime:
                 "episode_id": current.episode_id,
                 "reason": TransitionReason.TIME_EXPIRED.value,
                 "next": finished.episode_id if finished is not None else "",
+                "plan": plan_action,
             }
         if moment >= float(current.planned_end_at or 0.0) + self.recovery_grace_seconds and (
             current.overdue(moment)
@@ -641,21 +1042,38 @@ class ActivityRuntime:
                 started_today=await self._started_today(moment),
             )
             result = await self._apply_decision(current, decision, now=moment)
+            await self._refresh_after_recovery(moment)
             return {
                 "action": decision.action,
                 "episode_id": current.episode_id,
                 "reason": decision.reason.value,
                 "next": result.episode_id if result is not None and result is not current else "",
+                "plan": plan_action,
             }
         # 情况 A：还在计划窗口内 → 继续 ACTIVE（如果还没开始就先开始）
         if current.status is ActivityStatus.SCHEDULED:
             await self._activate(current, reason=TransitionReason.RECOVERY, now=moment)
         await self._project(await self.current(), reason="recovered")
+        await self._refresh_after_recovery(moment)
         return {
             "action": "resumed",
             "episode_id": current.episode_id,
             "reason": TransitionReason.RECOVERY.value,
+            "plan": plan_action,
         }
+
+    async def _refresh_after_recovery(self, moment: float) -> None:
+        """重启后的重新规划（§八 触发点 7 + §四十七）。
+
+        计划过期就重排；计划没过期也只是"重算一遍看变没变"（内容签名一样就不会产生新版本）。
+        注意方向：**现实 → 计划**，绝不是计划改现状（§三十一/§五十二）。
+        """
+        await self.refresh_plan(
+            trigger=PlanTrigger.RECOVERY,
+            now=moment,
+            current=await self.current(),
+            force=True,
+        )
 
     async def _align_with_task(
         self, episode: ActivityEpisode, *, now: float
@@ -882,21 +1300,53 @@ class ActivityRuntime:
         name: str = "",
         duration: tuple[float, float, float] | None = None,
     ) -> ActivityEpisode | None:
-        decision = (
-            ActivityDecision(
+        """排下一个 Episode —— 有显式 ``name`` 就用它，否则**问计划**（§十七/§三十一）。
+
+        Phase 6C 的关键变化：规划不再是 Planner 的"一次性回答"，而是**落盘的 rolling horizon
+        计划**；Episode 只是计划第一条的落地。计划拿不到（或为空）才退回 6A 的
+        :meth:`ActivityPlanner.initial` —— v1.0 §126 的"Primary Activity 不能为空"两条路都守住。
+        """
+        if name:
+            decision = ActivityDecision(
                 action="next",
                 reason=TransitionReason.SCHEDULED,
                 activity_name=name,
                 duration=duration,
             )
-            if name
-            else self.planner.initial(
-                now=now,
-                clock=self.clock,
-                character_id=self.character_id,
-                started_today=await self._started_today(now),
-            )
-        )
+        else:
+            # Episode 结束/她空着 = §八 的硬触发点：先把计划刷新，再照计划的**第一条**开 Episode
+            await self.refresh_plan(trigger=PlanTrigger.EPISODE_ENDED, now=now)
+            planned_name = self._first_planned_activity(now)
+            if planned_name:
+                decision = ActivityDecision(
+                    action="next",
+                    reason=TransitionReason.SCHEDULED,
+                    activity_name=planned_name,
+                    duration=duration or duration_profile(ActivityType.VIRTUAL_LIFE, planned_name),
+                )
+            else:
+                # 计划也给不出东西 → 退回 6A 的老路；
+                # **连它都炸了**（§四十八：Planner 完全不可用）也绝不把活动置空。
+                try:
+                    decision = self.planner.initial(
+                        now=now,
+                        clock=self.clock,
+                        character_id=self.character_id,
+                        started_today=await self._started_today(now),
+                    )
+                except Exception:  # noqa: BLE001 - 兜底的兜底
+                    self.degraded_reason = "planner_unavailable"
+                    if self._log is not None:
+                        self._log.warning(
+                            "[World.Activity] Planner 完全不可用，使用最后兜底活动（§四十八）"
+                        )
+                    last_resort = self._last_resort_activity(now)
+                    decision = ActivityDecision(
+                        action="next",
+                        reason=TransitionReason.SCHEDULED,
+                        activity_name=last_resort,
+                        duration=duration_profile(ActivityType.VIRTUAL_LIFE, last_resort),
+                    )
         try:
             return await self.start(
                 activity_name=decision.activity_name,
@@ -914,6 +1364,36 @@ class ActivityRuntime:
             if self._log is not None:
                 self._log.exception("[World.Activity] 排下一个 Episode 失败（降级）")
             return None
+
+    def _last_resort_activity(self, now: float) -> str:
+        """Planner **完全**不可用时的最后兜底活动（§四十九：idle / resting / free_time）。
+
+        刻意不经过 Planner 对象的任何方法（它可能整个坏掉）：只看时段，确定性二选一。
+        """
+        try:
+            period = str(self.clock.period(now))
+        except Exception:  # noqa: BLE001 - 时钟也坏了就当白天
+            period = "afternoon"
+        return "resting" if period == "night" else FALLBACK_ACTIVITIES[0]
+
+    def _first_planned_activity(self, now: float) -> str:
+        """计划里"下一步做什么"（跳过 CONTINUATION 与已经过去/同名的条目）。
+
+        拿不到就返回空串，调用方退回 6A 的老路 —— 绝不在这里编一个活动出来。
+        """
+        plan = self._active_plan
+        if plan is None:
+            return ""
+        for item in plan.items:
+            if item.reason == ItemReason.CONTINUATION.value:
+                continue
+            if float(item.planned_end) <= float(now):
+                continue
+            activity = str(item.activity or "")
+            if not activity or looks_like_minecraft_activity(activity):
+                continue  # 虚拟活动绝不冒用 Minecraft 名字（6A §二十九）
+            return activity
+        return ""
 
     async def _project(self, episode: ActivityEpisode | None, *, reason: str) -> None:
         if self.projection is None:

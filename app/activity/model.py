@@ -161,6 +161,18 @@ VIRTUAL_DURATIONS: dict[str, tuple[float, float, float]] = {
     "napping": (20 * 60.0, 60 * 60.0, 120 * 60.0),
     "sleeping": (180 * 60.0, 480 * 60.0, 600 * 60.0),
     "idle": (5 * 60.0, 20 * 60.0, 60 * 60.0),
+    # Phase 6C §十六 自由活动池 + §二十二 的 building（"完成自己的项目"）。
+    # 这几个名字原先只在**兜底**里出现过（decision.py 的 FALLBACK_ACTIVITIES），
+    # 却没有时长档/人话标签 —— 于是兜底活动会裸着 token 进上下文、还落进默认时长档。
+    # 6C 把它们补成**一等公民**（同一个词表，不另造一套）。
+    "free_time": (20 * 60.0, 60 * 60.0, 180 * 60.0),
+    "resting": (15 * 60.0, 45 * 60.0, 120 * 60.0),
+    "relax": (15 * 60.0, 45 * 60.0, 120 * 60.0),
+    "music": (15 * 60.0, 45 * 60.0, 120 * 60.0),
+    "watching_show": (30 * 60.0, 90 * 60.0, 240 * 60.0),
+    #: 虚拟的"做自己的项目"（§二十二 例子里那个 building）。**不是** Minecraft 活动：
+    #: 它不带 ``related_task_id``，因此永远不能被说成"她在现实世界里动手"（§五十六）。
+    "building": (30 * 60.0, 90 * 60.0, 240 * 60.0),
 }
 
 #: 活动 token → 人话（**只用于给模型/WebUI 的措辞**，不参与任何判断）
@@ -177,6 +189,12 @@ ACTIVITY_LABELS: dict[str, str] = {
     "napping": "小睡",
     "sleeping": "睡觉",
     "idle": "发呆",
+    "free_time": "空闲",
+    "resting": "休息",
+    "relax": "放松",
+    "music": "听音乐",
+    "watching_show": "看剧",
+    "building": "搭东西",
     "minecraft_task": "执行 Minecraft 任务",
 }
 
