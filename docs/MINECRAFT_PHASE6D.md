@@ -304,3 +304,138 @@ CI **不联网、不调真实 LLM**；`minecraft_runtime/` / `app/tools/` / `app
   被本阶段的造点替换过 —— 这是**我的操作**造成的，在此如实记档；
 * 想开顾问（自己决定）：`world.activity.model_advisor {enabled: true, timeout_ms: 5000, provider: Workbuddy2API, model: primary}`
   —— `timeout_ms` 务必取上限或换更快的模型（§18.1），改完要**重启**（`overrides.yaml` 不在热重载范围内）。
+
+---
+
+# Phase 6D.1
+
+## 19. 撞车护栏统一化 + 延迟回执修复（2026-10-09）
+
+6D.1 **不引入任何新能力**：只把 6D 里两个"漏掉的缝"补上 —— 一个是撞车护栏的旁路，
+一个是失败回执里丢掉的延迟。**没有**换模型、**没有**改 `timeout` 默认值（仍是 1500ms）、
+**没有**把 advisor 默认打开（仍是 `enabled: false`）、**没有**动 Model schema、
+**没有**新增 Minecraft tool / TaskRuntime state / 迁移（仍 30）/ Episode 状态。
+
+### 19.1 A：所有"产生下一个活动"的路径统一过 `ActivityBounceGuard`
+
+不变量（§二五 的收紧）：
+
+```
+candidate  →  ActivityBounceGuard  →  accepted / rejected
+```
+
+修掉的两条缝：
+
+| 缝 | 6D 里的样子 | 6D.1 |
+| --- | --- | --- |
+| **中性兜底旁路** | `_transition` 撞车后直接返回 `neutral_fallback(period)`，**没有再查护栏** —— 夜里这一档就是 `napping`，于是"刚被拒的 napping"可以立刻再开一个 | 中性候选与首选候选走**同一个出口**，同样要过护栏 |
+| **硬中断旁路** | `decide()` 第 4 步（任务抢占 / 用户打断 / 恢复 / 手动）拿 `_next_hint` 就直接 TRANSITION，**从不查护栏** | 硬中断可以突破最短时长（§十四），但**不能**突破护栏 |
+
+模型这一半也挂到同一个出口上：被采纳的模型提案在落地前再走一遍 `_resolve_next_activity`
+（`_reject_proposal` 已经验过一次，这是**结构性复核**而不是第二套判断）；
+`continue` / `extend` 提案不产生 next activity，因此不参与候选链。
+
+**候选顺序（确定性，全部过护栏）**：
+
+1. `preferred`（Planner 的提示，或模型的 `next_hint`）；
+2. 时段**中性**活动（`NEUTRAL_BY_PERIOD`：夜里 `napping`，其余 `idle`）；
+3. **兜底**活动（`FALLBACK_ACTIVITIES`：`idle` / `free_time` / `resting`）；
+4. Planner 的**合格**候选（懒加载：只有前面全被拒才去问 `preview_plan`，只取 `eligible=True`）。
+
+中性/兜底两档刻意**不**用计划资格过滤：它们是撞车后的安全网（6B 的老行为就是这样），
+而"能不能当计划目标"是 Planner 的判断（§二十五）——所以 `sleeping`（`NOT_MOVEABLE`）
+不会被兜底偷偷选中。
+
+**原因码**：首选候选过了护栏 → 用传入的原因（`TRANSITION_WINDOW` / `MAX_DURATION`）；
+换个候选落地 → 如实记 `BOUNCE_GUARD`。`MAX_DURATION` 例外：到硬上限必须换是 §十五 的硬规则
+（runtime 靠它判 `EXPIRED`），所以它永远保持 `MAX_DURATION`。
+
+**审计**（新，追加式）：`guards["bounce"]` 形状**不变**（仍只报首选候选的护栏结论），
+旁边新增 `guards["bounce_resolution"]`：
+
+```json
+{"policy": "candidate->bounce_guard->accept_reject", "current": "napping", "preferred": "napping",
+ "checked": [{"activity": "napping", "source": "preferred", "ok": false, "code": "BOUNCE_GUARD", "detail": {"reason": "cooldown"}},
+             {"activity": "napping", "source": "neutral",   "ok": false, ...},
+             {"activity": "idle",    "source": "fallback",  "ok": true,  ...}],
+ "chosen": "idle", "accepted_candidate": "idle", "source": "fallback",
+ "same_as_current": false, "no_legal_candidate": false}
+```
+
+`chosen == ""` 的两种含义：① `same_as_current`（"下一个"就是当前这件事 —— §十九 交给 EXTEND）；
+② `no_legal_candidate`（一个合法候选都没有 —— 只能 EXTEND / CONTINUE）。
+**无论哪种，都绝不会换到一个被护栏拒绝的活动。**
+
+**与 6B 的关系（逐字对齐的部分）**：窗口到期且**能延长**时，第 9 步仍然先 EXTEND
+（`_transition` 只在"不能延长"或 `force_change` 时才到达），所以"优先延长"的优先级没变 ——
+变的只是那个"中性活动"从"免检"变成"过检"。`_transition` 里那段 inner EXTEND 现在是
+事实上不可达的兜底（第 9 步已经决定了延长），保留它只为形状不变。
+
+### 19.2 B：失败回执必须保留**实际**延迟
+
+6D 的失败分支只写了 `receipt["failure"]`，没读 `advisor.last_latency_ms`
+（顾问在 `advise()` 的 `finally` 里量过墙钟），于是真机上 6 次超时全部打印 `latency_ms=0`
+—— 最需要看延迟的场景反而看不到。修法一行：
+
+```python
+receipt["latency_ms"] = int(getattr(advisor, "last_latency_ms", 0) or 0)
+```
+
+`TIMEOUT` / `CONNECTION_ERROR` / `PROVIDER_ERROR` / `INVALID_JSON` 四类失败现在**都带**实际延迟，
+并同时进 `DecisionTrace.model_latency_ms`（WebUI / 审计看到同一个数）。
+
+日志统一成四件套（`proposal=` 改名 `result=`）：
+
+```
+[Activity.Model] episode=ACT-… cycle=activity:ACT-…:1791486519 provider=Workbuddy2API
+                 model=primary attempted=True latency_ms=503 result=TIMEOUT
+                 accepted=False fallback=True reason=TIMEOUT period=night
+```
+
+### 19.3 测试（新增 12 项）
+
+`tests/test_activity_bounce_unification.py`（9 项，矩阵 H）+ `tests/test_activity_model_fallback.py`
+的 `TestLatencyReceipt`（3 项）：
+
+* 任务书场景：`current = napping` / `previous = napping`（终端、冷却期内）/ cooldown active →
+  最终落在 **`idle`**，且凡是名叫 `napping` 的候选**一条都没被接受**；
+* 首选与**中性兜底**（夜里同样是 `napping`）**都被拒**（`checked` 里两条 `ok=False`，来源分别是
+  `preferred` / `neutral`）→ 落到兜底活动 `idle`；
+* 模型提 `napping` → `RULE_REJECTED`（`trace.model_rejected` / `model_reject_reason`），
+  规则回退候选同样被拒，最终 `idle`；
+* 硬中断（`USER_INTERACTION`）也被护栏约束 → 同样落 `idle`；
+* 回归：没有撞车时**逐字一致**（首选直接过、原因码不变）；窗口能延长时仍先 EXTEND；
+  "中性 == 当前"时既不换活动也不重开第二个（`same_as_current`）；
+* 被采纳的模型转移留下同一套候选审计（`source=preferred`）；
+* B：provider 睡 500ms 再抛 Timeout → `receipt.latency_ms ∈ [400, 1500]`、
+  `trace.model_latency_ms` 同值、日志里 `attempted=True` + `latency_ms` 非 0 +
+  `result=TIMEOUT` + `fallback=True`（且断言**没有** `proposal=` 与 `latency_ms=0`）。
+
+### 19.4 真机确认（2026-10-09 04:05–04:10，同一台机器 / 真实 provider）
+
+**B（延迟回执）**——把顾问预算刻意压到 **500ms**（`primary` 平均 4.1s），每轮都是真实超时：
+
+```
+04:08:40 [Activity.Model] episode=ACT-20261009-013 cycle=activity:ACT-20261009-013:1791490119
+         provider=Workbuddy2API model=primary attempted=True latency_ms=507 result=TIMEOUT
+         accepted=False fallback=True reason=TIMEOUT period=night
+04:09:28 [Activity.Model] episode=ACT-20261009-014 cycle=activity:ACT-20261009-014:1791490167
+         ... attempted=True latency_ms=493 result=TIMEOUT accepted=False fallback=True ...
+```
+
+`latency_ms` 现在是**真实墙钟**（507ms / 493ms ≈ 预算），不再是 6D 的 `0`；
+四件套字段名与任务书一致（`attempted=` / `latency_ms=` / `result=` / `fallback=`）。
+
+**A（护栏统一化）**——同一台机器上的**前后对照**（形态完全相同：Planner 想回到刚结束的那件事）：
+
+| 版本 | 真机日志 | 含义 |
+| --- | --- | --- |
+| Phase 6D（`02:53:28`） | `decision=TRANSITION reason=BOUNCE_GUARD … hint=napping` | 被护栏拒掉的**中性兜底**仍被采用（旁路）：`napping` 81 秒前刚结束，却又开了一个 |
+| Phase 6D.1（`04:09:28`） | `decision=TRANSITION reason=BOUNCE_GUARD … hint=idle` | 首选与中性兜底**都过护栏、都被拒** → 落到合法候选 `idle`；活动链 `napping → music → idle`，**没有**再回到 `napping` |
+
+**造点披露**（与 §18.6 同一纪律）：只推 `started_at` / `planned_end_at` 两个时间字段
+（`activity_name` / `status` / `source` 一律不动）；配置侧临时把顾问打开（`timeout_ms: 500`）、
+`max_extensions_per_episode: 0`（逼它必须真的换活动）、`recovery_grace_seconds: 600`（重启保住同一 Episode）。
+**跑完已全部还原**成"纯规则"，并重启机器人（`overrides.yaml` 只剩你自己的 `transition_window_minutes: 6`）。
+
+全量门禁：**3144 passed**（6D 3132 + 6D.1 12）；ruff / ruff format / mypy 312 源文件全绿。

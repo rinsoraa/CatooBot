@@ -124,6 +124,10 @@ NEUTRAL_BY_PERIOD: dict[str, str] = {
     "night": "napping",
 }
 
+#: 6D.1 A：候选出口的策略名（写进 ``guards["bounce_resolution"]["policy"]``，可审计）
+#: 策略本身是"candidate → Bounce Guard → accepted / rejected"，**没有**任何旁路。
+BOUNCE_RESOLUTION_POLICY = "candidate->bounce_guard->accept_reject"
+
 #: 可能出现"语义冲突"的组合（§二十 Rule 5）：只报 WARNING，绝不静默吞掉
 CONFLICT_PAIRS: tuple[tuple[str, str], ...] = (
     ("sleeping", "kitchen"),
@@ -651,16 +655,38 @@ class ActivityDecisionEngine:
             )
         # 4. 硬中断（可以突破最短时长）
         if hard:
-            hint = await self._next_hint(
-                episode, now=now, started_today=started_today, period=period
+            # 6D.1 A：硬中断**也**走同一个出口 —— 它可以突破最短时长（§十四），
+            # 但绝不突破撞车护栏（护栏是 §十七/§十八 的硬规则，不是时长规则）。
+            chosen, resolution = self._resolve_next_activity(
+                episode,
+                now=now,
+                period=period,
+                started_today=started_today,
+                history=history,
+                preferred=await self._next_hint(
+                    episode, now=now, started_today=started_today, period=period
+                ),
             )
+            guards["bounce"] = self._preferred_verdict(resolution)
+            guards["bounce_resolution"] = resolution
+            reason_by_trigger = REASON_BY_TRIGGER.get(trigger, DecisionReason.USER_INTERACTION)
+            if chosen:
+                return self._finish(
+                    episode,
+                    ActivityDecision(
+                        ActivityDecisionKind.TRANSITION,
+                        reason_by_trigger,
+                        next_activity_hint=chosen,
+                    ),
+                    now=now,
+                    trigger=trigger,
+                    period=period,
+                    guards=guards,
+                )
+            # 一个合法候选都没有 → 只能留在当前活动（绝不换到被护栏拒绝的活动）
             return self._finish(
                 episode,
-                ActivityDecision(
-                    ActivityDecisionKind.TRANSITION,
-                    REASON_BY_TRIGGER.get(trigger, DecisionReason.USER_INTERACTION),
-                    next_activity_hint=hint,
-                ),
+                ActivityDecision(ActivityDecisionKind.CONTINUE, reason_by_trigger, confidence=0.5),
                 now=now,
                 trigger=trigger,
                 period=period,
@@ -837,6 +863,10 @@ class ActivityDecisionEngine:
         except Exception as exc:  # noqa: BLE001 - 任何失败都只回退规则（§二十七/§三十九）
             code = str(getattr(exc, "code", "") or ModelFailureCode.PROVIDER_ERROR)
             receipt["failure"] = code
+            # 6D.1 B：失败回执也必须带**实际**延迟 —— 顾问在 finally 里量过墙钟，
+            # 所以 TIMEOUT / CONNECTION_ERROR / PROVIDER_ERROR / INVALID_JSON 都有值，
+            # 绝不允许再出现 "TIMEOUT latency_ms=0"。
+            receipt["latency_ms"] = int(getattr(advisor, "last_latency_ms", 0) or 0)
             receipt["fallback_used"] = True
             guards["model"].update({"failure": code, "fallback": True})
             self._log_advisory(episode, cycle_key, advisor, receipt, period=period)
@@ -865,6 +895,36 @@ class ActivityDecisionEngine:
             self._log_advisory(episode, cycle_key, advisor, receipt, period=period)
             self.last_receipt = receipt
             return None, receipt
+        if proposal.decision == "transition":
+            # 6D.1 A：被采纳的模型提案也走**同一个候选出口** —— 于是"模型转移"与
+            # "规则转移"在结构上共用一条缝，不可能有一个绕过护栏。
+            # （`_reject_proposal` 已经验过一遍；这里是结构性的复核，不是第二套判断。）
+            chosen, resolution = self._resolve_next_activity(
+                episode,
+                now=now,
+                period=period,
+                started_today=started_today,
+                history=history,
+                preferred=str(proposal.next_hint or ""),
+            )
+            guards["bounce"] = self._preferred_verdict(resolution)
+            guards["bounce_resolution"] = resolution
+            if not chosen:
+                # 理论上到不了（上面已经验过）：真到了就整条拒绝 + 回退规则，绝不换到被拒的活动
+                receipt["accepted"] = False
+                receipt["rejection_reason"] = ModelFailureCode.RULE_REJECTED
+                receipt["fallback_used"] = True
+                guards["model"].update(
+                    {
+                        "accepted": False,
+                        "rejected": True,
+                        "reason": ModelFailureCode.RULE_REJECTED,
+                        "fallback": True,
+                    }
+                )
+                self._log_advisory(episode, cycle_key, advisor, receipt, period=period)
+                self.last_receipt = receipt
+                return None, receipt
         receipt["accepted"] = True
         guards["model"]["accepted"] = True
         self._log_advisory(episode, cycle_key, advisor, receipt, period=period)
@@ -1072,17 +1132,23 @@ class ActivityDecisionEngine:
         *,
         period: str,
     ) -> None:
-        """§七十一：INFO 一行够用 —— **绝不**打印 prompt 或完整模型输出。"""
+        """§七十一：INFO 一行够用 —— **绝不**打印 prompt 或完整模型输出。
+
+        6D.1 B：统一成 ``attempted= / latency_ms= / result= / fallback=`` 四件套 ——
+        失败路径（TIMEOUT / CONNECTION_ERROR / PROVIDER_ERROR / INVALID_JSON）也一定带**实际**延迟，
+        不再出现 "TIMEOUT latency_ms=0"。
+        """
         if self._log is None:
             return
         proposal = receipt.get("proposal") or {}
         self._log.info(
-            "[Activity.Model] episode=%s cycle=%s provider=%s model=%s latency_ms=%d"
-            " proposal=%s accepted=%s fallback=%s reason=%s period=%s",
+            "[Activity.Model] episode=%s cycle=%s provider=%s model=%s attempted=%s latency_ms=%d"
+            " result=%s accepted=%s fallback=%s reason=%s period=%s",
             episode.episode_id,
             cycle_key,
             str(receipt.get("provider") or ""),
             str(receipt.get("model") or ""),
+            bool(receipt.get("attempted")),
             int(receipt.get("latency_ms") or 0),
             str(proposal.get("decision") or receipt.get("failure") or ""),
             bool(receipt.get("accepted")),
@@ -1188,48 +1254,51 @@ class ActivityDecisionEngine:
                 period=period,
                 force_change=True,
             )
-        verdict = self.bounce.check(current=episode, candidate=hint, history=history, now=now)
-        guards["bounce"] = verdict.to_payload()
-        if not verdict.ok:
-            # §十八：拒绝之后要么继续当前（能延长就延长），要么换一个**中性**活动
-            extension = self.guard.extension(
-                episode, now=now, extension_seconds=float(episode.typical_duration or 0.0)
-            )
-            if extension.ok and self._extendable(episode):
-                seconds = float(extension.detail.get("extension_seconds") or 0.0)
-                return self._finish(
-                    episode,
-                    ActivityDecision(
-                        ActivityDecisionKind.EXTEND,
-                        DecisionReason.BOUNCE_GUARD,
-                        extension_seconds=seconds,
-                        confidence=0.9,
-                    ),
-                    now=now,
-                    trigger=trigger,
-                    period=period,
-                    guards=guards,
-                )
-            neutral = self.bounce.neutral_fallback(period=period)
-            if str(neutral).lower() == str(episode.activity_name).lower():
-                return self._finish(
-                    episode,
-                    ActivityDecision(
-                        ActivityDecisionKind.CONTINUE,
-                        DecisionReason.BOUNCE_GUARD,
-                        confidence=0.9,
-                    ),
-                    now=now,
-                    trigger=trigger,
-                    period=period,
-                    guards=guards,
-                )
+        # 6D.1 A：**唯一**产生 next activity 的出口 —— 候选 → 撞车护栏 → 接受/拒绝。
+        # 首选候选（Planner 的提示）与"中性/兜底"候选走的是**同一个**出口，
+        # 谁都不能绕过护栏（旧版本的中性兜底是直接返回的，那是唯一的旁路）。
+        chosen, resolution = self._resolve_next_activity(
+            episode,
+            now=now,
+            period=period,
+            started_today=started_today,
+            history=history,
+            preferred=hint,
+        )
+        guards["bounce"] = self._preferred_verdict(resolution)
+        guards["bounce_resolution"] = resolution
+        if chosen:
             return self._finish(
                 episode,
                 ActivityDecision(
                     ActivityDecisionKind.TRANSITION,
+                    self._transition_reason(reason, resolution),
+                    next_activity_hint=chosen,
+                ),
+                now=now,
+                trigger=trigger,
+                period=period,
+                guards=guards,
+                transition_pending=True,
+            )
+        # 没有一个合法候选（或"下一个"就是当前这件事）：优先延长，否则继续当前。
+        # **绝不**换到一个被护栏拒绝的活动 —— 这是 6D.1 A 的核心不变量。
+        extension = self.guard.extension(
+            episode, now=now, extension_seconds=float(episode.typical_duration or 0.0)
+        )
+        guards["bounce_extension"] = {
+            "ok": bool(extension.ok),
+            "extendable": self._extendable(episode),
+            "same_as_current": bool(resolution.get("same_as_current")),
+        }
+        if extension.ok and self._extendable(episode):
+            seconds = float(extension.detail.get("extension_seconds") or 0.0)
+            return self._finish(
+                episode,
+                ActivityDecision(
+                    ActivityDecisionKind.EXTEND,
                     DecisionReason.BOUNCE_GUARD,
-                    next_activity_hint=neutral,
+                    extension_seconds=seconds,
                     confidence=0.9,
                 ),
                 now=now,
@@ -1239,12 +1308,15 @@ class ActivityDecisionEngine:
             )
         return self._finish(
             episode,
-            ActivityDecision(ActivityDecisionKind.TRANSITION, reason, next_activity_hint=hint),
+            ActivityDecision(
+                ActivityDecisionKind.CONTINUE,
+                DecisionReason.BOUNCE_GUARD,
+                confidence=0.9,
+            ),
             now=now,
             trigger=trigger,
             period=period,
             guards=guards,
-            transition_pending=True,
         )
 
     async def _next_hint(
@@ -1289,6 +1361,170 @@ class ActivityDecisionEngine:
                 if str(candidate).lower() != current:
                     return candidate
         return fallback if fallback else FALLBACK_ACTIVITIES[0]
+
+    # ------------------------------------------------------------ 6D.1 A：候选出口
+
+    def _resolve_next_activity(
+        self,
+        episode: ActivityEpisode,
+        *,
+        now: float,
+        period: str,
+        started_today: int,
+        history: Sequence[ActivityEpisode] = (),
+        preferred: str = "",
+    ) -> tuple[str, dict[str, Any]]:
+        """**唯一**产生"下一个活动"的出口（6D.1 A）：候选 → 撞车护栏 → 接受 / 拒绝。
+
+        候选顺序是**确定性**的：首选候选（Planner / 模型给的提示）→ 时段中性活动 →
+        兜底活动（§三十一）→ Planner 的**合格**候选（懒加载：只有前面全被拒才去问它）。
+
+        返回值 ``(activity, audit)``：
+
+        * ``activity != ""`` = 通过护栏的合法候选（调用方按传入的 reason 换过去）；
+        * ``activity == ""`` = 没有合法候选，或者"下一个"就是当前这件事
+          （``audit["same_as_current"]``）—— 调用方负责 EXTEND / CONTINUE，
+          **绝不**换到一个被护栏拒绝的活动。
+
+        于是任何路径（普通转移 / Planner 转移 / 模型转移 / 回退转移 / 中性兜底）都只能
+        落到"过了护栏的候选"上，没有旁路。
+        """
+        current = str(episode.activity_name).strip().lower()
+        audit: dict[str, Any] = {
+            "policy": BOUNCE_RESOLUTION_POLICY,
+            "current": current,
+            "preferred": str(preferred or ""),
+            "cooldown_seconds": float(self.bounce.cooldown_seconds),
+            "checked": [],
+            "chosen": "",
+            "accepted_candidate": "",
+            "source": "",
+            "same_as_current": False,
+            "no_legal_candidate": False,
+        }
+
+        def consider(name: str, source: str) -> tuple[str, bool]:
+            """过一个候选：返回 (activity, 是否已经定下来)。"""
+            verdict = self.bounce.check(
+                current=episode, candidate=name, history=list(history), now=now
+            )
+            same = name.lower() == current
+            audit["checked"].append(
+                {
+                    "activity": name,
+                    "source": source,
+                    "ok": bool(verdict.ok),
+                    "code": verdict.code.value,
+                    "same_as_current": same,
+                    "detail": dict(verdict.detail),
+                }
+            )
+            if not verdict.ok:
+                return "", False
+            if same:
+                # §十九：Planner/模型说的"下一个"就是当前这件事 —— 没有"下一个活动"，
+                # 交回调用方去 EXTEND（而不是"结束再开一个一样的"）。
+                # ``chosen`` 留空（**不会**开新 Episode），名字记在 ``accepted_candidate``。
+                audit["chosen"] = ""
+                audit["accepted_candidate"] = name
+                audit["source"] = source
+                audit["same_as_current"] = True
+                return "", True
+            audit["chosen"] = name
+            audit["source"] = source
+            return name, True
+
+        order: list[tuple[str, str]] = []
+        if str(preferred or "").strip():
+            order.append((str(preferred).strip(), "preferred"))
+        order.extend(self._static_candidate_pool(period=period))
+        for name, source in order:
+            resolved, done = consider(name, source)
+            if done:
+                return resolved, audit
+        for name in self._planner_eligible_candidates(
+            episode, now=now, started_today=started_today
+        ):
+            resolved, done = consider(name, "planner")
+            if done:
+                return resolved, audit
+        audit["no_legal_candidate"] = True
+        return "", audit
+
+    def _static_candidate_pool(self, *, period: str) -> list[tuple[str, str]]:
+        """时段中性活动 + 兜底活动（§十八/§三十一）—— 顺序**就是**优先级，确定性。
+
+        刻意不用计划资格（``eligible``）过滤它们：中性/兜底是撞车后的**安全网**
+        （6B 的老行为就是这样），而"能不能当计划目标"是 Planner 的判断（§二十五）——
+        Planner 的候选在下一档，那里才按 ``eligible`` 过滤。
+        """
+        pool: list[tuple[str, str]] = []
+
+        def push(name: Any, source: str) -> None:
+            text = str(name or "").strip()
+            if not text:
+                return
+            if any(text.lower() == item[0].lower() for item in pool):
+                return
+            pool.append((text, source))
+
+        push(self.bounce.neutral_fallback(period=period), "neutral")
+        for name in FALLBACK_ACTIVITIES:
+            push(name, "fallback")
+        return pool
+
+    def _planner_eligible_candidates(
+        self, episode: ActivityEpisode, *, now: float, started_today: int
+    ) -> list[str]:
+        """Planner 认为**合格**的候选（§二十五）—— 生成/资格/排序都是它的活。
+
+        只读预览（``preview_plan`` 不落盘、无副作用）；拿不到就返回空表 ——
+        前面两档（中性 / 兜底）照样管用，绝不让候选池的问题影响决策主流程。
+        """
+        try:
+            plan = self.planner.preview_plan(
+                episode=episode, now=now, clock=self.clock, started_today=started_today
+            )
+        except Exception:  # noqa: BLE001 - 候选拿不到就当没有（中性/兜底是兜底的兜底）
+            if self._log is not None:
+                self._log.debug("[World.Activity] 候选池拿不到计划（忽略）", exc_info=True)
+            return []
+        return [
+            str(getattr(item, "activity", "") or "")
+            for item in (getattr(plan, "candidates", ()) or ())
+            if bool(getattr(item, "eligible", False))
+        ]
+
+    @staticmethod
+    def _preferred_verdict(resolution: Mapping[str, Any]) -> dict[str, Any]:
+        """``guards["bounce"]`` 仍只报**首选候选**的护栏结论（审计形状向后兼容）。"""
+        checked = list(resolution.get("checked") or [])
+        for item in checked:
+            if str(item.get("source") or "") == "preferred":
+                return {
+                    "ok": bool(item.get("ok")),
+                    "code": str(item.get("code") or DecisionReason.BOUNCE_GUARD.value),
+                    "detail": dict(item.get("detail") or {}),
+                }
+        first = checked[0] if checked else {}
+        return {
+            "ok": bool(first.get("ok")),
+            "code": str(first.get("code") or DecisionReason.BOUNCE_GUARD.value),
+            "detail": dict(first.get("detail") or {}),
+        }
+
+    @staticmethod
+    def _transition_reason(reason: DecisionReason, resolution: Mapping[str, Any]) -> DecisionReason:
+        """最终原因码：首选候选过了护栏 → 用传入的原因；否则如实记 BOUNCE_GUARD。
+
+        ``MAX_DURATION`` 例外：到硬上限必须换是 §十五 的硬规则（runtime 靠它判 EXPIRED），
+        所以即使首选被护栏挡住、改换了别的合法活动，原因码仍然是 MAX_DURATION。
+        """
+        if reason is DecisionReason.MAX_DURATION:
+            return reason
+        if str(resolution.get("source") or "") == "preferred":
+            return reason
+        return DecisionReason.BOUNCE_GUARD
 
     @staticmethod
     def _extendable(episode: ActivityEpisode) -> bool:

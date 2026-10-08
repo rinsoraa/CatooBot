@@ -124,6 +124,8 @@ class PlanRig:
     events: list[tuple[str, dict[str, Any]]] = field(default_factory=list)
     planner: ActivityPlanner | None = None
     runtime: ActivityRuntime | None = None
+    #: 可选 logger（6D.1：用例要断言 [Activity.Model] 那一行日志时必须给一个）
+    logger: Any = None
 
     def __post_init__(self) -> None:
         if self.planner is None:
@@ -136,6 +138,7 @@ class PlanRig:
             publisher=ActivityEventPublisher(sink=self._record),
             projection=ActivityProjection(self.states),
             state_provider=lambda: self.state,
+            logger=self.logger,
         )
 
     def _record(self, name: str, payload: dict[str, Any]) -> None:

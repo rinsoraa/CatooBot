@@ -3,6 +3,35 @@
 本文件记录 CatooBot 的版本演进。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号见 `pyproject.toml`；日期取自真实提交历史（本仓库 2026-09-30 起）。
 
+## Minecraft Phase 6D.1 — 撞车护栏统一化 + 延迟回执修复
+
+* **A：所有产生"下一个活动"的路径统一过 `ActivityBounceGuard`**：不变量收紧成
+  ``candidate → Bounce Guard → accepted / rejected``。修掉 6D 里的两条缝 ——
+  ① **中性兜底旁路**（`_transition` 撞车后直接返回 `neutral_fallback(period)`，**没再查护栏**，
+  而夜里这一档正是 `napping`，于是"刚被拒的 napping"可以立刻再开一个）；
+  ② **硬中断旁路**（`decide()` 第 4 步拿 `_next_hint` 就直接 TRANSITION，从不查护栏）。
+  新增唯一出口 `_resolve_next_activity`：候选顺序 = 首选（Planner/模型）→ 时段中性 → 兜底活动
+  （`idle`/`free_time`/`resting`）→ Planner 的**合格**候选（懒加载），**每一个都过护栏**；
+  被采纳的模型转移也在落地前走同一个出口（结构性复核，不是第二套判断）。
+  原因码：首选过了护栏 → 传入的原因；换候选落地 → `BOUNCE_GUARD`（`MAX_DURATION` 永远保持
+  —— runtime 靠它判 `EXPIRED`）。审计新增 `guards["bounce_resolution"]`
+  （`policy` + `checked[]` + `chosen` + `source` + `same_as_current` + `no_legal_candidate`），
+  `guards["bounce"]` 形状不变（仍只报首选候选的结论）。**与 6B 同序**：窗口能延长时仍先 EXTEND
+  （`_transition` 只在不能延长时到达），变的只是那个"中性活动"从**免检**变成**过检**；
+  "没有合法候选"时只能 EXTEND / CONTINUE，**绝不**换到一个被护栏拒绝的活动。
+* **B：失败回执保留实际延迟**：失败分支补 `receipt["latency_ms"] = advisor.last_latency_ms`
+  —— `TIMEOUT` / `CONNECTION_ERROR` / `PROVIDER_ERROR` / `INVALID_JSON` 现在都带**真实**墙钟，
+  并同值进 `DecisionTrace.model_latency_ms`；日志统一成
+  `attempted=True latency_ms=503 result=TIMEOUT accepted=False fallback=True`
+  （`proposal=` 改名 `result=`），不再出现 `TIMEOUT latency_ms=0`。
+* **不改 6D**：没换模型、没改 `timeout` 默认值（仍 1500ms）、没把 advisor 默认打开
+  （仍 `enabled: false`）、没动 Model schema、没新增 Minecraft tool / TaskRuntime state /
+  迁移（仍 30）/ Episode 状态；决策词表（CONTINUE/EXTEND/TRANSITION + 原因码）与顾问的地位都没变。
+* **测试**：新增 **12** 项（`tests/test_activity_bounce_unification.py` 9 项矩阵 H +
+  `TestLatencyReceipt` 3 项）—— 含任务书场景（`current=napping` / `previous=napping` / 冷却内 →
+  模型提 napping 被 `RULE_REJECTED`、**中性兜底同样被拒** → 最终落 `idle`，凡 `napping` 候选一条都不被接受），
+  以及"provider 睡 500ms 再抛 Timeout → `latency_ms ≈ 500`"。
+
 ## Minecraft Phase 6D — 模型辅助活动决策（Model Advisor）
 
 * **模型第一次进入世界运行时，但仍然只是"参谋"**（§零）：`RULE > MODEL`、`MODEL = ADVISOR`、

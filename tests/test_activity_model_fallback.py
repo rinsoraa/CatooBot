@@ -5,14 +5,17 @@
 
 from __future__ import annotations
 
+import asyncio
+import logging
 from typing import Any
 
 from app.activity import ActivityStatus, TransitionReason
 from app.activity.decision import DecisionReason
-from app.activity.model_advisor import ModelFailureCode
+from app.activity.model_advisor import ModelAdvisorError, ModelFailureCode
 from tests.activity_model_fakes import (
     RaisingProvider,
     ScriptedProvider,
+    advisor_with,
     proposal_json,
     rig_with_advisor,
 )
@@ -190,3 +193,78 @@ def test_runtime_keeps_working_when_the_advisor_is_absent() -> None:
     assert rig.runtime.advisor_view()["available"] is False
     # 延长审计里也不该出现顾问行
     assert TransitionReason.TIME_EXPIRED.value
+
+
+class SlowTimeoutProvider:
+    """**真的**慢：先睡 500ms，再抛超时（6D.1 B 要的是"实际延迟"，不是 0）。"""
+
+    calls: int = 0
+
+    async def complete_json(
+        self, *, schema: dict[str, Any], system: str, input: dict[str, Any], timeout_ms: int
+    ) -> str:
+        self.calls += 1
+        await asyncio.sleep(0.5)
+        raise ModelAdvisorError(ModelFailureCode.TIMEOUT, "deadline exceeded")
+
+
+def rig_with_log(provider: Any, log: Any) -> Any:
+    """带 logger 的装配（好让用例断言 [Activity.Model] 那一行）。"""
+    from app.activity import ActivityPlanner
+    from tests.activity_plan_fakes import PlanRig, clock_at
+
+    rig = PlanRig(clock=clock_at(14, 0), planner=ActivityPlanner(), logger=log)
+    rig.runtime.engine.advisor = advisor_with(provider)
+    return rig
+
+
+class TestLatencyReceipt:
+    """6D.1 B：失败路径也必须保留**实际**延迟，日志统一 attempted/latency/result/fallback。"""
+
+    async def test_failure_receipt_keeps_the_real_latency(self) -> None:
+        """任务书用例：provider 睡 500ms 再抛 Timeout → receipt.latency_ms ≈ 500。"""
+        provider = SlowTimeoutProvider()
+        rig, _episode = await in_window_rig(provider)
+        current = await rig.runtime.advance()
+        assert current is not None
+        receipt = rig.runtime.advisor_view()["last_receipt"]
+        assert receipt["failure"] == ModelFailureCode.TIMEOUT
+        assert 400 <= receipt["latency_ms"] <= 1500, receipt
+        assert receipt["latency_ms"] != 0, "绝不允许再出现 TIMEOUT latency_ms=0"
+        assert receipt["fallback_used"] is True
+
+    async def test_trace_carries_the_same_latency_on_failure(self) -> None:
+        """同一条延迟也要进 DecisionTrace（WebUI/审计看到的是同一个数）。"""
+        provider = SlowTimeoutProvider()
+        rig, _episode = await in_window_rig(provider)
+        _current, trace = await decide(rig)
+        receipt = rig.runtime.advisor_view()["last_receipt"]
+        assert trace["model_attempted"] is True
+        assert trace["fallback_used"] is True
+        assert trace["model_latency_ms"] == receipt["latency_ms"]
+        assert trace["model_latency_ms"] >= 400
+
+    async def test_failure_log_line_is_unified(self, caplog: Any) -> None:
+        """日志四件套：attempted= / latency_ms=（非 0）/ result= / fallback=。"""
+        log = logging.getLogger("catoobot.test.activity.advisor")
+        provider = SlowTimeoutProvider()
+        rig = rig_with_log(provider, log)
+        episode = await rig.runtime.start(
+            activity_name="gaming", duration=PROFILE, now=rig.clock.now()
+        )
+        assert episode is not None
+        rig.clock.advance_minutes(31)
+        with caplog.at_level(logging.INFO, logger=log.name):
+            await rig.runtime.advance()
+        lines = [
+            record.getMessage()
+            for record in caplog.records
+            if "Activity.Model" in record.getMessage()
+        ]
+        assert lines, "顾问失败也必须留下一行日志"
+        text = lines[-1]
+        assert "attempted=True" in text
+        assert "result=TIMEOUT" in text
+        assert "fallback=True" in text
+        assert "latency_ms=0" not in text
+        assert "proposal=" not in text  # 6D.1：字段名统一成 result=
