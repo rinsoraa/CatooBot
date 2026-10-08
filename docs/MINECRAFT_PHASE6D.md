@@ -222,3 +222,52 @@ CI **不联网、不调真实 LLM**；`minecraft_runtime/` / `app/tools/` / `app
 ## 真机取证
 
 （本节在真机轮次之后补写；与 6A/6B/6C/6C.1 同一纪律：**没真跑过的一律写 SKIPPED**。）
+
+---
+
+## 18. 真机发现与门禁现状（2026-10-09 凌晨，ZCode 用 Computer Use 亲手跑）
+
+### 18.1 模型选型有**硬约束**（重要）
+
+同一家 provider 的实测延迟（`ai_usage`，近 24 小时）：
+
+| 模型 | 调用数 | 平均 | 最小 | 最大 |
+| --- | --- | --- | --- | --- |
+| `cn:glm-5.3-flash`（曾用别名 `small`） | 15 | **8593ms** | 3994ms | 16954ms |
+| `cn:deepseek-v4.1-flash`（别名 `primary`） | 37 | **4136ms** | 3199ms | 5912ms |
+| `cn:minimax-m3` | 27 | 4225ms | 2814ms | 7356ms |
+
+§二十八 的墙钟上限是 **5000ms** —— 所以"随手挑个便宜模型"是错的：`glm-5.3-flash` 平均 8.6 秒，
+**永远**超时（真机上连试两次都是 `TIMEOUT` + 回退）；`deepseek-v4.1-flash` 才塞得进去。
+
+**建议**：代码默认值保持任务书 §二十八 的 **1500ms** 不变；但示例配置与运维文档要写明
+"**选平均延迟明显低于 `timeout_ms` 的模型**"，本机最终用的是 `model: primary` / `timeout_ms: 5000`。
+
+### 18.2 一个 cosmetic 缺陷（未修，一行）
+
+**失败路径的回执 `latency_ms` 恒为 0**：`ActivityDecisionEngine._maybe_advise` 的 `except` 分支
+只写了 `receipt["failure"]`，没读 `advisor.last_latency_ms` —— 于是"超时"这类最需要看延迟的场景
+反而看不到延迟（真实值在 AI 日志与 `ai_usage` 里都有）。
+修法：`except` 分支里补 `receipt["latency_ms"] = int(getattr(advisor, "last_latency_ms", 0) or 0)`。
+
+### 18.3 真机门禁现状（真实 provider = Workbuddy2API / primary；真实调用共 7 次）
+
+| 门禁 | 结果 | 证据摘要 |
+| --- | --- | --- |
+| Real A | **PASS** | `01:58:20 latency_ms=4680 proposal=transition accepted=True fallback=False` → 规则采纳 → `idle → napping`；无世界动作 |
+| Real B | **PASS** | 两次真实超时（`01:51:29` 预算 1500ms / `01:54:52` 预算 4500ms）→ `fallback=True reason=TIMEOUT` → 活动照常 |
+| Real D | **PASS** | `02:14:11 decision=TRANSITION reason=MAX_DURATION elapsed=4000s` → `EXPIRED`，且**模型调用计数不变**（到硬上限时模型**不被问**） |
+| Real E | **PASS**（真机形态） | 每个到期窗（≈75–80 tick）恰好一条调用；`cycle` 键 `…2955/…3030/…3105/…3205` 各只被问一次、现实一变就换新键 |
+| Real QQ A/B | **PASS** | `01:41:32`「啊——睡着呢，被你消息震醒了」↔ `sleeping`；`01:43:30`「接着睡啊，才一点多」= 计划 |
+| Real QQ C/D | **PASS** | `02:16:45`「还在睡……你别一直戳我啊」↔ 规则收尾后的 `napping`（Episode 事实，不含模型文本） |
+| Real C | **未取证** | 模型看到 `allowed_decisions` 里没有 extend 时**从不提延长**（5 次真实调用均如此）；撞车那一路因造点脚本改了 `activity_name`、抹掉了"刚做过 napping"的历史而没触发 |
+| Real F | **未取证** | 需要一次"被采纳的 continue"保持同一 cycle 跨重启；真机上模型 5 次都稳定给 `transition`（状态必变） |
+| Real QQ E | **未取证** | 没在"模型失败窗口"里当场问她 |
+
+**Real C 的补法**：`max_extensions_per_episode` 取正常值，造到期点时**只推 `started_at`/`planned_end_at`、
+不要改 `activity_name`**（保留历史里的 `napping`），10 分钟撞车冷却内模型再提 `napping` → `RULE_REJECTED`；
+或把模型临时指向一个"总是说 extend 999 分钟"的桩（那就不是 Real Model 了，须如实标注）。
+**Real F 的补法**：起一个能给出 `continue` 的配置（或直接手工补一行 `MODEL_ADVISED` 审计行），
+重启后把 `planned_end_at` 设回**同一个 epoch**（cycle 键相同）→ 审计行计数应保持 1。
+**Real QQ E 的补法**：把 `model` 临时指向一个不存在的名字（provider 必失败）→ 重启 → 正常问她一句，
+她应当照常回答（同时再证一次 Real B 的另一类失败）。

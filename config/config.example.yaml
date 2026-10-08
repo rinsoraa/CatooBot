@@ -581,7 +581,9 @@ world:
     # ---- Phase 6D：模型顾问（软判断的"参谋"；**关着 = 纯规则**，行为与 6B/6C 完全一致）
     model_advisor:
       enabled: false                   # 想试就改成 true，并填上下面的 provider / model
-      timeout_ms: 1500                 # 500~5000：单次顾问调用的墙钟上限
+      # ⚠️ 选一个**平均延迟明显低于 timeout_ms** 的模型：远程 provider 上 glm 系常常 8 秒+，
+      #    那样顾问会一直超时回退（代码默认仍按任务书用 1500；远程 provider 建议 4000~5000）
+      timeout_ms: 4000                 # 500~5000：单次顾问调用的墙钟上限
       provider: null                   # 供应商标签（只出现在日志/trace 里）
       model: null                      # 用哪个模型（既有 router 里的模型名）
 

@@ -31,6 +31,13 @@
   `ActivityModelReceipt`（不含 prompt/思维链）；日志一行 `[Activity.Model] …`（绝不打印 prompt）；
   只读端点 `GET /api/v1/world/activity/advisor`；WebUI 世界页新增只读「模型顾问」卡片
   （**没有**强制采纳 / 否决 / 再问一次）。
+* **真机发现（2026-10-09 凌晨，ZCode 亲手跑）**：①**模型选型有硬约束** —— 同一 provider 上
+  `glm-5.3-flash` 平均 **8593ms**、`deepseek-v4.1-flash` 平均 **4136ms**，而 §二十八 上限是 5000ms，
+  所以"随手挑个便宜模型"会让顾问永远超时；示例配置与文档因此写明"选平均延迟明显低于 `timeout_ms` 的模型"
+  （代码默认值仍按任务书保持 1500ms）。②一个 cosmetic 缺陷：**失败路径的回执 `latency_ms` 恒为 0**
+  （`_maybe_advise` 的 `except` 分支没读 `advisor.last_latency_ms`），修法一行。
+  ③真机门禁：Real A/B/D/E 与 Real QQ A/B/C/D **全部 PASS**（真实调用 7 次：5 次被采纳的提案 +
+  2 次真实超时回退）；Real C/F 与 Real QQ E 未取证，补法写进 `docs/MINECRAFT_PHASE6D.md` §18。
 * **测试与文档**：新增 7 个文件、**93 项**（advisor 20 / schema 22 / fallback 14 / guard 10 /
   frequency 11 / injection 9 / recovery 7），覆盖任务书 A–X 矩阵 + 纯规则等价 + AST 安全 guard；
   文档 `docs/MINECRAFT_PHASE6D.md` + `docs/README.md` 索引。
