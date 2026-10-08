@@ -171,6 +171,20 @@ SCHEDULED ──→ ACTIVE ──┬─→ EXTENDED ──┬─→ EXTENDED（�
 | 其它（`plan_ready` / `confirmation_required` / `step_*` / `replanning` / `authorization_expired`） | **不动**：它们是同一个活动内部的阶段 |
 
 * 每个终态映射到**不同**的 Episode 状态，审计能一眼看出"取消/超时/失败"。
+  映射表只有一张：`app/activity/model.py::TASK_STATE_OUTCOME`
+  （`SUCCEEDED→COMPLETED/TASK_COMPLETED`、`FAILED→INTERRUPTED/TASK_FAILED`、
+  `CANCELLED→CANCELLED/MANUAL`、`EXPIRED→EXPIRED/TIME_EXPIRED`、`PAUSED→INTERRUPTED/USER_INTERACTION`），
+  "实时事件"与"重启后对账"**共用同一条口径**（§四十二：不允许每个模块自己解释）。
+* **暂停必须真的发事件**（真机缺陷修复）：`TaskRuntime.pause()` 有两条路 ——
+  有前台动作时是**延后暂停**（任务先停在 `WAITING_ACTION`，等动作自然结束才进 `PAUSED`）；
+  没有动作时**立即暂停**。**只有真的进入 `PAUSED` 的那一刻**才发布 `task.paused`
+  （延后请求那一步发出去就是谎报），事件由三条进入 PAUSED 的路径各自发出
+  （立即暂停 / 动作成功结束后收尾 / 动作失败结束后收尾 / 重启恢复时进入 PAUSED）。
+  真机上踩到的正是这里：早期版本只写 checkpoint、不发事件，于是"任务 PAUSED 而活动还 ACTIVE"。
+* **重启对账用只读探针校正**（同上）：事件可能在活动层装配之前就发过了，所以
+  `ActivityRuntime.recover()` 会用一个**只读**的 `task_state_probe(task_id)` 问一句任务的权威状态 ——
+  任务是 `PAUSED` 或已经收尾（停机期间结束）就按同一张 `TASK_STATE_OUTCOME` 表收尾活动；
+  探针拿不到就什么都不做（按时间对账），绝不猜。探针故障只降级。
 * **恢复不重建**（§四十三）：如果已经有一条 live Episode 绑着同一个 `task_id`，就复用它；
   暂停之后再恢复会开**新** Episode 并把 parent 指向前一条（状态机不允许 INTERRUPTED→ACTIVE）。
 * 任务结束后**不自动续摊**：下一个 tick 让她回到自己的日常（Planner 决定），

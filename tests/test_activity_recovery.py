@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 import pytest
@@ -19,6 +20,7 @@ from app.activity import (
     ActivityStatus,
     ActivityType,
     FakeClock,
+    InMemoryActivityStore,
     SqliteActivityStore,
     TransitionReason,
 )
@@ -332,3 +334,184 @@ async def test_terminal_episodes_are_not_resumed(tmp_path: Any, status: Activity
     closed = [item for item in await runtime.recent(10) if item.episode_id == episode.episode_id]
     assert closed and closed[0].status is status
     await database.close()
+
+
+class TestTaskStateAlignment:
+    """§四十二：任务 PAUSED / 已结束的事实比时间更权威 —— 重启对账时按它校正活动。
+
+    真机上踩到的正是这一条：任务被暂停了（或停机期间已经结束），但活动层在重启后
+    把 Episode 当成 ACTIVE 接管回来，于是"任务 PAUSED 而活动 ACTIVE"。
+    """
+
+    async def _seeded(self, tmp_path: Any, *, task_id: str = "task_real") -> tuple[Any, Any, Any]:
+        from app.activity.model import ActivitySource, ActivityType
+
+        database = await make_db(tmp_path, "align.db")
+        clock = FakeClock()
+        runtime = build(database, clock=clock)
+        episode = await runtime.start(
+            activity_name="minecraft_task",
+            activity_type=ActivityType.TASK_EXECUTION,
+            source=ActivitySource.TASK,
+            related_task_id=task_id,
+            now=clock.now(),
+        )
+        assert episode is not None
+        return database, clock, episode
+
+    async def test_paused_task_interrupts_the_takeover(self, tmp_path: Any) -> None:
+        database, clock, episode = await self._seeded(tmp_path)
+
+        async def probe(task_id: str) -> str:
+            return "PAUSED"
+
+        runtime = build(database, clock=clock)
+        runtime.task_state_probe = probe
+        result = await runtime.recover()
+        assert result["action"] == "aligned"
+        assert result["task_state"] == "PAUSED"
+        current = await runtime.current()
+        assert current is None  # 活动已经收尾，不再谎报 ACTIVE
+        stored = await runtime.store.get(episode.episode_id)
+        assert stored is not None
+        assert stored.status is ActivityStatus.INTERRUPTED
+        assert stored.transition_reason == TransitionReason.USER_INTERACTION.value
+        await database.close()
+
+    @pytest.mark.parametrize(
+        ("task_state", "status", "reason"),
+        [
+            ("SUCCEEDED", ActivityStatus.COMPLETED, TransitionReason.TASK_COMPLETED),
+            ("FAILED", ActivityStatus.INTERRUPTED, TransitionReason.TASK_FAILED),
+            ("CANCELLED", ActivityStatus.CANCELLED, TransitionReason.MANUAL),
+            ("EXPIRED", ActivityStatus.EXPIRED, TransitionReason.TIME_EXPIRED),
+        ],
+    )
+    async def test_task_finished_while_offline_is_reconciled(
+        self, tmp_path: Any, task_state: str, status: ActivityStatus, reason: TransitionReason
+    ) -> None:
+        database, clock, episode = await self._seeded(tmp_path, task_id=f"task_{task_state}")
+
+        async def probe(task_id: str) -> str:
+            return task_state
+
+        runtime = build(database, clock=clock)
+        runtime.task_state_probe = probe
+        await runtime.recover()
+        stored = await runtime.store.get(episode.episode_id)
+        assert stored is not None and stored.status is status
+        assert stored.transition_reason == reason.value
+        await database.close()
+
+    async def test_running_task_resumes_normally(self, tmp_path: Any) -> None:
+        database, clock, episode = await self._seeded(tmp_path)
+
+        async def probe(task_id: str) -> str:
+            return "WAITING_ACTION"
+
+        runtime = build(database, clock=clock)
+        runtime.task_state_probe = probe
+        result = await runtime.recover()
+        assert result["action"] == "resumed"
+        current = await runtime.current()
+        assert current is not None and current.episode_id == episode.episode_id
+        await database.close()
+
+    async def test_probe_failure_only_degrades(self, tmp_path: Any) -> None:
+        """探针坏了 → 不许猜，退回按时间对账（Episode 仍是 ACTIVE）。"""
+        database, clock, episode = await self._seeded(tmp_path)
+
+        async def probe(task_id: str) -> str:
+            raise RuntimeError("task store down")
+
+        runtime = build(database, clock=clock)
+        runtime.task_state_probe = probe
+        result = await runtime.recover()
+        assert result["action"] == "resumed"
+        current = await runtime.current()
+        assert current is not None and current.episode_id == episode.episode_id
+        await database.close()
+
+    async def test_no_probe_means_no_guessing(self, tmp_path: Any) -> None:
+        database, clock, _episode = await self._seeded(tmp_path)
+        runtime = build(database, clock=clock)  # 没有探针
+        assert (await runtime.recover())["action"] == "resumed"
+        await database.close()
+
+    async def test_routine_episode_ignores_the_task_probe(self, tmp_path: Any) -> None:
+        """非任务型 Episode 不该被任务状态影响（她自己的日常归时间管）。"""
+        database = await make_db(tmp_path, "align2.db")
+        clock = FakeClock()
+        runtime = build(database, clock=clock)
+        episode = await runtime.start(activity_name="reading", now=clock.now())
+        assert episode is not None
+
+        async def probe(task_id: str) -> str:
+            return "PAUSED"
+
+        runtime2 = build(database, clock=clock)
+        runtime2.task_state_probe = probe
+        assert (await runtime2.recover())["action"] == "resumed"
+        current = await runtime2.current()
+        assert current is not None and current.status is ActivityStatus.ACTIVE
+        await database.close()
+
+
+class TestBotForwardsTaskPause:
+    """真机缺陷的接线回归：Bot 必须把 ``task.paused`` 送到活动适配器。
+
+    真机上断掉的正是这一环：``TaskRuntime.pause()`` 当年压根不发这个事件，所以"任务暂停
+    而活动还 ACTIVE"（§四十二）。这里从 **Bot 的同步钩子** 出发，走真实的
+    ``_publish_task_event`` → ``_observe_activity_task_event`` → 适配器 → Episode 收尾。
+    """
+
+    async def test_bot_hook_interrupts_the_episode(self) -> None:
+        import asyncio
+
+        from app.activity.adapters import TaskActivityAdapter
+        from app.core.bot import Bot
+
+        clock = FakeClock()
+        runtime = ActivityRuntime(
+            store=InMemoryActivityStore(),
+            clock=clock,
+            character_id="罐头@deadbeef",
+            planner=ActivityPlanner(),
+        )
+        episode = await runtime.start(
+            activity_name="minecraft_task",
+            activity_type=ActivityType.TASK_EXECUTION,
+            source=ActivitySource.TASK,
+            related_task_id="task_real",
+            now=clock.now(),
+        )
+        assert episode is not None
+
+        bot = Bot.__new__(Bot)  # 不启动整个 Bot：只装这一条链路需要的属性
+        bot.log = logging.getLogger("test.activity")
+        bot.activity_tasks = TaskActivityAdapter(runtime)
+        bot._activity_tasks_running = set()
+        bot.minecraft_memory = None
+        bot.tasks = None
+        bot.task_entry = None
+
+        bot._publish_task_event("task.paused", {"task_id": "task_real"})
+        await asyncio.gather(*bot._activity_tasks_running)
+
+        stored = await runtime.store.get(episode.episode_id)
+        assert stored is not None
+        assert stored.status is ActivityStatus.INTERRUPTED
+        assert stored.transition_reason == TransitionReason.USER_INTERACTION.value
+        assert await runtime.current() is None
+
+    async def test_bot_hook_is_a_noop_without_an_activity_layer(self) -> None:
+        from app.core.bot import Bot
+
+        bot = Bot.__new__(Bot)
+        bot.log = logging.getLogger("test.activity")
+        bot.activity_tasks = None
+        bot._activity_tasks_running = set()
+        bot.minecraft_memory = None
+        bot.tasks = None
+        bot.task_entry = None
+        bot._publish_task_event("task.paused", {"task_id": "task_real"})  # 不抛异常

@@ -196,6 +196,26 @@ def looks_like_minecraft_activity(name: str) -> bool:
     return any(marker in text for marker in MINECRAFT_ACTIVITY_MARKERS)
 
 
+#: Task 的**终态** → Episode 的 (状态, 原因)。这是 §四十二"必须统一"的唯一口径：
+#: 无论走"实时事件"还是"重启后对账"，同一种任务结局都映射到同一种活动结局。
+#: （任务侧的状态名来自 ``TaskState``；这里只认终态 + PAUSED。）
+TASK_STATE_OUTCOME: dict[str, tuple[ActivityStatus, TransitionReason]] = {
+    "SUCCEEDED": (ActivityStatus.COMPLETED, TransitionReason.TASK_COMPLETED),
+    "FAILED": (ActivityStatus.INTERRUPTED, TransitionReason.TASK_FAILED),
+    "CANCELLED": (ActivityStatus.CANCELLED, TransitionReason.MANUAL),
+    "EXPIRED": (ActivityStatus.EXPIRED, TransitionReason.TIME_EXPIRED),
+    "PAUSED": (ActivityStatus.INTERRUPTED, TransitionReason.USER_INTERACTION),
+}
+
+#: Episode 终态 → ActivityRuntime 的公开收尾方法（事件适配器只走这些入口，绕不过状态机）
+FINISH_METHOD_BY_STATUS: dict[ActivityStatus, str] = {
+    ActivityStatus.COMPLETED: "complete",
+    ActivityStatus.INTERRUPTED: "interrupt",
+    ActivityStatus.CANCELLED: "cancel",
+    ActivityStatus.EXPIRED: "expire",
+}
+
+
 def duration_profile(activity_type: ActivityType, activity_name: str) -> tuple[float, float, float]:
     """活动的 (min, typical, max) 时长（秒）。
 

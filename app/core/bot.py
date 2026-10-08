@@ -1045,6 +1045,8 @@ class Bot:
                 getattr(config, "persistence_interval_seconds", 60.0) or 60.0
             ),
             recovery_grace_seconds=float(getattr(config, "recovery_grace_seconds", 30.0) or 0.0),
+            # 重启对账时用它把活动与任务的权威状态对齐（只读探针）
+            task_state_probe=self._probe_task_state,
             logger=self.log,
         )
         self.activity = runtime
@@ -1067,6 +1069,17 @@ class Bot:
             recovered.get("action", "none"),
             len(ACTIVITY_EVENT_NAMES),
         )
+
+    async def _probe_task_state(self, task_id: str) -> str:
+        """只读地问一句"这个任务现在什么状态"（活动重启对账用；拿不到就返回空串）。"""
+        tasks = getattr(self, "tasks", None)
+        if tasks is None:
+            return ""
+        try:
+            record = await tasks.get(str(task_id))
+        except Exception:  # noqa: BLE001 - 探针故障只降级（活动按时间对账）
+            return ""
+        return str(getattr(getattr(record, "state", None), "value", "") or "")
 
     def _activity_character_id(self) -> str:
         """活动归属的角色 id。

@@ -20,6 +20,8 @@ from __future__ import annotations
 from typing import Any
 
 from app.activity.model import (
+    FINISH_METHOD_BY_STATUS,
+    TASK_STATE_OUTCOME,
     ActivitySource,
     ActivityType,
     TransitionReason,
@@ -76,15 +78,24 @@ class SandboxActivityAdapter:
 # ---------------------------------------------------------------- Task（真实任务）
 
 
+#: 任务终态事件 → TaskState 名（事件与状态两套名字的唯一一处换算）
+TASK_TERMINAL_EVENT_STATES: dict[str, str] = {
+    "task.succeeded": "SUCCEEDED",
+    "task.failed": "FAILED",
+    "task.cancelled": "CANCELLED",
+    "task.expired": "EXPIRED",
+}
+
 #: Task 终态 → (调 ActivityRuntime 的哪个公开方法, 转移原因)。
-#: **每个终态都映射到不同的 Episode 状态**，审计能一眼看出"这个活动是被取消、超时，
-#: 还是任务失败"（§十九/§三十一）。用公开方法（而不是内部转移助手）是为了让任务层
-#: 只能走"正常生命周期入口"，绕不过状态机。
+#: 映射表本身在 ``model.TASK_STATE_OUTCOME``（与"重启后对账"共用同一口径，§四十二）。
+#: 用公开方法（而不是内部转移助手）是为了让任务层只能走"正常生命周期入口"，绕不过状态机。
 TASK_TERMINAL_MAP: dict[str, tuple[str, TransitionReason]] = {
-    "task.succeeded": ("complete", TransitionReason.TASK_COMPLETED),
-    "task.failed": ("interrupt", TransitionReason.TASK_FAILED),
-    "task.cancelled": ("cancel", TransitionReason.MANUAL),
-    "task.expired": ("expire", TransitionReason.TIME_EXPIRED),
+    event: (
+        FINISH_METHOD_BY_STATUS[outcome[0]],
+        outcome[1],
+    )
+    for event, state in TASK_TERMINAL_EVENT_STATES.items()
+    for outcome in (TASK_STATE_OUTCOME[state],)
 }
 
 #: 任务开始/恢复 → 开一个新的任务型 Episode
@@ -195,10 +206,13 @@ class TaskActivityAdapter:
         if current.status is not ActivityStatus.ACTIVE:
             return None
         # §四十二：任务 PAUSED 时活动**不能**还 ACTIVE。统一口径 = INTERRUPTED
-        # （不是 EXTENDED/WAITING —— 本项目的状态机里没有 WAITING，且 INTERRUPTED 语义最准）。
-        return await self._runtime.interrupt(
-            episode_id=current.episode_id, reason=TransitionReason.USER_INTERACTION
-        )
+        # （不是 EXTENDED/WAITING —— 本项目的状态机里没有 WAITING，且 INTERRUPTED 语义最准），
+        # 而且这张映射表与"重启后对账"共用（``model.TASK_STATE_OUTCOME``）。
+        status, reason = TASK_STATE_OUTCOME["PAUSED"]
+        method = getattr(self._runtime, FINISH_METHOD_BY_STATUS[status], None)
+        if method is None:
+            return None
+        return await method(episode_id=current.episode_id, reason=reason)
 
 
 # ---------------------------------------------------------------- Minecraft（只读观察）

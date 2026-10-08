@@ -984,6 +984,8 @@ class TaskRuntime:
                 await self._publish(TASK_CONFIRMATION_REQUIRED, self._event_payload(record))
             elif record.state is not TaskState.PAUSED:
                 await self._enter(record, TaskState.PAUSED)
+                # Phase 6A：重启后发现任务该停在 PAUSED —— 也对外说一声（活动层据此收尾）
+                await self._publish(TASK_PAUSED, self._event_payload(record, stale_step))
             if record.state is TaskState.PAUSED:
                 record.failure = TaskFailure.RUNTIME_RESTART.value
                 record.failed_step = stale_step.step_id if stale_step is not None else ""
@@ -1091,6 +1093,7 @@ class TaskRuntime:
             if target.pause_requested:
                 target.pause_requested = False
                 await self._enter(target, TaskState.PAUSED)
+                await self._publish(TASK_PAUSED, self._event_payload(target, step))
                 await self._save(target, event=TASK_PAUSED, step_id=step.step_id)
                 return target
             await self._pause_after_failure(target, failure, step)
@@ -1099,6 +1102,7 @@ class TaskRuntime:
             # §二十九：暂停等当前动作**自然结束**，绝不在动作中间硬切状态
             target.pause_requested = False
             await self._enter(target, TaskState.PAUSED)
+            await self._publish(TASK_PAUSED, self._event_payload(target, step))
             await self._save(target, event=TASK_PAUSED, step_id=step.step_id)
             return target
         # 动作结束了：先把状态切回 RUNNING **并落盘**再继续下一步。
@@ -1127,6 +1131,11 @@ class TaskRuntime:
         record.pause_requested = False
         await self._enter(record, TaskState.PAUSED)
         record.message = f"已暂停（{reason}）"
+        # Phase 6A：任务**真的**进入 PAUSED 时要对外说一声 —— 世界活动（ActivityEpisode）靠
+        # 这个事件把"执行任务"这条活动收成 INTERRUPTED（§四十二：任务 PAUSED 时活动不能还 ACTIVE）。
+        # 注意：只有"真的进了 PAUSED"才发；上面那条"等动作结束后暂停"的延后请求**不发**
+        # （那时任务还是 WAITING_ACTION，发出去就是谎报）。
+        await self._publish(TASK_PAUSED, self._event_payload(record))
         await self._save(record, event=TASK_PAUSED)
         return record
 

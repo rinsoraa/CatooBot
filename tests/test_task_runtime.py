@@ -477,11 +477,15 @@ async def test_j_pause_waits_for_a_running_action_then_pauses() -> None:
     paused = await runtime.pause(record.task_id)
     assert paused.pause_requested is True and paused.state is TaskState.WAITING_ACTION
     assert [call["tool"] for call in invoke.calls][-1] == "minecraft_stop"
+    # Phase 6A §四十二：延后暂停的**请求**阶段还不算 PAUSED，这时不许谎报事件
+    assert "task.paused" not in [event for event, _ in runtime.events]  # type: ignore[attr-defined]
 
     after = await runtime.on_action_event(
         action_id=paused.pending_action_id, event="minecraft.action.cancelled", status="CANCELLED"
     )
     assert after is not None and after.state is TaskState.PAUSED
+    # 真的进入 PAUSED 了 → 必须对外说一声（世界活动靠它把"执行任务"收成 INTERRUPTED）
+    assert "task.paused" in [event for event, _ in runtime.events]  # type: ignore[attr-defined]
 
 
 async def test_j_pause_without_action_is_immediate_and_does_not_advance() -> None:
@@ -497,6 +501,8 @@ async def test_j_pause_without_action_is_immediate_and_does_not_advance() -> Non
     )
     paused = await runtime.pause(record.task_id)
     assert paused.state is TaskState.PAUSED and paused.pending_action_id == ""
+    # 立即暂停：进入 PAUSED 的同一刻对外发事件（§四十二 的统一口径）
+    assert "task.paused" in [event for event, _ in runtime.events]  # type: ignore[attr-defined]
     before = len(invoke.calls)
     again = await runtime.drive(record.task_id)
     assert again.state is TaskState.PAUSED and len(invoke.calls) == before, "暂停后绝不再往下走一步"

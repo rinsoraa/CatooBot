@@ -48,6 +48,15 @@
 * **API / WebUI**：`GET /api/v1/world/activity?limit=10`（只读、恒 200）；World 页新增只读卡片
   「当前活动（Phase 6A）」（Episode ID/状态/开始/计划结束/时长/来源/关联任务/原因/延长次数 +
   最近 ≤10 条），**没有任何** start/cancel/extend 入口。
+* **真机门禁暴露的产品缺陷（已修）**：`TaskRuntime.pause()` 以前只写 checkpoint、**不发布**
+  `task.paused` —— 于是活动层永远收不到"任务被暂停了"，**§四十二（任务 PAUSED 时活动不能还
+  ACTIVE）在真机上不成立**（真机日志：09:00:26 任务已 PAUSED，而活动的 `minecraft_task`
+  一直 ACTIVE 到超时）。现在"真的进入 PAUSED"的三条路径（立即暂停 / 动作成功结束后 /
+  动作失败结束后）与"重启恢复时进入 PAUSED"都会发布事件，并补了回归测试。
+  同一轮还加了**重启对账的只读探针**：`ActivityRuntime.recover()` 会问一句任务的权威状态
+  （`PAUSED` / 已在停机期间收尾），按 §四十二 的统一口径收尾活动；探针拿不到就不猜。
+  任务结局→活动结局的映射现在只有一张表（`model.TASK_STATE_OUTCOME`），"实时事件"与
+  "重启对账"共用它。
 * **真机取证后的两处修正**：①`recover()` 现在往 `activity_transitions` 写一行
   `RECOVERED / reason=RECOVERY`（原先只记日志、`audit=False`）—— 数据库要能自己回答
   "重启后是不是同一个 Episode"，连续重启会有多行；②真机 smoke 的 `pause` 阶段加了**前置条件**

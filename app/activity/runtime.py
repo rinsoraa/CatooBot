@@ -33,6 +33,7 @@ from app.activity.events import (
     ActivityEventPublisher,
 )
 from app.activity.model import (
+    TASK_STATE_OUTCOME,
     ActivityEpisode,
     ActivitySource,
     ActivityStatus,
@@ -70,6 +71,7 @@ class ActivityRuntime:
         recent_episode_limit: int = 5,
         persistence_interval_seconds: float = DEFAULT_PERSISTENCE_INTERVAL_SECONDS,
         recovery_grace_seconds: float = 0.0,
+        task_state_probe: Any = None,
         logger: Any = None,
     ) -> None:
         self.store = store
@@ -84,6 +86,9 @@ class ActivityRuntime:
         #: 重启宽限（§五十三）：计划结束时间过了这么久之内都不算"已过期"，
         #: 免得每次重启都因为差几秒而强行转移。
         self.recovery_grace_seconds = max(0.0, float(recovery_grace_seconds))
+        #: **只读**的任务状态探针（``async def probe(task_id) -> "PAUSED"|"SUCCEEDED"|…``）：
+        #: 重启对账时用它把活动与任务权威状态对齐（§四十二：不允许每个模块自己解释）。
+        self.task_state_probe = task_state_probe
         #: 写操作串行化（同一个进程里绝不让两次转移交错）
         self._lock = asyncio.Lock()
         #: 观察的写盘节流（§二十三）
@@ -429,7 +434,13 @@ class ActivityRuntime:
             # 合法状态：没有 Episode 就不假装有（§五十二）。她"现在做什么"交给下一次 tick。
             return {"action": "none", "episode_id": "", "reason": "no_episode"}
 
-        # 先把"我重启过"如实记下来（不是伪造活动，只是说明这条 Episode 被重新接管）。
+        # 先与**任务的权威状态**对齐（§四十二）：重启之前任务就已经 PAUSED / 已经结束的情况，
+        # 事件早就发过了（那时活动层可能还没装配），只能在这里用只读事实校正。
+        aligned = await self._align_with_task(current, now=moment)
+        if aligned is not None:
+            return aligned
+
+        # 再把"我重启过"如实记下来（不是伪造活动，只是说明这条 Episode 被重新接管）。
         # **同时落一行转移审计**：§五十五 要求能回答"重启后是不是同一个 Episode"，
         # 只写日志不够 —— 但 RECOVERED 不在一次性索引里，多次重启会有多行（这是对的）。
         if hasattr(self.store, "log_transition"):
@@ -493,6 +504,40 @@ class ActivityRuntime:
             "action": "resumed",
             "episode_id": current.episode_id,
             "reason": TransitionReason.RECOVERY.value,
+        }
+
+    async def _align_with_task(
+        self, episode: ActivityEpisode, *, now: float
+    ) -> dict[str, Any] | None:
+        """重启后把"任务型 Episode"对齐到任务的权威状态（只读探针；不可用就不猜）。
+
+        * 任务 PAUSED → INTERRUPTED（§四十二 的统一口径）
+        * 任务已经在停机期间收尾 → 对应的终态（COMPLETED/INTERRUPTED/CANCELLED/EXPIRED）
+        * 任务还在跑 / 探针拿不到 → 什么都不做（交给下面的时间对账）
+        """
+        task_id = str(episode.related_task_id or "")
+        if not task_id or self.task_state_probe is None:
+            return None
+        try:
+            state = str(await self.task_state_probe(task_id) or "").strip().upper()
+        except Exception:  # noqa: BLE001 - 探针故障只降级：按时间对账继续
+            if self._log is not None:
+                self._log.debug("[World.Activity] 任务状态探针失败（忽略）", exc_info=True)
+            return None
+        outcome = TASK_STATE_OUTCOME.get(state)
+        if outcome is None:
+            return None
+        target, reason = outcome
+        if not episode.can_transition_to(target):
+            return None
+        updated = await self._terminate(episode, to=target, reason=reason, now=now, publish=True)
+        if updated is None:
+            return None
+        return {
+            "action": "aligned",
+            "episode_id": episode.episode_id,
+            "reason": reason.value,
+            "task_state": state,
         }
 
     # ------------------------------------------------------------ 只读观察（§十六/§十七）
