@@ -60,6 +60,15 @@
   `test_activity_plan_persistence.py`、`test_activity_plan_recovery.py`（含 AST 安全 guard、
   3 天快进、确定性矩阵），并更新 runtime / decision / recovery / consistency 四个既有文件；
   文档 `docs/MINECRAFT_PHASE6C.md` + `docs/README.md` 索引。
+* **真机门禁 A–D + Real QQ A/B 全部取得证据**（详见 `docs/MINECRAFT_PHASE6C.md` §16/§17）：
+  任务期间 `Activity=minecraft_task`、任务完成后**计划真的重排**（`plan-005 v5` → `plan-006 v6`，
+  同为 `trigger=episode_ended`）；Minecraft 离线窗口内计划与活动都不含 Minecraft 活动名、她也不声称
+  在服务器里；沙盒 world event 换活动期间零世界动作；QQ 的「你现在在干嘛」答当前 Episode（napping）、
+  「你接下来准备干嘛」两次都把 `sleeping` 说成**将来**（"打完就睡"）而没冒充现状。
+  顺带验到三件事：**计划真的驱动了 Episode**（计划第一条 `online` → 随即 `ACT-…-049 online`）、
+  **§九 刷新冷却在真机上生效**（`21:03:44 v1(recovery)` → `21:08:45 v2(state_changed)`，间隔恰好
+  5 分 01 秒）、触发点分布 `recovery×1 / state_changed×2 / episode_ended×4`。
+  一条已知限制从真机里长出来（Episode 被 EXTEND 时不立刻重排计划），已如实记进文档 §19 第 8 条。
 
 ## Minecraft Phase 6B — 活动决策引擎（Continue / Extend / Transition）
 

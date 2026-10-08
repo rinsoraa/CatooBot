@@ -217,23 +217,41 @@ ScheduleAnchor(anchor_id, activity, target_time="HH:MM",
 * `allow_medium` 默认值没变；没有新 Minecraft 工具（仍 19 个）；没有新 ActionRuntime action；
   没有新 TaskRuntime 状态。
 
-## 16. Real Java（§六十一，A–D）
+## 16. Real Java（§六十一，A–D）—— 真机结果
 
-| 门禁 | 要做的 | 判定依据（只读：smoke 脚本 + 真实库 + 日志） |
-| --- | --- | --- |
-| A | 真实 Minecraft 在线 → Planner context 能识别，但不执行动作 | |
-| B | 真实 Task 进行 → `Activity = minecraft_task`；任务完成后**能重新规划** | |
-| C | Minecraft 离线 → 不生成"我正在 Minecraft 里"，但可以有虚拟兴趣 | |
-| D | 真实 world event → 不得绕过 `TaskRuntime` 直接产生 Minecraft 动作 | |
+| 门禁 | 要做的 | 证据（只读：smoke + 真实库 + `logs/catoobot.log` + NapCat 日志） | 判定 |
+| --- | --- | --- | --- |
+| A | 真实 Minecraft 在线 → 计划/上下文能识别在线事实，但**不执行动作** | `--phase plan` 每次输出里计划条目全部是虚拟活动（`online`/`sleeping`/`music`/`gaming`/`idle`），**没有**任何 Minecraft 活动名；在线事实经任务型 Episode 如实进入活动层（`ACT-20261008-048 minecraft_task … source=TASK`）。除任务窗口外没有世界动作 | PASS |
+| B | 真实 Task 进行 → `Activity = minecraft_task`；任务完成后**能重新规划** | `21:19:02 ACT-047 gaming COMPLETED reason=TASK_STARTED` → `ACT-048 minecraft_task SCHEDULED→ACTIVE source=TASK`；`21:19:02 重新规划 plan=PLAN-20261008-005 v5 trigger=episode_ended`；任务成功后 `21:19:05 ACT-048 minecraft_task COMPLETED reason=TASK_COMPLETED` → **`21:19:06 重新规划 plan=PLAN-20261008-006 v6 trigger=episode_ended`**（plan_id 与版本都前进）。QQ 侧六个动作反馈后回「完成啦，已经拿到了 1 个 oak_log」 | PASS |
+| C | Minecraft 离线 → **不生成**"我正在 Minecraft 里"，但可以有虚拟兴趣 | 连接时间线：`21:21:47 disconnected`（任务完成后）→ `21:26:59 connected` → **`21:58:06 disconnected`（此后无 connecting）**；`--phase report`/`--phase plan` 与 22:01:14 的提问全部发生在这两个离线窗口内。离线期间计划仍是 `online→sleeping`（`✓ 计划里没有任何 Minecraft 活动名（§五十五）[]`）、活动里最后一条 Minecraft 型 Episode 是 `21:19:05 COMPLETED`（之后没有新的）、她的回答也只谈虚拟层面（"打boss"），从未声称在服务器里 | PASS |
+| D | 真实 world event → 不得绕过 `TaskRuntime` 直接产生 Minecraft 动作 | `21:15:44` 沙盒连续换活动（`ACT-046 idle reason=WORLD_EVENT` → `ACT-047 gaming reason=WORLD_EVENT`）期间 Minecraft 侧**零动作**；全场唯一的动作窗口是 `21:19:02–21:19:05`，由用户那句「确认」开启（`source=TASK`） | PASS |
 
-现场结果见本文件末尾的"真机取证"一节（与 6A/6B 一样，逐条贴证据）。
-
-## 17. Real QQ（§五十九/§六十/§七十二）
+## 17. Real QQ（§五十九/§六十/§七十二）—— 真机结果
 
 * **QQ A**：`你现在在干嘛？` → 当前 `ActivityEpisode`（6B 那一轮漏掉的门禁，本阶段补上）。
 * **QQ B**：`你接下来准备干嘛？` → 计划里的**下一步**（不是现状）。
 * 必须能证明 `current != planned` 时不会把计划冒充现状：上下文里两块分开写、
   计划块自带"以现状为准"的声明。
+
+| 门禁 | 证据（原话） | 对照的系统事实 | 判定 |
+| --- | --- | --- | --- |
+| QQ A | `21:14:01` 问 → `21:14:08` 答「刚在补觉，小喵一直蹭我要吃的，给我蹭醒了」 | 当时 live = `ACT-20261008-045 napping`（小睡/补觉） | PASS |
+| QQ B（第一轮） | `21:16:00` 问 → `21:16:08` 答「把小喵喂了，继续打boss，打完差不多就睡了」 | 当时 live = `ACT-20261008-047 gaming`（"继续打boss"= 正在做的事）；计划 v4 的下一步 = `sleeping 22:15`（"打完就睡了"= **计划**，措辞明确不是"我正在睡"） | PASS |
+| QQ B（第二轮，**离线窗口内**） | `22:01:14` 问 → `22:01:20` 答「刚不是说了嘛——打完这个boss就睡，别催啊」 | 当时 live = `ACT-20261008-049 online EXTENDED`（6B 延长 +2400s，现实到 ~22:39）；计划 v7 预报 `sleeping 22:00`。她**以现状为准**（"打完就睡"而不是"我已经睡了"），且没有声称在 Minecraft 服务器里 | PASS |
+
+> §七十二 的关键反例（`current != planned` 且**不能把计划说成现状**）在 QQ B 两轮里都成立：
+> 计划说 `sleeping`，她两次的回答都把"睡觉"放在**将来**（"打完…就睡"/"差不多就睡了"），
+> 一次也没说成"我现在正在睡觉"。
+
+**顺带拿到的三条额外证据（比门禁要求更硬）**：
+
+1. **计划真的驱动了 Episode**（§十七/§三十一）：`21:19:06` 计划 v6 的第一条是 `online`（ROUTINE），
+   紧接着就出现 `ACT-20261008-049 online SCHEDULED reason=SCHEDULED source=ROUTINE`
+   —— 落地的那条 Episode 就是计划的第一条，而不是 Planner 临时另给一个。
+2. **§九 的刷新冷却在真机上生效**：`21:03:44 v1(trigger=recovery)` → 下一个计划是
+   `21:08:45 v2(trigger=state_changed)`，间隔**恰好 5 分 01 秒** —— 软触发被 5 分钟冷却挡住之后才执行。
+3. **触发点覆盖**：21:03–21:24 的 7 份计划里 `recovery`×1、`state_changed`×2、`episode_ended`×4，
+   全部落在 §八 的清单内（任务开始/结束各触发一次，沙盒换活动各触发一次）。
 
 ## 18. 3-day Fast Forward（§六十二/§六十三/§六十四/§六十五）
 
@@ -255,6 +273,11 @@ ScheduleAnchor(anchor_id, activity, target_time="HH:MM",
    规划那一刻的值（计划是意图，会随触发点重算）。
 6. **相邻同名只在展示层/铺计划时处理**：库里仍是两条记录（§十九 要求不丢原始审计）。
 7. **QoL 债**：`activity_plan_items` 没有外键（本项目 SQLite 一贯不带 FK），靠事务保持一致。
+8. **Episode 被 EXTEND 时不会立刻重排计划**（真机 22:01 那轮发现的）：`ACT-20261008-049` 被 6B
+   延长 40 分钟后，计划里那条 `CONTINUATION` 仍写着**原来的**结束时间；原因是 §八 的触发点清单里
+   没有"延长"这一项，要等下一个 Episode 边界或软触发才更新。影响面很小（上下文里"现状"与"计划"
+   分块写、并且明确"以现状为准"，真机上模型正确地优先了现状），修法也小（把 EXTEND 接成一个
+   **软**触发即可，走 5 分钟冷却）—— 但 6C 任务书没有要求，故**未改**，留作已知限制。
 
 ---
 
@@ -262,4 +285,15 @@ ScheduleAnchor(anchor_id, activity, target_time="HH:MM",
 
 > 与 6A/6B 同一纪律：**没真跑过的一律写 SKIPPED，绝不写成 PASS**。
 
-（本节的现场证据在真机轮次之后补写，格式与 `MINECRAFT_PHASE6B.md` §15 一致。）
+**结论：Real Java A–D 与 Real QQ A（含 6B 遗留门禁）/ QQ B 全部 PASS**（逐条证据见上面 §16/§17）。
+
+取证工具与口径：
+
+* **只读脚本**：`scripts/activity_smoke_real.py --phase plan`（计划）与 `--phase report`（当前 Episode）
+  —— 直接读真实库，不经过任何写入口；脚本本阶段顺手加了两条机械断言：
+  ①计划里绝不允许出现 Minecraft 活动名（§五十五）；②Minecraft 相关活动**必须**带
+  `related_task_id`（§五十六）。脚本是本地工具，**不进发布镜像**。
+* **三方对照**：脚本输出 + 真实库（`logs/catoobot.log` 的 `[World.Activity]` 行）+ NapCat 的 QQ 收发日志。
+* **WebUI 只读卡片**：世界页「当前活动」（6A/6B）与「接下来的打算（计划，不是现状）」（6C）并列显示，
+  截图与 API/DB 完全一致；卡片里有 Plan / 版本 / 视野 / 来源·触发 / 下一步 / 被选中 / 刷新次数 /
+  一致性 / 未来安排 / 候选与**八项打分明细** / 被拒原因 / 锚点，且**没有任何** force select 入口。
