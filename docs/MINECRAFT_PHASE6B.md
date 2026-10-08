@@ -210,6 +210,16 @@ grep -E "World.Activity" logs/catoobot.log | tail -20
 * 普通 tick 是 O(1) 量级（只读当前 Episode + 少量历史）：50 次 tick < 2s（有性能用例）；
 * 绝不做"每 tick 扫全表 / 查整个 Memory / 调 LLM"（§四九）。
 
+## 16.1 真机发现（已修 / 已记）
+
+* **决策日志一秒一条**（真机日志实测：最近 200 条里 197 条是逐 tick 的决策行）：平凡 CONTINUE
+  （`BEFORE_END` / `MIN_DURATION_GUARD`）现在只在**状态签名变化时**记 INFO，其余降为 DEBUG ——
+  决策本身仍然可在 trace/只读视图里查到。这是 §十/§四九 的精神（普通 tick 不该刷日志）。
+* **窗口在真机上很少出现**：沙盒自己的换活动（`WORLD_EVENT`）通常在 `planned_end - window`
+  之前就把活动换掉了，所以 `transition_pending=True` 需要**一条能跑到窗口的长活动**才能观察到 ——
+  想快速取证可以临时把 `world.activity.transition_window_minutes` 调大（例如 60），
+  窗口就会立刻进入（配置项本身就是为这种场合准备的）。
+
 ## 17. Known limitations
 
 1. **不接 LLM**（§三）：决策只有规则那一半；`advisor` 接口留空，模型辅助决策留给后续阶段。

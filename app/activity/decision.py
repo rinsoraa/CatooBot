@@ -534,6 +534,9 @@ class ActivityDecisionEngine:
         #: 最近几次决策的 trace（内存里、只读展示；持久事实在 Episode 行上）
         self.traces: list[DecisionTrace] = []
         self.max_traces = 32
+        #: 上一次**对外记 INFO** 的决策签名（逐 tick 的平凡 CONTINUE 只写 DEBUG，§十/§四九：
+        #: 普通 tick 不该刷日志 —— 真机上曾经一秒一条）
+        self._log_signature: tuple[Any, ...] = ()
 
     # ------------------------------------------------------------ 只读视图
 
@@ -910,9 +913,17 @@ class ActivityDecisionEngine:
         if len(self.traces) > self.max_traces:
             del self.traces[: len(self.traces) - self.max_traces]
         if self._log is not None:
-            self._log.info(
+            signature = (
+                episode.episode_id,
+                decided.decision.value,
+                decided.reason_code.value,
+                bool(trace.transition_pending),
+            )
+            message = (
                 "[World.Activity] episode=%s decision=%s reason=%s trigger=%s"
-                " elapsed=%ds planned_end=%s pending=%s hint=%s",
+                " elapsed=%ds planned_end=%s pending=%s hint=%s"
+            )
+            args = (
                 episode.episode_id,
                 decided.decision.value,
                 decided.reason_code.value,
@@ -922,6 +933,16 @@ class ActivityDecisionEngine:
                 trace.transition_pending,
                 decided.next_activity_hint or "-",
             )
+            # 平凡 CONTINUE **只在状态变化时**记 INFO，其余降为 DEBUG：
+            # 一秒一条 INFO 会把日志淹掉（真机上就是这个现象），而"决策本身"在 trace 里查得到。
+            if (
+                signature != self._log_signature
+                or decided.decision is not ActivityDecisionKind.CONTINUE
+            ):
+                self._log.info(message, *args)
+            else:
+                self._log.debug(message, *args)
+            self._log_signature = signature
         return decided, trace
 
 
