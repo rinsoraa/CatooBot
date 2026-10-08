@@ -3,6 +3,31 @@
 本文件记录 CatooBot 的版本演进。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号见 `pyproject.toml`；日期取自真实提交历史（本仓库 2026-09-30 起）。
 
+## Minecraft Phase 6C.1 — Episode 延长后的计划对齐（Schedule Reconciliation）
+
+* **问题**：Episode 被 6B `EXTEND` 之后，计划里那条 `CONTINUATION` 仍写着**旧**的结束时间，
+  后续条目可能已经被现实占掉（stale future schedule）。
+* **两条路**：计划第一条是"现实延续"且后续不冲突 → **Strategy A**：只更新这一条的时间边界
+  （不重算候选、不改后续活动身份）；冲突或形状对不上 → **作废 + 受控 replan**
+  （不硬推时间线）。两条路都**不碰**当前 Episode、**不提前**开下一个活动、
+  **不调用**决策引擎（避免 `EXTEND → replan → decision → EXTEND` 活锁）。
+* **软触发 + 冷却**：新增 `EPISODE_EXTENDED`（**SOFT**，不在 `HARD_PLAN_TRIGGERS` 里），
+  复用既有 `planner_refresh_min_minutes`；冷却没到只把计划标成"脏"
+  （`plan_dirty`：**派生**缓存、不落盘、不加新配置）。一个活动连续延长三次最多 **1 次** Planner 调用。
+* **审计**：新计划 `trigger=episode_extended` 且版本 +1（边界变了 = 内容变了，仍由 `content_hash` 判定）；
+  旧计划标 `SUPERSEDED` + `superseded_by`，永不删除；**复用** `activity_plans` /
+  `activity_plan_items`，**没有新表、迁移数仍是 30**。
+* **恢复**：重启后一定重排一次（补上了"任务状态对齐"那条早返回路径原来漏掉的重排），
+  所以"EXTEND 之后马上重启"不会继续用旧计划；优先级仍是 `Episode > … > Future Plan`。
+* **可观测**：`/api/v1/world/activity/plan`（与 `/world/activity` 的 `plan` 段）新增 `dirty`；
+  WebUI 计划卡片显示三态（计划有效 / 待对齐（延长后等冷却）/ 计划已过期）。
+* **顺手修的仓储护栏**：同一个 `plan_id` 二次写入现在会抛 `ActivityConflict`（原来用的是
+  `INSERT OR REPLACE`，撞号会**静默覆盖**一条历史计划 —— 违反"旧计划不得删除"）。
+* **测试**：新增 `tests/test_activity_plan_reconciliation.py`（22 项，矩阵 A–O：Strategy A 边界更新 /
+  冲突检测与受控 replan / 冷却与 dirty / 连续 EXTEND 只 1 次 Planner 调用 / 版本与历史 /
+  重启修复 / 当前 Episode 不被改 / 不提前开新活动 / 不二次决策 / 无世界动作 /
+  QQ 现状与计划仍隔离 / 6A-6C 回归）。
+
 ## Minecraft Phase 6C — 活动规划（Rolling Horizon / 日程锚点 / 持久目标）
 
 * **ActivityPlanner 升级（§三）**：`app/activity/planner.py` 现在产出 `plan_next(...) -> ActivityPlan`

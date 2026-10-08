@@ -133,6 +133,8 @@ v0.4 行为引擎（回复延迟/分段/作息，规格不在 docs/specs/）标 
 | [MINECRAFT_PHASE6A.md](MINECRAFT_PHASE6A.md) | 世界活动运行时（Phase 6A）：ActivityEpisode 成为"当前活动"的唯一事实来源（7 状态显式状态机、min/typical/max 时长、稳定 Episode ID）、ActivityRuntime（推进/延长/收尾/中断/取消/超时/恢复，CAS 幂等事件）、确定性 Planner、CharacterState 投影（activity 只由 Episode 派生）、Task↔Activity 绑定、Minecraft 只读观察（观察不是命令）、世界 tick 只推进不决策 | 见文档 §九（真机门禁 A–E） |
 | [MINECRAFT_PHASE6B.md](MINECRAFT_PHASE6B.md) | 活动决策引擎（Phase 6B）：Transition Guard（最短/最长时长、延长预算、撞车）+ 规则优先的 Decision Engine（CONTINUE / EXTEND / TRANSITION + 原因码 + 下一个活动提示 + trace）、Transition Window（窗口内只待命）、相邻同活动优先 EXTEND + 展示层合并、WorldConsistencyChecker（只报不修）、决策 trace（不含思维链）、只读决策 API 与面板 | 见文档 §15（真机 A–D） |
 | [MINECRAFT_PHASE6C.md](MINECRAFT_PHASE6C.md) | 活动规划（Phase 6C）：ActivityPlanner → **Rolling Horizon**（`ActivityPlan`：3~6 候选、被拒原因、八项确定性打分、固定 tie-break）、日程锚点（睡觉/三餐 + 弹性窗口 + 五档优先级）、活动画像与 fixed/flexible/free、持久目标（复用既有 `sandbox_goals`，只影响排名）、能量硬规则 / 专注软信号、计划持久化（迁移 30；版本只在内容变化时 +1；旧计划永不删除）、重启"先认现实再认计划"、只读计划 API 与面板、QQ「接下来准备干嘛」与「现在在干嘛」分块 | 见文档 §16-§17（Real Java A–D + Real QQ A/B） |
+| [MINECRAFT_PHASE6C.md §20](MINECRAFT_PHASE6C.md#20-phase-6c1--schedule-reconciliationepisode-延长后的计划对齐) | Episode 延长后的计划对齐（Phase 6C.1）：6B `EXTEND` 之后计划即时对齐 —— Strategy A（只改 continuation 边界）/ 冲突则受控 replan；`EPISODE_EXTENDED` **软**触发复用既有冷却（冷却内只标 `dirty`，派生不落盘）；不二次决策、不碰当前 Episode、不提前开下一个活动；`trigger=episode_extended` 审计 + 版本 +1；无新表（迁移仍 30）；只读面新增 `dirty` 三态 | 见文档 §20.8（Real A–D 窄门禁） |
+| bible_source_罐头.txt | 内置角色的人物档案源文件（Bible 编译器输入） | **本地内容资产**：按「Character Bible 不得上传」约束，已移至 `config/bible_source_罐头.txt`（`config/` 不在发布镜像内） |
 | bible_source_罐头.txt | 内置角色的人物档案源文件（Bible 编译器输入） | **本地内容资产**：按「Character Bible 不得上传」约束，已移至 `config/bible_source_罐头.txt`（`config/` 不在发布镜像内） |
 
 ## 运维速查

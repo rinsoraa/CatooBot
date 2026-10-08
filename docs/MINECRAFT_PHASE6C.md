@@ -273,11 +273,10 @@ ScheduleAnchor(anchor_id, activity, target_time="HH:MM",
    规划那一刻的值（计划是意图，会随触发点重算）。
 6. **相邻同名只在展示层/铺计划时处理**：库里仍是两条记录（§十九 要求不丢原始审计）。
 7. **QoL 债**：`activity_plan_items` 没有外键（本项目 SQLite 一贯不带 FK），靠事务保持一致。
-8. **Episode 被 EXTEND 时不会立刻重排计划**（真机 22:01 那轮发现的）：`ACT-20261008-049` 被 6B
-   延长 40 分钟后，计划里那条 `CONTINUATION` 仍写着**原来的**结束时间；原因是 §八 的触发点清单里
-   没有"延长"这一项，要等下一个 Episode 边界或软触发才更新。影响面很小（上下文里"现状"与"计划"
-   分块写、并且明确"以现状为准"，真机上模型正确地优先了现状），修法也小（把 EXTEND 接成一个
-   **软**触发即可，走 5 分钟冷却）—— 但 6C 任务书没有要求，故**未改**，留作已知限制。
+8. ~~**Episode 被 EXTEND 时不会立刻重排计划**（真机 22:01 那轮发现的）~~ —— **已在
+   [Phase 6C.1](#20-phase-6c1--schedule-reconciliationepisode-延长后的计划对齐) 修掉**：
+   延长后计划会即时对齐（Strategy A）或在冷却允许时受控重排，并带
+   `trigger=episode_extended` 的审计。
 
 ---
 
@@ -297,3 +296,93 @@ ScheduleAnchor(anchor_id, activity, target_time="HH:MM",
 * **WebUI 只读卡片**：世界页「当前活动」（6A/6B）与「接下来的打算（计划，不是现状）」（6C）并列显示，
   截图与 API/DB 完全一致；卡片里有 Plan / 版本 / 视野 / 来源·触发 / 下一步 / 被选中 / 刷新次数 /
   一致性 / 未来安排 / 候选与**八项打分明细** / 被拒原因 / 锚点，且**没有任何** force select 入口。
+
+---
+
+## 20. Phase 6C.1 — Schedule Reconciliation（Episode 延长后的计划对齐）
+
+> 这是 6C 的 **consistency cleanup**（上一节已知限制 8 的补丁），不是新能力阶段：
+> 不接 LLM、不加决策规则、不加 Minecraft 能力、不加表、**迁移数仍是 30**。
+
+### 20.1 问题
+
+```
+Reality: gaming → 16:20（被 6B EXTEND 推后）
+Plan:    gaming continuation 14:00–16:00   ← 过时
+         rest 16:00–16:20                  ← 已经被现实占掉
+         music 16:20–17:00
+```
+
+### 20.2 两条路（§二/§三/§四）
+
+```
+Episode EXTENDED
+      ↓
+Schedule Reconciliation（只碰 future plan）
+      ├── 计划第一条就是"现实延续"且后续不冲突 → Strategy A：只改这一条的边界
+      └── 冲突 / 形状对不上                    → 作废 + 受控 replan（trigger=EPISODE_EXTENDED）
+```
+
+* **Strategy A**（§三）：`continuation.start = episode.started_at`、
+  `continuation.end = episode.planned_end_at`；**不重算候选**、**不改后续活动的身份**。
+* **冲突**（§四）：只要有一条后续计划项的起点早于新的结束时间，就不可能"只挪边界"了 ——
+  此时**不硬推时间线**，而是作废当前计划走一次受控 replan（6C §十七 的最终时间线就是这条路产出的）。
+* **形状对不上**（第一条不是当前活动的 `CONTINUATION`）→ 同样走 replan。
+
+### 20.3 软触发与冷却（§五/§六/§十八）
+
+`EPISODE_EXTENDED` 是 **SOFT** 触发（不在 `HARD_PLAN_TRIGGERS` 里），复用既有的
+`planner_refresh_min_minutes` 冷却（**不加新配置**）：
+
+* 冷却允许 → 立刻受控 replan；
+* 冷却没到 → 只把计划标成"脏"（`plan_dirty`，**派生缓存、不落盘**，§七），等下一次合法时机再排。
+
+所以一个活动连续延长三次最多只会触发**一次** Planner 调用（有测试用计数 Planner 守着），
+不会出现 `EXTEND → replan → decision → EXTEND` 的活锁（§十一：reconcile **不调用**决策引擎）。
+
+### 20.4 审计与历史（§八/§九/§十）
+
+* 新计划 `trigger=episode_extended`，版本 +1（continuation 边界变了 = 内容变了），
+  仍然由既有 `content_hash` 判定；**绝不会因为"读的时刻不同"就升版本**。
+* 旧计划标 `SUPERSEDED` + `superseded_by`，**永不删除**；`activity_plans` /
+  `activity_plan_items` 两表复用，**没有新表、没有新迁移**。
+* 顺手加了一道仓储护栏：同一个 `plan_id` 二次写入现在会抛 `ActivityConflict`
+  （原来是 `INSERT OR REPLACE`，撞号会**静默覆盖**一条历史计划 —— 违反 §九）。
+
+### 20.5 不许碰的东西（§十一-§十六）
+
+| 不许 | 怎么保证 |
+| --- | --- |
+| 改当前 Episode | reconcile 只构造新的 `ActivityPlan`；有测试断言 `episode_id/started_at/planned_end_at/status` 全不变 |
+| 提前开下一个活动 | 有测试断言"这一段时间只发布了 `activity.extended` 事件、Episode 数量不变" |
+| 再决策一次 | 有测试把决策引擎的 `decide` 换成计数器，断言延长+对齐期间 **0 次调用** |
+| max_duration 守卫 | 仍归 6B：到硬上限时 `extend()` 直接转 EXPIRED，**不产生** `EPISODE_EXTENDED` |
+| 任何世界动作 | 源码级 AST guard + `runtime` 上没有 minecraft 句柄 |
+| QQ 现状/计划混用 | 两块上下文不变：`你现在在干嘛？` 读 Episode、`你接下来准备干嘛？` 读计划 |
+
+### 20.6 恢复（§二十/§二十一）
+
+重启后仍然 **先认现实**：`recover()` 之后一定会重排一次计划（含"任务状态对齐"那条早返回路径 ——
+那里原来漏了），所以"EXTEND 之后马上重启"不会继续用一份过时的计划。
+优先级不变：`Episode > WorldState > Character snapshot > Future Plan`。
+
+### 20.7 只读可观测性
+
+* `GET /api/v1/world/activity/plan` 与 `GET /api/v1/world/activity` 的 `plan` 段新增
+  **`dirty`**（计划是否已与现实脱节，等一下冷却）；
+* WebUI 的"接下来的打算"卡片把它显示成三态：**计划有效 / 待对齐（延长后等冷却）/ 计划已过期**；
+* 本地取证脚本 `scripts/activity_smoke_real.py --phase plan` 增加两行：
+  ①计划与现实是否对齐（§三，比对 continuation 结束 vs 现实结束）；
+  ②最近 5 份计划的历史（`plan_id / 版本 / 状态 / trigger`）—— §二十五 Real B
+  "连续 EXTEND 不得每次都重排" 就靠它看。
+
+### 20.8 真机门禁（§二十五，窄门禁）
+
+| 门禁 | 要做的 | 判定 |
+| --- | --- | --- |
+| **Real A** | 让她做某件事 → 手动触发一次真实 EXTEND → `--phase plan` | 现实结束时间 = 新结束时间；计划已对齐（`dirty=false` 或 `trigger=episode_extended` 的新版本） |
+| **Real B** | 连续 EXTEND 两次 | 计划历史里**不是**每次延长都多一版：多为"一次受控 replan"（`trigger=episode_extended`） |
+| **Real C** | EXTEND 之后重启 | `--phase plan` 显示计划与现实仍然一致（`dirty=false`） |
+| **Real D** | QQ 问两句 | `你现在在干嘛？` → 当前 Episode；`你接下来准备干嘛？` → 对齐后的计划（两者不混） |
+
+现场结果见文档末尾"真机取证"一节的 6C.1 小节。

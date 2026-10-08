@@ -177,6 +177,8 @@ export interface WorldPersistentGoal {
 /** Phase 6C §五十八：计划只读视图（**没有** force select，也没有思维链）。 */
 export interface WorldActivityPlanView {
   enabled: boolean
+  /** Phase 6C.1：计划是否已经与现实脱节（Episode 被延长后、还在等刷新冷却时为 true） */
+  dirty: boolean
   plan: {
     plan_id: string
     character_id: string

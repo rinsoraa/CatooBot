@@ -220,7 +220,13 @@ class InMemoryActivityStore:
         return plan_id_for(day, seq)
 
     async def create_plan(self, plan: ActivityPlan) -> ActivityPlan:
-        """落一份新计划（旧 ACTIVE_PLAN 标 SUPERSEDED，历史保留，§四十四）。"""
+        """落一份新计划（旧 ACTIVE_PLAN 标 SUPERSEDED，历史保留，§四十四）。
+
+        同一个 ``plan_id`` **不许**二次写入：那会静默覆盖掉一条历史计划，
+        而 §九 明确要求"旧 Plan 不得删除"。撞上就抛 ``ActivityConflict``（和 Episode 一样）。
+        """
+        if str(plan.plan_id) in self._plans:
+            raise ActivityConflict(f"计划号 {plan.plan_id} 已经存在（历史计划不允许被覆盖）")
         stored = ActivityPlan.from_payload(plan.to_payload())  # JSON 往返：模拟真落盘
         for existing in self._plans.values():
             if existing.character_id == stored.character_id and existing.active:
@@ -381,7 +387,7 @@ class SqliteActivityStore:
                 ),
             )
             conn.execute(
-                "INSERT OR REPLACE INTO activity_plans (plan_id, character_id, plan_version,"
+                "INSERT INTO activity_plans (plan_id, character_id, plan_version,"
                 " status, generated_at, horizon_start, horizon_end, source, trigger,"
                 " content_hash, superseded_by, constraints, candidates, created_at, updated_at)"
                 " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
@@ -406,7 +412,7 @@ class SqliteActivityStore:
             for sequence, item in enumerate(plan.items):
                 payload = item.to_payload()
                 conn.execute(
-                    "INSERT OR REPLACE INTO activity_plan_items (plan_id, sequence, activity,"
+                    "INSERT INTO activity_plan_items (plan_id, sequence, activity,"
                     " planned_start, planned_end, reason, priority, anchor_id, goal_id, score)"
                     " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                     (

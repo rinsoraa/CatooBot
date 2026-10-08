@@ -34,10 +34,14 @@ class PlanTrigger(str, Enum):  # noqa: UP042
 
     ``HARD_PLAN_TRIGGERS`` 里的触发点可以突破刷新冷却（§九）—— 因为它们是"世界真的变了"：
     Episode 结束、锚点配置变了、用户交互、重启恢复、管理员手动刷新。
-    其余（目标漂移、状态漂移、计划快耗尽）走冷却，避免每个 tick 都重算整段 horizon。
+    其余（Episode 被延长、目标漂移、状态漂移、计划快耗尽）走冷却，避免每个 tick 都重算整段 horizon。
     """
 
     EPISODE_ENDED = "episode_ended"
+    #: Phase 6C.1：Episode 被 6B **延长**了（现实结束时间往后走了）。
+    #: 它是**软**触发（不在 ``HARD_PLAN_TRIGGERS`` 里）：一次活动可能连续延长好几次，
+    #: 如果每次都立刻调 Planner，计划会跟着抖动（§五/§十八）。
+    EPISODE_EXTENDED = "episode_extended"
     PLAN_EXHAUSTED = "plan_exhausted"
     ANCHOR_CHANGED = "anchor_changed"
     GOAL_CHANGED = "goal_changed"

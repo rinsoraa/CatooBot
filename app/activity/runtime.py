@@ -59,6 +59,7 @@ from app.activity.plan import (
     HARD_PLAN_TRIGGERS,
     ActivityPlan,
     ItemReason,
+    PlanItem,
     PlanTrigger,
     as_plan_trigger,
 )
@@ -90,6 +91,10 @@ DEFAULT_MAX_FUTURE_EPISODES = 6
 
 #: 计划"快耗尽"的判定余量：覆盖不到这么久之后就重新规划（§八 触发点 2）
 PLAN_COVERAGE_LEAD_SECONDS = 10 * 60.0
+
+#: Phase 6C.1 §三：continuation 边界与现实的容差（秒）。
+#: 小于它就认为"已经对齐"—— 免得浮点/取整差异被当成"计划脏了"。
+RECONCILE_TOLERANCE_SECONDS = 1.0
 
 #: 状态签名只看这几个字段（Planner 真正用到的输入）
 STATE_SIGNATURE_FIELDS: tuple[str, ...] = (
@@ -205,6 +210,9 @@ class ActivityRuntime:
         self._plan_signature = ""
         self._plan_refresh_count = 0
         self.last_plan_result: dict[str, Any] = {}
+        #: Phase 6C.1 §七：计划是否"脏"（continuation 边界与现实不一致）。
+        #: 这是**派生**缓存（由 ``plan_dirty()`` 现算后写进这里），不是新的持久化状态。
+        self._plan_dirty = False
 
     # ------------------------------------------------------------ 读
 
@@ -253,6 +261,8 @@ class ActivityRuntime:
         recent = await self.recent(self.recent_episode_limit)
         now = self._now(None)
         report = self.run_consistency_check(episode, now=now)
+        # §七：只读视图里的 dirty 要现算（它是派生的，不落盘）
+        self.plan_dirty(episode)
         return {
             "enabled": True,
             "character_id": self.character_id,
@@ -394,38 +404,18 @@ class ActivityRuntime:
                 plan_id=previous.plan_id,
                 plan_version=int(previous.plan_version),
             )
-        try:
-            plan.plan_id = await self.plan_store.next_plan_id(str(self.clock.day_key(moment)))
-            # 角色归属以 **Runtime** 为准（Planner 是纯函数，拿不到就留空 —— 但计划是
-            # "这个角色的计划"，落盘前必须盖成运行时的 character_id，与 Episode 同一口径）
-            plan.character_id = self.character_id
-            plan.plan_version = (int(previous.plan_version) + 1) if previous is not None else 1
-            plan.trigger = trigger_enum.value
-            plan.content_hash = signature
-            await self.plan_store.create_plan(plan)
-        except Exception as exc:  # noqa: BLE001 - 落盘失败也只在内存里用（只降级）
-            self.degraded_reason = f"plan_{type(exc).__name__}"
-            if self._log is not None:
-                self._log.warning("[World.Activity] 计划落盘失败（仅在内存中使用）：%s", exc)
-        self._active_plan = plan
-        self._last_planned_at = moment
-        self._plan_refresh_count += 1
-        if self._log is not None:
-            self._log.info(
-                "[World.Activity] 重新规划 plan=%s v%s trigger=%s 条目=%d 覆盖到 %s",
-                plan.plan_id or "(未落盘)",
-                plan.plan_version,
-                trigger_enum.value,
-                len(plan.items),
-                self.clock.isoformat(plan.horizon_end),
-            )
-        return self._plan_result(
-            refreshed=True,
-            reason="planned",
+        result = await self._persist_plan(
+            plan,
             trigger=trigger_enum,
-            plan_id=plan.plan_id,
-            plan_version=int(plan.plan_version),
+            now=moment,
+            previous=previous,
+            reason="planned",
+            log_label="重新规划",
         )
+        # 整份重排过 → 计划与现实重新对齐（§七 的 dirty 清掉；它是派生缓存，不是持久状态）
+        self._plan_dirty = False
+        result["dirty"] = False
+        return result
 
     def _plan_result(
         self,
@@ -465,11 +455,19 @@ class ActivityRuntime:
         moment = float(now)
         plan = self._active_plan
         exhausted = plan is None or plan.stale(moment) or self._plan_coverage_left(moment) <= 0.0
+        # Phase 6C.1 §六/§七：延长把计划弄脏了（continuation 边界与现实不一致）→ 也是一个触发点，
+        # 但**软**的：``refresh_plan`` 会先过冷却；冷却没到就保持 dirty，等下一次合法时机。
+        dirty = self.plan_dirty(current)
         signature = self._context_signature()
         changed = bool(signature) and signature != self._plan_signature
-        if not exhausted and not changed:
+        if not exhausted and not dirty and not changed:
             return {"refreshed": False, "reason": "not_needed", "trigger": ""}
-        trigger = PlanTrigger.PLAN_EXHAUSTED if exhausted else PlanTrigger.STATE_CHANGED
+        if exhausted:
+            trigger = PlanTrigger.PLAN_EXHAUSTED
+        elif dirty:
+            trigger = PlanTrigger.EPISODE_EXTENDED
+        else:
+            trigger = PlanTrigger.STATE_CHANGED
         result = await self.refresh_plan(trigger=trigger, now=moment, current=current)
         if result.get("refreshed"):
             self._plan_signature = signature
@@ -518,6 +516,8 @@ class ActivityRuntime:
         plan = self._active_plan
         base: dict[str, Any] = {
             "enabled": plan is not None,
+            # Phase 6C.1 §七：计划是否已经与现实脱节（等冷却时会是 True）
+            "dirty": bool(self._plan_dirty),
             "planning_horizon_seconds": self.planning_horizon_seconds,
             "refresh_min_seconds": self.planner_refresh_min_seconds,
             "max_future_episodes": self.max_future_episodes,
@@ -589,6 +589,201 @@ class ActivityRuntime:
             return ""
         episode = await self.current()
         return build_block(plan, episode=episode, now=self._now(None), clock=self.clock)
+
+    # ------------------------------------------------------------ 6C.1：Episode 延长后的计划对齐
+
+    def plan_dirty(self, episode: ActivityEpisode | None) -> bool:
+        """计划是否**已经与现实脱节**（§七：派生判断，不新增持久化状态）。
+
+        判据只有一条：**生效计划的第一条**是否还与当前 Episode 对得上 ——
+
+        * 计划里第一条的活动 ≠ 她现在做的事 → 脏；
+        * 活动一样，但第一条的结束时间 ≠ 她现实的 ``planned_end_at`` → 脏
+          （**这正是 EXTEND 的情形**，§一）。
+
+        没有 Episode（她空着）时无所谓脏不脏：下一次 ``_plan_next`` 会整份重排。
+        结果会缓存到 ``self._plan_dirty``（给只读视图用），但每次调用都**现算**。
+        """
+        plan = self._active_plan
+        dirty = False
+        if episode is not None and plan is not None and plan.items:
+            first = plan.first_item()
+            if first is None:
+                dirty = False
+            elif str(first.activity) != str(episode.activity_name):
+                dirty = True
+            else:
+                reality = float(episode.planned_end_at or 0.0)
+                dirty = bool(reality) and (
+                    abs(reality - float(first.planned_end)) > RECONCILE_TOLERANCE_SECONDS
+                )
+        self._plan_dirty = dirty
+        return dirty
+
+    async def reconcile_plan(
+        self,
+        *,
+        now: float | None = None,
+        current: ActivityEpisode | None = None,
+    ) -> dict[str, Any]:
+        """Episode 被 6B 延长之后，把未来的计划与现实对齐（6C.1 §二/§三/§四）。
+
+        两条路，**都不是**"再决策一次"（§十一：6B 已经做完了那个决定）：
+
+        * **Strategy A（§三）**：计划第一条就是"现实延续"（``CONTINUATION`` 且活动名一致），
+          而且后续条目不会被新的结束时间压住 → **只**更新这一条的时间边界，
+          不动任何后续活动的身份、不重算任何候选；
+        * **冲突（§四）或形状对不上** → 作废当前计划、走一次受控 replan
+          （``trigger=EPISODE_EXTENDED``，**软**触发：冷却没到就标 dirty，等下一次合法时机）。
+
+        期间当前 Episode **一个字都不改**（§十二），也**不会**提前开下一个活动（§十三）。
+        """
+        moment = self._now(now)
+        episode = current if current is not None else await self.current()
+        plan = self._active_plan
+        if episode is None or plan is None or not plan.items:
+            self._plan_dirty = False
+            return {"action": "no_plan", "plan_id": "", "reason": "no_active_plan"}
+        first = plan.first_item()
+        new_end = float(episode.planned_end_at or 0.0)
+        if (
+            first is not None
+            and first.reason == ItemReason.CONTINUATION.value
+            and str(first.activity) == str(episode.activity_name)
+            and abs(new_end - float(first.planned_end)) <= RECONCILE_TOLERANCE_SECONDS
+        ):
+            # 已经对齐（例如同一个 Episode 被延长两次之间没有别的变化）
+            self._plan_dirty = False
+            return {"action": "consistent", "plan_id": plan.plan_id, "reason": "already_aligned"}
+        conflict = self._continuation_conflict(plan, episode, new_end=new_end)
+        aligned_shape = (
+            first is not None
+            and first.reason == ItemReason.CONTINUATION.value
+            and str(first.activity) == str(episode.activity_name)
+            and bool(new_end)
+        )
+        if not aligned_shape or conflict:
+            # §四：不硬推时间线 —— 交给一次受控 replan（冷却没到就先标 dirty）
+            result = await self.refresh_plan(trigger=PlanTrigger.EPISODE_EXTENDED, now=moment)
+            self._plan_dirty = not bool(result.get("refreshed"))
+            result["action"] = "replanned" if result.get("refreshed") else "dirty"
+            result["reason_code"] = "conflict" if conflict else "not_a_continuation"
+            self.last_plan_result = result
+            if self._log is not None:
+                self._log.info(
+                    "[World.Activity] 计划对齐：%s（trigger=episode_extended）",
+                    "已重排" if result.get("refreshed") else "标记 dirty（等冷却）",
+                )
+            return result
+        # Strategy A：只改 continuation 的边界（起始 = 现实开始，结束 = 现实新的结束）
+        updated = self._reconciled_plan(plan, episode, now=moment)
+        result = await self._persist_plan(
+            updated,
+            trigger=PlanTrigger.EPISODE_EXTENDED,
+            now=moment,
+            previous=plan,
+            reason="reconciled",
+            log_label="计划对齐",
+        )
+        self._plan_dirty = False
+        result["action"] = "reconciled"
+        result["reason_code"] = "continuation_boundary"
+        return result
+
+    def _continuation_conflict(
+        self, plan: ActivityPlan, episode: ActivityEpisode, *, new_end: float
+    ) -> bool:
+        """后续条目会不会被"新的现实结束时间"压住（§四）。
+
+        只要有一条后续计划项的起点比新的结束时间还早，就不可能"只挪一下边界"了 ——
+        那段时间已经被现实占掉。此时必须作废重排，而不是把后续项硬推（§四）。
+        """
+        for item in plan.items[1:]:
+            if float(item.planned_start) < float(new_end) - RECONCILE_TOLERANCE_SECONDS:
+                return True
+        return False
+
+    def _reconciled_plan(
+        self, plan: ActivityPlan, episode: ActivityEpisode, *, now: float
+    ) -> ActivityPlan:
+        """Strategy A 的产物：**只有**第一条的时间边界变了，其余原样（§三）。
+
+        刻意新建对象而不是就地改：旧计划要原封不动地留在历史里（§九）。
+        """
+        items = list(plan.items)
+        first = items[0]
+        items[0] = PlanItem(
+            activity=first.activity,
+            planned_start=float(episode.started_at or first.planned_start),
+            planned_end=float(episode.planned_end_at or first.planned_end),
+            reason=first.reason,
+            priority=first.priority,
+            anchor_id=first.anchor_id,
+            goal_id=first.goal_id,
+            score=first.score,
+        )
+        return ActivityPlan(
+            plan_id="",
+            character_id=self.character_id,
+            plan_version=int(plan.plan_version),
+            generated_at=float(now),
+            horizon_start=float(plan.horizon_start),
+            horizon_end=float(plan.horizon_end),
+            status=plan.status,
+            items=tuple(items),
+            candidates=tuple(plan.candidates),
+            constraints=dict(plan.constraints),
+            source=plan.source,
+            trigger=PlanTrigger.EPISODE_EXTENDED.value,
+        )
+
+    async def _persist_plan(
+        self,
+        plan: ActivityPlan,
+        *,
+        trigger: PlanTrigger,
+        now: float,
+        previous: ActivityPlan | None,
+        reason: str,
+        log_label: str = "计划落盘",
+    ) -> dict[str, Any]:
+        """把一份**已经算好**的计划落盘并接管为生效计划（§九/§六十七：一个事务里作废旧计划）。
+
+        ``refresh_plan``（整份重新规划）与 ``reconcile_plan``（只对齐一条边界）共用这条尾巴：
+        计划号由存储层分配、版本 = 上一版 + 1、旧计划标 SUPERSEDED 且**永不删除**。
+        写失败只降级（计划仍在内存里用，如实记 ``degraded_reason``）。
+        """
+        plan.character_id = self.character_id
+        plan.trigger = trigger.value
+        plan.content_hash = plan.content_signature()
+        try:
+            plan.plan_id = await self.plan_store.next_plan_id(str(self.clock.day_key(now)))
+            plan.plan_version = (int(previous.plan_version) + 1) if previous is not None else 1
+            await self.plan_store.create_plan(plan)
+        except Exception as exc:  # noqa: BLE001 - 落盘失败也只在内存里用（只降级）
+            self.degraded_reason = f"plan_{type(exc).__name__}"
+            if self._log is not None:
+                self._log.warning("[World.Activity] 计划落盘失败（仅在内存中使用）：%s", exc)
+        self._active_plan = plan
+        self._last_planned_at = float(now)
+        self._plan_refresh_count += 1
+        if self._log is not None:
+            self._log.info(
+                "[World.Activity] %s plan=%s v%s trigger=%s 条目=%d 覆盖到 %s",
+                log_label,
+                plan.plan_id or "(未落盘)",
+                plan.plan_version,
+                trigger.value,
+                len(plan.items),
+                self.clock.isoformat(plan.horizon_end),
+            )
+        return self._plan_result(
+            refreshed=True,
+            reason=reason,
+            trigger=trigger,
+            plan_id=plan.plan_id,
+            plan_version=int(plan.plan_version),
+        )
 
     # ------------------------------------------------------------ 写：创建 / 转移
 
@@ -758,7 +953,7 @@ class ActivityRuntime:
             return await self.expire(episode_id=target.episode_id, now=moment)
         step = float(extra_seconds if extra_seconds is not None else target.typical_duration or 0.0)
         planned = min(limit, float(target.planned_end_at or moment) + step) if step > 0 else limit
-        return await self._terminate(
+        extended = await self._terminate(
             target,
             to=ActivityStatus.EXTENDED,
             reason=reason,
@@ -771,6 +966,11 @@ class ActivityRuntime:
                 "extension_count": int(target.extension_count) + 1,
             },
         )
+        if extended is not None:
+            # Phase 6C.1 §二：6B 的 Decision **已经做完了** —— 这里只把"未来的计划"与现实对齐，
+            # 绝不重新决策、绝不碰当前 Episode、也绝不提前开下一个活动（§十一/§十二/§十三）。
+            await self.reconcile_plan(now=moment, current=extended)
+        return extended
 
     async def complete(
         self,
@@ -988,6 +1188,10 @@ class ActivityRuntime:
         # 事件早就发过了（那时活动层可能还没装配），只能在这里用只读事实校正。
         aligned = await self._align_with_task(current, now=moment)
         if aligned is not None:
+            # §二十/§二十一：即使走了"任务状态对齐"这条路，也必须**先认现实**再认计划 ——
+            # 现实可能已经在停机期间变了（Episode 被延长过 / 任务已经收尾），
+            # 所以计划同样要重排；Future Plan 永远不能覆盖现实。
+            await self._refresh_after_recovery(moment)
             aligned.setdefault("plan", plan_action)
             return aligned
 

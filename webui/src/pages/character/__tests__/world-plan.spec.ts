@@ -121,6 +121,7 @@ const PLAN_ITEM_ANCHOR = {
 function planView(overrides: Partial<WorldActivityPlanView> = {}): WorldActivityPlanView {
   return {
     enabled: true,
+    dirty: false,
     planning_horizon_seconds: 14_400,
     refresh_min_seconds: 300,
     max_future_episodes: 6,
@@ -292,5 +293,15 @@ describe('世界页 · 接下来的打算（Phase 6C）', () => {
   it('计划过期时明说"已过期"（不假装还有效）', async () => {
     const { wrapper } = await mountPage(planView({ stale: true }))
     expect(wrapper.get('[data-test="world-plan-stale"]').text()).toContain('已过期')
+  })
+
+  it('Phase 6C.1：Episode 延长后计划"待对齐"时如实显示（不假装已对齐）', async () => {
+    const { wrapper } = await mountPage(planView({ dirty: true }))
+    expect(wrapper.get('[data-test="world-plan-stale"]').text()).toContain('待对齐')
+  })
+
+  it('Phase 6C.1：对齐完成后显示"计划有效"', async () => {
+    const { wrapper } = await mountPage(planView({ dirty: false, stale: false }))
+    expect(wrapper.get('[data-test="world-plan-stale"]').text()).toBe('计划有效')
   })
 })

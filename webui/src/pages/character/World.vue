@@ -124,6 +124,16 @@ function anchorLabel(anchor: {
   return `${anchor.anchor_id} ${anchor.target_time} ${anchor.activity}(${hardness}${phase})`
 }
 
+/**
+ * Phase 6C.1：计划与现实的三种状态。
+ * `dirty` 表示"Episode 被延长过，计划边界还没对齐"（通常是在等刷新冷却）。
+ */
+function planStateText(view: { stale?: boolean; dirty?: boolean }): string {
+  if (view.stale) return '计划已过期'
+  if (view.dirty) return '待对齐（延长后等冷却）'
+  return '计划有效'
+}
+
 onMounted(() => {
   if (!store.world && !store.loading) void store.loadWorld()
   void loadActivity()
@@ -774,7 +784,8 @@ function previewMoodText(): string {
             </div>
             <div>
               <dt>一致性</dt>
-              <dd data-test="world-plan-stale">{{ plan.stale ? '计划已过期' : '计划有效' }}</dd>
+              <!-- Phase 6C.1：计划与现状是否对齐（Episode 被延长后可能先"待对齐"等冷却） -->
+              <dd data-test="world-plan-stale">{{ planStateText(plan) }}</dd>
             </div>
           </dl>
 
