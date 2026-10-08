@@ -1052,12 +1052,8 @@ class Bot:
                 getattr(config, "transition_window_minutes", 5.0) or 0.0
             )
             * 60.0,
-            max_extensions_per_episode=int(
-                getattr(config, "max_extensions_per_episode", 2) or 0
-            ),
-            bounce_cooldown_seconds=float(
-                getattr(config, "bounce_cooldown_minutes", 10.0) or 0.0
-            )
+            max_extensions_per_episode=int(getattr(config, "max_extensions_per_episode", 2) or 0),
+            bounce_cooldown_seconds=float(getattr(config, "bounce_cooldown_minutes", 10.0) or 0.0)
             * 60.0,
             logger=self.log,
         )

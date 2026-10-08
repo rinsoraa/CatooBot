@@ -100,7 +100,7 @@ class TestWindowTimeline:
 
     async def test_window_is_configurable(self) -> None:
         wide = Rig(window=30 * 60.0)  # 半小时窗口
-        episode = await wide.start()
+        await wide.start()
         wide.clock.advance_minutes(31)
         view = wide.runtime.decision_view(episode, now=wide.clock.now())
         assert view["transition_pending"] is True

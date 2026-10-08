@@ -34,8 +34,7 @@ ActivityRuntime（**只有它**能改生命周期）
 一次决策**只**产出（§四）：
 
 ```python
-ActivityDecision(decision, reason_code, next_activity_hint,
-                 extension_seconds, confidence, trace_id)
+ActivityDecision(decision, reason_code, next_activity_hint, extension_seconds, confidence, trace_id)
 ```
 
 `decision ∈ {CONTINUE, EXTEND, TRANSITION}` —— 没有 `EXECUTE` / `ACT` / `DO_TOOL`。
