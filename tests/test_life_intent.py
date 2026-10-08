@@ -244,7 +244,7 @@ class TestCandidateGeneration:
         context = Rig().context
         empty = propose_intents(context)
         assert len(empty) == 0
-        assert MAX_GOAL_SIGNALS <= 3 and MAX_MEMORY_SIGNALS <= 3
+        assert MAX_GOAL_SIGNALS <= 3 and MAX_MEMORY_SIGNALS <= 5
 
 
 class TestDedupe:

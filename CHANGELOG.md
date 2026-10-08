@@ -50,16 +50,23 @@
   `test_initiative_recovery` / `test_initiative_activity_bridge` / `test_initiative_security`），
   覆盖任务书 A–W 矩阵 + 24 小时快进仿真（144 次 check → 20 条提案，低噪声）；
   全量 **3216 passed**。
-* **真机（§五十七/§五十八）**：Real QQ **A/B PASS**（`你最近想干嘛？` → 她答"想把 MC 图书馆的屋顶
-  搭完"；`你自己去 Minecraft 玩玩？` → 她答"现在不去了，困得眼睛都睁不开"，**没有**建任务 / 没有
-  `move_to`）；Real Java **B PASS**（离线仍然产出 `virtual_interest` 的 `MINECRAFT_INTEREST`，
-  `world_actions=0`、`minecraft_task_count=0`），并额外见证 `CHARACTER_RECOVERY` 与 `SLEEPING`
-  两条 guard 在真机生效；Real Java **A/C/D SKIPPED**（当时 MC 离线、她正在真实睡眠窗口
-  00:30–08:00、无合法手段叫醒）—— 配方写在 `docs/MINECRAFT_PHASE7A.md` §15。
-  ★真机教训两条：①她的 Minecraft 记忆写的是"橡**树**/原**木**"，关键词判据永远匹配不上
-  → 改成**结构化判据**（记忆 `provenance.domain` / scope 后缀 `:minecraft`）+ 补真实用词；
-  ②`MemoryManager.list_memories` 与任务状态探针是 **async**，同步读取会拿到协程对象
-  → 只读适配器统一走 async-aware 读取。
+* **真机（§五十七/§五十八）—— 全部 PASS**（2026-10-09 05:00–07:13，真实服务器 `127.0.0.1:25565`）：
+  **Real QQ A/B PASS**（`你最近想干嘛？` → 「最近啊……想把 MC 图书馆的屋顶搭完吧」；
+  `你自己去 Minecraft 玩玩？` → 「啊——现在不去了，困得眼睛都睁不开」，**没有**建任务 / 没有 `move_to`）；
+  **Real Java A PASS**（MC 在线时 `06:59:43 action=proposed created=1` → `MINECRAFT_INTEREST /
+  source=MEMORY / status=PROPOSED`，意图层零世界动作）、**B PASS**（离线同样产出虚拟兴趣，
+  且**不是**被 `MINECRAFT_OFFLINE` 挡的）、**C PASS**（`reason=PENDING_CONFIRMATION` 与
+  `reason=ACTIVE_USER_TASK` 两种形态都有真机日志；整条任务链真实跑通：created → confirmed →
+  `WAITING_ACTION` → `SUCCEEDED`，她真的挖到并捡回了 oak_log）、**D PASS**（一条普通聊天消息后
+  连续三轮 `reason=RECENT_USER_INTERACTION`）；额外见证 `CHARACTER_RECOVERY` / `SLEEPING` /
+  `BURST_PROTECTION` / `RECENT_INITIATIVE` / `DUPLICATE_INTENT` 在真机生效。
+* **真机发现四条**（写进 `docs/MINECRAFT_PHASE7A.md` §15.1）：① **记忆窗口太窄** —— 只扫"最近 3 条"
+  时，一条 MC 记忆被三条日常记忆一挤就再也触不到（真机实测稳定停在第 4 位）→ 放宽到 **5**
+  （与写侧同宽，**仍有界**）；② `minecraft.agent.confirmation.ttl_seconds` **默认 60 秒**，
+  人工确认容易超时（取证时临时放宽到 300 秒，跑完还原）—— 运维提示，不是缺陷；
+  ③ **任务类消息被任务入口先认领**、不会更新 `user_interaction_at`，所以 Real D 要用普通聊天触发；
+  ④ **30 秒检查节奏 vs 很短的任务**：15–20 秒的任务会让 `ACTIVE_USER_TASK` 窗口落在两次 check 之间，
+  取证要用带长途移动的任务。
 
 ## Minecraft Phase 6D.1 — 撞车护栏统一化 + 延迟回执修复
 

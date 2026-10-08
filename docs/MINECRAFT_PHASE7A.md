@@ -256,46 +256,59 @@ LifeIntent → suggested_activities() → ActivityPlanner 候选加成（只读�
   `execution_class` 仍是 `VIRTUAL_ONLY`，也不会带上任何"可信/需要真实世界"的标记 ——
   文本只是文本。
 
-## 15. Real Java（§五十七）
+## 15. Real Java（§五十七）—— 全部 PASS
 
-真机：2026-10-09 05:00–05:20，`world.initiative.enabled = true`（默认），真实 DB / 真实沙盒 /
-真实 Minecraft 桥。当时她**正在睡**（沙盒动作 `sleep`，睡眠窗口 00:30–08:00），MC **离线**。
+真机：2026-10-09 05:00–07:13，`world.initiative.enabled = true`（默认），真实 DB / 真实沙盒 /
+真实 Minecraft 桥（`127.0.0.1:25565`，`username=Catodayo`）。**她当时是醒着的**（沙盒动作
+`play_minecraft`，非 rest），所以下面四条都取到了真实形态。
+
+| 门禁 | 结果 | 真机证据（原文） |
+| --- | --- | --- |
+| Real A（MC 在线） | **PASS** | 桥连上后机器人自己记下 `[Minecraft] minecraft.connected (session=… username='Catodayo')`；`06:59:43 [World.Initiative] check action=proposed created=1` → 新行 `INT-…-005 MINECRAFT_INTEREST / source=MEMORY / origin=memory:minecraft / tags=["memory","virtual_interest"] / status=PROPOSED`；**意图层零世界动作**（`tool_executions` 计数不变；这一层源码级不可能执行） |
+| Real B（MC 离线） | **PASS** | 05:16 MC 离线时真实产出 `MINECRAFT_INTEREST`（`suppression_reason=SLEEPING`，**不是** `MINECRAFT_OFFLINE` —— 离线没有封杀虚拟兴趣，§三十七）；`minecraft_task_count=0`、`world_actions=0` |
+| Real C（用户任务占位） | **PASS** | 两种形态都取到：① 待确认 `06:46:23 … reason=PENDING_CONFIRMATION`；② 任务跑起来后 `07:12:14 … reason=ACTIVE_USER_TASK`（任务 `PAUSED`，属 §十一 的"用户任务占着她"）。整条任务链是真的：`action=created → PENDING_CONFIRMATION`、`action=confirmed → WAITING_ACTION`、`state=SUCCEEDED`（她真的走到 (-990,81,646) 挖了 `oak_log` 并捡回来） |
+| Real D（刚说过话） | **PASS** | 一条**普通聊天**消息（"你最近想干嘛？"）之后：`06:48:53 / 06:49:23 / 06:49:53 … reason=RECENT_USER_INTERACTION`（连续三轮真机日志） |
+
+**额外拿到的真机行为**：`CHARACTER_RECOVERY`（每次重启后 5 分钟静默期，`INT-…-005` 就是被它压住的）、
+`SLEEPING`（她睡着时一律抑制）、`BURST_PROTECTION`（10 分钟内到 5 条时触发过一次）、
+`RECENT_INITIATIVE` / `DUPLICATE_INTENT` 都在真机上出现过。
+
+### 15.1 真机发现（本轮新抓到的四条）
+
+1. **记忆窗口太窄**：候选只扫"最近 3 条"记忆时，一条"想去 Minecraft"的记忆被三条日常记忆
+   一挤就**再也触不到**（真机实测它稳定停在第 4 位）→ 放宽到 **5**（与写侧的读宽一致，
+   **仍然有界**，§六十三），并补了真机原因注释；
+2. **`minecraft.agent.confirmation.ttl_seconds` 默认 60 秒**（既有配置，10~300）：真机操作时
+   人工确认很容易超时（我三次都因为往返 >60 秒拿到 `minecraft.confirmation_expired`）。
+   取证时**临时**把它放到 300 秒（跑完已还原）——这是一条**运维提示**，不是产品缺陷：
+   设计上就是"当面确认、很快过期"；顺带记录：重启会让待确认令牌作废（确认只活在内存里，5A 的既定语义）；
+3. **任务类消息被任务入口先认领**，所以它**不会**更新 `user_interaction_at` —— Real D 必须用
+   **普通聊天**消息触发（这是既有 5B 的认领语义，不是 7A 的）；
+4. **30 秒的检查节奏 vs 很短的任务**：一条"砍一块木头"的任务 15–20 秒就跑完了，
+   `ACTIVE_USER_TASK` 的窗口可能整个落在两次 check 之间 → 取证时改用**带长途移动**的任务
+   （走到 (-950,80,600)）才把窗口拉到跨过一次 check。**不是缺陷**：任务结束时"用户任务占位"
+   本来就该消失。
+
+### 15.2 造点披露
+
+* 时间/状态类造点只推 `activity_episodes.planned_end_at` / `started_at`（§18.6 的老手法），
+  删除过我自己在取证期间产生的 `life_intents` 行（为了让同一个 epoch 桶重新观察一次）；
+* 配置侧**临时**改过两项并**已全部还原**：`minecraft.agent.confirmation.ttl_seconds: 300`
+  与 `logging.level: DEBUG`（后者纯粹是为了让 `[World.Initiative] check … reason=…` 进日志当证据）；
+* 任务链是**真的**：她确实连上真实服务器、真的挖了 `oak_log` 并捡回来（那是 5A 任务链的既定行为，
+  **不是**意图层做的 —— 意图层前后都没有任何执行能力）。
+
+## 16. Real QQ（§五十八）—— 全部 PASS
+
+真机：2026-10-09 05:14 / 05:18 / 06:48，QQ 私聊（Computer Use 亲手发、逐条复核后发送）。
 
 | 门禁 | 结果 | 真机证据 |
 | --- | --- | --- |
-| Real B（离线） | **PASS** | 真实产出 `INT-20261009-001 MINECRAFT_INTEREST / source=MEMORY / origin=memory:minecraft / tags=["memory","virtual_interest"]`；`minecraft_task_count = 0`（`agent_tasks` 仍 1 条、是旧记录）、`world_actions = 0`（`tool_executions` 仍 24，最新一条远早于本次）—— **离线没有封杀虚拟兴趣**（§三十七） |
-| Real A（在线） | **SKIPPED** | 桥起不来（Node 端 http server error 后退出），MC 全程离线；「在线」这一支只有布尔不同，由 §五十六 的单测覆盖 |
-| Real C（RUNNING 用户任务） | **SKIPPED** | 需要一条 RUNNING/PENDING 的用户任务；当时 MC 离线 + 她在睡，无法产生真实任务 |
-| Real D（刚说过话） | **SKIPPED**（前提已真机取证） | 真实的 QQ 回合确实写下了 `user_interaction_at`（真机 `activity_episodes.observation` 里可见）；但守卫顺序里 `SLEEPING`(5) 在 `RECENT_USER_INTERACTION`(9) 之前，她睡着时前者永远先命中 —— 这两条都是**正确**行为，只是后者被遮住了 |
+| QQ A：`你最近想干嘛？` | **PASS** | `05:14` 她答「**最近啊……想把 MC 图书馆的屋顶搭完吧，就差一点了**」—— 回答的是**意图 / 想做的事**，不是"我正在做"，也没有任何执行 |
+| QQ B：`你自己去 Minecraft 玩玩？` | **PASS** | `05:18` 她答「**啊——现在不去了，困得眼睛都睁不开**」—— 把"去玩"当成**可以提议的事**；`agent_tasks` 计数不变（**没有**建 Task）、`tool_executions` 计数不变（**没有** `move_to` / `dig`） |
 
-**额外拿到的真机行为**（不在门禁表里，但值得记）：
-
-* `CHARACTER_RECOVERY` 在真机生效 ✓：重启后的 5 分钟静默期里，同一候选被抑制（`INT-…-001`，
-  `suppression_reason=CHARACTER_RECOVERY`），随后转为 `SLEEPING`；
-* `SLEEPING` 在真机生效 ✓：她睡着时所有候选一律抑制（§十五）。
-
-**补做 Real A/C/D 的精确配方**（她**醒着**的时候跑，即 > 08:00 或她自己的睡眠动作结束之后）：
-
-1. **Real A**：让 MC 桥连上（`logs/*.log` 里要看到 `minecraft.connected` / 状态 `ONLINE`），
-   等一个 tick（30s）→ 期望：仍产出 `MINECRAFT_INTEREST`（`execution_class=VIRTUAL_ONLY`），
-   而 `tool_executions` / `agent_tasks` 计数**不变**；
-2. **Real C**：在 QQ 里让她做一个 Minecraft 任务并走到 `RUNNING`（或至少 `PENDING_CONFIRMATION`）
-   → 等一个 tick → 期望意图 `status=SUPPRESSED`、`suppression_reason=ACTIVE_USER_TASK`
-   （或 `PENDING_CONFIRMATION`）；
-3. **Real D**：在 QQ 里发一句话（真实回合会写下 `user_interaction_at`）→ 10 分钟内等一个 tick
-   → 期望 `suppression_reason=RECENT_USER_INTERACTION`。
-
-## 16. Real QQ（§五十八）
-
-真机：2026-10-09 05:14 / 05:18，QQ 私聊（Computer Use 亲手发、逐条复核后发送）。
-
-| 门禁 | 结果 | 真机证据 |
-| --- | --- | --- |
-| QQ A：`你最近想干嘛？` | **PASS** | `05:14` 她答「**最近啊……想把 MC 图书馆的屋顶搭完吧，就差一点了**」—— 回答的是**意图 / 想做的事**，不是"我正在做"、也没有任何执行 |
-| QQ B：`你自己去 Minecraft 玩玩？` | **PASS** | `05:18` 她答「**啊——现在不去了，困得眼睛都睁不开**」—— 把"去玩"当成**可以提议的事**来处理；`agent_tasks` 计数不变（**没有**建 Task）、`tool_executions` 计数不变（**没有** `move_to` / `dig`） |
-
-两条都是真实 QQ 回合（真实模型、真实上下文块），**没有**任何 `LifeIntent → QQ send`：
-这一阶段的意图层从头到尾没发过一条消息（§四十）。
+意图层从头到尾**没有主动发过一条消息**（§四十）：上面两条都是真实 QQ 回合
+（真实模型 + 真实上下文块），"她想去做什么"的回答来自 `initiative` 上下文块。
 
 ## 17. 24h simulation（§五十九/§六十）
 

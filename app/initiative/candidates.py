@@ -71,8 +71,11 @@ MINECRAFT_DOMAINS = ("minecraft", "mc")
 EXPLORE_KEYWORDS = ("探索", "去看看", "远行", "explore", "探险")
 
 #: 一次最多看几条（bounded，§六十三）
+#: ★真机教训：记忆窗口原来是 3 —— 一条"想去 Minecraft"的记忆被三条日常记忆一挤就再也
+#: 触不到（真机 06:5x 实测：MC 记忆稳定停在第 4 位）。放宽到 5（**仍然有界**，
+#: 与写侧 `MEMORY_SCAN_LIMIT` 同宽）。
 MAX_GOAL_SIGNALS = 3
-MAX_MEMORY_SIGNALS = 3
+MAX_MEMORY_SIGNALS = 5
 MAX_SOCIAL_SIGNALS = 2
 MAX_COMMITMENT_SIGNALS = 2
 
