@@ -31,14 +31,22 @@
   `ActivityModelReceipt`（不含 prompt/思维链）；日志一行 `[Activity.Model] …`（绝不打印 prompt）；
   只读端点 `GET /api/v1/world/activity/advisor`；WebUI 世界页新增只读「模型顾问」卡片
   （**没有**强制采纳 / 否决 / 再问一次）。
-* **真机发现（2026-10-09 凌晨，ZCode 亲手跑）**：①**模型选型有硬约束** —— 同一 provider 上
-  `glm-5.3-flash` 平均 **8593ms**、`deepseek-v4.1-flash` 平均 **4136ms**，而 §二十八 上限是 5000ms，
-  所以"随手挑个便宜模型"会让顾问永远超时；示例配置与文档因此写明"选平均延迟明显低于 `timeout_ms` 的模型"
-  （代码默认值仍按任务书保持 1500ms）。②一个 cosmetic 缺陷：**失败路径的回执 `latency_ms` 恒为 0**
-  （`_maybe_advise` 的 `except` 分支没读 `advisor.last_latency_ms`），修法一行。
-  ③真机门禁：Real A/B/D/E 与 Real QQ A/B/C/D **全部 PASS**（真实调用 7 次：5 次被采纳的提案 +
-  2 次真实超时回退）；Real C/F 与 Real QQ E 未取证，补法写进 `docs/MINECRAFT_PHASE6D.md` §18。
-* **测试与文档**：新增 7 个文件、**93 项**（advisor 20 / schema 22 / fallback 14 / guard 10 /
+* **真机取证（2026-10-09 凌晨 01:39–03:13，ZCode 亲手跑；真实调用 16 次）**：
+  ①**模型选型有硬约束** —— `ai_usage` 里 `activity_advisor` 的成功调用全部来自
+  `cn:deepseek-v4.1-flash`：**平均 4126ms、最大 4898ms**，而 §二十八 上限是 5000ms（只剩约 100ms 余量，
+  12 次里超时 3 次）；`glm-5.3-flash` 平均 8.6 秒，**永远**超时。示例配置与文档因此写明
+  "选平均延迟明显低于 `timeout_ms` 的模型"（代码默认值仍按任务书保持 1500ms）。
+  ②一个 cosmetic 缺陷：**失败路径的回执 `latency_ms` 恒为 0**（`_maybe_advise` 的 `except` 分支没读
+  `advisor.last_latency_ms`），6 次真实超时全都显示 0；修法一行。
+  ③**门禁 A–F + Real QQ A–E 全部 PASS**：Real A `01:58:20 latency 4680 accepted=True`（`world_actions=0`）；
+  Real B 6 次真实失败全部回退且活动照常；Real C 3 次独立 `RULE_REJECTED`；Real D 到硬上限时模型**不被问**；
+  Real E 16 次调用对应 16 个不同 cycle 键（一个 cycle 恰好一次）；Real F 重启后同一 cycle 键**不再问**
+  （同进程换新键立刻被问，作对照）；Real QQ E 顾问每轮真实超时时她照常回答。
+  ④两个新发现写进 `docs/MINECRAFT_PHASE6D.md` §18：**撞车护栏的不对称**（规则自己的"中性兜底"不查护栏，
+  所以规则也会造出它刚否掉的 A→B→A —— 方向安全，要修得动 6B 规则路径，6D 不碰）；
+  **真实模型从不提 `extend`**（10/10 都是 `transition`），所以任务书的 Real C 触发法在本机无法复现，
+  按"提案被规则拒绝"这一**不变量**取证，`extend` 分支如实标为真机未取证（单测矩阵覆盖）。
+* **测试与文档**：新增 7 个文件、**91 项**（advisor 20 / schema 22 / fallback 12 / guard 10 /
   frequency 11 / injection 9 / recovery 7），覆盖任务书 A–X 矩阵 + 纯规则等价 + AST 安全 guard；
   文档 `docs/MINECRAFT_PHASE6D.md` + `docs/README.md` 索引。
 * 顺手把 6B 的包级守卫更新为 6D 语义：**模型入口只允许存在于 `model_advisor.py` 这一条缝里**

@@ -225,49 +225,82 @@ CI **不联网、不调真实 LLM**；`minecraft_runtime/` / `app/tools/` / `app
 
 ---
 
-## 18. 真机发现与门禁现状（2026-10-09 凌晨，ZCode 用 Computer Use 亲手跑）
+## 18. 真机取证与门禁现状（2026-10-09 凌晨 01:39–03:13，ZCode 亲手跑）
 
-### 18.1 模型选型有**硬约束**（重要）
+真实 provider = **Workbuddy2API**；真实调用 **16 次**（10 次拿到提案 / 6 次真实失败）。
 
-同一家 provider 的实测延迟（`ai_usage`，近 24 小时）：
+### 18.1 模型选型有**硬约束**（★重要）
 
-| 模型 | 调用数 | 平均 | 最小 | 最大 |
+`ai_usage` 里 `purpose=activity_advisor` 的**成功**调用（失败的在超时那一刻就被取消了，不落账）：
+
+| 模型 | 落账调用 | 平均 | 最小 | 最大 |
 | --- | --- | --- | --- | --- |
-| `cn:glm-5.3-flash`（曾用别名 `small`） | 15 | **8593ms** | 3994ms | 16954ms |
-| `cn:deepseek-v4.1-flash`（别名 `primary`） | 37 | **4136ms** | 3199ms | 5912ms |
-| `cn:minimax-m3` | 27 | 4225ms | 2814ms | 7356ms |
+| `cn:deepseek-v4.1-flash`（别名 `primary`） | 10 | **4126ms** | 3521ms | **4898ms** |
 
-§二十八 的墙钟上限是 **5000ms** —— 所以"随手挑个便宜模型"是错的：`glm-5.3-flash` 平均 8.6 秒，
-**永远**超时（真机上连试两次都是 `TIMEOUT` + 回退）；`deepseek-v4.1-flash` 才塞得进去。
+另**未落账**的 6 次是真实超时：2 次用 `small`（`cn:glm-5.3-flash`，预算 1500/4500ms）、
+3 次用 `primary`（预算 5000ms）、1 次用 `primary`（预算刻意压到 500ms 取证用）。
 
-**建议**：代码默认值保持任务书 §二十八 的 **1500ms** 不变；但示例配置与运维文档要写明
-"**选平均延迟明显低于 `timeout_ms` 的模型**"，本机最终用的是 `model: primary` / `timeout_ms: 5000`。
+结论：**5000ms 上限下 `primary` 只剩约 100ms 余量**（最大值 4898ms 贴着墙），
+同预算下 12 次里超时 3 次；`glm-5.3-flash` 平均 8.6 秒，**永远**超时。
+`docs`/示例配置因此写明"**选平均延迟明显低于 `timeout_ms` 的模型**"，本机最终用
+`model: primary` / `timeout_ms: 5000`（代码默认值仍按 §二十八 保持 1500ms）。
 
 ### 18.2 一个 cosmetic 缺陷（未修，一行）
 
 **失败路径的回执 `latency_ms` 恒为 0**：`ActivityDecisionEngine._maybe_advise` 的 `except` 分支
-只写了 `receipt["failure"]`，没读 `advisor.last_latency_ms` —— 于是"超时"这类最需要看延迟的场景
-反而看不到延迟（真实值在 AI 日志与 `ai_usage` 里都有）。
+只写了 `receipt["failure"]`，没读 `advisor.last_latency_ms` —— 于是 6 次真实超时全部显示
+`latency_ms=0`，最需要看延迟的场景反而看不到（真实值在 AI 日志与 `ai_usage` 里）。
 修法：`except` 分支里补 `receipt["latency_ms"] = int(getattr(advisor, "last_latency_ms", 0) or 0)`。
 
-### 18.3 真机门禁现状（真实 provider = Workbuddy2API / primary；真实调用共 7 次）
+### 18.3 真机门禁总表（A–F + Real QQ A–E 全部 PASS）
 
-| 门禁 | 结果 | 证据摘要 |
+| 门禁 | 结果 | 真机证据（原文节选） |
 | --- | --- | --- |
-| Real A | **PASS** | `01:58:20 latency_ms=4680 proposal=transition accepted=True fallback=False` → 规则采纳 → `idle → napping`；无世界动作 |
-| Real B | **PASS** | 两次真实超时（`01:51:29` 预算 1500ms / `01:54:52` 预算 4500ms）→ `fallback=True reason=TIMEOUT` → 活动照常 |
+| Real A | **PASS** | `01:58:20 latency_ms=4680 proposal=transition accepted=True fallback=False` → 规则采纳 → `ACT-001 → ACT-002`；全过程 `world_actions=0` |
+| Real B | **PASS** | 6 次真实失败全部回退且活动照常：`01:51:29`/`01:54:52`（`small`）、`02:27:04`/`02:51:14`/`03:05:08`（`primary`/5000）、`03:08:40`（`primary`/500，刻意取证） |
+| Real C | **PASS**（口径见 §18.5） | 3 次独立 **`accepted=False fallback=True reason=RULE_REJECTED`**：`02:53:28`（`ACT-010`）/`02:55:49`（`ACT-011`）/`03:01:31`（`ACT-012`） |
 | Real D | **PASS** | `02:14:11 decision=TRANSITION reason=MAX_DURATION elapsed=4000s` → `EXPIRED`，且**模型调用计数不变**（到硬上限时模型**不被问**） |
-| Real E | **PASS**（真机形态） | 每个到期窗（≈75–80 tick）恰好一条调用；`cycle` 键 `…2955/…3030/…3105/…3205` 各只被问一次、现实一变就换新键 |
-| Real QQ A/B | **PASS** | `01:41:32`「啊——睡着呢，被你消息震醒了」↔ `sleeping`；`01:43:30`「接着睡啊，才一点多」= 计划 |
-| Real QQ C/D | **PASS** | `02:16:45`「还在睡……你别一直戳我啊」↔ 规则收尾后的 `napping`（Episode 事实，不含模型文本） |
-| Real C | **未取证** | 模型看到 `allowed_decisions` 里没有 extend 时**从不提延长**（5 次真实调用均如此）；撞车那一路因造点脚本改了 `activity_name`、抹掉了"刚做过 napping"的历史而没触发 |
-| Real F | **未取证** | 需要一次"被采纳的 continue"保持同一 cycle 跨重启；真机上模型 5 次都稳定给 `transition`（状态必变） |
-| Real QQ E | **未取证** | 没在"模型失败窗口"里当场问她 |
+| Real E | **PASS** | 每次调用只发生在 `planned_end` 到期那一刻，一个 cycle 恰好 1 次：16 次调用对应 16 个**不同**的 cycle 键，没有任何键被问第二次（≈75–80 tick 的窗口里 ≤1 次） |
+| Real F | **PASS** | 重启后把 `ACT-012` 的 `planned_end_at` 复原成**同一个** `1791486086.5`：`03:03:43` 规则照常决策（`EXTEND`），**没有**任何 `[Activity.Model]` 行、审计行仍 **1** 条；同一新进程里换成新键 `1791486302` → `03:05:08` **立刻**出现调用并新增 1 行（对照证明顾问是活的，跳过纯属 cycle 守卫） |
+| Real QQ A/B | **PASS** | `01:41`「啊——睡着呢，被你消息震醒了」↔ `sleeping`；`01:43`「接着睡啊，才一点多」= 计划 |
+| Real QQ C/D | **PASS** | `02:16`「还在睡……你别一直戳我啊」↔ 规则收尾后的 `napping`（Episode 事实，不含模型文本） |
+| Real QQ E | **PASS** | 顾问每轮都在真实超时（`03:08:40 TIMEOUT`，预算 500ms）时，`03:10` 问她「你现在在干嘛？」→ `03:11:05` 答「三点多了啊……还睡呢，你也赶紧睡吧」（QQ 截图存证，与 `ACT-013 napping` 一致） |
 
-**Real C 的补法**：`max_extensions_per_episode` 取正常值，造到期点时**只推 `started_at`/`planned_end_at`、
-不要改 `activity_name`**（保留历史里的 `napping`），10 分钟撞车冷却内模型再提 `napping` → `RULE_REJECTED`；
-或把模型临时指向一个"总是说 extend 999 分钟"的桩（那就不是 Real Model 了，须如实标注）。
-**Real F 的补法**：起一个能给出 `continue` 的配置（或直接手工补一行 `MODEL_ADVISED` 审计行），
-重启后把 `planned_end_at` 设回**同一个 epoch**（cycle 键相同）→ 审计行计数应保持 1。
-**Real QQ E 的补法**：把 `model` 临时指向一个不存在的名字（provider 必失败）→ 重启 → 正常问她一句，
-她应当照常回答（同时再证一次 Real B 的另一类失败）。
+### 18.4 撞车护栏的**不对称**（新发现；方向是安全的）
+
+`_reject_proposal` 对模型的提案查撞车护栏，而规则自己在 `_transition` 里的"中性兜底"
+**不查**护栏：`02:53:28` 模型提 `transition → napping` 被判 `RULE_REJECTED`
+（`napping` 刚在 `02:58` 结束、还在 10 分钟冷却里），**规则随后自己转到了 `napping`**
+（`decision=TRANSITION reason=BOUNCE_GUARD hint=napping`）——即规则路径也可能造出它刚刚否掉的 A→B→A。
+
+方向是**安全**的（模型只会比规则更保守，绝不会更激进），但不对称值得记录。
+要修它得动 6B 的规则路径（让 `neutral_fallback` 也过一遍护栏），**6D 不碰**。
+
+### 18.5 真实模型从不提 `extend`（★口径说明）
+
+16 次真实调用里 10 次拿到提案，**全部是 `transition`**：一次 `extend`、一次 `continue` 都没有。
+所以 §14 的 Real C 建议触发法（"把 duration 调短，让模型提一个不可能的延长"）**在本机真实模型上无法复现** ——
+不是规则不收，是模型根本不给延长提案。
+
+本阶段因此按 Real C 的**不变量**取证：**真实模型的提案被规则拒绝 → 整条回退到规则**
+（3 次独立实例，含"模型提案与规则最终动作不一致"的情形）。
+`_reject_proposal` 的 `extend` 分支（超额 / 跨硬边界）由单测矩阵覆盖，**真机未观察到**，
+按纪律如实标为"未取证"。
+
+### 18.6 造点方法（本机临时脚本，**未入库**）
+
+* 只推 `started_at` / `planned_end_at` 两个**时间**字段；`activity_name` / `status` / `source` 一律不动
+  （活动本身是真实的：`ACT-009`…`ACT-013` 都是世界 tick 自己决策出来的）；
+* `_p6d_stage.py`（`--push-end` / `--plan-end` / `--past`）与 `_p6d_watch.py`（从文件末尾只读增量日志）；
+* 两个坑：① `planned_end_at` 相同 = 同一个 cycle，**问过就不会再问**（这正是 Real F 的机制本身）；
+  ② 重启必须在"同一 cycle 还活着"时做 —— 已过期的 Episode 会被 `recover()` 换掉，
+  所以要么临时放大 `recovery_grace_seconds`，要么在 30 秒宽限内重启。
+
+### 18.7 收尾状态
+
+* `config/overrides.yaml` 已从 `config/overrides.yaml.bak-6d` **恢复**：顾问回到**默认关闭**（纯规则），
+  只留你原有的 `transition_window_minutes: 6`；`max_extensions_per_episode: 0` 等门禁暂存值全部撤掉；
+* 她当前的 Episode：`ACT-20261009-013 napping`（EXTENDED）。★夜里那条**真实**的 `sleeping`  Episode
+  被本阶段的造点替换过 —— 这是**我的操作**造成的，在此如实记档；
+* 想开顾问（自己决定）：`world.activity.model_advisor {enabled: true, timeout_ms: 5000, provider: Workbuddy2API, model: primary}`
+  —— `timeout_ms` 务必取上限或换更快的模型（§18.1），改完要**重启**（`overrides.yaml` 不在热重载范围内）。
