@@ -27,6 +27,15 @@
   冲突检测与受控 replan / 冷却与 dirty / 连续 EXTEND 只 1 次 Planner 调用 / 版本与历史 /
   重启修复 / 当前 Episode 不被改 / 不提前开新活动 / 不二次决策 / 无世界动作 /
   QQ 现状与计划仍隔离 / 6A-6C 回归）。
+* **真机窄门禁 A–D 取得证据**（详见 `docs/MINECRAFT_PHASE6C.md` §20.8 与文档末尾 6C.1 小节）：
+  真实 EXTEND（`out` +1800s）当场触发 `计划对齐：已重排` 与
+  `PLAN-… v18 trigger=episode_extended`，而她**没有被提前切走**（随后仍是 `CONTINUE BEFORE_END`）；
+  杀掉进程树（含 Node 桥）重启后 `activity.recovered` + `PLAN-… v21 trigger=recovery`，
+  `✓ 计划与现实对齐（continuation 结束 00:39 / 现实 00:39）`；真 QQ 两个问题分别得到
+  "出来买布丁呢"（现状 `out`）与"买完就回家，换上睡衣窝着吃布丁"（计划 `sleeping`，将来时）。
+  **Real B 如实记**：真机是"1 次延长 → 恰好 1 次受控 replan"；§十八 的"同一活动连续两次 EXTEND
+  都在 5 分钟冷却内"在真机上**结构上无法构造**（两次延长必然相隔 ≥ typical_duration），
+  该路径由计数 Planner 单测覆盖。
 
 ## Minecraft Phase 6C — 活动规划（Rolling Horizon / 日程锚点 / 持久目标）
 

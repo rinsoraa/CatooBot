@@ -376,13 +376,59 @@ Schedule Reconciliation（只碰 future plan）
   ②最近 5 份计划的历史（`plan_id / 版本 / 状态 / trigger`）—— §二十五 Real B
   "连续 EXTEND 不得每次都重排" 就靠它看。
 
-### 20.8 真机门禁（§二十五，窄门禁）
+### 20.8 真机门禁（§二十五，窄门禁）—— 真机结果（2026-10-08 23:20–23:42）
 
-| 门禁 | 要做的 | 判定 |
-| --- | --- | --- |
-| **Real A** | 让她做某件事 → 手动触发一次真实 EXTEND → `--phase plan` | 现实结束时间 = 新结束时间；计划已对齐（`dirty=false` 或 `trigger=episode_extended` 的新版本） |
-| **Real B** | 连续 EXTEND 两次 | 计划历史里**不是**每次延长都多一版：多为"一次受控 replan"（`trigger=episode_extended`） |
-| **Real C** | EXTEND 之后重启 | `--phase plan` 显示计划与现实仍然一致（`dirty=false`） |
-| **Real D** | QQ 问两句 | `你现在在干嘛？` → 当前 Episode；`你接下来准备干嘛？` → 对齐后的计划（两者不混） |
+| 门禁 | 要做的 | 判定 | 证据 | 结果 |
+| --- | --- | --- | --- | --- |
+| **Real A** | 让她做某件事 → 真实 EXTEND → `--phase plan` | 现实结束时间 = 新结束时间；计划已对齐 | `23:35:10`：`decision=EXTEND reason=TRANSITION_WINDOW trigger=TIME_EXPIRED elapsed=1800s pending=True` → `activity.extended activity=out` → **`重新规划 plan=PLAN-20261008-018 v18 trigger=episode_extended`** + **`计划对齐：已重排`** → `decision=CONTINUE reason=BEFORE_END`（**没有提前切活动**）；`--phase plan` → `✓ 计划与现实对齐：continuation 结束 00:05 / 现实 00:05` | **PASS** |
+| **Real B** | 连续 EXTEND 两次 | 不是每次延长都多一版；最终 1 次受控 replan | 真机：**1 次延长 → 恰好 1 次受控 replan**（v17→v18，同一个 `trigger=episode_extended`）；"软触发被 5 分钟冷却挡住"另有 6C 真机证据（`21:03:44 recovery` → `21:08:45 state_changed`，间隔恰好 5 分 01 秒） | **PASS**（附结构性说明 ↓） |
+| **Real C** | EXTEND 之后重启 | 计划与现实仍然一致 | 杀掉进程树（含 Node 桥）后重启：`23:40:58 activity.recovered activity=gaming status=ACTIVE reason=RECOVERY` → `重新规划 PLAN-021 v21 trigger=recovery` → `✓ 计划与现实对齐：continuation 结束 00:39 / 现实 00:39`；`ready recovered=resumed events=8`；`NapCat connected` / `Bot logged in as 杏仁罐头` | **PASS** |
+| **Real D** | QQ 问两句 | 现状读 Episode、计划读对齐后的 Plan，两者不混 | 重启前 `23:20:55`「出来买布丁呢，顺路买盒草莓就回」↔ live `out`；`23:22:22`「买完就回家，换上睡衣窝着吃布丁」↔ 计划 `sleeping`（措辞是将来）；重启后 `23:42:07`「都问第三遍啦——在打游戏呢」↔ 恢复后的 live `gaming` | **PASS** |
 
-现场结果见文档末尾"真机取证"一节的 6C.1 小节。
+**Real B 的结构性说明（如实记录，不冒充真机观察）**：§十八 要的"同一活动连续两次 EXTEND 都在冷却内"在真机上
+**无法构造** —— 同一个 Episode 两次延长之间必然相隔 ≥ 该活动的 `typical_duration`（本项目 20–60 分钟），
+永远落在 5 分钟冷却之外，因此"冷却内标 dirty、不立即重排"这一路不会被"连续延长"触发。
+该路径由单测覆盖（`tests/test_activity_plan_reconciliation.py` 用计数 Planner 断言
+**连续 3 次延长 → 1 次** Planner 调用）。用户已确认接受"可构造部分 PASS + 本说明"。
+
+**两条观察（不属本阶段门禁）**：
+
+1. **Strategy A（只改边界、不重排）在真机上没被触发**：真实计划总是排满的（后续项紧贴现实结束时间），
+   所以真机走的是**冲突 → 受控 replan** 分支（正是 §四/§十七 描述的情形）；Strategy A 由单测 A 覆盖。
+2. **跨零点的睡眠锚点**：`23:00` 的 sleep 锚点窗口归**新的一天**，所以 00:05 之后的计划用 `napping`
+   兜底而不是 `sleeping`（v18 条目可见 `00:05 napping ROUTINE`）。这是 6C 的日界行为，不是 6C.1 引入的，
+   建议另开小任务处理。
+
+---
+
+## 真机取证 · 6C.1 小节（2026-10-08 23:20–23:42）
+
+**结论：Real A / C / D 全部 PASS；Real B 可构造部分 PASS + 结构性说明（见 §20.8）。**
+
+取证方式与 6C 一致（只读脚本 + 真实库 + `logs/catoobot.log`），另外本轮由 ZCode 直接操作了
+操作者的桌面（Computer Use）：QQ 的两个问题是我在真 QQ 窗口里发的，bot 的重启是按 Real C 的要求
+亲手杀掉进程树（含 Node 桥）再拉起来的。
+
+时间线（全部来自真实日志与真实库）：
+
+```
+23:20:48  你在吗？← QQ 问「你现在在干嘛？」
+23:20:55  她答「出来买布丁呢，顺路买盒草莓就回」          ↔ live ACT-054 out（出门）
+23:22:16  QQ 问「你接下来准备干嘛？」
+23:22:22  她答「买完就回家，换上睡衣窝着吃布丁」          ↔ 计划 v17 的下一步 sleeping（将来时）
+23:35:10  6B EXTEND（out +1800s，planned_end → 00:05:09）
+23:35:10  6C.1 计划对齐：PLAN-018 v18 trigger=episode_extended（冲突 → 受控 replan）
+23:35:11  仍然 CONTINUE BEFORE_END（没有提前切活动）
+23:39:06  沙盒自己换活动两次（WORLD_EVENT）→ v19 / v20（trigger=episode_ended）
+23:40:5x  杀掉进程树（bot + Node 桥）后重启
+23:40:58  activity.recovered activity=gaming / PLAN-021 v21 trigger=recovery
+23:40:58  ready recovered=resumed events=8；NapCat connected；Bot logged in as 杏仁罐头
+23:42:07  她答「都问第三遍啦——在打游戏呢」                ↔ 恢复后的 live ACT-056 gaming
+```
+
+复核命令（只读，脚本不进镜像）：
+
+```powershell
+.venv\Scripts\python.exe scripts\activity_smoke_real.py --phase plan    # 对齐检查 + 计划历史
+Select-String -Path logs\catoobot.log -Pattern "计划对齐|重新规划" | Select-Object -Last 10
+```
