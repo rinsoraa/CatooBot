@@ -130,20 +130,27 @@ class TestPrivateReplies:
         assert presence.is_sleeping() is True
         assert presence.hard_block_reason(for_initiative=True) == "sleeping"
 
-    async def test_hot_applied_schedule_reaches_the_gate(self, tmp_path) -> None:
+    async def test_hot_applied_schedule_reaches_the_gate(self, tmp_path, monkeypatch) -> None:
         """WebUI 改作息必须立刻生效。
 
         PresenceResolver captures the schedule at construction and everything
         (replies, timing, initiative) shares that one instance — so a WebUI save
         that only replaced ``bot.config`` left the gate on the old window until
-        a restart. The window below covers the whole day, which makes the
-        assertion independent of when the suite runs.
+        a restart.
+
+        **她的钟被钉在本地中午**（``monkeypatch`` 掉 ``presence.now``）：窗口判据是
+        ``[start, end)``，所以"覆盖全天的 HH:MM 窗口"根本不存在 —— 用
+        ``00:00–23:59`` 时最后一分钟（23:59:xx）落在窗口外，CI 恰好在那
+        一分钟跑到本用例而红过一次。钉在中午之后无论何时运行都确定：
+        默认窗口是 ``00:30–08:00``（中午=醒着），改过的窗口覆盖中午。
         """
         from app.web.services.behavior import BehaviorService
 
         bot = make_bot(tmp_path)
         await bot.database.connect()
         try:
+            noon = bot.presence.now().replace(hour=12, minute=0, second=0, microsecond=0)
+            monkeypatch.setattr(bot.presence, "now", lambda: noon)
             service = BehaviorService(bot)
             await service.apply_overrides(
                 {
