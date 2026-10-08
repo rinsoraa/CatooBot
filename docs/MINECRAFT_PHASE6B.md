@@ -181,14 +181,26 @@ AST 级 guard（`tests/test_activity_minecraft_adapter.py`）：`app/activity/**
 QQ 只能**读**：问「你现在在干嘛？」得到当前 Episode（6A 的上下文注入 + `QQ 任务控制` 仍走 5B 的 TaskRuntime）。
 「你别玩了」这类"命令她停止生活"**不开放**（§四三）——6B 没有 QQ 强制管理活动这一层。
 
+本轮真机**未执行**该条（见 §15 末尾）：QQ→活动上下文的读取路径由 6A 的实现与单测覆盖，
+但"真机上问到当前 Episode"没有证据，按纪律记 `SKIPPED`。
+
 ## 15. Real Java（§四五 A–D）
 
-| 真实门禁 | 要做的 | 证据 |
-| --- | --- | --- |
-| A | 真跑一个 Minecraft 任务 | 任务期间活动是 `minecraft_task`（`source=TASK`） |
-| B | 任务运行中在 QQ 里说「暂停」 | 日志里**当场**出现 `activity.interrupted`（`reason=USER_INTERACTION`）—— **必须现场观察实时路径**，不是重启对账 |
-| C | 任务恢复 | 出现**新的**合法活动（parent 指向前一条），且没有重复 live Episode |
-| D | Episode 接近 `planned_end` | `transition_pending=True` 而状态仍 `ACTIVE`，**没有世界动作** |
+| 真实门禁 | 要做的 | 证据（真机实测，均为只读观察） | 判定 |
+| --- | --- | --- | --- |
+| A | 真跑一个 Minecraft 任务 | `ACT-20261008-020 minecraft_task ACTIVE source=TASK task=task_0e414b8c92cf` | PASS |
+| B | 任务运行中在 QQ 里说「暂停」 | `10:54:32` 日志**当场**出现 `018 activity.interrupted reason=USER_INTERACTION`，且 `10:54:33` 起新活动接管（中间**没有重启**）—— 实时路径 | PASS |
+| C | 任务恢复 | `020 INTERRUPTED/USER_INTERACTION` → **`022 minecraft_task ACTIVE TASK_STARTED task=task_0e414b8c92cf parent=ACT-20261008-020`**；live Episode 始终只有一条（021 是她中途回到自己的 `out`，被任务恢复正常抢占为 `COMPLETED/TASK_STARTED`） | PASS |
+| D | Episode 接近 `planned_end` | `019` 典型时长 1800s、窗口 5 分钟 → `planned_end=1791429872`、窗口在 `1791429572` 打开；日志 `11:19:33/34/35` 与 `11:19:57`（重启后）连续出现 `decision=CONTINUE reason=TRANSITION_WINDOW trigger=TIME_NEAR_END elapsed=1500s..1524s pending=True`，状态始终 `ACTIVE`，**没有任何世界动作** | PASS |
+
+`019` 的完整生命周期（`activity_transitions`）与上面的算术互相印证：
+`ACTIVE/SCHEDULED @1791428072`（10:54:32，暂停那一刻接管）→ `RECOVERED/RECOVERY @1791429597`
+（11:19:57 重启；只记恢复、不伪造活动、状态保持 ACTIVE、窗口照旧 pending）→
+`COMPLETED/TASK_STARTED @1791429826`（11:23:46 被恢复的任务正常抢占）。
+
+**Real QQ（§四六）未执行**：6B 的 QQ 面是只读的，`你现在在干嘛？` 的取证留待下次真机轮次
+（本次已由 B 间接证明 QQ→暂停链路可用，但"问她在干嘛并读到当前 Episode"这一条**没有证据**，
+按纪律记 `SKIPPED`，绝不当作 PASS）。
 
 观察方式（只读）：
 
@@ -215,10 +227,11 @@ grep -E "World.Activity" logs/catoobot.log | tail -20
 * **决策日志一秒一条**（真机日志实测：最近 200 条里 197 条是逐 tick 的决策行）：平凡 CONTINUE
   （`BEFORE_END` / `MIN_DURATION_GUARD`）现在只在**状态签名变化时**记 INFO，其余降为 DEBUG ——
   决策本身仍然可在 trace/只读视图里查到。这是 §十/§四九 的精神（普通 tick 不该刷日志）。
-* **窗口在真机上很少出现**：沙盒自己的换活动（`WORLD_EVENT`）通常在 `planned_end - window`
-  之前就把活动换掉了，所以 `transition_pending=True` 需要**一条能跑到窗口的长活动**才能观察到 ——
-  想快速取证可以临时把 `world.activity.transition_window_minutes` 调大（例如 60），
-  窗口就会立刻进入（配置项本身就是为这种场合准备的）。
+* **窗口在真机上确实能观察到，但需要一条"能跑到窗口的长活动"**（已实测，见 §15 D）：
+  沙盒自己的换活动（`WORLD_EVENT`）通常在 `planned_end - window` 之前就把活动换掉了。
+  本次是一条 30 分钟（典型 1800s）的活动跑到窗口才取到证；来不及等的话，把
+  `world.activity.transition_window_minutes` 临时调大（例如 60）就能立刻进入窗口 ——
+  配置项本身就是为这种场合准备的。
 
 ## 17. Known limitations
 

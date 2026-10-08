@@ -39,8 +39,13 @@
   `bounce_cooldown_minutes`）—— **`allow_medium` 默认值没有变化**。
 * **真机取证后的两处修正**：①平凡 CONTINUE 的决策日志从"每 tick 一条 INFO"改为"状态变化才 INFO、
   其余 DEBUG"（真机实测 200 条日志里 197 条是逐 tick 决策行 —— 日志会被淹掉）；
-  ②文档记录"Transition Window 在真机上很少自然出现"（沙盒自己的换活动通常在窗口之前就发生），
-  并给出用配置项放大窗口来取证的可行做法。
+  ②文档记录"Transition Window 需要一条能跑到窗口的长活动才会自然出现"（沙盒自己的换活动通常在
+  窗口之前就发生），并给出用配置项放大窗口来取证的可行做法。
+* **真机门禁 A–D 全部取得证据**（详见 `docs/MINECRAFT_PHASE6B.md` §15）：任务期间 `minecraft_task`
+  （TASK 源）；暂停在日志里**当场**触发 `activity.interrupted reason=USER_INTERACTION`（实时路径，
+  中间无重启）；恢复产生**新的**同任务 Episode（`parent` 指向前一条，live 始终只有一条）；
+  Episode 走到 `planned_end − window` 时连续出现 `reason=TRANSITION_WINDOW … pending=True`
+  而状态仍 `ACTIVE`、无世界动作。Real QQ 的只读取证本轮**未执行**（记 `SKIPPED`）。
 * **测试与文档**：新增 `tests/test_activity_decision.py`、`test_activity_transition_window.py`、
   `test_activity_bounce_guard.py`、`test_activity_consistency.py`、`test_activity_merge.py`、
   `test_activity_decision_trace.py`（覆盖 A–W 矩阵 + 源码级安全 guard）；
