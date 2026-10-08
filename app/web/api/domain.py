@@ -267,6 +267,39 @@ class DomainApiRoutes(SocialApiRoutes, WebContext):
             )
         return ok(view, request=request)
 
+    async def _v1_world_initiative(self, request: web.Request) -> web.Response:
+        """Phase 7A §四十九：Initiative / LifeIntent 的**只读**视图。
+
+        返回 Current Activity / Candidates / Recent / Suppressed / Cooldown / Guards / History，
+        以及 **execution_layer="NONE"**（这一层不执行任何东西）。
+
+        **没有** Execute / Send / Confirm / Run / Force —— 一个都没有（§四十九/§六十八）。
+        """
+        service = getattr(self._bot, "initiative", None)
+        if service is None:
+            return ok(
+                {
+                    "enabled": False,
+                    "character_id": "",
+                    "execution_layer": "NONE",
+                    "current": None,
+                    "candidates": [],
+                    "recent": [],
+                    "suppressed": [],
+                    "cooldown": {},
+                    "guards": {},
+                    "history": [],
+                },
+                request=request,
+            )
+        try:
+            payload = await service.view()
+        except Exception as exc:  # noqa: BLE001 - 只读视图失败不冒泡成 500
+            raise unavailable(
+                f"initiative view unavailable: {type(exc).__name__}", code="initiative.view"
+            ) from exc
+        return ok(payload, request=request)
+
     async def _v1_world_activity_advisor(self, request: web.Request) -> web.Response:
         """Phase 6D §八十九：模型顾问的**只读**回执视图。
 
@@ -644,6 +677,8 @@ class DomainApiRoutes(SocialApiRoutes, WebContext):
         app.router.add_get(
             f"{API_PREFIX}/world/activity/advisor", wrap(self._v1_world_activity_advisor)
         )
+        # Phase 7A：Initiative / LifeIntent 只读视图（§四九；执行层 NONE，没有任何执行入口）
+        app.router.add_get(f"{API_PREFIX}/world/initiative", wrap(self._v1_world_initiative))
         app.router.add_get(f"{API_PREFIX}/world/trace", wrap(self._v1_world_trace))
         app.router.add_get(f"{API_PREFIX}/world/timeline", wrap(self._v1_world_timeline))
         app.router.add_get(f"{API_PREFIX}/world/topics", wrap(self._v1_world_topics))

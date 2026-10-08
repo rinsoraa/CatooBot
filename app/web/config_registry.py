@@ -890,6 +890,15 @@ _NOTES: dict[str, str] = {
     "world.activity.model_advisor.timeout_ms": "单次顾问调用的墙钟上限：500~5000ms，默认 1500",
     "world.activity.model_advisor.provider": "供应商标签：只写进日志与 trace，不参与选路",
     "world.activity.model_advisor.model": "用哪个模型：既有 router 里的模型名",
+    "world.initiative.enabled": (
+        "Initiative / LifeIntent（只**产生意图**：提出 / 评估 / 记录 / 抑制 / 过期；"
+        "执行层恒为 NONE）"
+    ),
+    "world.initiative.cooldown_minutes": "同类 Initiative 的冷却（分钟，默认 20）",
+    "world.initiative.max_proposals_per_hour": "每小时最多产生几条意图（防爆上限，默认 3）",
+    "world.initiative.recent_interaction_suppress_minutes": (
+        "用户刚说过话之后的抑制窗口（分钟，默认 10；复用既有的 user_interaction_at）"
+    ),
     "minecraft.memory.enabled": "Minecraft 身份桥 + 世界记忆（关掉只是「不记得」，权限照旧）",
     "minecraft.memory.reconcile_interval_seconds": "多久拿当前世界核对一次记忆（对账）",
     "minecraft.memory.context_items": "每次对话最多带几条 Minecraft 记忆（≤5）",
@@ -1010,6 +1019,7 @@ _SECTION_LABELS: dict[str, str] = {
     "world": "角色世界（世界时钟 · 活动）",
     "world.activity": "世界活动（Activity Episode · Phase 6A）",
     "world.activity.model_advisor": "模型顾问（软判断的参谋 · Phase 6D）",
+    "world.initiative": "意图（Initiative / LifeIntent · Phase 7A）",
     "minecraft": "Minecraft 集成",
     "minecraft.agent": "Minecraft 智能体（LLM 工具）",
     "minecraft.agent.tools": "模型可以做什么（风险分级）",

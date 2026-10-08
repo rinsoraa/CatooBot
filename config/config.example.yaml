@@ -586,6 +586,14 @@ world:
       timeout_ms: 4000                 # 500~5000：单次顾问调用的墙钟上限
       provider: null                   # 供应商标签（只出现在日志/trace 里）
       model: null                      # 用哪个模型（既有 router 里的模型名）
+  # ---- Phase 7A：意图（Initiative / LifeIntent）
+  # 这一层只**产生意图**（提出 / 评估 / 记录 / 抑制 / 过期）：不建任务、不调工具、
+  # 不自动确认、不发消息、不动 Minecraft —— 执行层恒为 NONE，所以默认开着是安全的。
+  initiative:
+    enabled: true                      # 只表示"允许产生 LifeIntent"，不是允许自主执行
+    cooldown_minutes: 20               # 同类意图的冷却（0~720；0 = 不设冷却）
+    max_proposals_per_hour: 3          # 每小时最多产生几条（0~60；0 = 不限）
+    recent_interaction_suppress_minutes: 10   # 你刚说过话之后的抑制窗口（0~240）
 
 # ============================================================
 # Minecraft 连接层（Phase 1）

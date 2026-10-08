@@ -78,6 +78,8 @@ class CharacterRuntime:
         self.minecraft_memory: Any = None
         # Phase 6A：世界活动（只读：她"现在在做什么"由 Bot 装配的 ActivityRuntime 提供）
         self.activity: Any = None
+        # Phase 7A §五十：只读的 LifeIntent 服务（拿不到就不加意图上下文）
+        self.initiative: Any = None
         self.builder = CharacterContextBuilder()
         self.processor = CharacterResponseProcessor(logger=self._log)
         self.expression_store: Any = None  # optional ExpressionStore (Task 22)
@@ -178,6 +180,8 @@ class CharacterRuntime:
         activity_context = await self._activity_context()
         # Phase 6C §五十九：她"接下来打算做什么"（计划上下文；≤3 条，措辞上明确"不是现状"）
         plan_context = await self._plan_context()
+        # Phase 7A §五十：她最近冒出来的念头（当前 1 条 + 最近 ≤3 条；措辞上明确"只是念头"）
+        initiative_context = await self._initiative_context()
         if memory_block:
             minecraft_context = (
                 f"{minecraft_context}\n{memory_block}" if minecraft_context else memory_block
@@ -198,6 +202,7 @@ class CharacterRuntime:
             minecraft=minecraft_context,
             activity=activity_context,
             plan=plan_context,
+            initiative=initiative_context,
             media_context=media_context,
             facts=facts,
             expressions=expressions,
@@ -622,6 +627,20 @@ class CharacterRuntime:
             return str(await runtime.plan_context_block())
         except Exception:  # noqa: BLE001 - 计划上下文只是上下文
             self._log.debug("Plan context unavailable", exc_info=True)
+            return ""
+
+    async def _initiative_context(self) -> str:
+        """她最近冒出来的念头（Phase 7A §五十）—— **只是念头**，不是现状也不是计划。
+
+        拿不到（意图层关了 / 没装配）就什么都不加，绝不拖垮对话。
+        """
+        service = getattr(self, "initiative", None)
+        if service is None:
+            return ""
+        try:
+            return str(await service.context_block())
+        except Exception:  # noqa: BLE001 - 意图上下文只是上下文
+            self._log.debug("Initiative context unavailable", exc_info=True)
             return ""
 
     def _minecraft_context(self) -> str:

@@ -1392,6 +1392,56 @@ CREATE INDEX IF NOT EXISTS idx_activity_plan_items_plan
     ON activity_plan_items(plan_id, sequence);
 """,
     ),
+    (
+        31,
+        "world initiative: life intents (Phase 7A)",
+        """
+-- Phase 7A §二十三/§六十六：LifeIntent 的最小存储。先查过现有库：
+--   initiative_state —— 是**聊天**主动性的按 scope 计数器（last_sent_at / 未回复数），
+--                       语义与"生活意图"不同，塞进来会把两件事混成一件；
+--   behavior_events  —— 已经是 append-only 审计表，7A **复用它**记录意图历史（§二十四），
+--                       所以这里只有这一张新表：没有第二张历史表、没有候选表。
+-- 幂等（§四十六）：fingerprint = character_id|type|goal|activity|semantic_key|time bucket，
+-- 唯一索引保证"同一条想法"在一个时间桶里只会有一行 —— 重启 / 崩溃重放都不会多出一条。
+-- 注意：状态只有 PROPOSED/SUPPRESSED/EXPIRED/CANCELLED/RESOLVED ——
+-- **没有** EXECUTING / RUNNING（LifeIntent != Task，§四/§八）。
+CREATE TABLE IF NOT EXISTS life_intents (
+    id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+    intent_id          TEXT NOT NULL UNIQUE,
+    character_id       TEXT NOT NULL,
+    intent_type        TEXT NOT NULL,
+    title              TEXT NOT NULL DEFAULT '',
+    description        TEXT NOT NULL DEFAULT '',
+    source             TEXT NOT NULL DEFAULT 'SYSTEM',
+    origin             TEXT NOT NULL DEFAULT '',
+    priority           REAL NOT NULL DEFAULT 0.5,
+    confidence         REAL NOT NULL DEFAULT 0.5,
+    created_at         REAL NOT NULL DEFAULT 0,
+    expires_at         REAL NOT NULL DEFAULT 0,
+    related_activity   TEXT NOT NULL DEFAULT '',
+    related_goal       TEXT NOT NULL DEFAULT '',
+    related_memory     TEXT NOT NULL DEFAULT '',
+    related_player     TEXT NOT NULL DEFAULT '',
+    related_task       TEXT NOT NULL DEFAULT '',
+    status             TEXT NOT NULL DEFAULT 'PROPOSED',
+    suppression_reason TEXT NOT NULL DEFAULT '',
+    resolution_reason  TEXT NOT NULL DEFAULT '',
+    fingerprint        TEXT NOT NULL,
+    execution_class    TEXT NOT NULL DEFAULT 'VIRTUAL_ONLY',
+    tags               TEXT NOT NULL DEFAULT '[]',
+    updated_at         REAL NOT NULL DEFAULT 0
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_life_intents_fingerprint
+    ON life_intents(fingerprint);
+CREATE INDEX IF NOT EXISTS idx_life_intents_character
+    ON life_intents(character_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_life_intents_status
+    ON life_intents(character_id, status);
+-- 意图历史复用 behavior_events（§二十四）：这条索引给"按 scope 取本阶段的审计"用
+CREATE INDEX IF NOT EXISTS idx_behavior_events_scope_type
+    ON behavior_events(scope_key, type, id);
+""",
+    ),
 ]
 
 

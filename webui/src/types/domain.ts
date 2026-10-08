@@ -119,6 +119,76 @@ export interface WorldActivityDecisionView {
 }
 
 /** Phase 6C：计划条目 —— 一条"打算做的事"（**不是** Episode，没有 id/状态机）。 */
+/** Phase 7A §三/§四十九：一条 LifeIntent（**只读**；执行层恒为 NONE）。 */
+export interface WorldLifeIntent {
+  intent_id: string
+  character_id: string
+  intent_type: string
+  title: string
+  description: string
+  source: string
+  origin: string
+  priority: number
+  created_at: number
+  expires_at: number
+  related_activity: string
+  related_goal: string
+  related_memory: string
+  related_player: string
+  related_task: string
+  status: string
+  suppression_reason: string
+  resolution_reason: string
+  confidence: number
+  fingerprint: string
+  execution_class: string
+  tags: string[]
+}
+
+/** 本轮候选的裁决（为什么放行 / 为什么被抑制）。 */
+export interface WorldInitiativeCandidate {
+  intent_type: string
+  title: string
+  fingerprint: string
+  priority: number
+  allowed: boolean
+  reason: string
+  checks: { guard: string; ok: boolean; detail: Record<string, unknown> }[]
+}
+
+/**
+ * Phase 7A §四十九：Initiative / LifeIntent 的只读视图。
+ *
+ * `execution_layer` 恒为 `'NONE'`：这一层只**提出 / 评估 / 记录 / 抑制 / 过期**意图，
+ * 界面上**没有** Execute / Send / Confirm / Run / Force 任何一个入口。
+ */
+export interface WorldInitiativeView {
+  enabled: boolean
+  character_id: string
+  execution_layer: string
+  degraded: string
+  last_check_at: number
+  checks: number
+  current: WorldLifeIntent | null
+  candidates: WorldInitiativeCandidate[]
+  recent: WorldLifeIntent[]
+  suppressed: WorldLifeIntent[]
+  cooldown: {
+    minutes: number
+    seconds_remaining: number
+    max_proposals_per_hour: number
+    proposals_last_hour: number
+  }
+  guards: Record<string, unknown>
+  history: {
+    type: string
+    reason: string
+    detail: Record<string, unknown>
+    status: string
+    created_at: number
+  }[]
+}
+
 export interface WorldPlanItem {
   activity: string
   planned_start: number

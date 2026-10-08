@@ -1070,12 +1070,30 @@ class WorldActivityConfig(BaseModel):
     model_advisor: ModelAdvisorConfig = Field(default_factory=ModelAdvisorConfig)
 
 
+class WorldInitiativeConfig(BaseModel):
+    """Phase 7A §六十四：Initiative / LifeIntent 的旋钮（**最多就这四个**）。
+
+    ``enabled`` 只表示"**允许产生 LifeIntent**"，**不是**允许自主执行 ——
+    7A 的执行层恒为 ``NONE``（§六十五），所以默认开着是安全的。
+    """
+
+    enabled: bool = True
+    #: 同类 Initiative 的冷却（§二十一）—— 直接复用这一套，不再造第二套计时器
+    cooldown_minutes: int = Field(default=20, ge=0, le=720)
+    #: 每小时最多产生几条（§三十三 的防爆上限；0 = 不限）
+    max_proposals_per_hour: int = Field(default=3, ge=0, le=60)
+    #: 用户刚说过话之后的抑制窗口（分钟；§十三 复用既有的 user_interaction_at 标记）
+    recent_interaction_suppress_minutes: int = Field(default=10, ge=0, le=240)
+
+
 class WorldConfig(BaseModel):
-    """Phase 6A：角色世界（目前只有时钟与活动）。"""
+    """Phase 6A：角色世界（时钟 + 活动）；Phase 7A 加 Initiative。"""
 
     #: 世界时钟的时区（§二十二：默认 Asia/Singapore，可配置）
     timezone: str = "Asia/Singapore"
     activity: WorldActivityConfig = Field(default_factory=WorldActivityConfig)
+    #: Phase 7A §六十四：Initiative / LifeIntent（只产生意图，**不执行**任何东西）
+    initiative: WorldInitiativeConfig = Field(default_factory=WorldInitiativeConfig)
 
 
 class TaskRuntimeConfig(BaseModel):

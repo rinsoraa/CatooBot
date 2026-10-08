@@ -14,6 +14,7 @@ import type {
   WorldActivityPlanView,
   WorldActivityView,
   WorldData,
+  WorldInitiativeView,
   WorldTimelineRow,
 } from '@/types/domain'
 
@@ -78,6 +79,14 @@ export const worldApi = {
    */
   activityAdvisor() {
     return api.get<WorldActivityAdvisorView>('/world/activity/advisor')
+  },
+
+  /**
+   * Phase 7A §四十九：Initiative / LifeIntent 只读视图。
+   * 只读：**没有** Execute / Send / Confirm / Run / Force（执行层恒为 NONE）。
+   */
+  worldInitiative() {
+    return api.get<WorldInitiativeView>('/world/initiative')
   },
 
   timeline(limit = 100) {

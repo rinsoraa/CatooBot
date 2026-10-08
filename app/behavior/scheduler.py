@@ -98,6 +98,9 @@ class BehaviorScheduler:
         await self._safe("activity", self._behavior.tick())
         if self._behavior.initiative.enabled:
             await self._safe("initiative", self._initiative_pass())
+        # Phase 7A §三十一：LifeIntent 的 bounded check 挂在**同一个** tick 上 ——
+        # 不新建循环、不新建计时器；它纯规则、不调模型、不发送任何消息。
+        await self._safe("life_intent", self._life_intent_pass())
         # Agent housekeeping rides the existing scheduler (spec v0.8 §103/§104):
         # timeouts and stale tasks only — no personality work here.
         agent = getattr(self._bot, "agent", None)
@@ -195,6 +198,33 @@ class BehaviorScheduler:
             self._log.exception("[Behavior] %s step failed", name)
 
     # ------------------------------------------------------------ initiative
+
+    async def _life_intent_pass(self) -> None:
+        """Phase 7A：跑一次 LifeIntent check（纯规则；执行层 NONE）。
+
+        §四十八：事件只是 state update —— 这里**不会**因此调模型或发 QQ。
+        """
+        service = getattr(self._bot, "initiative", None)
+        if service is None or not getattr(service, "enabled", False):
+            return
+        out = await service.check(trigger="scheduled")
+        created = list(out.get("created") or ())
+        suppressed = list(out.get("suppressed") or ())
+        if created or suppressed:
+            self._log.info(
+                "[World.Initiative] check action=%s created=%d suppressed=%d reason=%s",
+                out.get("action", ""),
+                len(created),
+                len(suppressed),
+                out.get("reason", ""),
+            )
+        else:
+            self._log.debug(
+                "[World.Initiative] check action=%s reason=%s candidates=%s",
+                out.get("action", ""),
+                out.get("reason", ""),
+                out.get("candidate_count", 0),
+            )
 
     async def _initiative_pass(self) -> None:
         if self._bot.character is None:

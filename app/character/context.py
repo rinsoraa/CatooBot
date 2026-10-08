@@ -130,6 +130,9 @@ class CharacterContextBuilder:
         # Phase 6C §五十九：她**接下来打算**做什么（来自 ActivityPlan；≤3 条）。
         # 与 `activity` 是两件事 —— 计划永远不能冒充现状（§七十二）。
         plan: str = "",
+        # Phase 7A §五十：她最近**冒出来的念头**（来自 LifeIntent；当前 1 条 + 最近 ≤3 条）。
+        # 念头既不是现状、也不是计划，更不是"已经被允许做什么"（§七/§五十五）。
+        initiative: str = "",
         media_context: str = "",
         facts: str = "",
         expressions: str = "",

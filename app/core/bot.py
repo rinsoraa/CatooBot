@@ -325,6 +325,8 @@ class Bot:
         self.task_entry: Any = None
         #: Phase 6A：世界活动（Activity Episode 生命周期；装配失败 = 没有活动能力）
         self.activity: Any = None
+        # Phase 7A：Initiative / LifeIntent 服务（只产生意图；没装配就是 None）
+        self.initiative: Any = None
         self.activity_sandbox: Any = None
         self.activity_tasks: Any = None
         self.activity_observation: Any = None
@@ -894,6 +896,13 @@ class Bot:
         except Exception:  # noqa: BLE001 - 活动装配失败不拖垮启动
             self.log.exception("World activity initialization failed; continuing without it")
             self.activity = None
+        # Phase 7A：Initiative Gate / LifeIntent（**只产生意图**，执行层 = NONE）。
+        # 装配点放在活动层之后：得先有"现在在做什么"，才谈得上"突然想做点别的"。
+        try:
+            await self._setup_world_initiative()
+        except Exception:  # noqa: BLE001 - 意图层装配失败不拖垮启动
+            self.log.exception("World initiative initialization failed; continuing without it")
+            self.initiative = None
         await self.adapter.start()
         story.boot_step("OneBot 适配器已监听", detail=self.config.onebot.url)
         if self.watchdog is not None:
@@ -1105,6 +1114,81 @@ class Bot:
             recovered.get("action", "none"),
             len(ACTIVITY_EVENT_NAMES),
         )
+
+    async def _setup_world_initiative(self) -> None:
+        """Phase 7A §二：把 Initiative Gate / LifeIntent 接上。
+
+        这一层只有**只读输入 + 一个状态存储**：没有 TaskRuntime / ActionRuntime /
+        MinecraftService / Policy / ConfirmationStore / QQ 发送器（§四十一/§四十三）。
+        """
+        config = getattr(getattr(self.config, "world", None), "initiative", None)
+        if config is None or not config.enabled:
+            self.initiative = None
+            self.log.info("[World.Initiative] 已在配置里关闭")
+            return
+        from app.initiative import (
+            INITIATIVE_EVENT_NAMES,
+            InitiativeContextAdapter,
+            InitiativeEventPublisher,
+            LifeIntentService,
+            SqliteLifeIntentStore,
+        )
+
+        character_id = self._activity_character_id()
+        sandbox = getattr(self, "sandbox", None)
+        planner = getattr(getattr(self, "activity", None), "planner", None)
+        adapter = InitiativeContextAdapter(
+            character_id=character_id,
+            activity=getattr(self, "activity", None),
+            goals=getattr(sandbox, "goals", None),
+            commitments=getattr(sandbox, "commitments", None),
+            memory=getattr(self, "memory", None),
+            topics=getattr(getattr(self, "behavior", None), "topics", None),
+            social=getattr(self, "social", None),
+            presence=getattr(self, "presence", None),
+            minecraft=getattr(self, "minecraft", None),
+            state_provider=self._activity_state,
+            task_states_provider=self._active_task_states,
+            routine_table=getattr(planner, "routine_table", None),
+            logger=self.log,
+        )
+        service = LifeIntentService(
+            store=SqliteLifeIntentStore(self.database, logger=self.log),
+            config=config,
+            context_provider=adapter.collect,
+            character_id=character_id,
+            publisher=InitiativeEventPublisher(logger=self.log),
+            logger=self.log,
+        )
+        self.initiative = service
+        # 角色运行时可以**读**它（§五十：QQ 里说得出"最近想干嘛"），但不能改
+        if self.character is not None:
+            self.character.initiative = service
+        recovered = await service.recover()
+        self.log.info(
+            "[World.Initiative] ready character=%s recovered=%s proposed=%d events=%d",
+            character_id,
+            recovered.get("action", "none"),
+            int(recovered.get("proposed", 0) or 0),
+            len(INITIATIVE_EVENT_NAMES),
+        )
+
+    async def _active_task_states(self) -> tuple[str, ...]:
+        """只读地问一句"现在有没有用户任务占着她"（§十一/§十二）。
+
+        拿不到就返回空表 —— 守卫层会把"读不到"当作没有任务，而不是当作有任务。
+        """
+        tasks = getattr(self, "tasks", None)
+        if tasks is None:
+            return ()
+        try:
+            record = await tasks.current()
+        except Exception:  # noqa: BLE001 - 只读探针，失败即空
+            return ()
+        if record is None:
+            return ()
+        state = getattr(getattr(record, "state", None), "value", "")
+        return (str(state).upper(),)
 
     async def _probe_task_state(self, task_id: str) -> str:
         """只读地问一句"这个任务现在什么状态"（活动重启对账用；拿不到就返回空串）。"""

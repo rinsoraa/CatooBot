@@ -3,6 +3,64 @@
 本文件记录 CatooBot 的版本演进。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号见 `pyproject.toml`；日期取自真实提交历史（本仓库 2026-09-30 起）。
 
+## Minecraft Phase 7A — Initiative Gate / Life Intent Foundation
+
+* **建立"她**想**去做什么"这一层**（§零/§一）：`Initiative → Life Intent`。7A 的意图**只能被
+  提出 / 评估 / 记录 / 抑制 / 过期** —— 执行层恒为 **NONE**：不建 Task、不调工具、不碰 Policy /
+  ConfirmationStore、不动 Minecraft、不发 QQ。新增 `app/initiative/`
+  （`model` / `candidates` / `gate` / `store` / `events` / `service` / `adapters`，7 个模块）。
+* **LifeIntent 与枚举**（§三-§八/§四十二）：状态只有
+  `PROPOSED / SUPPRESSED / EXPIRED / CANCELLED / RESOLVED`（**没有** EXECUTING/RUNNING ——
+  `LifeIntent != Task`）；类型 8 种；来源 8 种（**没有 RANDOM**）；
+  `LifeIntentExecutionClass` 三值但 7A 只给 `VIRTUAL_ONLY`；`Intent != Episode`、`Intent != Task`。
+  状态机是**追加式**的：没有"回到 PROPOSED"的路，"抑制之后还能再出现"靠新的一条意图（§二十六）。
+* **确定性候选生成**（§十六-§十九/§三十二/§五十三）：`propose_intents(context)` 是纯函数 ——
+  同一个 context 永远给同一批候选，不联网、不调模型、不随机。由 Goal（
+  `GOAL_PROGRESS` / MC 项目 → `MINECRAFT_INTEREST`）、Memory（只作支持性上下文）、
+  Social 话题、未了结的承诺（USER_CONTEXT）、低能量（REST）、**长闲置 ≥ 2 小时**
+  （ACTIVITY_CHANGE）、时段日常（PERSONAL_ROUTINE）生成；
+  **不由这里产生 `ACTIVITY_CONTINUATION`**（连续性属于 6B/6C，§五十三）。
+* **InitiativeGate**（§九-§十五）：纯函数式的门禁，11 条 hard guard **按固定顺序**评估并如实记录
+  （`CHARACTER_RECOVERY` / `SYSTEM_DEGRADED` / `ACTIVE_USER_TASK` / `PENDING_CONFIRMATION` /
+  `SLEEPING` / `QUIET_HOURS` / `HIGH_SOCIAL_FATIGUE` / `MINECRAFT_OFFLINE` /
+  `RECENT_USER_INTERACTION` / `RECENT_INITIATIVE` / `DUPLICATE_INTENT`）；
+  `SUPPRESSED != FAILED`，而且抑制**不封死未来**；`priority ≠ permission`。
+  冷却 20 分钟 / 每小时上限 3 / 10 分钟内 5 条触发防爆 / 指纹去重（`character|type|goal|activity|
+  semantic key|time bucket`）/ 一轮最多放行 1 条（低噪声）。
+* **持久化**（§二十三/§二十四/§六十六）：**只新增一张表** `life_intents`（迁移 **31**），
+  历史**复用**既有 append-only 表 `behavior_events` —— 没有第二张历史表、没有候选表；
+  `fingerprint` 唯一索引 + `INSERT OR IGNORE` 保证崩溃重放不会多出一条（§四十六）。
+* **恢复**（§二十二/§四十五）：启动只做"载入 + 按 `expires_at` 收尾"（`skipped_generation=True`），
+  5 分钟静默期由 `CHARACTER_RECOVERY` 守住 —— 重启不会撒出一堆意图。
+* **接线**（§二，升级而非另起一套）：check 挂在**同一个** `BehaviorScheduler` tick 上
+  （`_life_intent_pass`），休眠/DND 复用既有 `PresenceResolver`，交互窗口复用既有
+  `user_interaction_at` 标记；配置是 `world.initiative`（`enabled` 默认 **true** ——
+  它只表示"允许产生意图"，不是允许执行）。
+* **QQ 边界**（§三十九/§四十/§五十）：对话上下文新增一块 `initiative`（当前 1 条 + 最近 ≤3 条，
+  措辞明确"只是念头"），所以能答"你最近想干嘛"；**没有** proactive messaging，
+  事件默认只是 state update（§四十八）。
+* **安全**（§四十三/§四十四/§六十二）：整包**只 import 自己 + 标准库**（源码级不可能执行）；
+  AST 禁止清单（`TaskRuntime` / `ActionRuntime` / `ConfirmationStore` / `MinecraftService` /
+  `confirm_and_start` / `create_task` / `allow_medium` / `force_transition` / `Policy`）+
+  禁止的调用名（消息面 `send*`/`deliver`/`reply`、模型面 `chat`/`complete`/`generate`）+
+  构造函数参数里没有任何执行句柄；事件表里没有 `initiative.executed`。
+* **可观测**：只读端点 `GET /api/v1/world/initiative` + WebUI 世界页新增只读「意图」卡片
+  （**没有** Execute / Send / Confirm / Run / Force）；`[World.Initiative] check …` 一行日志。
+* **测试**：新增 **72** 项（`test_life_intent` / `test_initiative_gate` / `test_initiative_cooldown` /
+  `test_initiative_recovery` / `test_initiative_activity_bridge` / `test_initiative_security`），
+  覆盖任务书 A–W 矩阵 + 24 小时快进仿真（144 次 check → 20 条提案，低噪声）；
+  全量 **3216 passed**。
+* **真机（§五十七/§五十八）**：Real QQ **A/B PASS**（`你最近想干嘛？` → 她答"想把 MC 图书馆的屋顶
+  搭完"；`你自己去 Minecraft 玩玩？` → 她答"现在不去了，困得眼睛都睁不开"，**没有**建任务 / 没有
+  `move_to`）；Real Java **B PASS**（离线仍然产出 `virtual_interest` 的 `MINECRAFT_INTEREST`，
+  `world_actions=0`、`minecraft_task_count=0`），并额外见证 `CHARACTER_RECOVERY` 与 `SLEEPING`
+  两条 guard 在真机生效；Real Java **A/C/D SKIPPED**（当时 MC 离线、她正在真实睡眠窗口
+  00:30–08:00、无合法手段叫醒）—— 配方写在 `docs/MINECRAFT_PHASE7A.md` §15。
+  ★真机教训两条：①她的 Minecraft 记忆写的是"橡**树**/原**木**"，关键词判据永远匹配不上
+  → 改成**结构化判据**（记忆 `provenance.domain` / scope 后缀 `:minecraft`）+ 补真实用词；
+  ②`MemoryManager.list_memories` 与任务状态探针是 **async**，同步读取会拿到协程对象
+  → 只读适配器统一走 async-aware 读取。
+
 ## Minecraft Phase 6D.1 — 撞车护栏统一化 + 延迟回执修复
 
 * **A：所有产生"下一个活动"的路径统一过 `ActivityBounceGuard`**：不变量收紧成

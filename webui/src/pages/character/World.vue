@@ -26,6 +26,7 @@ import { toast } from '@/composables/toast'
 import { useWorldStore } from '@/stores/world'
 import type {
   WorldActivityAdvisorView,
+  WorldInitiativeView,
   WorldActivityPlanView,
   WorldActivityView,
 } from '@/types/domain'
@@ -156,6 +157,38 @@ function advisorStateText(view: WorldActivityAdvisorView | null): string {
   return view.available ? '已启用' : '已启用但不可用（退回规则）'
 }
 
+// Phase 7A §四十九：Initiative / LifeIntent 的**只读**视图（执行层 NONE）。
+// 界面上**没有** Execute / Send / Confirm / Run / Force —— 一个都不给。
+const initiative = ref<WorldInitiativeView | null>(null)
+const initiativeError = ref('')
+
+async function loadInitiative(): Promise<void> {
+  try {
+    initiative.value = await worldApi.worldInitiative()
+    initiativeError.value = ''
+  } catch (caught) {
+    initiativeError.value = errorMessage(caught)
+  }
+}
+
+function initiativeStateText(view: WorldInitiativeView | null): string {
+  if (!view || !view.enabled) return '未启用'
+  if (view.degraded) return `降级（${view.degraded}）`
+  return '运行中（只产生意图）'
+}
+
+function intentTime(value: number): string {
+  if (!value) return '—'
+  return new Date(value * 1000).toLocaleString()
+}
+
+function cooldownText(view: WorldInitiativeView | null): string {
+  const cooldown = view?.cooldown
+  if (!cooldown) return '—'
+  const remain = Math.max(0, Math.round(cooldown.seconds_remaining || 0))
+  return `冷却 ${cooldown.minutes} 分钟 · 剩余 ${remain} 秒 · 本小时 ${cooldown.proposals_last_hour}/${cooldown.max_proposals_per_hour}`
+}
+
 function receiptText(view: WorldActivityAdvisorView | null): string {
   const receipt = view?.last_receipt
   if (!receipt || !receipt.attempted) return '还没问过'
@@ -170,6 +203,7 @@ onMounted(() => {
   void loadActivity()
   void loadPlan()
   void loadAdvisor()
+  void loadInitiative()
 })
 
 function reload(): void {
@@ -937,6 +971,67 @@ function previewMoodText(): string {
         <p class="cb-world__readonly" data-test="world-advisor-readonly">
           只读：模型只给「继续 / 延长 / 切换」的建议，硬约束（最短最长时长、锚点、撞车、候选资格）
           一律由规则校验；这里不能强制采纳，也不能让模型再想一次。
+        </p>
+      </section>
+
+      <!-- Phase 7A §四十九：意图（LifeIntent）**只读** —— 执行层 NONE，没有任何执行入口 -->
+      <section class="cb-card cb-world__section" data-test="world-initiative">
+        <SectionHeader
+          title="意图（她想去做什么）"
+          description="只是念头：既不是现状，也不是计划，更不能被执行（执行层 NONE）"
+        />
+        <p v-if="initiativeError" class="cb-world__readonly" data-test="world-initiative-error">
+          意图状态读取失败：{{ initiativeError }}
+        </p>
+        <dl v-if="initiative" class="cb-world__facts" data-test="world-initiative-facts">
+          <div>
+            <dt>状态</dt>
+            <dd data-test="world-initiative-enabled">{{ initiativeStateText(initiative) }}</dd>
+          </div>
+          <div>
+            <dt>执行层</dt>
+            <dd data-test="world-initiative-execution">{{ text(initiative.execution_layer) }}</dd>
+          </div>
+          <div>
+            <dt>最近一次检查</dt>
+            <dd data-test="world-initiative-checked">{{ intentTime(initiative.last_check_at) }}</dd>
+          </div>
+          <div>
+            <dt>冷却</dt>
+            <dd data-test="world-initiative-cooldown">{{ cooldownText(initiative) }}</dd>
+          </div>
+        </dl>
+        <p v-if="initiative" class="cb-world__readonly" data-test="world-initiative-current">
+          现在挂着：{{ initiative.current ? `${initiative.current.title}（${initiative.current.intent_type}）` : '没有' }}
+        </p>
+        <div v-if="initiative && initiative.candidates.length" class="cb-world__facts" data-test="world-initiative-candidates">
+          <div v-for="candidate in initiative.candidates" :key="candidate.fingerprint">
+            <dt>{{ candidate.intent_type }}</dt>
+            <dd>
+              {{ candidate.title }} ·
+              {{ candidate.allowed ? '已提出' : `被抑制（${candidate.reason}）` }}
+            </dd>
+          </div>
+        </div>
+        <div v-if="initiative && initiative.suppressed.length" class="cb-world__facts" data-test="world-initiative-suppressed">
+          <div v-for="item in initiative.suppressed" :key="item.intent_id">
+            <dt>被抑制</dt>
+            <dd>
+              {{ item.title }}（{{ item.intent_type }}）· {{ text(item.suppression_reason) }} ·
+              {{ intentTime(item.created_at) }}
+            </dd>
+          </div>
+        </div>
+        <p
+          v-if="initiative && !initiative.current && !initiative.candidates.length"
+          class="cb-world__readonly"
+          data-test="world-initiative-empty"
+        >
+          现在没有任何念头（这一层只在有真实信号时才提；没有就什么都不说）。
+        </p>
+        <p class="cb-world__readonly" data-test="world-initiative-readonly">
+          只读：意图只会被**提出 / 评估 / 记录 / 抑制 / 过期**。它不会创建任务、不会调用工具、
+          不会自动确认、不会发消息，也不会自己动 Minecraft —— 这里没有任何执行按钮。
         </p>
       </section>
 
