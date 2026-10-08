@@ -58,6 +58,18 @@ function activityDuration(row: WorldActivityView['recent'][number]): string {
   return `${hours} 小时 ${minutes % 60} 分钟`
 }
 
+function elapsedText(seconds: number | undefined): string {
+  if (!seconds || seconds <= 0) return '—'
+  const minutes = Math.round(seconds / 60)
+  if (minutes < 60) return `${minutes} 分钟`
+  return `${Math.floor(minutes / 60)} 小时 ${minutes % 60} 分钟`
+}
+
+function windowText(seconds: number | undefined): string {
+  if (!seconds || seconds <= 0) return '无窗口'
+  return `计划结束前 ${Math.round(seconds / 60)} 分钟`
+}
+
 function activityClock(seconds: number): string {
   if (!seconds) return '—'
   return new Date(seconds * 1000).toLocaleTimeString()
@@ -581,6 +593,53 @@ function previewMoodText(): string {
             <div>
               <dt>Extensions</dt>
               <dd data-test="world-activity-extensions">{{ activity.current.extension_count }}</dd>
+            </div>
+            <div>
+              <dt>Elapsed</dt>
+              <dd data-test="world-activity-elapsed">{{ elapsedText(activity.decision?.elapsed_seconds) }}</dd>
+            </div>
+            <div>
+              <dt>Transition Window</dt>
+              <dd data-test="world-activity-window">
+                {{ windowText(activity.decision?.transition_window_seconds) }}
+                （{{ activity.decision?.transition_pending ? '已进入，待命' : '未进入' }}）
+              </dd>
+            </div>
+            <div>
+              <dt>Decision</dt>
+              <dd data-test="world-activity-decision">
+                {{ activity.decision?.last_decision?.decision || '（还没做过决策）' }}
+              </dd>
+            </div>
+            <div>
+              <dt>Reason</dt>
+              <dd data-test="world-activity-decision-reason">
+                {{ activity.decision?.last_decision?.reason_code || '—' }}
+              </dd>
+            </div>
+            <div>
+              <dt>Next Hint</dt>
+              <dd data-test="world-activity-next-hint">
+                {{ activity.decision?.last_decision?.next_activity_hint || '—' }}
+              </dd>
+            </div>
+            <div>
+              <dt>Extensions Allowed</dt>
+              <dd data-test="world-activity-max-extensions">
+                {{ activity.decision?.extension_count ?? 0 }} / {{ activity.decision?.max_extensions ?? 0 }}
+              </dd>
+            </div>
+            <div>
+              <dt>Consistency</dt>
+              <dd data-test="world-activity-consistency">
+                {{
+                  activity.consistency
+                    ? activity.consistency.ok
+                      ? 'OK'
+                      : `ERROR（${activity.consistency.errors.length}）`
+                    : '—'
+                }}
+              </dd>
             </div>
           </dl>
           <p v-if="activity.degraded" class="cb-world__readonly" data-test="world-activity-degraded">

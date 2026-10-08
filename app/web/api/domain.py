@@ -204,6 +204,39 @@ class DomainApiRoutes(SocialApiRoutes, WebContext):
         data["recent"] = list(data.get("recent") or [])[:limit]
         return ok(data, request=request)
 
+    async def _v1_world_activity_decision(self, request: web.Request) -> web.Response:
+        """Phase 6B：当前活动的**决策只读视图**（§四八）。
+
+        返回 decision / reason / transition_pending / elapsed_seconds / planned_end_at /
+        extension_count / 最近一次 trace，**绝不返回思维链**，也没有任何 force/extend 入口。
+        """
+        runtime = getattr(self._bot, "activity", None)
+        if runtime is None:
+            return ok(
+                {
+                    "enabled": False,
+                    "episode_id": "",
+                    "decision": "",
+                    "reason": "",
+                    "transition_pending": False,
+                    "last_decision": None,
+                },
+                request=request,
+            )
+        try:
+            episode = await runtime.current()
+            view = runtime.decision_view(episode, now=None)
+        except Exception as exc:  # noqa: BLE001 - 只读失败不变成 5xx（如实降级）
+            return ok(
+                {"enabled": False, "degraded": type(exc).__name__, "decision": ""},
+                request=request,
+            )
+        payload = {"enabled": True, **view}
+        trace = view.get("last_decision") or {}
+        payload["decision"] = str(trace.get("decision") or "")
+        payload["reason"] = str(trace.get("reason_code") or "")
+        return ok(payload, request=request)
+
     async def _v1_world_trace(self, request: web.Request) -> web.Response:
         limit = read_query_int(request, "limit", default=120, minimum=1, maximum=500)
         return ok(await self._read().world_trace(limit=limit), request=request)
@@ -544,6 +577,10 @@ class DomainApiRoutes(SocialApiRoutes, WebContext):
         app.router.add_get(f"{API_PREFIX}/world", wrap(self._v1_world))
         # Phase 6A：世界活动（Episode）—— **只读**，最近 ≤10 条（§三十六/§三十七）
         app.router.add_get(f"{API_PREFIX}/world/activity", wrap(self._v1_world_activity))
+        # Phase 6B：活动决策只读视图（§四八；没有 force/extend 入口）
+        app.router.add_get(
+            f"{API_PREFIX}/world/activity/decision", wrap(self._v1_world_activity_decision)
+        )
         app.router.add_get(f"{API_PREFIX}/world/trace", wrap(self._v1_world_trace))
         app.router.add_get(f"{API_PREFIX}/world/timeline", wrap(self._v1_world_timeline))
         app.router.add_get(f"{API_PREFIX}/world/topics", wrap(self._v1_world_topics))

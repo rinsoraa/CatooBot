@@ -9,6 +9,7 @@ import type {
   CharacterState,
   InterruptedInfo,
   TopicRow,
+  WorldActivityDecisionView,
   WorldActivityView,
   WorldData,
   WorldTimelineRow,
@@ -54,6 +55,11 @@ export const worldApi = {
   /** Phase 6A：她此刻的活动（Episode）。**只读** —— 不能启动/取消/延长。 */
   activity(limit = 10) {
     return api.get<WorldActivityView>('/world/activity', { query: { limit } })
+  },
+
+  /** Phase 6B：活动决策只读视图（decision / reason / transition_pending / …）。 */
+  activityDecision() {
+    return api.get<WorldActivityDecisionView>('/world/activity/decision')
   },
 
   timeline(limit = 100) {

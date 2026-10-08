@@ -570,6 +570,10 @@ world:
     persistence_interval_seconds: 60   # 运行中的观察多久落一次盘（10~600；重大状态变化随时落盘）
     recovery_grace_seconds: 30         # 重启宽限：计划结束时间离现在这么近就不算过期
     recent_episode_limit: 5            # 最近活动读几条（1~10；对话上下文与界面默认窗口）
+    # ---- Phase 6B：活动决策（继续 / 延长 / 换活动）
+    transition_window_minutes: 5       # 结束前多久进入"准备换活动"窗口（窗口内只待命，不提前切）
+    max_extensions_per_episode: 2      # 一条活动最多自动延长几次（0~5；防无限续命）
+    bounce_cooldown_minutes: 10        # 刚做过的活动多久内不许立刻回来（防 A→B→A）
 
 # ============================================================
 # Minecraft 连接层（Phase 1）

@@ -92,6 +92,40 @@ export interface WorldActivityEpisode {
   updated_at: number
 }
 
+/** Phase 6B：一次活动的决策只读视图（**没有** force/extend 入口）。 */
+export interface WorldActivityDecisionView {
+  episode_id: string
+  current_activity: string
+  status: string
+  elapsed_seconds: number
+  planned_end_at: number
+  transition_window_seconds: number
+  /** 进入"准备换活动"窗口：只是待命，不代表马上切 */
+  transition_pending: boolean
+  extension_count: number
+  max_extensions: number
+  last_decision: {
+    trace_id: string
+    decision: string
+    reason_code: string
+    next_activity_hint: string
+    extension_seconds: number
+    trigger: string
+    elapsed: number
+    guard_results: Record<string, unknown>
+    decided_at: number
+  } | null
+  guard?: Record<string, unknown>
+}
+
+/** 一致性检查结果（只报不修）。 */
+export interface WorldConsistencyReport {
+  ok: boolean
+  checked: number
+  errors: Array<Record<string, unknown>>
+  warnings: Array<Record<string, unknown>>
+}
+
 /** `GET /api/v1/world/activity`（**只读**；没有活动能力时 enabled=false）。 */
 export interface WorldActivityView {
   enabled: boolean
@@ -101,6 +135,19 @@ export interface WorldActivityView {
   recent: WorldActivityEpisode[]
   last_observation?: Record<string, unknown>
   context_budget?: Record<string, number>
+  /** Phase 6B：决策只读视图 */
+  decision?: WorldActivityDecisionView
+  consistency?: WorldConsistencyReport
+  /** Phase 6B：展示层合并后的时间线（原始 episode_ids 全部保留） */
+  merged_timeline?: Array<{
+    activity: string
+    episode_ids: string[]
+    started_at: number
+    ended_at: number
+    status: string
+    source: string
+    merged: number
+  }>
 }
 
 export interface WorldData {

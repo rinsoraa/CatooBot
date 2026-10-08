@@ -161,6 +161,54 @@ describe('世界页 · 当前活动（Phase 6A）', () => {
     expect(calls.some((call) => call.path === '/api/v1/world/activity')).toBe(true)
   })
 
+  it('展示决策只读字段（Phase 6B）：Elapsed / Window / Decision / Reason / 一致性', async () => {
+    const { wrapper, calls } = await mountPage(
+      activity({
+        decision: {
+          episode_id: 'ACT-20261008-007',
+          current_activity: 'reading',
+          status: 'ACTIVE',
+          elapsed_seconds: 1200,
+          planned_end_at: 1_700_003_600,
+          transition_window_seconds: 300,
+          transition_pending: true,
+          extension_count: 1,
+          max_extensions: 2,
+          last_decision: {
+            trace_id: 'dec_abc',
+            decision: 'EXTEND',
+            reason_code: 'TRANSITION_WINDOW',
+            next_activity_hint: 'gaming',
+            extension_seconds: 3600,
+            trigger: 'TIME_EXPIRED',
+            elapsed: 1200,
+            guard_results: { extension: { ok: true } },
+            decided_at: 1_700_001_200,
+          },
+        },
+        consistency: { ok: false, checked: 1, errors: [{ rule: 'x' }], warnings: [] },
+      }),
+    )
+    expect(wrapper.get('[data-test="world-activity-elapsed"]').text()).toContain('20 分钟')
+    expect(wrapper.get('[data-test="world-activity-window"]').text()).toContain('5 分钟')
+    expect(wrapper.get('[data-test="world-activity-window"]').text()).toContain('已进入')
+    expect(wrapper.get('[data-test="world-activity-decision"]').text()).toBe('EXTEND')
+    expect(wrapper.get('[data-test="world-activity-decision-reason"]').text()).toBe(
+      'TRANSITION_WINDOW',
+    )
+    expect(wrapper.get('[data-test="world-activity-next-hint"]').text()).toBe('gaming')
+    expect(wrapper.get('[data-test="world-activity-max-extensions"]').text()).toContain('1 / 2')
+    expect(wrapper.get('[data-test="world-activity-consistency"]').text()).toContain('ERROR')
+    expect(calls.every((call) => call.method === 'GET')).toBe(true)
+  })
+
+  it('没有决策时如实显示"还没做过决策"（不编一个）', async () => {
+    const { wrapper } = await mountPage(activity())
+    expect(wrapper.get('[data-test="world-activity-decision"]').text()).toContain('还没做过决策')
+    expect(wrapper.get('[data-test="world-activity-next-hint"]').text()).toBe('—')
+    expect(wrapper.find('[data-test="world-activity-decision-reason"]').exists()).toBe(true)
+  })
+
   it('没有任何修改 Episode 的入口（只读）', async () => {
     const { wrapper, calls } = await mountPage(activity())
     const html = wrapper.html()

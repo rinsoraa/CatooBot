@@ -258,6 +258,46 @@ class TestMemoryIsolation:
 
 
 class TestSecurityGuards:
+    def test_decision_layer_has_no_permission_or_world_entry_points(self) -> None:
+        """§五二（Phase 6B）：决策引擎这一层不许 import/调用任务确认、Policy 绕过、世界动作。"""
+        forbidden_modules = (
+            "app.integrations",
+            "app.tools",
+            "app.ai",
+            "app.character",
+            "app.tasks",
+        )
+        forbidden_names = (
+            "MinecraftService",
+            "ActionRuntime",
+            "TaskRuntime",
+            "ConfirmationStore",
+            "confirm_and_start",
+            "consume",
+            "allow_medium",
+            "Policy",
+        )
+        for path in sorted(ACTIVITY_PACKAGE.glob("*.py")):
+            modules = imported_modules(path)
+            for module in modules:
+                assert not any(module.startswith(bad) for bad in forbidden_modules), (
+                    f"{path.name} import 了 {module}"
+                )
+            names = referenced_names(path)
+            for needle in forbidden_names:
+                assert needle not in names, f"{path.name} 引用了 {needle}"
+
+    def test_decision_engine_has_no_write_authority(self) -> None:
+        """§二五：决策引擎自己**不能**改 Episode 状态 —— 它只产出决策与 trace。"""
+        from app.activity.decision import ActivityDecisionEngine
+
+        for forbidden in ("start", "complete", "interrupt", "cancel", "expire", "extend"):
+            assert not hasattr(ActivityDecisionEngine, forbidden)
+        # 它也不认识 store（生命周期改动只由 ActivityRuntime 做）
+        assert "store" not in set(
+            __import__("inspect").signature(ActivityDecisionEngine.__init__).parameters
+        )
+
     def test_activity_layer_has_no_world_action_symbols(self) -> None:
         """§四十九：架构级 guard（AST 级）—— 这一层不许调用任何世界动作、也不许 import 它们。
 

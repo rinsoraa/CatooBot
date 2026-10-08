@@ -1047,6 +1047,18 @@ class Bot:
             recovery_grace_seconds=float(getattr(config, "recovery_grace_seconds", 30.0) or 0.0),
             # 重启对账时用它把活动与任务的权威状态对齐（只读探针）
             task_state_probe=self._probe_task_state,
+            # Phase 6B：决策引擎的三个旋钮（§五十三）
+            transition_window_seconds=float(
+                getattr(config, "transition_window_minutes", 5.0) or 0.0
+            )
+            * 60.0,
+            max_extensions_per_episode=int(
+                getattr(config, "max_extensions_per_episode", 2) or 0
+            ),
+            bounce_cooldown_seconds=float(
+                getattr(config, "bounce_cooldown_minutes", 10.0) or 0.0
+            )
+            * 60.0,
             logger=self.log,
         )
         self.activity = runtime

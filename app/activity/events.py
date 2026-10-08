@@ -98,9 +98,13 @@ class ActivityEventPublisher:
         store: Any,
         timestamp: float,
         reason: str = "",
+        detail: str = "",
         audit: bool = True,
     ) -> bool:
         """发布一条事件。``audit=True`` 时先过幂等日志（一次性转移只发一次）。
+
+        ``detail`` 只进**审计行**（例如延长多少秒），不进事件载荷 ——
+        事件载荷保持 §三十二 的六个字段。
 
         返回是否真的发出去了（``False`` = 这条一次性事件之前已经发过）。
         """
@@ -111,11 +115,17 @@ class ActivityEventPublisher:
             ACTIVITY_CANCELLED,
             ACTIVITY_EXPIRED,
         }
-        if audit and name in one_shot and hasattr(store, "log_transition"):
+        # Phase 6B §十六：**延长也要留审计行**（extension_seconds / 新的 planned_end）。
+        # EXTENDED 不在一次性集合里：它可以合法地重复，所以只追加、不做幂等拦截。
+        audited = one_shot | {ACTIVITY_EXTENDED}
+        if audit and name in audited and hasattr(store, "log_transition"):
+            logged_reason = str(reason or episode.transition_reason or "")
+            if detail:
+                logged_reason = f"{logged_reason} {detail}".strip()
             fresh = await store.log_transition(
                 episode_id=episode.episode_id,
                 transition=episode.status.value,
-                reason=str(reason or episode.transition_reason or ""),
+                reason=logged_reason,
                 source=episode.source.value,
                 at=float(timestamp),
             )

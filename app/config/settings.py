@@ -1035,6 +1035,13 @@ class WorldActivityConfig(BaseModel):
     recovery_grace_seconds: float = Field(default=30.0, ge=0.0, le=3600.0)
     #: 最近 Episode 读多少条（LLM 上下文与 WebUI 的默认窗口，§三十五/§三十六）
     recent_episode_limit: int = Field(default=5, ge=1, le=10)
+    # ---- Phase 6B：决策引擎（只加这三个，§五十三）
+    #: 进入"准备换活动"的窗口（分钟）：窗口内只立 pending，不切活动（§十六）
+    transition_window_minutes: float = Field(default=5.0, ge=0.0, le=60.0)
+    #: 一条 Episode 最多自动延长几次（防无限续命，§十六）
+    max_extensions_per_episode: int = Field(default=2, ge=0, le=5)
+    #: 撞车冷却（分钟）：刚做过的活动在这么久内不许立刻回来（防 A→B→A，§十七）
+    bounce_cooldown_minutes: float = Field(default=10.0, ge=0.0, le=240.0)
 
 
 class WorldConfig(BaseModel):

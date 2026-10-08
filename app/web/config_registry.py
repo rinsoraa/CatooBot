@@ -874,6 +874,11 @@ _NOTES: dict[str, str] = {
     "world.activity.persistence_interval_seconds": "活动观察多久落一次盘（重大状态变化随时落盘）",
     "world.activity.recovery_grace_seconds": "重启宽限：计划结束时间离现在这么近就不算过期",
     "world.activity.recent_episode_limit": "最近活动读几条（对话上下文与界面默认窗口）",
+    "world.activity.transition_window_minutes": (
+        "活动结束前多久进入「准备换活动」窗口（窗口内只待命，不提前切）"
+    ),
+    "world.activity.max_extensions_per_episode": "一条活动最多自动延长几次（防无限续命）",
+    "world.activity.bounce_cooldown_minutes": "刚做过的活动多久内不许立刻回来（防来回跳）",
     "minecraft.memory.enabled": "Minecraft 身份桥 + 世界记忆（关掉只是「不记得」，权限照旧）",
     "minecraft.memory.reconcile_interval_seconds": "多久拿当前世界核对一次记忆（对账）",
     "minecraft.memory.context_items": "每次对话最多带几条 Minecraft 记忆（≤5）",

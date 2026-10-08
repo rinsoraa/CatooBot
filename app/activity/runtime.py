@@ -26,6 +26,15 @@ from __future__ import annotations
 import asyncio
 from typing import Any
 
+from app.activity.decision import (
+    ActivityDecisionEngine,
+    DecisionReason,
+    DecisionTrigger,
+    WorldConsistencyChecker,
+    as_trigger,
+    decision_reason_for_transition,
+    merge_adjacent,
+)
 from app.activity.events import (
     ACTIVITY_RECOVERED,
     ACTIVITY_SCHEDULED,
@@ -72,6 +81,11 @@ class ActivityRuntime:
         persistence_interval_seconds: float = DEFAULT_PERSISTENCE_INTERVAL_SECONDS,
         recovery_grace_seconds: float = 0.0,
         task_state_probe: Any = None,
+        # ---- Phase 6B：决策引擎的三个旋钮（§五十三）
+        transition_window_seconds: float = 300.0,
+        max_extensions_per_episode: int = 2,
+        bounce_cooldown_seconds: float = 600.0,
+        decision_engine: Any = None,
         logger: Any = None,
     ) -> None:
         self.store = store
@@ -89,6 +103,18 @@ class ActivityRuntime:
         #: **只读**的任务状态探针（``async def probe(task_id) -> "PAUSED"|"SUCCEEDED"|…``）：
         #: 重启对账时用它把活动与任务权威状态对齐（§四十二：不允许每个模块自己解释）。
         self.task_state_probe = task_state_probe
+        #: Phase 6B：规则优先的决策引擎（§二四 的流水线；不认识任何世界写 API）
+        self.engine = decision_engine or ActivityDecisionEngine(
+            clock=clock,
+            planner=self.planner,
+            transition_window_seconds=transition_window_seconds,
+            max_extensions=max_extensions_per_episode,
+            bounce_cooldown_seconds=bounce_cooldown_seconds,
+            logger=logger,
+        )
+        #: 一致性检查器（只报不修，§二一）；status()/recover() 都会跑一次并如实展示
+        self.checker = WorldConsistencyChecker()
+        self.last_consistency: dict[str, Any] = {}
         #: 写操作串行化（同一个进程里绝不让两次转移交错）
         self._lock = asyncio.Lock()
         #: 观察的写盘节流（§二十三）
@@ -136,9 +162,11 @@ class ActivityRuntime:
         return activity_context_block(episode, transitions, related_task=episode.related_task_id)
 
     async def status(self) -> dict[str, Any]:
-        """WebUI/API 的只读投影（含最近 Episode，§三十六）。"""
+        """WebUI/API 的只读投影（含最近 Episode 与决策视图，§三六/§四七/§四八）。"""
         episode = await self.current()
         recent = await self.recent(self.recent_episode_limit)
+        now = self._now(None)
+        report = self.run_consistency_check(episode, now=now)
         return {
             "enabled": True,
             "character_id": self.character_id,
@@ -147,7 +175,43 @@ class ActivityRuntime:
             "recent": [item.to_payload() for item in recent],
             "last_observation": dict(self.last_observation),
             "context_budget": {"current_episode": 1, "recent_transitions": 3},
+            # Phase 6B：决策只读视图（**没有**任何 force/extend/cancel 入口）
+            "decision": self.decision_view(episode, now=now),
+            "consistency": report,
+            # 展示层时间线：按"从旧到新"给（recent 本身是新→旧），原始 id 全保留
+            "merged_timeline": merge_adjacent(list(reversed(recent))),
         }
+
+    def run_consistency_check(
+        self, episode: ActivityEpisode | None, *, now: float | None = None
+    ) -> dict[str, Any]:
+        """跑一次一致性检查并记在案（只读；异常只报告，绝不自动修，§二一）。"""
+        moment = self._now(now)
+        live = [episode] if episode is not None else []
+        report = self.checker.check(current=episode, now=moment, live=live)
+        self.last_consistency = report.to_payload()
+        if not report.ok and self._log is not None:
+            self._log.warning(
+                "[World.Activity] 一致性检查报错（只报告，不自动修）：%s",
+                [item.get("rule") for item in report.errors],
+            )
+        return self.last_consistency
+
+    def decision_view(
+        self, episode: ActivityEpisode | None, *, now: float | None = None
+    ) -> dict[str, Any]:
+        """决策只读视图（§四八 的形状：decision/reason/transition_pending/elapsed/…）。"""
+        return self.engine.view(episode, now=self._now(now))
+
+    @property
+    def transition_pending(self) -> bool:
+        """是否已经进入 transition window（**只是准备**，不代表马上切活动，§十一）。"""
+        return bool(self.last_decision_view.get("transition_pending"))
+
+    async def refresh_decision_view(self) -> dict[str, Any]:
+        episode = await self.current()
+        self.last_decision_view = self.decision_view(episode, now=self._now(None))
+        return self.last_decision_view
 
     # ------------------------------------------------------------ 写：创建 / 转移
 
@@ -319,6 +383,8 @@ class ActivityRuntime:
             reason=reason,
             now=moment,
             publish=True,
+            # §十六：延长必须留痕 —— 秒数进审计行（新 planned_end 在 Episode 行上）
+            transition_detail=f"+{int(step)}s",
             fields={
                 "planned_end_at": planned,
                 "extension_count": int(target.extension_count) + 1,
@@ -398,21 +464,106 @@ class ActivityRuntime:
                 return await self._finish_and_replan(current, to=ActivityStatus.EXPIRED, now=moment)
             return await self._activate(current, reason=TransitionReason.SCHEDULED, now=moment)
         if current.status in {ActivityStatus.ACTIVE, ActivityStatus.EXTENDED}:
-            # 注意：世界 tick 不用重启宽限（那只是给"刚重启那一瞬间"的容忍，§五十三）
-            if current.beyond_max(moment):
-                # §二十七 情况 C：超过硬上限必须终结（绝不无限延长）
-                return await self._finish_and_replan(current, to=ActivityStatus.EXPIRED, now=moment)
-            if current.overdue(moment):
-                # 决策点：到期 → Planner 说延长还是换下一个（§八/§十）
-                decision = self.planner.next_after(
-                    current,
-                    now=moment,
-                    clock=self.clock,
-                    started_today=await self._started_today(moment),
-                )
-                return await self._apply_decision(current, decision, now=moment)
-            return current
+            # Phase 6B：普通 tick 只问"要不要做决策"（§十：没进 window 就什么都不做）。
+            # 真正的决定由决策引擎按 §二四 的流水线给出（最短/最长时长 → window → 延长 → 撞车）。
+            trigger = (
+                DecisionTrigger.TIME_EXPIRED
+                if current.overdue(moment)
+                else DecisionTrigger.TIME_NEAR_END
+            )
+            return await self.tick(current, trigger=trigger, now=moment)
         return None
+
+    async def tick(
+        self,
+        current: ActivityEpisode | None = None,
+        *,
+        trigger: Any = DecisionTrigger.TIME_NEAR_END,
+        now: float | None = None,
+    ) -> ActivityEpisode | None:
+        """一次 world tick 的决策执行（§二四 第 12-14 步）：只改生命周期、只发既有事件。"""
+        moment = self._now(now)
+        episode = current if current is not None else await self.current()
+        if episode is None:
+            return None
+        if episode.status not in {ActivityStatus.ACTIVE, ActivityStatus.EXTENDED}:
+            return episode
+        history = await self.recent(max(self.recent_episode_limit, 6))
+        live = [item for item in history if item.status.open]
+        decision, _trace = await self.engine.decide(
+            episode=episode,
+            now=moment,
+            trigger=as_trigger(trigger),
+            history=history,
+            live=live,
+            started_today=await self._started_today(moment),
+        )
+        return await self.apply_decision(episode, decision, now=moment)
+
+    async def apply_decision(
+        self, episode: ActivityEpisode, decision: Any, *, now: float | None = None
+    ) -> ActivityEpisode | None:
+        """把决策落到生命周期上（CONTINUE 不动、EXTEND 延长、TRANSITION 收尾并排下一个）。"""
+        moment = self._now(now)
+        kind = str(getattr(getattr(decision, "decision", None), "value", decision) or "")
+        reason = getattr(decision, "reason_code", None)
+        if kind == "CONTINUE":
+            return episode
+        if kind == "EXTEND":
+            return await self.extend(
+                episode.episode_id,
+                reason=TransitionReason.TIME_EXPIRED,
+                extra_seconds=float(getattr(decision, "extension_seconds", 0.0) or 0.0),
+                now=moment,
+            )
+        if kind == "TRANSITION":
+            hint = str(getattr(decision, "next_activity_hint", "") or "")
+            transition_reason = (
+                decision_reason_for_transition(reason)
+                if isinstance(reason, DecisionReason)
+                else TransitionReason.TIME_EXPIRED
+            )
+            # §十五 的"到硬上限必须换"用 EXPIRED 收尾（她**用完了**这条命），
+            # 其它原因（window 到期 / 撞车护栏 / 任务抢占）都是正常收尾 → COMPLETED。
+            # 这条区分由 6A 的状态语义定下，6B 不改它。
+            terminal = (
+                ActivityStatus.EXPIRED
+                if reason is DecisionReason.MAX_DURATION
+                else ActivityStatus.COMPLETED
+            )
+            return await self._finish_and_replan(
+                episode,
+                to=terminal,
+                now=moment,
+                replan=True,
+                replan_reason=transition_reason,
+                next_name=hint,
+            )
+        return episode
+
+    async def decide_now(
+        self, *, trigger: Any = DecisionTrigger.MANUAL, now: float | None = None
+    ) -> dict[str, Any]:
+        """显式做一次决策（恢复 / 手动 / 测试用）—— 不改状态，只给决策与 trace。"""
+        moment = self._now(now)
+        episode = await self.current()
+        if episode is None:
+            return {"decision": "", "reason": "", "trace": None}
+        history = await self.recent(max(self.recent_episode_limit, 6))
+        decision, trace = await self.engine.decide(
+            episode=episode,
+            now=moment,
+            trigger=as_trigger(trigger),
+            history=history,
+            live=[item for item in history if item.status.open],
+            started_today=await self._started_today(moment),
+        )
+        return {
+            "decision": decision.decision.value,
+            "reason": decision.reason_code.value,
+            "next_activity_hint": decision.next_activity_hint,
+            "trace": trace.to_payload(),
+        }
 
     async def plan_next(self, *, now: float | None = None) -> ActivityEpisode | None:
         """显式地"她空着" → 让 Planner 排一个（供测试与恢复后使用）。"""
@@ -629,6 +780,7 @@ class ActivityRuntime:
         now: float,
         publish: bool,
         fields: dict[str, Any] | None = None,
+        transition_detail: str = "",
     ) -> ActivityEpisode | None:
         """一次状态转移：状态机裁决 → CAS 写入 → 幂等事件 → 投影。"""
         if not episode.can_transition_to(to):
@@ -667,6 +819,7 @@ class ActivityRuntime:
                 store=self.store,
                 timestamp=now,
                 reason=reason_value(reason),
+                detail=transition_detail,
             )
         if self._observation_buffer and updated.status.open:
             await self._flush_observation(updated, now=now)

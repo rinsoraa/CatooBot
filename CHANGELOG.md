@@ -3,6 +3,45 @@
 本文件记录 CatooBot 的版本演进。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号见 `pyproject.toml`；日期取自真实提交历史（本仓库 2026-09-30 起）。
 
+## Minecraft Phase 6B — 活动决策引擎（Continue / Extend / Transition）
+
+* **决策引擎（规则优先）**：新增 `app/activity/decision.py` —— `ActivityDecisionEngine` 按任务书 §二四
+  的固定流水线给出 **CONTINUE / EXTEND / TRANSITION**（+ 原因码 + 下一个活动提示 + 延长秒数 + trace）。
+  **确定性**：没有 LLM、没有 `random`、没有概率阈值（§三/§二一/§二三）；v1.0 §22 的"模型那一半"
+  只留 `advisor` 接口，6B 永远为 None。不新增 Minecraft 工具（仍 19 个）、不新增 ActionRuntime action、
+  不新增 TaskRuntime 状态。
+* **Transition Window**（§八/§十/§十一）：新增 `world.activity.transition_window_minutes`（默认 5）。
+  窗口外普通 tick **什么都不做**（不选活动、不建 Episode、不刷事件）；进入窗口只立派生字段
+  `transition_pending`，**活动状态不变**；到期才决策，而且一个 transition 最多一次决策（§三七）。
+  `ActivityStatus` 不膨胀（仍然 7 个状态）。
+* **时长护栏**（§十四/§十五）：`min_duration` 之前不许换（**硬中断**可突破：任务开始/完成/失败/被打断、
+  用户交互、恢复、手动）；到 `max_end_at` **必须** TRANSITION（EXPIRED 收尾）——连"同名合并 → EXTEND"
+  的捷径也不许走（hard rule）。
+* **延长护栏**（§十六）：`max_extensions_per_episode`（默认 2）+ 绝不越过硬上限；每次延长的秒数进
+  转移审计行（`EXTENDED` + `reason="TIME_EXPIRED +1200s"`），`extension_count` 落在 Episode 行上，
+  **重启也不会把预算刷回来**（§四十，SQLite 用例覆盖）。
+* **撞车护栏**（§十七/§十八）：`ActivityBounceGuard` 按"刚结束过的活动 + 冷却
+  (`bounce_cooldown_minutes`，默认 10) + 最短稳定时长"拒绝 A→B→A；被拒后**确定性**二选一：
+  能延长就 EXTEND（原因 `BOUNCE_GUARD`），否则换中性活动（`idle`，夜里 `napping`）。
+* **相邻同活动合并**（§十九）：优先 EXTEND（决策流水线第 9 步），不制造"结束 + 又开一个一样的"；
+  已经产生的相邻同名只在**展示层**合并（`merge_adjacent`），`episode_ids` 原始审计一个都不丢。
+* **一致性检查器**（§二十/§二一）：`WorldConsistencyChecker` 检查 5 条规则（started_at 不在未来 /
+  ended_at ≥ started_at / 每角色最多一条 live primary / current 必须 live / 活动与位置冲突 WARNING）
+  + 时长档顺序；**只报不修**（没有 store、没有 fix/repair/delete），异常由 Runtime 的
+  transition / recovery 处理。
+* **决策 trace**（§二二/§四八）：每次决策一条结构化 trace（含 trigger / 护栏结论 / decision /
+  reason / 时长 / 时段），**绝不保存思维链**；不新增事件名（§三九，结果仍走 6A 的生命周期事件）。
+* **只读暴露**（§四七/§四八）：`GET /api/v1/world/activity/decision`；`GET /api/v1/world/activity`
+  新增 `decision` / `consistency` / `merged_timeline`；WebUI World 页活动卡片增加
+  Elapsed / Transition Window / Decision / Reason / Next Hint / Extensions Allowed / Consistency，
+  **没有任何** force / extend / cancel 入口。
+* **配置**：只加三个旋钮（`transition_window_minutes` / `max_extensions_per_episode` /
+  `bounce_cooldown_minutes`）—— **`allow_medium` 默认值没有变化**。
+* **测试与文档**：新增 `tests/test_activity_decision.py`、`test_activity_transition_window.py`、
+  `test_activity_bounce_guard.py`、`test_activity_consistency.py`、`test_activity_merge.py`、
+  `test_activity_decision_trace.py`（覆盖 A–W 矩阵 + 源码级安全 guard）；
+  文档 `docs/MINECRAFT_PHASE6B.md` + `docs/README.md` 索引。
+
 ## Minecraft Phase 6A — 世界活动运行时（Activity Episode）
 
 * **「当前活动」升级为有生命周期的 Episode**：新增 `app/activity/`（model/clock/store/events/
