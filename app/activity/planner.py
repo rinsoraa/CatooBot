@@ -34,6 +34,12 @@ from typing import Any
 
 from app.activity.anchors import AnchorBook, ScheduleAnchor
 from app.activity.goals import GoalSnapshot
+from app.activity.initiative import (
+    EMPTY_HINT_BOOK,
+    HINT_TERM,
+    InitiativeHintBook,
+    hint_book_from,
+)
 from app.activity.model import (
     VIRTUAL_DURATIONS,
     ActivityEpisode,
@@ -189,6 +195,8 @@ class PlannerContext:
     continue_until: float = 0.0
     #: 这个计划里**已经排过**的锚点（同一个锚点在一条计划里只排一次；铺到未来时逐个累加）
     planned_anchors: frozenset[str] = frozenset()
+    #: Phase 7B §四：角色主动意图的**软**偏好（只读；空书 = 与 6C 逐字一致，§五）
+    hints: Any = EMPTY_HINT_BOOK
 
     # ------------------------------------------------------------ 只读派生
 
@@ -287,6 +295,8 @@ class _Step:
     start: float = 0.0
     end: float = 0.0
     jump_to: float = 0.0
+    #: Phase 7B：这一步的活动是不是被某条意图"往前排"了（审计用）
+    intent_id: str = ""
 
 
 class ActivityPlanner:
@@ -308,6 +318,8 @@ class ActivityPlanner:
         weights: dict[str, float] | None = None,
         max_candidates: int = DEFAULT_MAX_CANDIDATES,
         max_items: int = DEFAULT_MAX_ITEMS,
+        # ---- Phase 7B §三：只读的意图建议来源（鸭子类型；默认 None = 与 6C 逐字一致）
+        intent_source: Any = None,
         logger: Any = None,
     ) -> None:
         table = dict(routine or ROUTINE_BY_PERIOD)
@@ -327,6 +339,9 @@ class ActivityPlanner:
         self.weights = dict(weights or SCORE_WEIGHTS)
         self.max_candidates = max(MIN_CANDIDATES, int(max_candidates))
         self.max_items = max(1, int(max_items))
+        #: Phase 7B §三：只读建议来源（有 ``hints(*, limit, now)`` 就行）。
+        #: **只在规划触发点读**（不是每个 tick），读失败只会得到空书（§三.6/§十一）。
+        self.intent_source = intent_source
         self._log = logger
 
     # ------------------------------------------------------------ 6C：整段计划
@@ -359,6 +374,9 @@ class ActivityPlanner:
             )
         if horizon is not None:
             context.horizon_seconds = float(horizon)
+        # Phase 7B §三/§十一：建议**只在规划这一刻读一次**（不是每个 tick），
+        # 读失败 → 空书 → 后面逐字退回 6C 的行为（§三.6/§五）。
+        context.hints = self._hint_book(now=float(context.now))
         # horizon 的终点一次性定死（计划项铺到未来时 now 会前移，horizon 不许跟着缩）
         context.horizon_end_at = context.horizon_start + max(0.0, float(context.horizon_seconds))
         candidates = self._collect_candidates(context)
@@ -471,6 +489,9 @@ class ActivityPlanner:
         if ctx.goals is not None:
             for goal in ctx.goals.open_goals:
                 ordered.extend(goal.affinity)
+        # Phase 7B §三：被建议的活动也要进候选池，否则"她的想法"永远进不了排序
+        # （放在目标亲和之后、自由池之前：与"目标在推它"同级，不越权）。
+        ordered.extend(ctx.hints.activities())
         ordered.extend(FREE_ACTIVITY_POOL)
         if ctx.energy < LOW_ENERGY_THRESHOLD:
             ordered.extend(sorted(LOW_ENERGY_SAFE))
@@ -507,8 +528,13 @@ class ActivityPlanner:
         goal_value, goal_id = (0.0, "")
         if ctx.goals is not None:
             goal_value, goal_id = ctx.goals.relevance_for(activity)
+        hint = ctx.hints.hint_for(activity)
         breakdown = self._score_breakdown(
-            activity, ctx, anchor_fit=anchor_fit, goal_value=goal_value
+            activity,
+            ctx,
+            anchor_fit=anchor_fit,
+            goal_value=goal_value,
+            hint_bonus=float(hint.score_bonus) if hint is not None else 0.0,
         )
         reason = self._rejection(activity, ctx, profile=profile, anchor_ref=anchor)
         return Candidate(
@@ -519,6 +545,8 @@ class ActivityPlanner:
             breakdown=breakdown,
             anchor_id=str(getattr(anchor, "anchor_id", "") or ""),
             goal_id=goal_id,
+            # §八：归因只记"哪条意图"；资格与分数照旧由规则说了算
+            intent_id=str(hint.intent_id) if hint is not None else "",
             order=order,
         )
 
@@ -598,8 +626,13 @@ class ActivityPlanner:
         *,
         anchor_fit: float,
         goal_value: float,
+        hint_bonus: float = 0.0,
     ) -> dict[str, float]:
-        """§三十六 的加权确定性求和。每一项都能单独解释，且都不是概率。"""
+        """§三十六 的加权确定性求和。每一项都能单独解释，且都不是概率。
+
+        Phase 7B §四：``initiative_fit`` 是唯一的**软**项（权重低于锚点/习惯/目标），
+        它只在候选**已经合格**之后参与排序 —— 越不过任何硬约束。
+        """
         weights = self.weights
         profile = profile_for(activity)
         period = ctx.period
@@ -618,6 +651,7 @@ class ActivityPlanner:
             "repetition_penalty": repetition * float(weights.get("repetition_penalty", 0.0)),
             "flexibility": float(profile.flexibility) * float(weights.get("flexibility", 0.0)),
             "time_period_fit": category * float(weights.get("time_period_fit", 0.0)),
+            HINT_TERM: float(hint_bonus) * float(weights.get(HINT_TERM, 0.0)),
         }
 
     def _routine_preference(self, activity: str, ctx: PlannerContext) -> float:
@@ -756,6 +790,7 @@ class ActivityPlanner:
                     reason=step.reason,
                     priority=self._item_priority(step.activity, step.reason, anchors=anchors),
                     anchor_id=step.anchor_id,
+                    intent_id=step.intent_id,
                 )
             )
             # 锚点之后绝不回到锚点前那件事（§十五：gaming → lunch 而不是 gaming → lunch → gaming）
@@ -859,6 +894,7 @@ class ActivityPlanner:
         anchor_id = pick.anchor_id if reason == ItemReason.ANCHOR.value else ""
         return _Step(
             activity=pick.activity,
+            intent_id=str(pick.intent_id or ""),
             reason=reason,
             anchor_id=anchor_id,
             start=t,
@@ -982,7 +1018,13 @@ class ActivityPlanner:
             payload["goals_signature"] = ctx.goals.signature()
             payload["open_goals"] = [goal.goal_id for goal in ctx.goals.open_goals]
         payload["weights"] = {key: float(value) for key, value in sorted(self.weights.items())}
+        # Phase 7B §十二：这次规划**真的采纳了哪些建议**（审计用；不参与内容签名，§五）
+        payload["initiative"] = ctx.hints.payload()
         return payload
+
+    def _hint_book(self, *, now: float) -> InitiativeHintBook:
+        """读一次意图建议（bounded / 只读 / 可降级）。"""
+        return hint_book_from(self.intent_source, now=float(now))
 
     def preview_plan(
         self,

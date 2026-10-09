@@ -3,6 +3,43 @@
 本文件记录 CatooBot 的版本演进。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号见 `pyproject.toml`；日期取自真实提交历史（本仓库 2026-09-30 起）。
 
+## Minecraft Phase 7B — Virtual Autonomous Activity / Initiative-to-Plan Integration
+
+* **闭合 7A 留的那条缝**（§零）：`LifeIntent → InitiativeActivityHint → ActivityPlanner →
+  ActivityPlan → 6B → ActivityRuntime → Virtual ActivityEpisode`。新增 `app/activity/initiative.py`
+  （桥的形状与整理：`InitiativeActivityHint` / `InitiativeHintBook` / `hint_book_from`），
+  7A 的服务新增只读 `hints()` 交出**纯数据**（不认识活动注册表）；
+  **不建平行系统**（没有 `LifeActivityPlanner` / `AutonomousActivityRuntime` 之类）。
+* **分层不反向依赖**（§二/§六）：7A 的包仍然只 import 自己 + 标准库（它的 AST 守卫一字未改），
+  activity 侧也不 import `app.initiative`（鸭子类型的 `hints()`）；"意图类型 → 已注册活动"的
+  翻译（`MINECRAFT_INTEREST → building` / `REST → relax` / `SOCIAL → online`）留在 activity 侧，
+  因为 `minecraft` **根本没注册**（6C 就禁止它当虚拟活动），`minecraft_task` 更永远不是虚拟活动。
+* **只是一个软项**（§四）：评分新增 `initiative_fit`（权重 1.0，刻意低于锚点 3.0 / 习惯 2.0 /
+  目标 1.2）。资格（能量/时段/锚点/装不下/固定活动）与 6B 护栏一律在它**之前**：
+  `Hard Constraints > Eligibility > 6B Guards > Initiative Soft Preference`；tie-break 一字未改。
+* **无意图时逐字一致**（§五，回归门禁）：空书时候选池/排序/条目/**内容签名**与 6C 完全相同；
+  新增的 `intent_id` 归因是**审计字段**，刻意**不进** `content_signature()` ——
+  只多记一个 id 不会让同名计划不断 +1 版本。
+* **有界、确定、可降级**（§三/§十一）：一次规划最多 3 条建议、同一活动只取**最大**加成、
+  同一意图只出现一次；来源抛异常 → 空书 + `constraints.initiative.degraded`，
+  Planner 逐字退回原行为；建议**只在规划触发点**读（普通 tick 完全不碰）。
+* **意图生命周期语义**（§八）：计划里有某活动 ≠ 它已经开始（只有真开出 Episode 才算）；
+  `RESOLVED` 仍按 7A 语义（已被更高层处理，**不是**执行成功）；过期/取消/被抑制一律不参与；
+  Plan supersede / recovery / 崩溃重启都不会重复消费意图。**没有新表、没有新迁移（仍 31）**。
+* **只读可观测**（§十二）：`/world/activity/plan` 的候选带 `intent_id` 与
+  `breakdown.initiative_fit`、计划项带 `intent_id`、`constraints.initiative` 写明采纳/丢弃明细；
+  WebUI 计划卡片新增两列「意图」，**没有**任何 Execute/Force/Confirm/Run 入口。
+* **测试**：新增 **23** 项（`tests/test_initiative_plan_bridge.py`）覆盖任务书 §十四 的五组矩阵
+  （Planner Adapter / Candidate Ranking / Lifecycle / Security / 24h 快进），
+  含"MC 兴趣真的以 `building` 进计划"的端到端用例。
+* **真机（2026-10-09 07:56–08:37）—— 全部 PASS**：**Real Java A**（在线规划 v87 里
+  `building` 带 `initiative_fit=0.81` 与 `intent_id=INT-…-005`；意图层零世界动作、零新任务）、
+  **B**（离线后的规划 v88 同样带着这条虚拟候选）、**C**（真实待确认任务期间
+  `08:36:20 reason=PENDING_CONFIRMATION`，任务/工具计数不变）、**D**（08:00:32 的真实
+  `MAX_DURATION` 转移把虚拟活动落成 `ACT-028 reading`，与计划条目/候选一致）；**Real QQ A–D** 四问
+  各归其位（现状 / 计划 / 意图 / 虚拟兴趣，且没有任何执行）。真机又抓出四条（写进 §15.1）：
+  建议上限 3→5、**任务占位时建议必须整体失效**、计划项归因从候选 JSON 反查、WebUI 只读视图可能被缓存。
+
 ## Minecraft Phase 7A — Initiative Gate / Life Intent Foundation
 
 * **建立"她**想**去做什么"这一层**（§零/§一）：`Initiative → Life Intent`。7A 的意图**只能被

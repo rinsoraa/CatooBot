@@ -279,6 +279,9 @@ SCORE_WEIGHTS: dict[str, float] = {
     "repetition_penalty": -1.8,
     "flexibility": 0.5,
     "time_period_fit": 1.0,
+    # Phase 7B §四：角色的主动意图只是**软偏好** —— 权重刻意低于锚点(3.0)/习惯(2.0)/目标(1.2)，
+    # 于是它永远压不过硬锚点与时段习惯，只能在**合格候选之间**挪动排序。
+    "initiative_fit": 1.0,
 }
 
 #: tie-break 顺序（§三十七）—— 分数打平时**固定**按这个顺序比，绝不随机挑一个。

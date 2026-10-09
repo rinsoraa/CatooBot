@@ -199,6 +199,8 @@ export interface WorldPlanItem {
   anchor_id: string
   goal_id: string
   score: number
+  /** Phase 7B §八：这条计划项背后是哪一条 LifeIntent（**审计用**，只读） */
+  intent_id?: string
 }
 
 /** Phase 6C：一个候选（含资格、拒绝原因与打分明细；score **不是**概率）。 */
@@ -210,6 +212,8 @@ export interface WorldPlanCandidate {
   breakdown: Record<string, number>
   anchor_id: string
   goal_id: string
+  /** Phase 7B §八：影响过它的那条 LifeIntent（审计用；软项是 breakdown.initiative_fit） */
+  intent_id?: string
   order: number
 }
 

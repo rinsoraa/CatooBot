@@ -864,6 +864,7 @@ function previewMoodText(): string {
                 <th>时长</th>
                 <th>理由</th>
                 <th>锚点 / 目标</th>
+                <th>意图</th>
               </tr>
             </thead>
             <tbody>
@@ -873,6 +874,7 @@ function previewMoodText(): string {
                 <td>{{ minutesText(row.duration) }}</td>
                 <td>{{ row.reason }}</td>
                 <td>{{ text(row.anchor_id) }} {{ text(row.goal_id) }}</td>
+                <td data-test="world-plan-item-intent">{{ text(row.intent_id) }}</td>
               </tr>
             </tbody>
           </table>
@@ -885,6 +887,7 @@ function previewMoodText(): string {
                 <th>Score</th>
                 <th>锚点</th>
                 <th>目标</th>
+                <th>意图</th>
                 <th>分项</th>
               </tr>
             </thead>
@@ -894,6 +897,7 @@ function previewMoodText(): string {
                 <td>{{ row.score.toFixed(2) }}</td>
                 <td>{{ text(row.anchor_id) }}</td>
                 <td>{{ text(row.goal_id) }}</td>
+                <td data-test="world-plan-candidate-intent">{{ text(row.intent_id) }}</td>
                 <td class="cb-world__readonly">{{ breakdownText(row.breakdown) }}</td>
               </tr>
             </tbody>

@@ -578,6 +578,13 @@ def _plan_from_row(row: dict[str, Any], items: list[dict[str, Any]]) -> Activity
                 payload[key] = json.loads(raw)
             except (TypeError, ValueError):
                 payload[key] = {} if key == "constraints" else []
+    # Phase 7B §八：计划项**没有**单独的 intent_id 列（不新增迁移），
+    # 归因从同一份计划的候选 JSON 里补回来 —— 于是重载之后界面与 API 都还答得出"哪条意图影响了它"。
+    intent_by_activity = {
+        str(item.get("activity") or ""): str(item.get("intent_id") or "")
+        for item in (payload.get("candidates") or [])
+        if isinstance(item, dict)
+    }
     return ActivityPlan(
         plan_id=str(payload.get("plan_id") or ""),
         character_id=str(payload.get("character_id") or ""),
@@ -596,6 +603,7 @@ def _plan_from_row(row: dict[str, Any], items: list[dict[str, Any]]) -> Activity
                 anchor_id=str(item.get("anchor_id") or ""),
                 goal_id=str(item.get("goal_id") or ""),
                 score=float(item.get("score") or 0.0),
+                intent_id=intent_by_activity.get(str(item.get("activity") or ""), ""),
             )
             for item in items
         ),

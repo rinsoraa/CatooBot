@@ -155,9 +155,10 @@ function planView(overrides: Partial<WorldActivityPlanView> = {}): WorldActivity
         eligible: true,
         reason: '',
         score: 3.27,
-        breakdown: { state_fit: 0.9, flexibility: 0.4 },
+        breakdown: { state_fit: 0.9, flexibility: 0.4, initiative_fit: 0.8 },
         anchor_id: '',
         goal_id: '',
+        intent_id: 'INT-20261009-005',
         order: 1,
       },
     ],
@@ -245,6 +246,29 @@ describe('世界页 · 接下来的打算（Phase 6C）', () => {
     expect(wrapper.get('[data-test="world-plan-refresh"]').text()).toContain('共 3 次')
     expect(wrapper.get('[data-test="world-plan-stale"]').text()).toContain('计划有效')
     expect(calls.some((call) => call.path === '/api/v1/world/activity/plan')).toBe(true)
+    // Phase 7B §十二：意图对计划的影响是**只读可观测**的（一条软项 + 一条归因）
+    expect(wrapper.find('[data-test="world-plan-candidate-intent"]').exists()).toBe(true)
+    expect(wrapper.find('[data-test="world-plan-item-intent"]').exists()).toBe(true)
+    expect(wrapper.get('[data-test="world-plan-candidates"]').text()).toContain('initiative_fit')
+  })
+
+  it('展示计划的只读字段（Plan / 版本 / 视野 / 来源 / 触发 / 下一步 / 刷新）', async () => {
+    const { wrapper, calls } = await mountPage(planView())
+    expect(wrapper.find('[data-test="world-plan"]').exists()).toBe(true)
+    expect(wrapper.get('[data-test="world-plan-id"]').text()).toBe('PLAN-20261008-003')
+    expect(wrapper.get('[data-test="world-plan-version"]').text()).toBe('v3')
+    expect(wrapper.get('[data-test="world-plan-horizon"]').text()).toContain('240 分钟')
+    expect(wrapper.get('[data-test="world-plan-source"]').text()).toContain('MIXED')
+    expect(wrapper.get('[data-test="world-plan-next"]').text()).toBe('gaming')
+    expect(wrapper.get('[data-test="world-plan-selected"]').text()).toContain('3.27')
+    expect(wrapper.get('[data-test="world-plan-refresh"]').text()).toContain('共 3 次')
+    expect(wrapper.get('[data-test="world-plan-stale"]').text()).toContain('计划有效')
+    expect(calls.some((call) => call.path === '/api/v1/world/activity/plan')).toBe(true)
+    // Phase 7B §十二：意图对计划的影响是**只读可观测**的（一条软项 + 一条归因）
+    expect(wrapper.find('[data-test="world-plan-candidate-intent"]').exists()).toBe(true)
+    expect(wrapper.find('[data-test="world-plan-item-intent"]').exists()).toBe(true)
+    expect(wrapper.find('[data-test="world-plan-candidates"]').text()).toContain('initiative_fit')
+
   })
 
   it('展示未来安排、候选打分与**被拒原因**（§五十八：为什么不是别的）', async () => {

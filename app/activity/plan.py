@@ -100,6 +100,8 @@ class Candidate:
     breakdown: dict[str, float] = field(default_factory=dict)
     anchor_id: str = ""
     goal_id: str = ""
+    #: Phase 7B §八：哪一条 LifeIntent 影响了它（**审计用**，不参与内容签名）
+    intent_id: str = ""
     #: 生成顺序（确定性：同一个输入永远是同一个顺序）
     order: int = 0
 
@@ -112,6 +114,7 @@ class Candidate:
             "breakdown": {key: float(value) for key, value in self.breakdown.items()},
             "anchor_id": self.anchor_id,
             "goal_id": self.goal_id,
+            "intent_id": self.intent_id,
             "order": int(self.order),
         }
 
@@ -128,6 +131,9 @@ class PlanItem:
     anchor_id: str = ""
     goal_id: str = ""
     score: float = 0.0
+    #: Phase 7B §八：这条计划项背后是哪一条 LifeIntent（**审计用**；内容签名刻意不含它，
+    #: 于是"只是多记了一个 id"不会让同名计划不断 +1 版本，§五）。
+    intent_id: str = ""
 
     @property
     def duration(self) -> float:
@@ -147,6 +153,7 @@ class PlanItem:
             "anchor_id": self.anchor_id,
             "goal_id": self.goal_id,
             "score": float(self.score),
+            "intent_id": self.intent_id,
         }
 
 

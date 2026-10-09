@@ -17,7 +17,7 @@ ConfirmationStore，也没有 QQ 发送器 —— 执行层恒为 ``NONE``（§�
 from __future__ import annotations
 
 import time
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import replace
 from typing import Any
 
@@ -41,6 +41,25 @@ DUPLICATE_INTENT = SuppressionReason.DUPLICATE_INTENT.value
 
 #: 每次 check 读回多少条历史意图（bounded，§六十三）
 RECENT_INTENT_LIMIT = 40
+#: 给 Planner 的建议条数上限（bounded，§三.3；与 activity 侧的 MAX_HINTS 同宽）
+#: ★真机发现：上限 3 会把同时挂着的 4 条念头里最弱的那条整条挤出去 → 放宽到 5（仍有界）
+HINT_LIMIT = 5
+
+#: §九：**"她此刻不方便"**的守卫 —— 命中这些时连建议都不给 Planner（旧想法也不算数）。
+#: 刻意**不含** MINECRAFT_OFFLINE（§三十七：离线时虚拟兴趣照样有效）、
+#: 也不含 RECENT_USER_INTERACTION / RECENT_INITIATIVE / DUPLICATE_INTENT（那些只是"现在别再提"，
+#: 不是"她不想做"）。
+HINT_BLOCKING_REASONS: frozenset[str] = frozenset(
+    {
+        "CHARACTER_RECOVERY",
+        "SYSTEM_DEGRADED",
+        "ACTIVE_USER_TASK",
+        "PENDING_CONFIRMATION",
+        "SLEEPING",
+        "QUIET_HOURS",
+        "HIGH_SOCIAL_FATIGUE",
+    }
+)
 #: 展示用（WebUI / 对话上下文）
 VIEW_RECENT_LIMIT = 10
 CONTEXT_RECENT_LIMIT = 3
@@ -73,6 +92,9 @@ class LifeIntentService:
         self.started_at = float(self._clock())
         self.recovered_at = self.started_at
         self.last_decision: GateDecision | None = None
+        #: Phase 7B §三：给 ActivityPlanner 的**只读建议**（bounded；只在 check/recover 刷新，
+        #: 于是"每 30 秒重算整个 horizon"这件事**不会**发生，§十一）
+        self._open_hints: tuple[dict[str, Any], ...] = ()
         self.last_check_at = 0.0
         self.checks = 0
         self.degraded_reason = ""
@@ -175,20 +197,78 @@ class LifeIntentService:
             lines.append(line + "）")
         return "\n".join(lines)
 
+    #: 建议的加成公式（确定性的；§三：只交数据，Planner 自己乘权重）
+    @staticmethod
+    def _hint_bonus(priority: float) -> float:
+        return round(0.6 + 0.4 * max(0.0, min(1.0, float(priority))), 4)
+
+    def hints(self, *, limit: int = 3, now: float | None = None) -> tuple[dict[str, Any], ...]:
+        """Phase 7B §三：给 ActivityPlanner 的**只读结构化建议**（纯数据）。
+
+        * 只有 **PROPOSED 且未过期**的意图参与（§三.1/§三.2）——被抑制/取消/解决/过期的一律不交；
+        * bounded（默认 ≤3 条，§三.3）、确定性（同样的输入同样顺序）、**不写任何东西**（§三.5）；
+        * 每条意图只会出现一次（§三.4：重复 check 不会重复加分）；
+        * 名字到活动的翻译**不在这里做**（那是 activity 侧的 Registry 知识，§六 分层）。
+
+        拿不到（没装配 / 没跑过 check）就是空表 —— Planner 逐字退回原有行为（§五）。
+        """
+        moment = self._now(now)
+        bound = max(0, int(limit))
+        out: list[dict[str, Any]] = []
+        for item in self._open_hints:
+            if len(out) >= bound:
+                break
+            expires = float(item.get("expires_at") or 0.0)
+            if expires and moment >= expires:
+                continue  # §二十二：过期就是过期，绝不当成"还想做"
+            out.append(dict(item))
+        return tuple(out)
+
+    def _refresh_hints(self, *, extra: Sequence[Any] = ()) -> None:
+        """刷新建议缓存（§三.1：只留 PROPOSED 且未过期的；bounded）。"""
+        rows = [
+            item
+            for item in extra
+            if getattr(item, "status", LifeIntentStatus.PROPOSED) is LifeIntentStatus.PROPOSED
+        ]
+        hints: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        for item in rows:
+            intent_id = str(getattr(item, "intent_id", "") or "")
+            if not intent_id or intent_id in seen:
+                continue
+            seen.add(intent_id)
+            hints.append(
+                {
+                    "intent_id": intent_id,
+                    "intent_type": str(getattr(item, "intent_type", "") and item.intent_type.value),
+                    "source": str(getattr(item, "source", "") and item.source.value),
+                    "related_activity": str(getattr(item, "related_activity", "") or ""),
+                    "score_bonus": self._hint_bonus(float(getattr(item, "priority", 0.5) or 0.5)),
+                    "expires_at": float(getattr(item, "expires_at", 0.0) or 0.0),
+                }
+            )
+            if len(hints) >= HINT_LIMIT:
+                break
+        hints.sort(key=lambda row: (-float(row["score_bonus"]), str(row["intent_id"])))
+        self._open_hints = tuple(hints)
+
     def suggested_activities(self) -> dict[str, float]:
         """§三十五/§五四：**只读**建议给 ActivityPlanner 的候选加权（没有就空表）。
 
         这里只交出"活动名 → 加成"的字典；要不要采纳、怎么算分、会不会换活动，
         全在 6B/6C —— Initiative **永远**没有决定权（§五十五）。
         """
-        decision = self.last_decision
-        if decision is None or decision.selected is None:
-            return {}
-        selected = decision.selected
-        activity = str(selected.related_activity or "")
-        if not activity:
-            return {}
-        return {activity: round(0.6 + 0.4 * float(selected.priority), 4)}
+        # 这里只报"意图自己带活动名"的那些（例如长闲置建议的 reading）；
+        # 类型 → 已注册活动的翻译在 activity 侧（§六 分层），所以 MINECRAFT_INTEREST /
+        # REST / SOCIAL 这类意向在这里是空表 —— Planner 走 hints()。
+        suggestions: dict[str, float] = {}
+        for item in self.hints():
+            activity = str(item.get("related_activity") or "")
+            if not activity:
+                continue
+            suggestions[activity] = float(item.get("score_bonus") or 0.0)
+        return suggestions
 
     # ------------------------------------------------------------ 主流程
 
@@ -230,6 +310,9 @@ class LifeIntentService:
             context = _replace_recovered(context, self.recovered_at)
 
         recent = await self.store.recent(self.character_id, limit=RECENT_INTENT_LIMIT)
+        self._refresh_hints(
+            extra=tuple(item for item in recent if item.status is LifeIntentStatus.PROPOSED)
+        )
         candidates = propose_intents(context)
         decision = self.gate.evaluate(
             candidates, context=context, config=self.config, recent_intents=recent
@@ -237,6 +320,7 @@ class LifeIntentService:
         self.last_decision = decision
 
         created: list[str] = []
+        created_intents: list[LifeIntent] = []
         suppressed: list[str] = []
         ignored: list[str] = []
         verdict_by_fp = {item.fingerprint: item for item in decision.verdicts}
@@ -259,6 +343,7 @@ class LifeIntentService:
                 continue  # §四十六：同一个指纹只写一次
             if verdict.allowed:
                 created.append(stored.intent_id)
+                created_intents.append(stored)
                 await self.publisher.publish(
                     INITIATIVE_CREATED,
                     stored,
@@ -276,6 +361,20 @@ class LifeIntentService:
                     reason=verdict.reason,
                 )
         self.degraded_reason = ""
+        # §九：**硬 guard 命中时连建议都不给**（任务占位 / 待确认 / 睡着 / 刚重启 …）——
+        # 已经提过的旧想法也不能在这个时刻继续给 Planner 加权（那不是"自由时的想法"了）。
+        if str(decision.reason or "") in HINT_BLOCKING_REASONS or (
+            not decision.allowed and str(decision.reason or "") in HINT_BLOCKING_REASONS
+        ):
+            self._open_hints = ()
+        else:
+            self._refresh_hints(
+                extra=tuple(
+                    item
+                    for item in (*created_intents, *recent)
+                    if item.status is LifeIntentStatus.PROPOSED
+                )
+            )
         action = "proposed" if created else ("suppressed" if suppressed else "idle")
         if not created and not suppressed and ignored:
             action = "ignored"
@@ -324,6 +423,7 @@ class LifeIntentService:
         rows = await self.store.recent(self.character_id, limit=RECENT_INTENT_LIMIT)
         expired = await self.expire_due(now=moment)
         proposed = [item for item in rows if item.status is LifeIntentStatus.PROPOSED]
+        self._refresh_hints(extra=tuple(proposed))
         return {
             "action": "recovered",
             "loaded": len(rows),

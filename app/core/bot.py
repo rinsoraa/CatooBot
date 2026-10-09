@@ -1161,6 +1161,12 @@ class Bot:
             logger=self.log,
         )
         self.initiative = service
+        # Phase 7B §三：把意图建议接进 ActivityPlanner（**只读**；Planner 只在规划触发点读它，
+        # 而且只有"合格候选之间的软排序"会被它影响 —— 硬约束/资格/6B 护栏永远优先）。
+        activity = getattr(self, "activity", None)
+        planner = getattr(activity, "planner", None)
+        if planner is not None:
+            planner.intent_source = service
         # 角色运行时可以**读**它（§五十：QQ 里说得出"最近想干嘛"），但不能改
         if self.character is not None:
             self.character.initiative = service
