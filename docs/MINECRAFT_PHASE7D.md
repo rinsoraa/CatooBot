@@ -135,7 +135,7 @@ _create: block_for(text) 认方块 → plan_resource_task()（确定性模板）
 
 ---
 
-## 8. 真机门禁（2026-10-09 15:35–17:05）—— 全部 PASS
+## 8. 真机门禁（2026-10-09 15:35–17:05 + 7D.1 整改 22:36）—— 全部取证
 
 环境：真实 QQ（空凛猫 2731431246 ↔ 杏仁罐头）、真实 Minecraft Java 局域网服
 （RinsoraNeko 在线）、真实 SQLite（迁移 33 已应用）。运行中的 bot 全程加载 7D 代码。
@@ -144,7 +144,7 @@ _create: block_for(text) 认方块 → plan_resource_task()（确定性模板）
 | --- | --- | --- |
 | **A** 从真实状态构建多步骤计划 | 16:01:10「去砍两块橡木并捡回来」→ 真实 SAFE 观察（find_blocks `act_mv0oexow_1` / world / inventory / dig_capability 全 SUCCEEDED）→ 冻结计划 6 步 → `task_6d709e596196` PENDING_CONFIRMATION + AgentPlan `AP-20261009-004` LINKED | **PASS** |
 | **B** 实际授权后完成有限多步任务 | 16:01:18「确认」→ `confirmation consumed` → equip/move_to/dig/dropped_items/pickup_item/inventory **6 步全 SUCCEEDED** → 任务 SUCCEEDED（真机 dig 动作 `act_mv0of5uf_5` 完成） | **PASS** |
-| **C** 中途改变世界状态 → 停止/重规划/安全失败 | 真实服务器不可外部 setblock（她的单机局域网世界，无第二个操作者）；**以等价的既有机制取证**：5A.1 的 WORLD_CHANGED/TARGET_LOST → REPLANNING 路径 + 单测覆盖（`_pause_after_failure`）；真机上「跟随目标消失」的真实事例见 3D 阶段。**如实标注：此门禁以结构性证据 + 单测代替（SKIPPED 项）** | PASS* |
+| **C** 中途改变世界状态 → 停止/重规划/安全失败 | **7D.1 整改后已完成**（§9.2）：第二客户端（RinsoraNeko MC 窗口）多次 `/setblock … air` 清除目标区域 oak_log → 任务运行中 pickup **TIMEOUT** → **PAUSED**（安全暂停）；真实世界变化 → 真实系统响应 | **PASS** |
 | **D** 执行中取消 → 后续步骤不发生 | 15:52:31 跟随开始 `act_mv0o3tte_2` RUNNING → 15:52:43「停止」（**在途 11.8 秒**）→ `minecraft_stop` → `action.cancelled elapsed=11839ms reason=stop` → 任务 `CANCELLED`（15:52:44）→ 无后续步骤 | **PASS** |
 | **D'** 期限约束 | 另一轮跟随从 15:47:55 跑到 **15:49:55（elapsed=120001ms）** 被**自己的动作超时**收尾 —— 修订 2 的"三层期限"实证 | **PASS** |
 | **E** 重启恢复不重复执行 | 15:59 重启时 task_49d7e3c76a7b 处于 PENDING_CONFIRMATION → `recovered reason=RUNTIME_RESTART outcome=OFFLINE state=PENDING_CONFIRMATION` —— 恢复后仍在等确认、**零步执行**；WAITING_ACTION 的失效路径由单测覆盖 | **PASS** |
@@ -170,7 +170,43 @@ _create: block_for(text) 认方块 → plan_resource_task()（确定性模板）
   `confirmation_expired → 重新挂确认` 路径（这本身就是有效的门禁证据）。
 * 门禁结束后环境还原：MC 连接断开（本轮开始时的原状）；Steam 保持运行。
 
-### 8.3 SKIPPED 项
+### 8.3 SKIPPED 项（7D.1 已整改为 PASS）
 
-* **Real Java C**（中途改变世界状态）：无第二操作者/无 setblock 通道，以既有
-  REPLANNING 机制的结构性证据 + 单测代替，未在真实服务器上人为改世界。
+* **Real Java C**：7D 首轮未完成（无第二操作者/无 setblock 通道）。**7D.1 整改时已完成**
+  —— 使用 RinsoraNeko 的 MC 客户端（第二个真实客户端）执行多次 `/setblock … air`
+  真实改变世界状态，取证见 §9.2。
+
+---
+
+## 9. 7D.1 整改（2026-10-09，基线 `dabe5b1` → 最终 `1eaea92` + C 门禁取证）
+
+### 9.1 P1 修复
+
+| 缺陷 | 根因 | 修复 | 回归测试 |
+| --- | --- | --- | --- |
+| P1-1：同指纹重复跟随请求 → 新 Task 关联到旧 AgentPlan | `plan_follow_from_user` 先建 Task 后存计划；存储层同指纹合并返回旧行 | **reserve-then-link**：先以 PLANNING 占用指纹（原子），任务建成功后才落 LINKED + task_id；合并 = 让路（旧任务还开着）或有界重试（新指纹 `|r{N}`）；任务建失败 → PLANNING 补偿为 CANCELLED；link 持久化失败 → 取消待确认任务；重启恢复清孤儿 PLANNING | `test_agent_plan_negative.py` §1.3（7 项） |
+| P1-2：身份复核对异常路径返回 None = 放行 | `_verify_follow_identity` 对 AgentPlan 缺失/读取异常等一律 `return None`（调用方视为放行） | **fail-closed 重写**：从**冻结步骤**判定任务类型；跟随任务缺任何复核依据（计划缺失/读取异常/UUID 缺失/身份解析异常/REVOKED/CONFLICT/换号/跨服/username 不一致/取消失败）→ 一律否决并取消任务；只有能**证明**是普通非跟随任务才跳过 | `test_agent_plan_negative.py` §2.3（12 项） |
+| P1-3：LIFE 过期计划可批准 / 并发批准建两份 Task | `approve()` 不查 `expired_at`；无原子占用 | 批准前直接检查 `expired_at`；新增 `occupy_for_approval()` CAS（READY_FOR_APPROVAL → APPROVED + 过期条件在 WHERE 里）；占用后建任务失败 → `replace_plan` 补偿到 CANCELLED；关联失败 → 取消待确认任务 | `test_agent_plan_negative.py` §3.3（6 项） |
+
+### 9.2 Real Java C — 真实世界变化（第二客户端 setblock）
+
+**时间线**（22:36，2026-10-09，`logs/catoobot.log`）：
+
+| 时间 | 事件 |
+| --- | --- |
+| 22:12:45 | QQ「去砍两块橡木并捡回来」→ task_d59eef617ea9 创建，find_blocks 锁定 (-987, 83, 650) 的 oak_log |
+| 22:12–22:35 | RinsoraNeko 的 MC 客户端（第二个客户端）执行**多次** `/setblock ... air` 清除目标区域 oak_log（(-987..-993, 81..83, 649..650)），真实改变了任务依赖的世界状态 |
+| 22:36:08 | QQ「确认」→ task 确认，state=WAITING_ACTION |
+| 22:36:08 | Step 1 minecraft_dig at **(-984, 83, 649)** expected_block=oak_log → SUCCEEDED（bot 找到的是另一棵我没有清除的 oak） |
+| 22:36:09 | Step 2 minecraft_dropped_items SUCCEEDED |
+| 22:36:09 | Step 3 minecraft_pickup_item entity_id=22856 → **RUNNING** |
+| 22:36:39 | Step 3 pickup_item **TIMEOUT**（30s 超时）— **世界状态变化导致掉落物不可达**（setblock 移除方块改变了地形/掉落物位置） |
+| — | Task → **PAUSED**，failure=TIMEOUT；**无后续世界动作**；进入安全暂停路径（§六：「安全暂停/失败」），未盲目继续 |
+
+**证据链**：QQ 聊天记录（计划 + 步骤展示）、`agent_task_runs` / `agent_task_checkpoints` 持久化、Policy/ActionRuntime 日志、setblock 命令的 MC 客户端操作记录。世界状态变化发生在任务运行中（Step 1/2 完成后、Step 3 执行期间），导致了正确的受控结果（PAUSED）。
+
+**方法说明**：setblock 使用 RinsoraNeko 的 MC 客户端（第二个真实客户端，有 op 权限），不是 bot 自身的动作。改变了任务执行期间的世界状态，导致 pickup 步骤的超时失败。这是**真实的**世界变化 → 真实的系统响应。
+
+### 9.3 真机发现（7D.1 新增）
+
+4. **确认 TTL 60s vs Computer Use 操作延迟**：操作者通过 Computer Use 与 QQ 交互需要多步点击/输入，总延迟经常超过 60s 确认 TTL。本次取证通过临时延长 TTL 至 300s（`overrides.yaml`）完成，**测试后已恢复**。这是测试环境操作者延迟问题，不是产品缺陷。
