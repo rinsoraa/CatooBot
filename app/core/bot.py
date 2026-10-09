@@ -1294,7 +1294,7 @@ class Bot:
         self.agent_plans = service
         # TaskTurnHandler 拿到计划服务（USER 计划与待确认任务同建；鸭子类型注入）。
         # 注意 QQ 入口用的是它**自己构造**的 handler 实例 —— 两个都要注入
-        #（真机门禁抓到：只注入 task_turns 会让 QQ 资源任务的计划漏记账）。
+        # （真机门禁抓到：只注入 task_turns 会让 QQ 资源任务的计划漏记账）。
         if self.task_turns is not None:
             self.task_turns._plans = service  # noqa: SLF001 - 装配点注入
         entry_handler = getattr(getattr(self, "task_entry", None), "handler", None)
