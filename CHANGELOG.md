@@ -2103,3 +2103,4 @@
 - OneBot 11 反向 WebSocket 适配（token 鉴权、单连接接管、断线保活）、
   API 客户端（echo/future/超时/断开清理）、事件总线、命令系统、权限、插件加载、SQLite（WAL）。
 - 内置 `/ping` `/help` `/about`；WebUI 起步（登录 + 仪表盘）。
+
