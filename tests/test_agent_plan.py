@@ -227,6 +227,9 @@ class TestSourceRouting:
         assert out["record"].task_id
         assert out["plan"].status == PlanStatus.LINKED.value
         assert out["plan"].approver_user_id == "2731431246"
+        # 批准者要写进**列**（不只 payload）—— 审计直接查库也要看得见
+        row = await rig.store.get(plan.plan_id)
+        assert row.approver_user_id == "2731431246"
         assert rig.runtime.created[-1]["user_id"] == "2731431246"
         assert rig.runtime.created[-1]["session_id"] == "private:2731431246"
         # 计划审计明确记录了这是第一道门

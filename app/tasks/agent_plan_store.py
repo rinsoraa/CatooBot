@@ -280,13 +280,17 @@ class SqliteAgentPlanStore:
 
         def _run(conn: Any) -> bool:
             cursor = conn.execute(
-                "UPDATE task_agent_plans SET status = ?, task_id = ?, target = ?, plan = ?,"
+                "UPDATE task_agent_plans SET status = ?, task_id = ?, approver_user_id = ?,"
+                " approver_session_id = ?, approved_at = ?, target = ?, plan = ?,"
                 " plan_hash = ?, version = ?, history = ?, checks = ?, risk_summary = ?,"
                 " reason = ?, replans = ?, replan_reason = ?, fingerprint = ?,"
                 " expires_at = ?, updated_at = ?, payload = ? WHERE plan_id = ?",
                 (
                     payload["status"],
                     payload["task_id"],
+                    payload["approver_user_id"],
+                    payload["approver_session_id"],
+                    float(payload["approved_at"]),
                     _dump(payload["target"]),
                     _dump(payload["plan"]),
                     payload["plan_hash"],

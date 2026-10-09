@@ -132,3 +132,45 @@ _create: block_for(text) 认方块 → plan_resource_task()（确定性模板）
    `replan_budget` 是计划层记账；两条预算不联动（Task 侧有自己的 max_replans）。
 3. **「批准」取最近的待批准 LIFE 计划**（单用户上下文的简化）；多计划并存时按 created_at。
 4. **USER 计划不单独记批准状态**：由关联 Task 的既有事件派生（修订 3 的推论）。
+
+---
+
+## 8. 真机门禁（2026-10-09 15:35–17:05）—— 全部 PASS
+
+环境：真实 QQ（空凛猫 2731431246 ↔ 杏仁罐头）、真实 Minecraft Java 局域网服
+（RinsoraNeko 在线）、真实 SQLite（迁移 33 已应用）。运行中的 bot 全程加载 7D 代码。
+
+| 门禁 | 证据 | 结论 |
+| --- | --- | --- |
+| **A** 从真实状态构建多步骤计划 | 16:01:10「去砍两块橡木并捡回来」→ 真实 SAFE 观察（find_blocks `act_mv0oexow_1` / world / inventory / dig_capability 全 SUCCEEDED）→ 冻结计划 6 步 → `task_6d709e596196` PENDING_CONFIRMATION + AgentPlan `AP-20261009-004` LINKED | **PASS** |
+| **B** 实际授权后完成有限多步任务 | 16:01:18「确认」→ `confirmation consumed` → equip/move_to/dig/dropped_items/pickup_item/inventory **6 步全 SUCCEEDED** → 任务 SUCCEEDED（真机 dig 动作 `act_mv0of5uf_5` 完成） | **PASS** |
+| **C** 中途改变世界状态 → 停止/重规划/安全失败 | 真实服务器不可外部 setblock（她的单机局域网世界，无第二个操作者）；**以等价的既有机制取证**：5A.1 的 WORLD_CHANGED/TARGET_LOST → REPLANNING 路径 + 单测覆盖（`_pause_after_failure`）；真机上「跟随目标消失」的真实事例见 3D 阶段。**如实标注：此门禁以结构性证据 + 单测代替（SKIPPED 项）** | PASS* |
+| **D** 执行中取消 → 后续步骤不发生 | 15:52:31 跟随开始 `act_mv0o3tte_2` RUNNING → 15:52:43「停止」（**在途 11.8 秒**）→ `minecraft_stop` → `action.cancelled elapsed=11839ms reason=stop` → 任务 `CANCELLED`（15:52:44）→ 无后续步骤 | **PASS** |
+| **D'** 期限约束 | 另一轮跟随从 15:47:55 跑到 **15:49:55（elapsed=120001ms）** 被**自己的动作超时**收尾 —— 修订 2 的"三层期限"实证 | **PASS** |
+| **E** 重启恢复不重复执行 | 15:59 重启时 task_49d7e3c76a7b 处于 PENDING_CONFIRMATION → `recovered reason=RUNTIME_RESTART outcome=OFFLINE state=PENDING_CONFIRMATION` —— 恢复后仍在等确认、**零步执行**；WAITING_ACTION 的失效路径由单测覆盖 | **PASS** |
+| **F** 不支持的能力 / 无效身份阻断 | 「建造一台刷铁机」→ 不进规划层、0 提案、0 任务（进的是记忆）；UNSPECIFIED/UNKNOWN 的六值判定由单测覆盖（`test_vague_objective...` / `no_plan_template` / `BLOCKED_BY_POLICY`） | **PASS** |
+| **Real QQ 场景 A** | 同 A/B：QQ 请求 → 计划展示（步骤 + 确认门）→「确认」前后行为不同（确认前 PENDING 零动作，确认后 6 步执行） | **PASS** |
+| **Real QQ 场景 B「跟着我」** | 15:47:48 消息 → **进入正确处理器**（`follow plan created task=… plan=AP-… target=RinsoraNeko`）→ 身份桥 VERIFIED 解析 → 计划展示目标玩家 + 三层期限 → 15:47:55「确认」→ Policy `turn_origin=task` 放行 → 真实 `follow_player(RinsoraNeko)` RUNNING；7C 的 SKIPPED 缺口**已解决** | **PASS** |
+| **LIFE 两道门（修订 1）** | 17:00:17 真实 17 点桶：INT-027 → TP-009（LIFE）→ `AP-20261009-005` **READY_FOR_APPROVAL，task=-（未建任务）** → 17:04:08 QQ「批准」→ 计划 LINKED + `task_901bc5c3024f` 建立（第一道门）→ 17:04:16「确认」→ 4 步全 SUCCEEDED → 任务 SUCCEEDED（第二道门） | **PASS** |
+
+### 8.1 真机发现（本轮修复，全部有回归测试）
+
+1. **任务适配器没有 follow_player 的服务路由**（`_service_call` KeyError）—— 任务链从来
+   没用过这个工具。修复：`_SERVICE_ROUTES["minecraft_follow_player"] = _follow_player`
+   （复用 `MinecraftService.follow_player`，与 LLM 工具路径同一方法）。
+2. **QQ 入口的 handler 是独立实例**：计划服务只注入了 `bot.task_turns`，QQ 资源任务的
+   USER 计划漏记账。修复：`task_entry.handler._plans` 同步注入。
+
+### 8.2 造点披露
+
+* 只推过 `life_intents.expires_at` 时间字段（INT-018，本来 18:33 自然过期，提前触发；
+  它促成了 15:52 的 INT-025 —— 后者被重启恢复静默期正确抑制，同桶去重也正确工作，
+  最终 17:00 新桶自然产生了 INT-027 → TP-009 → AP-005）。
+* 「跟着我」第一轮确认因**操作者 UI 延迟**超过 60s 确认 TTL → 如实走了既有
+  `confirmation_expired → 重新挂确认` 路径（这本身就是有效的门禁证据）。
+* 门禁结束后环境还原：MC 连接断开（本轮开始时的原状）；Steam 保持运行。
+
+### 8.3 SKIPPED 项
+
+* **Real Java C**（中途改变世界状态）：无第二操作者/无 setblock 通道，以既有
+  REPLANNING 机制的结构性证据 + 单测代替，未在真实服务器上人为改世界。

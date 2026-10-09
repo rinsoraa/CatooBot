@@ -19,8 +19,15 @@
   （含 UUID + server_id），确认前**复核身份仍有效**（撤销/换号 → 取消任务）；
   修订 2 的生命周期逐条证明：validate_plan 接受 follow 步骤、detached RUNNING ≠ 成功、
   cancel/expire 走既有 `minecraft_stop`、三层期限（授权 60s / 动作 120s / 任务 600s）分层如实展示。
-* **测试**：新增 **45** 项（六值结论 / 来源隔离与确认次数 / 身份 / 状态机 / 源码级安全边界 /
-  QQ 路由 / 真运行时 follow 生命周期）；冻结测试 32→33；全量 3366 pytest + 528 vitest 绿。
+* **测试**：新增 **48** 项（六值结论 / 来源隔离与确认次数 / 身份 / 状态机 / 源码级安全边界 /
+  QQ 路由 / 真运行时 follow 生命周期 / 服务路由注册 / 双 handler 注入）；冻结测试 32→33。
+* **真机（2026-10-09 15:35–17:05）—— 全部 PASS**：跟随任务经身份桥 + 计划展示（目标玩家 +
+  三层期限）+「确认」→ 真实 `follow_player(RinsoraNeko)`，在途 11.8s「停止」→ CANCELLED，
+  另一轮精确跑满 **120001ms** 被动作超时收尾；资源任务 6 步全 SUCCEEDED；LIFE 两道门
+  （17 点真实桶：意图→提案→AP-005 只规划→QQ「批准」建任务→「确认」→4 步 SUCCEEDED）；
+  重启恢复零重复；不支持的目标零计划零任务。真机抓出两个缺口并修复：任务适配器缺
+  `follow_player` 服务路由、QQ 入口 handler 未注入计划服务。Real Java C（人为改世界）
+  以结构性证据 + 单测代替，如实记 SKIPPED 项。
 
 
 本文件记录 CatooBot 的版本演进。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
