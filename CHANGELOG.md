@@ -42,11 +42,17 @@
   QQ 任务入口**窄规则**旁路记账（真的建了任务，或这句话明确在指某个玩家 —— 普通闲聊与提问
   不会留提案）；配置 `world.proposals.{enabled, recent_limit, max_per_pass, ttl_hours}` 进
   WebUI 配置注册表与 `config.example.yaml`。
-* **测试**：新增 **79** 项（`tests/test_task_proposal.py` 61 + `tests/test_proposal_security.py` 18）
+* **测试**：新增 **83** 项（`tests/test_task_proposal.py` 65 + `tests/test_proposal_security.py` 18）
   覆盖任务书 §十三 的 17 项矩阵；安全边界与 7A 同一写法（AST 源码级 + 运行时句柄级），
   白名单里只有两样**只读**事实（风险表 + 身份桥）；`conn.execute` 不被当成"执行动作"。
-* **真机门禁**：见 `docs/MINECRAFT_PHASE7C.md` §15（Real Java A–E / Real QQ A–B 的取证与结论）。
-  **在真机跑完之前，本节不写任何"已通过"的结论。**
+* **真机（2026-10-09 11:25–12:41）—— 全部 PASS**：**Real QQ A**「你想收集一些橡木吗？」
+  零任务零提案（97 → 97）；**C**「跟着我」→ USER 提案经可信身份桥解析出 VERIFIED/RinsoraNeko
+  但**不执行**；**Real Java A/B** 在线与离线各产生一份 LIFE 提案（TP-004 / TP-003），
+  离线那份把六个世界能力**逐条**标成 `PARTIALLY_SUPPORTED/unavailable_now`；**E** 前后快照
+  任务 97→97、checkpoints 855→855、`turn_origin=user` 策略调用 0 次。真机抓出两条接线缺陷
+  （`check()` 交的是 id 不是对象 → 一条 LIFE 提案都不生成；`minecraft_identity` 是命令处理器
+  不是 IdentityStore → 目标误判 MISSING），均已修复 + 回归测试钉住（文档 §15.1）。
+  「跟着我」走既有执行链一项如实记 **SKIPPED**（既有任务检测器不认这句话，本阶段不改它）。
 
 ## Minecraft Phase 7B — Virtual Autonomous Activity / Initiative-to-Plan Integration
 

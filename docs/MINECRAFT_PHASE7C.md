@@ -270,7 +270,7 @@ WebUI 世界页新增「任务提案（她准备怎样做）」只读卡片，�
 
 ## 13. 测试（§十三 矩阵 17 项）
 
-新增 **77** 项（`tests/test_task_proposal.py` 59 + `tests/test_proposal_security.py` 18，
+新增 **83** 项（`tests/test_task_proposal.py` 65 + `tests/test_proposal_security.py` 18，
 夹具 `tests/proposal_fakes.py`：真 store + 真 service + 可注入的只读事实，不联网不调模型）：
 
 | 任务书 §十三 | 落在哪 |
@@ -319,3 +319,60 @@ invoke / call_tool / execute / dispatch / send / reply / deliver` 等。
    不区分"这个维度没加载"这类细分（真实的细分状态要等执行阶段的重新检查）。
 5. **`NEEDS_MORE_INFORMATION` / `READY_FOR_FUTURE_EXECUTION` 不是许可证**：
    未来任何执行阶段都必须**重新**检查当前世界、能力、授权、目标和风险（§九）。
+
+---
+
+## 15. 真机门禁（2026-10-09 11:25–12:41）—— 全部 PASS
+
+环境：真实 QQ（NapCat ↔ 反向 WS，罐头账号 2934257196）、真实 Minecraft Java 局域网服
+（127.0.0.1:25565，RinsoraNeko 在线）、真实 SQLite（迁移 32 已应用）。
+运行中的 bot 从 11:22 起加载 7C 代码（含 11:36 后的两处接线修复，见 §15.1）。
+
+### Real QQ
+
+| 门禁 | 证据 | 结论 |
+| --- | --- | --- |
+| A「你想收集一些橡木吗？」不能误建 Task | 11:25:41 私聊送达；`agent_task_runs` 97 → 97、`task_proposals` 0、无任何 `[Task/QQ] action=created`；她只当聊天回了「行啊，附近正好有橡树，我去砍点回来」 | **PASS** |
+| B 自主意图只能提出 Proposal，不触发执行 | 见 Real Java B/C（TP-003/TP-004）；全程 `minecraft.action` 计数 0 | **PASS** |
+| C「跟着我」解析到正确 MC 玩家且不执行 | 11:42:32 `TP-20261009-002`（USER）：身份桥解析出 `VERIFIED / RinsoraNeko / b46120…7d76 / mc-5a7d5e6316467e0f`，`feasibility=SUPPORTED`、`max_risk=LOW`、`READY_FOR_FUTURE_EXECUTION` —— 但任务数不变、无确认、无 follow 动作 | **PASS** |
+| D「跟着我」走既有用户任务执行链 | **SKIPPED（如实记录）**：既有的 `TaskIntentDetector` 不把「跟着我」认成任务（`is_task=False`，7C 之前就是这样），所以不存在可走的"现有执行链"；提案层按 §八 窄规则把请求记成了可审计提案（TP-002）。要让它真的走 5A 链属于任务检测器的功能扩展，超出本阶段"不做新工具/不改既有链"的边界 | SKIPPED |
+
+### Real Java
+
+| 门禁 | 证据 | 结论 |
+| --- | --- | --- |
+| A 在线时 LifeIntent 产生只读提案 | 12:40:17 `TP-20261009-004`（LIFE，`INT-20261009-019`「今天还没怎么reading」）：MC 在线状态下由真实意图产生，`execution_layer=NONE`；加上在线的 TP-002（USER 侧完整能力链） | **PASS** |
+| B 离线时 LifeIntent 产生只读提案 | 12:33:46 `TP-20261009-003`（LIFE，`INT-20261009-018`「有点想回 Minecraft 看看」，来自真实记忆）：MC 离线状态下产生，目标不需要指定玩家（`no_player_target`） | **PASS** |
+| 能力缺口在实际提案中明确显示 | TP-003 的六个世界能力（find_blocks/move_to/dig/pickup_item/world/place）**逐条** `PARTIALLY_SUPPORTED / unavailable_now`，`feasibility=PARTIALLY_SUPPORTED`、`status=NEEDS_MORE_INFORMATION`、`max_risk=MEDIUM`、`would_require_confirmation=true`（只是描述） | **PASS** |
+| 未绑定/解析不了的目标被拒或要求补充身份 | 11:35:58 `TP-20261009-001`（USER）：目标解析不成立 → `MISSING` + `NEEDS_MORE_INFORMATION`（`target_unresolved`），零执行。REVOKED/CONFLICT 路径由测试覆盖（`TestIdentityResolution`），**没有**在真实绑定上演练 —— 不动操作者的真实身份状态 | **PASS** |
+| 提案期间世界动作 / Task 数量 / 确认状态均不变化 | 前后快照（12:33 前 / 12:41 后）：`agent_task_runs` 97 → 97、`agent_task_checkpoints` 855 → 855、提案窗口内 `turn_origin=user` 的策略调用 **0** 次、`minecraft.action` **0** 条、无 confirmation 事件；12:36:10 的 `MC Policy allowed/confirmation` 行是 MC 重连时的**风险表枚举日志**，不是调用 | **PASS** |
+
+### 15.1 真机发现（本轮修复，全部有回归测试钉住）
+
+1. **`check()` 交出的是 intent_id 列表，不是意图对象** —— 提案层最初把 id 当对象用，
+   真机上 LIFE 提案一条都不生成（静默）。修复：7A 服务新增只读 `last_created`（本次 check
+   真正新建的意图本体），调度器 `_resolve_intents()` 先把 id 换成对象（查不到就跳过，绝不猜）。
+   *这条是真机门禁最大的收获：单测里喂的是对象，永远暴露不了契约错位。*
+2. **`bot.minecraft_identity` 不是 IdentityStore** —— 它是 QQ 绑定**命令处理器**（没有
+   `links_for`），导致第一份 USER 提案（TP-001）目标解析成 `MISSING`。真正的 store 在记忆桥的
+   `identities` 上；已改接线 + 加了"形状不对必须 `identity_unavailable`"的护栏测试。
+   TP-001 作为这次接线错误的**真实记录**保留在库里（诚实证据，不删）。
+3. **Steam 会占住 8080**（OneBot 反向 WS 端口）：bot 重启时若 Steam 先占了端口，OneBot 起不来
+   （`winerror 10013`）。本轮真机用 `steam.exe -shutdown` 优雅释放后重启 bot。这是环境竞态，
+   与 7C 无关，记录给后续排障。
+4. **提案视图的 `created_total` 是进程内计数器**：bot 重启会清零（所以截库里 2 行时它显示 1）。
+   只影响展示，不影响幂等（库里以指纹唯一索引兜住）。已知限制，见 §14。
+
+### 15.2 造点披露（可构造部分）
+
+* **时间字段造点**（与 6C/6D/7A 同一纪律）：三条**真实存在**的 PROPOSED 意图
+  （INT-005 MC 兴趣 / INT-014 eating / INT-016 reading）的 `expires_at` 被**单独**推到过去 ——
+  它们的 TTL 本来就会自然到期（12:59 / 14:00 / 15:08），只是提前；状态、内容、指纹一概未动。
+  目的：让下一次 check **自然**生成新意图，进而走真实的"意图 → 提案"全链。
+* **连接状态切换**：`POST /minecraft/leave` + `join` 用于构造"离线提案"（TP-003）与
+  "在线提案"（TP-004）两种状态。结束时的连接状态恢复为本轮开始时的原样（DISCONNECTED，见下）。
+* **Steam**：为释放 8080 端口执行过一次 `steam.exe -shutdown`（优雅关闭），门禁结束后已重新启动。
+* 时段跨越说明：12:37 起时段进入 afternoon，eating 不再出现在日常表里，所以"在线提案"
+  改用 reading（INT-019）—— 它同样是真实的 ROUTINE 意图。
+* **环境还原**：门禁结束后 MC 连接已断开（恢复本轮开始时的 DISCONNECTED 原状）；
+  Steam 已重启；运行中的 bot 保持 7C 代码继续生活。
