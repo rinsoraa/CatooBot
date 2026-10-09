@@ -478,92 +478,102 @@ class QQTaskEntry:
         return True
 
     async def _verify_follow_identity(self, identity: QQIdentity) -> str | None:
-        """确认执行前复核跟随目标身份（7D.1 P1-2，**fail-closed**）。
+        """确认执行前复核跟随目标身份（7D.1 P1-2 + 7D.2 P1-3，**fail-closed + 取消**）。
 
         返回 ``None`` = 放行（只有两种情况：当前没有待确认任务；或能**证明**它是
-        普通非跟随任务）。其余一切"读不到 / 缺失 / 不一致 / 异常"都返回否决文案
-        并走既有安全路径取消待确认任务 —— 绝不因异常路径静默放行。
+        普通非跟随任务）。其余一切"读不到 / 缺失 / 不一致 / 异常"都否决**并走既有
+        安全路径取消待确认任务**（7D.2 §3.2.2：只拒绝不取消会留下一个永远无法确认、
+        也无法通过身份复核的任务挂着）。
 
-        复核依据是**当前 Task 的冻结步骤**（不依赖 AgentPlan 是否存在来判定任务类型），
-        且至少核对 VERIFIED 状态、player_uuid、server_id 与冻结的 username。
+        * 取消成功 → 文案说明已取消；取消失败 → 如实说"取消未能确认"，**绝不**谎称已取消；
+        * 无论取消是否成功，本次都不进入 confirm_and_start() / 不派发 follow；
+        * 读取 Task 本身失败时记录"任务无法读取，无法执行取消"，不把拒绝误报成取消成功；
+        * 复核依据是**当前 Task 的冻结步骤**（不依赖 AgentPlan 是否存在来判定任务类型），
+          至少核对 VERIFIED 状态、player_uuid、server_id 与冻结的 username。
         """
         runtime = self.runtime
         current_getter = getattr(runtime, "current", None)
         if not callable(current_getter):
-            # 连"有没有待确认任务"都读不到 → 无法证明这不是跟随任务 → 安全拒绝
             self._log.warning("[Task/QQ] follow re-check: runtime 不可读，确认被拒绝")
-            return self._follow_veto_message("任务状态读不出来")
+            return await self._follow_veto_message("任务状态读不出来", task_id="")
         try:
             record = await current_getter(identity.session_id)
         except Exception:
             self._log.exception("[Task/QQ] follow re-check: current() 失败，确认被拒绝")
-            return self._follow_veto_message("任务状态读不出来")
+            return await self._follow_veto_message("任务状态读不出来", task_id="")
         if record is None:
             return None  # 当前会话没有任务 → 「确认」是普通聊天（既有链处理）
         state = str(getattr(getattr(record, "state", None), "value", "") or "")
         if state != "PENDING_CONFIRMATION":
             return None  # 不是待确认 → 既有链自己处理（busy 等）
+        task_id = str(getattr(record, "task_id", "") or "")
         # ---- 从**冻结步骤**判定任务类型（不依赖 AgentPlan 是否存在）
         plan_obj = getattr(record, "plan", None)
         steps = list(getattr(plan_obj, "steps", None) or [])
         if not steps:
-            self._log.exception("[Task/QQ] follow re-check: 冻结步骤读不到 task=%s", record.task_id)
-            return self._follow_veto_message("计划步骤读不出来")
+            self._log.exception("[Task/QQ] follow re-check: 冻结步骤读不到 task=%s", task_id)
+            return await self._follow_veto_message(
+                "计划步骤读不出来", task_id=task_id, runtime=runtime
+            )
         follow_steps = [
             s for s in steps if str(getattr(s, "tool", "")) == "minecraft_follow_player"
         ]
         if not follow_steps:
-            return None  # 能证明是普通非跟随任务 → 既有链处理
+            return None  # 能证明是普通非跟随任务 → 既有链处理（不触发 follow 专用取消）
         frozen = follow_steps[0]
         frozen_username = str((getattr(frozen, "arguments", None) or {}).get("username", "") or "")
         if not frozen_username:
-            self._log.warning(
-                "[Task/QQ] follow re-check: 冻结 username 缺失 task=%s", record.task_id
+            self._log.warning("[Task/QQ] follow re-check: 冻结 username 缺失 task=%s", task_id)
+            return await self._follow_veto_message(
+                "计划的目标玩家读不出来", task_id=task_id, runtime=runtime
             )
-            return self._follow_veto_message("计划的目标玩家读不出来")
-        # ---- 跟随任务：缺任何复核依据都拒绝（不再"查不到就放行"）
+        # ---- 跟随任务：缺任何复核依据都拒绝 + 取消（7D.2 §3.2.2）
         plans = getattr(self.bot, "agent_plans", None)
         plan_getter = getattr(plans, "plan_for_task", None)
         if plans is None or not callable(plan_getter):
-            self._log.warning(
-                "[Task/QQ] follow re-check: AgentPlan 层不可用 task=%s", record.task_id
+            self._log.warning("[Task/QQ] follow re-check: AgentPlan 层不可用 task=%s", task_id)
+            return await self._follow_veto_message(
+                "计划关联读不出来", task_id=task_id, runtime=runtime
             )
-            return self._follow_veto_message("计划关联读不出来")
         try:
-            agent_plan = await plan_getter(str(record.task_id))
+            agent_plan = await plan_getter(task_id)
         except Exception:
-            self._log.exception(
-                "[Task/QQ] follow re-check: plan_for_task 失败 task=%s", record.task_id
+            self._log.exception("[Task/QQ] follow re-check: plan_for_task 失败 task=%s", task_id)
+            return await self._follow_veto_message(
+                "计划关联读不出来", task_id=task_id, runtime=runtime
             )
-            return self._follow_veto_message("计划关联读不出来")
         if agent_plan is None:
-            self._log.warning("[Task/QQ] follow re-check: 无计划关联 task=%s", record.task_id)
-            return self._follow_veto_message("计划关联读不出来")
+            self._log.warning("[Task/QQ] follow re-check: 无计划关联 task=%s", task_id)
+            return await self._follow_veto_message(
+                "计划关联读不出来", task_id=task_id, runtime=runtime
+            )
         target = getattr(agent_plan, "target", None)
         plan_uuid = str(getattr(target, "player_uuid", "") or "")
         plan_server = str(getattr(target, "server_id", "") or "")
         if not plan_uuid:
-            self._log.warning(
-                "[Task/QQ] follow re-check: 计划目标 UUID 缺失 task=%s", record.task_id
+            self._log.warning("[Task/QQ] follow re-check: 计划目标 UUID 缺失 task=%s", task_id)
+            return await self._follow_veto_message(
+                "计划的目标身份不完整", task_id=task_id, runtime=runtime
             )
-            return self._follow_veto_message("计划的目标身份不完整")
         # ---- 当前服务器身份必须可靠（跨服务器同名玩家绝不当成当前目标）
         server_now = self._server_id()
         if not server_now:
-            self._log.warning(
-                "[Task/QQ] follow re-check: 当前服务器身份不可确认 task=%s", record.task_id
+            self._log.warning("[Task/QQ] follow re-check: 当前服务器身份不可确认 task=%s", task_id)
+            return await self._follow_veto_message(
+                "当前服务器身份确认不了", task_id=task_id, runtime=runtime
             )
-            return self._follow_veto_message("当前服务器身份确认不了")
         # ---- 可信身份桥解析
         proposals = getattr(self.bot, "proposals", None)
         resolver = getattr(proposals, "resolve_target", None)
         if not callable(resolver):
-            self._log.warning("[Task/QQ] follow re-check: 身份解析不可用 task=%s", record.task_id)
-            return self._follow_veto_message("身份解析读不出来")
+            self._log.warning("[Task/QQ] follow re-check: 身份解析不可用 task=%s", task_id)
+            return await self._follow_veto_message(
+                "身份解析读不出来", task_id=task_id, runtime=runtime
+            )
         try:
             resolved = await resolver(user_id=str(identity.user_id), server_id=server_now)
         except Exception:
-            self._log.exception("[Task/QQ] follow re-check: 身份解析失败 task=%s", record.task_id)
+            self._log.exception("[Task/QQ] follow re-check: 身份解析失败 task=%s", task_id)
             resolved = None
         uuid_now = str(getattr(resolved, "player_uuid", "") or "")
         status_now = str(getattr(resolved, "status", "") or "")
@@ -586,33 +596,57 @@ class QQTaskEntry:
         )
         self._log.warning(
             "[Task/QQ] follow re-check FAILED task=%s %s expected_uuid=…%s server=%s",
-            record.task_id,
+            task_id,
             reason,
             plan_uuid[-4:],
             plan_server,
         )
-        # ---- 既有安全路径取消待确认任务；取消失败也要记录并继续阻止确认
-        cancel = getattr(runtime, "cancel", None)
+        return await self._follow_veto_message(
+            "你的 Minecraft 身份绑定和计划对不上了（可能已解除、换号或换了服务器）",
+            task_id=task_id,
+            runtime=runtime,
+        )
+
+    async def _follow_veto_message(
+        self, reason: str, *, task_id: str = "", runtime: Any = None
+    ) -> str:
+        """fail-closed 的统一否决 + **取消**（7D.2 P1-3）。
+
+        * 有 task_id（跟随任务已确认身份）→ 走既有 ``TaskRuntime.cancel()`` 取消待确认任务；
+          取消失败 → 如实说"取消未能确认"，绝不伪称已取消；
+        * 没有 task_id（连任务都读不到）→ 明确记录"任务无法读取，无法执行取消"；
+        * 无论取消结果如何，都不放行 —— 调用方收到非 None 即拦截「确认」。
+        """
+        self._log.warning("[Task/QQ] follow re-check vetoed: %s", reason)
+        if not task_id:
+            self._log.warning("[Task/QQ] follow re-check: 任务无法读取，无法执行取消（只拒绝确认）")
+            return (
+                f"开始之前我需要再核对一次你的 Minecraft 身份，但{reason}，"
+                "这次「确认」我先不执行。请稍后再试或重新绑定。"
+            )
         cancelled = False
+        cancel = getattr(runtime, "cancel", None)
         if callable(cancel):
             try:
-                await cancel(str(record.task_id), reason="follow identity no longer valid")
+                await_cancel = cancel(task_id, reason="follow identity re-check failed")
+                # cancel 可能是同步的也可能是异步的（测试桩/真 runtime 都有）
+                if hasattr(await_cancel, "__await__"):
+                    await await_cancel
                 cancelled = True
             except Exception:
-                self._log.exception("[Task/QQ] follow re-check: 取消失败 task=%s", record.task_id)
-        detail = (
-            "这个跟随任务我取消了。重新绑定后再试。"
-            if cancelled
-            else ("这个跟随任务我暂时停不下来，但我不会开始执行它。请稍后再试一次「停止」。")
-        )
-        return "你的 Minecraft 身份绑定和计划对不上了（可能已解除、换号或换了服务器），" + detail
-
-    def _follow_veto_message(self, reason: str) -> str:
-        """fail-closed 的统一否决文案（原因写给用户，细节在日志/审计里）。"""
-        self._log.warning("[Task/QQ] follow re-check vetoed: %s", reason)
+                self._log.exception(
+                    "[Task/QQ] follow re-check: 取消失败 task=%s（确认仍被拒绝）", task_id
+                )
+        if cancelled:
+            self._log.info("[Task/QQ] follow re-check: 已取消待确认跟随任务 task=%s", task_id)
+            return (
+                f"开始之前我需要再核对一次你的 Minecraft 身份，但{reason}，"
+                "这个跟随任务我取消了。请稍后再试或重新绑定。"
+            )
         return (
             f"开始之前我需要再核对一次你的 Minecraft 身份，但{reason}，"
-            "这次「确认」我先不执行。请稍后再试或重新绑定。"
+            "这次「确认」我先不执行，跟随任务暂时停不下来（取消未能确认）。"
+            "请稍后再试一次「停止」。"
         )
 
     def _server_id(self) -> str:

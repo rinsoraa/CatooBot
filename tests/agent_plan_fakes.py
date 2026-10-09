@@ -192,6 +192,13 @@ class PlanRig:
             allow_medium=self.allow_medium,
             follow_timeout_seconds=120.0,
         )
+        #: 规划器（真 BoundedAgentPlanner；SQLite 真库测试复用同一实例）
+        self.planner = BoundedAgentPlanner(
+            allow_safe=True,
+            allow_low=True,
+            allow_medium=self.allow_medium,
+            follow_timeout_seconds=120.0,
+        )
         self.service = AgentPlanService(
             store=self.store,
             planner=planner,

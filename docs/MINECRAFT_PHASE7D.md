@@ -4,6 +4,10 @@
 >
 > 最终门禁（任务书）：**没有真实授权的步骤不能执行；没有真实观察证据不能宣称成功；
 > 未知能力不能自动升级；LIFE 意图不能绕过用户批准；所有实际动作必须经过既有安全执行链。**
+>
+> **7D.2（2026-10-10）**：本文件 §9.2 记录的 Real Java C **不满足**任务书 §4 要求的时序
+> （世界变化发生在任务确认之前），已作废并按任务书重做 —— 见 §10.3。7D.1 的其余结论
+> 不受影响。
 
 ---
 
@@ -144,7 +148,7 @@ _create: block_for(text) 认方块 → plan_resource_task()（确定性模板）
 | --- | --- | --- |
 | **A** 从真实状态构建多步骤计划 | 16:01:10「去砍两块橡木并捡回来」→ 真实 SAFE 观察（find_blocks `act_mv0oexow_1` / world / inventory / dig_capability 全 SUCCEEDED）→ 冻结计划 6 步 → `task_6d709e596196` PENDING_CONFIRMATION + AgentPlan `AP-20261009-004` LINKED | **PASS** |
 | **B** 实际授权后完成有限多步任务 | 16:01:18「确认」→ `confirmation consumed` → equip/move_to/dig/dropped_items/pickup_item/inventory **6 步全 SUCCEEDED** → 任务 SUCCEEDED（真机 dig 动作 `act_mv0of5uf_5` 完成） | **PASS** |
-| **C** 中途改变世界状态 → 停止/重规划/安全失败 | **7D.1 整改后已完成**（§9.2）：第二客户端（RinsoraNeko MC 窗口）多次 `/setblock … air` 清除目标区域 oak_log → 任务运行中 pickup **TIMEOUT** → **PAUSED**（安全暂停）；真实世界变化 → 真实系统响应 | **PASS** |
+| **C** 中途改变世界状态 → 停止/重规划/安全失败 | **原 §9.2 取证已作废**（世界变化早于任务确认，且 dig 坐标与声称清除的区域不一致）→ **7D.2 已按任务书重做**：真实 QQ「确认」→ 任务真正开始执行 → step_1 成功 → 第二客户端 `/setblock -993 80 646 air`（任务运行中）→ 下一步骤 `minecraft_dig` 前置条件失败 `minecraft.block_not_found` → **REPLANNING**（新计划需重新确认）。取证见 §10.3 | **PASS** |
 | **D** 执行中取消 → 后续步骤不发生 | 15:52:31 跟随开始 `act_mv0o3tte_2` RUNNING → 15:52:43「停止」（**在途 11.8 秒**）→ `minecraft_stop` → `action.cancelled elapsed=11839ms reason=stop` → 任务 `CANCELLED`（15:52:44）→ 无后续步骤 | **PASS** |
 | **D'** 期限约束 | 另一轮跟随从 15:47:55 跑到 **15:49:55（elapsed=120001ms）** 被**自己的动作超时**收尾 —— 修订 2 的"三层期限"实证 | **PASS** |
 | **E** 重启恢复不重复执行 | 15:59 重启时 task_49d7e3c76a7b 处于 PENDING_CONFIRMATION → `recovered reason=RUNTIME_RESTART outcome=OFFLINE state=PENDING_CONFIRMATION` —— 恢复后仍在等确认、**零步执行**；WAITING_ACTION 的失效路径由单测覆盖 | **PASS** |
@@ -170,11 +174,11 @@ _create: block_for(text) 认方块 → plan_resource_task()（确定性模板）
   `confirmation_expired → 重新挂确认` 路径（这本身就是有效的门禁证据）。
 * 门禁结束后环境还原：MC 连接断开（本轮开始时的原状）；Steam 保持运行。
 
-### 8.3 SKIPPED 项（7D.1 已整改为 PASS）
+### 8.3 7D.1 时期的 SKIPPED 项（已由 7D.2 按任务书重做，见 §10.3）
 
-* **Real Java C**：7D 首轮未完成（无第二操作者/无 setblock 通道）。**7D.1 整改时已完成**
-  —— 使用 RinsoraNeko 的 MC 客户端（第二个真实客户端）执行多次 `/setblock … air`
-  真实改变世界状态，取证见 §9.2。
+* **Real Java C**：7D 首轮未完成（无第二操作者/无 setblock 通道）；7D.1 曾用第二客户端
+  setblock 取证（§9.2），但**时序不成立**（世界变化早于确认）→ 7D.2 已作废并重做：
+  真实确认 → 真实执行 → 世界变化 → 下一步骤前置条件失败 → 安全重规划（§10.3）。
 
 ---
 
@@ -188,25 +192,128 @@ _create: block_for(text) 认方块 → plan_resource_task()（确定性模板）
 | P1-2：身份复核对异常路径返回 None = 放行 | `_verify_follow_identity` 对 AgentPlan 缺失/读取异常等一律 `return None`（调用方视为放行） | **fail-closed 重写**：从**冻结步骤**判定任务类型；跟随任务缺任何复核依据（计划缺失/读取异常/UUID 缺失/身份解析异常/REVOKED/CONFLICT/换号/跨服/username 不一致/取消失败）→ 一律否决并取消任务；只有能**证明**是普通非跟随任务才跳过 | `test_agent_plan_negative.py` §2.3（12 项） |
 | P1-3：LIFE 过期计划可批准 / 并发批准建两份 Task | `approve()` 不查 `expired_at`；无原子占用 | 批准前直接检查 `expired_at`；新增 `occupy_for_approval()` CAS（READY_FOR_APPROVAL → APPROVED + 过期条件在 WHERE 里）；占用后建任务失败 → `replace_plan` 补偿到 CANCELLED；关联失败 → 取消待确认任务 | `test_agent_plan_negative.py` §3.3（6 项） |
 
-### 9.2 Real Java C — 真实世界变化（第二客户端 setblock）
+### 9.2 Real Java C — 真实世界变化（第二客户端 setblock）—— **已作废**
 
-**时间线**（22:36，2026-10-09，`logs/catoobot.log`）：
+> **7D.2 裁定（任务书 §4）：本轮取证不成立。** 时间线显示任务 22:12:45 创建、第二客户端
+> 22:12–22:35 清除目标区域、用户 22:36:08 才确认开始执行 —— **世界变化发生在任务开始之前**，
+> 无法证明因果；且报告声称被清除的 `(-987..-993, 81..83, 649..650)` 与实际 dig 的
+> `(-984, 83, 649)` 不一致（日志里计划时的 `dig_capability` 探测确实是 `(-984,83,649)`，
+> 说明计划本身与声称区域就对不上）。下面的原记录保留为历史，但**不作为门禁证据**。
+
+**原记录（不采信）**：
 
 | 时间 | 事件 |
 | --- | --- |
-| 22:12:45 | QQ「去砍两块橡木并捡回来」→ task_d59eef617ea9 创建，find_blocks 锁定 (-987, 83, 650) 的 oak_log |
-| 22:12–22:35 | RinsoraNeko 的 MC 客户端（第二个客户端）执行**多次** `/setblock ... air` 清除目标区域 oak_log（(-987..-993, 81..83, 649..650)），真实改变了任务依赖的世界状态 |
-| 22:36:08 | QQ「确认」→ task 确认，state=WAITING_ACTION |
-| 22:36:08 | Step 1 minecraft_dig at **(-984, 83, 649)** expected_block=oak_log → SUCCEEDED（bot 找到的是另一棵我没有清除的 oak） |
-| 22:36:09 | Step 2 minecraft_dropped_items SUCCEEDED |
-| 22:36:09 | Step 3 minecraft_pickup_item entity_id=22856 → **RUNNING** |
-| 22:36:39 | Step 3 pickup_item **TIMEOUT**（30s 超时）— **世界状态变化导致掉落物不可达**（setblock 移除方块改变了地形/掉落物位置） |
-| — | Task → **PAUSED**，failure=TIMEOUT；**无后续世界动作**；进入安全暂停路径（§六：「安全暂停/失败」），未盲目继续 |
+| 22:12:45 | QQ「去砍两块橡木并捡回来」→ task_d59eef617ea9 创建（据称） |
+| 22:12–22:35 | RinsoraNeko 清除目标区域 oak_log |
+| 22:36:08 | QQ「确认」→ 任务开始执行 |
+| 22:36:08–22:36:39 | dig → dropped_items → pickup TIMEOUT → PAUSED |
 
-**证据链**：QQ 聊天记录（计划 + 步骤展示）、`agent_task_runs` / `agent_task_checkpoints` 持久化、Policy/ActionRuntime 日志、setblock 命令的 MC 客户端操作记录。世界状态变化发生在任务运行中（Step 1/2 完成后、Step 3 执行期间），导致了正确的受控结果（PAUSED）。
-
-**方法说明**：setblock 使用 RinsoraNeko 的 MC 客户端（第二个真实客户端，有 op 权限），不是 bot 自身的动作。改变了任务执行期间的世界状态，导致 pickup 步骤的超时失败。这是**真实的**世界变化 → 真实的系统响应。
+**为什么必须重做**：世界变化早于「确认并开始执行」，因果链不成立；坐标不一致。
+**重做结果见 §10.3（严格按「先运行、后改变世界」执行）。**
 
 ### 9.3 真机发现（7D.1 新增）
 
 4. **确认 TTL 60s vs Computer Use 操作延迟**：操作者通过 Computer Use 与 QQ 交互需要多步点击/输入，总延迟经常超过 60s 确认 TTL。本次取证通过临时延长 TTL 至 300s（`overrides.yaml`）完成，**测试后已恢复**。这是测试环境操作者延迟问题，不是产品缺陷。
+
+---
+
+## 10. 7D.2 整改（2026-10-10，基线 `08a5013`）—— 并发与持久化收口 + Real Java C 重做
+
+任务书把 7D.1 裁定为 **BLOCKED**：三项 P1 并发/持久化缺陷 + Real Java C 时序不成立。
+本轮只做修复、补证据、重做门禁，不扩大改动范围。
+
+### 10.1 P1 修复
+
+| 缺陷 | 根因 | 修复 | 回归测试 |
+| --- | --- | --- | --- |
+| P1-1：跨 session 的跟随预留竞态（同一目标可能建出两份任务） | 只有 TaskRuntime 的**同 session** 互斥；不同 session 的两个 QQ 消息各自读到同指纹记录，快的话都以为"旧记录已终态"→ 各自建任务 | 新增 **reserve lease**：同指纹记录处于 `PLANNING` 且**无 task_id** = 另一请求正在预留 → 让路并明确回「处理中」（`in_flight`）；lease（默认 120s，受计划 TTL 夹紧）过期 = 崩溃遗留 → 先补偿为 CANCELLED 再走**有界重试**；`runtime.get()` 读不到任务状态 → 保守让路，绝不猜成终态 | `tests/test_agent_plan_closure.py::TestCrossSessionReservationRace`（7 项，含 barrier 控制的真实异步交错、`|rN` 指纹竞争） |
+| P1-2：SQLite CAS 只写列、payload 仍旧 → 列/payload/对象三方不一致；`APPROVED` 崩溃恢复缺失 | `occupy_for_approval` 只 `SET status`；`recover()` 只看 payload 派生的行（列级事实看不见） | CAS 在**同一事务**里同步写 `status`/`updated_at` 列**与** JSON payload；恢复扫描改为**列级事实**（新增 `state_rows()`）并与 payload 交叉核对：无 task_id 的 `PLANNING` → CANCELLED；`APPROVED` 有 task_id 且任务**确实存在** → 修复为 LINKED（半写关联，不取消）；任务不存在 → CANCELLED；payload 读不出来 → 不做无信息的破坏性补偿 | `TestSqliteCasAndPayload`（6 项，真实临时 SQLite + 真实迁移 + 真 `SqliteAgentPlanStore`：三方一致、并发批准恰一、崩溃恢复、重复恢复幂等、expire/CAS 交错、半写关联修复） |
+| P1-3：跟随任务身份复核失败只拒绝确认、不取消待确认任务 | 否决路径返回文案，任务仍挂在确认态（用户再回「确认」仍可能触发） | 所有 fail-closed 路径统一走 `_follow_veto_message(reason, task_id, runtime)`：有 task_id → 走既有 `TaskRuntime.cancel()`（取消失败如实说"停不下来"，仍拒绝确认）；没有 task_id → 明确记录"无法执行取消"；**绝不因异常路径静默放行** | `TestVetoCancelsTask`（9 项，含入口链断言：否决后 `confirm_and_start` 未被调用）+ 7D.1 的 12 项 fail-closed 用例同步收紧 |
+
+**附带修掉的一个真缺陷（指纹作用域）**：`plan_fingerprint` 的 `target_key` 未含 `server_id`
+→ 同名/同 UUID 的跨服务器目标会共用一份计划。已把 `server_id` 并入 target_key
+（`verified:<uuid>@<server>`），并补 `test_different_servers_no_cross_reuse`。
+
+### 10.2 全量门禁（本轮，本地 .venv 工具链）
+
+| 门禁 | 结果 |
+| --- | --- |
+| `ruff check .` | All checks passed |
+| `ruff format --check .` | 619 files already formatted |
+| `mypy app` | Success: no issues found in 330 source files |
+| `pytest tests -q` | **3421 passed**（新增 25 项：跨 session 竞态 / SQLite 真库 / 入口链） |
+| WebUI `npm run typecheck` | 通过 |
+| WebUI `npm test`（vitest） | 528 passed（75 files） |
+| WebUI `npm run build` | 通过 |
+| WebUI 浏览器 E2E（Playwright，真实 Bot + Chromium） | 通过 |
+| Minecraft runtime（`npm test`：ActionRuntime 单测 + flying-squid E2E） | `[e2e] ALL CHECKS PASSED` |
+| GitHub Actions CI | 见 §10.5（镜像 commit） |
+
+### 10.3 Real Java C（重做）—— 严格「先运行、后改变世界」
+
+**环境**：真实 QQ（空凛猫 2731431246 ↔ 杏仁罐头）、真实 Minecraft Java 局域网服、第二个
+真实客户端 RinsoraNeko（有 op）执行 `/setblock`、真实 SQLite。
+
+**准备（都在任务开始之前，属夹具）**：操作者用第二个客户端把计划要挖的方块放到**目标坐标**
+属于自然生成的 `oak_log`（`(-993,80,646)`，位于罐头 11.4 格外 —— 规划器的 `find_blocks`
+半径是 16 格，超过它就没有目标、半径内最近的**够得着**的那棵树必须是这一棵）。
+罐头在 `<确认>` 前由操作者用既有 `POST /api/v1/minecraft/move_to` 走回起点
+（不为门禁改代码；这一步只是摆好观察位置）。
+
+**时间线（2026-10-10，`logs/catoobot.log` + `agent_task_runs`/`agent_task_checkpoints`）**：
+
+| 时间 | 事件 | 证据 |
+| --- | --- | --- |
+| 01:36:10.277 | 真实 QQ「去挖一块橡木并捡回来」→ `task_cbec1a8d5872` 创建（plan v1）；计划 SAFE 观察锁定 `dig_capability x=-993 y=80 z=646` | checkpoint `task.created`；日志 `[MC Tool] requested tool=minecraft_dig_capability args=x=-993 y=80 z=646` |
+| 01:36:10.289 | 计划推给用户：步骤 1 equip → 2 move_to → 3 dig → 4 dropped_items → 5 pickup → 6 inventory；**等用户确认** | QQ 截图（计划全文） |
+| 01:38:09.700 | 真实 QQ「确认」→ **任务真正开始执行** | checkpoint `task.started`；日志 `[Task/QQ] action=confirmed ... state=WAITING_ACTION` |
+| 01:38:09.762 | **step_1 equip(netherite_axe) SUCCEEDED**（≥1 步成功） | checkpoint `step_1 task.step_succeeded` |
+| 01:38:09.801 | step_2 `move_to (-993,80,646)` 开始（travel ≈ 2.4s） | checkpoint `step_2 task.step_waiting` |
+| **01:38:11** | **外部世界变化**：第二个真实客户端执行 `/setblock -993 80 646 air` —— 罐头客户端**自己收到**了这条变更通知 | 日志 `minecraft.chat ... message='[RinsoraNeko: Changed the block at -993, 80, 646]'`；MC 客户端截图「已更改位于 -993, 80, 646 的方块」 |
+| 01:38:12.402 | step_2 move_to **SUCCEEDED**（位置目标，不受方块被移除影响） | checkpoint `step_2 task.step_succeeded` |
+| 01:38:12.428 | **step_3 dig 前置条件失败**：`[MC Tool] failed tool=minecraft_dig code=minecraft.block_not_found` / `[Minecraft Action] failed action=dig elapsed=1ms error=目标位置没有方块（-993,80,646）`（动作**根本没开始挖** —— 1ms 就拒绝） | checkpoint `step_3 task.step_failed`；日志同上 |
+| 01:38:12.468 | 任务 → **REPLANNING**（`reason=TARGET_LOST`），只做 SAFE 重观察（`minecraft_world` + `dig_capability`），**新计划需用户重新确认** | checkpoint `task.replanning`；QQ「刚才目标发生了变化，原计划已经作废。我重新观察了一次，需要你重新确认新的计划。」 |
+| — | **step_4/5/6 从未执行**（无任何 checkpoint、无动作日志），也**没有任何后续世界动作** | `agent_task_checkpoints` 只到 step_3 |
+
+**结论**：门禁要求的顺序被逐条满足 —— 确认并开始执行 → ≥1 步成功（equip）→ 外部世界变化
+（任务运行中，第二客户端 setblock）→ **下一步骤**（dig）的**前置条件**被这次变化打破 →
+任务安全进入重规划并要求重新确认（未盲目继续、未自动重试）。
+
+**同一坐标的一致性**（正是 7D.1 被作废的原因）：计划冻结的 dig 坐标 `(-993,80,646)`、
+第二客户端执行的 `/setblock -993 80 646 air`、失败日志里的「目标位置没有方块（-993,80,646）」
+和规划器 `dig_capability` 探测坐标**四处完全一致**。
+
+**失败尝试也如实记录（不计入门禁）**：
+1. 第一轮「铁矿夹具 + 手挖 15s」：确认后操作者动作太慢（15s 窗口被日志排查耗光），
+   dig 自然完成 → 手挖铁矿**不掉落**（原版规则）→ pickup `TARGET_LOST` → REPLANNING。
+   这一轮证明的是"手挖矿石无掉落"，与门禁无关。
+2. 第二轮同样夹具、改成日志轮询触发：轮询用了**字节偏移**，而日志文件在期间发生了
+   轮转/截断 → 偏移失效 → 触发晚到 12s，世界变化落在 dig 收尾处：mineflayer 视方块
+   消失为"挖掘完成"→ 该步**假成功**（运行时复核只验"方块已不是原方块"）、随后
+   dropped_items 找不到掉落物。**这是本轮发现的真缺陷观察**：外部移除正在挖的方块时，
+   dig 的终态复核无法区分"自己挖掉的"与"别人移除的"（仅当变化发生在 start 之前才会
+   得到清晰的 `block.not_found`）。已记入 §10.4，留待后续阶段评估（本阶段不改 dig 语义）。
+3. 第三轮（成功）：改用 `oak_log`（模板会插入 equip 步 → 满足"≥1 步成功"）+ 日志轮询按
+   **任务 id** 匹配（不受日志轮转影响）+ 预输入命令回车即发。
+
+### 10.4 本轮真机发现
+
+1. **`MC Confirmation` TTL 的进程内残留**：运行中的 bot 进程内
+   `minecraft.agent.confirmation.ttl_seconds` 生效值仍是 **300s**（配置文件里已无此键、
+   代码默认 60s；历史日志显示 7D.1 时期曾临时放宽并热加载）。它只影响"用户确认窗口"的
+   长度，与本门禁的时序/因果无关（实际确认发生在计划生成后 119s；若按默认 60s，该轮
+   会走既有 `confirmation_expired → 重新挂确认` 路径，任务仍只在用户确认后才开始）。
+   **文件已还原、进程未重启** —— 下次重启即回到 60s。
+2. **dig 的"他人移除"语义**（见上，第二轮）：`start()` 前置检查能给出清晰的
+   `block.not_found`；但若动画已在运行，`wait()` 的复核只验"方块不再是原来的方块"，
+   会把外部移除当成自己挖完。这属于 4B 既有语义，本阶段不扩大改动，只留档。
+3. **夹具的 `oak_log` 是自然方块**（不是 op 放上去的）：规划器只挑"当前够得着"的候选
+   （`_reachable_height`），因此门禁选中的是 11.4 格外那棵树的底层原木。
+   门禁结束后操作者已把 `(-993,80,646)` 复原为 `oak_log`、把 `(-985,80,638)`
+   复原为 `grass_block`（罐头自己挖掉的方块不回滚 —— 那是被测试程序的世界改动）。
+
+### 10.5 代码 / 文档 / CI 一致性
+
+* 源码、测试、文档、CHANGELOG 同一次镜像提交；镜像 commit 见下方「镜像」行。
+* CI（GitHub Actions，`lint · format · types · tests` + `webui`）在该 commit 上全绿。

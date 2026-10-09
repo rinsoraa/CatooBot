@@ -40,6 +40,7 @@ class AgentPlanStore(Protocol):
     async def replace_plan(self, plan: AgentPlan) -> AgentPlan | None: ...
     async def occupy_for_approval(self, plan_id: str, *, now: float) -> AgentPlan | None: ...
     async def count_by_stem(self, stem: str) -> int: ...
+    async def state_rows(self, *, limit: int = 50) -> list[dict[str, str]]: ...
     async def log_event(
         self,
         *,
@@ -133,6 +134,14 @@ class InMemoryAgentPlanStore:
         """同词干（指纹去掉最后一段）的既有行数 —— follow 重试序号的确定性依据。"""
         stem = str(stem)
         return sum(1 for item in self._rows.values() if item.fingerprint.startswith(stem))
+
+    async def state_rows(self, *, limit: int = 50) -> list[dict[str, str]]:
+        """恢复扫描用：**行级事实**（与 SQLite 实现同形）。"""
+        rows = [self._rows[key] for key in reversed(self._order)]
+        return [
+            {"plan_id": item.plan_id, "status": item.status, "task_id": item.task_id}
+            for item in rows[: max(1, int(limit))]
+        ]
 
     async def log_event(
         self,
@@ -340,17 +349,37 @@ class SqliteAgentPlanStore:
         return await self.get(plan.plan_id)
 
     async def occupy_for_approval(self, plan_id: str, *, now: float) -> AgentPlan | None:
-        """批准的原子占用（7D.1 P1-3）：单条 CAS UPDATE，状态与过期条件都在 WHERE 里。"""
+        """批准的原子占用（7D.1 P1-3 + 7D.2 P1-2）。
+
+        单条 CAS UPDATE，**同一事务里同步更新独立列与 JSON payload**：
+        - WHERE 限制 plan_id + 当前状态 READY_FOR_APPROVAL + 未过期（不靠 Python 读后写）；
+        - SET 同时改 ``status`` / ``updated_at`` 列**和** ``payload`` 里的对应字段 ——
+          否则进程在占用成功后中断，列说 APPROVED、payload 说 READY，`get()` 读出来自相矛盾。
+        - 需要两个并发批准恰一个成功：先读当前 payload（供 CAS 写回），事务里的
+          UPDATE 只在状态仍是 READY 时生效。
+        """
         moment = float(now)
+        row = await self._db.fetchone(
+            "SELECT payload FROM task_agent_plans WHERE plan_id = ?", (str(plan_id),)
+        )
+        current = _from_row(row)
+        if current is None or current.status != PlanStatus.READY_FOR_APPROVAL.value:
+            return None
+        if current.expired_at(moment):
+            return None
+        payload = current.to_payload()
+        payload["status"] = PlanStatus.APPROVED.value
+        payload["updated_at"] = moment
 
         def _run(conn: Any) -> bool:
             cursor = conn.execute(
-                "UPDATE task_agent_plans SET status = ?, updated_at = ?"
+                "UPDATE task_agent_plans SET status = ?, updated_at = ?, payload = ?"
                 " WHERE plan_id = ? AND status = ?"
                 " AND (expires_at <= 0 OR expires_at > ?)",
                 (
                     PlanStatus.APPROVED.value,
                     moment,
+                    _dump(payload),
                     str(plan_id),
                     PlanStatus.READY_FOR_APPROVAL.value,
                     moment,
@@ -368,6 +397,27 @@ class SqliteAgentPlanStore:
             (str(stem) + "|%",),
         )
         return int((row or {}).get("n") or 0)
+
+    async def state_rows(self, *, limit: int = 50) -> list[dict[str, str]]:
+        """恢复扫描用：**列级事实**（status / task_id 列）。
+
+        payload 与列理论上同事务写、总是一致；但崩溃或外部写入可能只留下列。
+        恢复必须看列 —— 只看 payload 会把"列说 APPROVED + 有 task_id、payload 说
+        READY"的半写关联当成普通计划跳过（7D.2 §2.2.5）。
+        """
+        rows = await self._db.fetchall(
+            "SELECT plan_id, status, task_id FROM task_agent_plans"
+            " ORDER BY created_at DESC, id DESC LIMIT ?",
+            (max(1, int(limit)),),
+        )
+        return [
+            {
+                "plan_id": str(row.get("plan_id") or ""),
+                "status": str(row.get("status") or ""),
+                "task_id": str(row.get("task_id") or ""),
+            }
+            for row in rows
+        ]
 
     async def log_event(
         self,

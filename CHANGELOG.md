@@ -1,5 +1,32 @@
 # Changelog
 
+## Minecraft Phase 7D.2 — Concurrency & Persistence Closure
+
+* **P1-1 跨 session 的跟随预留竞态**：同指纹记录处于 `PLANNING` 且**无 task_id**
+  = 另一请求正在预留 → 让路并回「处理中」（`in_flight`），绝不立刻另建 `|rN` 任务；
+  新增 **reserve lease**（默认 120s，受计划 TTL 夹紧），lease 过期（崩溃遗留）先
+  补偿为 CANCELLED 再走有界重试；任务状态读不出来 → 保守让路。
+* **P1-2 CAS 与崩溃恢复的列/payload 一致性**：`occupy_for_approval` 在同一事务里
+  同步写 `status` 列**与** JSON payload；`recover()` 改为按**列级事实**扫描
+  （新增 `state_rows()`）—— 无 task_id 的 `PLANNING` → CANCELLED；`APPROVED` 有
+  task_id 且任务确实存在 → 修复为 LINKED（半写关联，不取消）；任务不存在 → CANCELLED；
+  payload 读不出来 → 不做无信息的破坏性补偿。重复恢复幂等。
+* **P1-3 身份复核否决必须真取消**：所有 fail-closed 路径统一走
+  `_follow_veto_message(reason, task_id, runtime)` → 走既有 `TaskRuntime.cancel()`
+  取消待确认任务；取消失败如实说「停不下来」但**仍拒绝确认**；没有 task_id 时明确
+  记录「无法执行取消」。
+* **指纹作用域**：`target_key` 并入 `server_id`（`verified:<uuid>@<server>`）——
+  不同服务器的同名/同 UUID 目标不再共用一份计划。
+* **测试**：新增 **25** 项（`tests/test_agent_plan_closure.py`：跨 session 竞态 ·
+  SQLite 真库 CAS/崩溃恢复/半写关联 · 否决取消与入口链），并把 7D.1 的 fail-closed
+  用例收紧到「必须取消」语义。全量 **3421 passed**。
+* **真机（2026-10-10，重做 Real Java C）**：真实 QQ「确认」→ 任务真正开始执行 →
+  step_1 equip SUCCEEDED → 第二真实客户端 `/setblock -993 80 646 air`（任务运行中）→
+  step_3 `minecraft_dig` 前置条件失败 `minecraft.block_not_found`（动作 1ms 即拒）→
+  任务 **REPLANNING**（新计划需重新确认，无后续世界动作）。计划冻结坐标、setblock 坐标、
+  失败日志坐标、规划器探测坐标四处一致。完整时间线见 `docs/MINECRAFT_PHASE7D.md` §10.3；
+  **7D.1 的 §9.2 取证已作废**（世界变化早于确认、坐标不一致）。
+
 ## Minecraft Phase 7D — Agent Harness: Bounded Planning & Authorized Execution
 
 * **规划与执行仍然分离，且分层更清楚**（§一审计 + 修订 3）：新增 `AgentPlan` ——

@@ -275,6 +275,12 @@ class _EntryHarness:
             def exception(self, *a: Any, **k: Any) -> None:
                 logs.append(str(a))
 
+            def info(self, *a: Any, **k: Any) -> None:
+                logs.append(str(a))
+
+            def debug(self, *a: Any, **k: Any) -> None:
+                logs.append(str(a))
+
         entry._log = Log()  # type: ignore[method-assign]
         entry._cancelled = cancelled  # type: ignore[attr-defined]
         entry._logs = logs  # type: ignore[attr-defined]
@@ -289,13 +295,15 @@ class TestIdentityRecheckFailClosed:
         harness = _EntryHarness(record=record, plan=None)
         veto = await harness.entry._verify_follow_identity(_Identity())
         assert veto is not None and "计划关联" in veto
-        assert harness.entry._cancelled == []
+        # 7D.2 §3.3：缺复核依据 → 不只拒绝确认，还要取消待确认任务
+        assert harness.entry._cancelled == ["T-1"]
 
     async def test_plan_lookup_error_is_refused(self) -> None:
         record = _pending_record("T-1", [_Step("minecraft_follow_player", {"username": "R"})])
         harness = _EntryHarness(record=record, plan=None, plan_error=True)
         veto = await harness.entry._verify_follow_identity(_Identity())
         assert veto is not None
+        assert harness.entry._cancelled == ["T-1"]
 
     async def test_current_read_error_is_refused(self) -> None:
         harness = _EntryHarness(record=None, current_error=True)
@@ -316,6 +324,7 @@ class TestIdentityRecheckFailClosed:
         harness = _EntryHarness(record=record, plan=plan)
         veto = await harness.entry._verify_follow_identity(_Identity())
         assert veto is not None and "不完整" in veto
+        assert harness.entry._cancelled == ["T-1"]
 
     @pytest.mark.parametrize(
         "resolved",
@@ -385,6 +394,7 @@ class TestIdentityRecheckFailClosed:
         harness = _EntryHarness(record=record, plan=plan, server_id="")
         veto = await harness.entry._verify_follow_identity(_Identity())
         assert veto is not None and "服务器" in veto
+        assert harness.entry._cancelled == ["T-1"]
 
     async def test_cancel_failure_still_vetoes(self) -> None:
         record = _pending_record("T-1", [_Step("minecraft_follow_player", {"username": "Rinsora"})])
@@ -449,6 +459,7 @@ class TestIdentityRecheckFailClosed:
         harness = _EntryHarness(record=record, plan=None)
         veto = await harness.entry._verify_follow_identity(_Identity())
         assert veto is not None and "目标玩家" in veto
+        assert harness.entry._cancelled == ["T-1"]
 
 
 # ---------------------------------------------------------------- §3.3 批准

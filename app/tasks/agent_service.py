@@ -43,6 +43,9 @@ from app.tasks.proposal_service import (  # noqa: F401 - 语义复用
 MAX_LIFE_PLANS_PER_PASS = 3
 #: WebUI / 上下文只读展示条数
 VIEW_LIMIT = 10
+#: 7D.2 §1.2.5：跟随预留租约（秒）。PLANNING 记录在这个时长内 = "另一请求正在处理中"
+#: （并发让路）；超过它 = 崩溃遗留，终结后才允许有界重试。上限始终 ≤ plan_ttl_seconds。
+DEFAULT_RESERVE_LEASE_SECONDS = 120.0
 
 #: LIFE 计划批准的关键词（修订 1：明确区分【批准计划】与【确认执行】）
 APPROVE_PLAN_COMMANDS: tuple[str, ...] = ("批准", "批准计划", "同意这个计划")
@@ -70,6 +73,7 @@ class AgentPlanService:
         plan_ttl_seconds: float = DEFAULT_PLAN_TTL_SECONDS,
         replan_budget: int = DEFAULT_REPLAN_BUDGET,
         view_limit: int = VIEW_LIMIT,
+        reserve_lease_seconds: float = DEFAULT_RESERVE_LEASE_SECONDS,
         clock: Callable[[], float] = time.time,
         logger: Any = None,
     ) -> None:
@@ -82,6 +86,11 @@ class AgentPlanService:
         self.plan_ttl_seconds = float(plan_ttl_seconds)
         self.replan_budget = int(replan_budget)
         self.view_limit = max(1, int(view_limit))
+        #: 7D.2 §1.2.5：预留租约 —— PLANNING 记录在这个时长内视为"另一请求正在处理"，
+        #: 并发请求让路；超过它 = 崩溃遗留，可终结后重试（上限受 plan_ttl 约束）。
+        self.reserve_lease_seconds = max(
+            1.0, min(float(reserve_lease_seconds), float(plan_ttl_seconds))
+        )
         self._clock = clock
         self._log = logger
         self.created_count = 0
@@ -291,7 +300,8 @@ class AgentPlanService:
         base = plan_fingerprint(
             source=PlanSource.USER,
             objective=objective,
-            target_key=f"{target.status}:{target.player_uuid or ''}",
+            # 7D.2 §1.2.6：server_id 也进指纹 —— 不同服务器的同名/同 UUID 目标绝共用一份计划
+            target_key=f"{target.status}:{target.player_uuid or ''}@{target.server_id or ''}",
             bucket=plan_time_bucket(moment),
         )
         stem = base.rsplit("|", 1)[0]
@@ -409,13 +419,48 @@ class AgentPlanService:
         ``reserve`` 是新的占用记录，调用方继续建任务。
         """
         existing_task = str(reserved.task_id or "")
+        # 7D.2 P1-1：**正在预留中的记录（PLANNING 且无 task_id）= 另一请求可能正在
+        # 创建任务**。此时让路（明确"处理中"），绝不立即生成 |rN 新任务 —— 否则
+        # 两个并发请求（尤其不同 session，TaskRuntime 的同会话互斥拦不住）各建一份任务。
+        if not existing_task and reserved.status == PlanStatus.PLANNING.value:
+            reserved_age = max(0.0, float(moment) - float(reserved.created_at))
+            if reserved_age <= self.reserve_lease_seconds:
+                return (
+                    {
+                        "action": "already_planned",
+                        "reply": "这个请求我正在处理中，稍等一下再看结果。",
+                        "outcome": result.outcome.value,
+                        "plan": reserved,
+                        "record": None,
+                        "in_flight": True,
+                    },
+                    reserved,
+                )
+            # lease 过期 = 崩溃遗留的预留（recover 也会清，这里是请求路径上的兜底）
+            # → 先终结它，再走有界重试
+            await self._compensate_reserved_plan(
+                reserved, reason="reserve_lease_expired", now=moment
+            )
         if existing_task and self.runtime is not None:
             getter = getattr(self.runtime, "get", None)
             if callable(getter):
                 try:
                     old_record = await getter(existing_task)
-                except Exception:  # noqa: BLE001 - 读不到就按无任务处理
-                    old_record = None
+                except Exception:
+                    # 7D.2 §1.2.4：读不到任务状态 ≠ 任务已终态 —— 保守让路，不猜
+                    return (
+                        {
+                            "action": "already_planned",
+                            "reply": (
+                                f"这件事我已经在办了（任务 {existing_task}，状态暂时读不到）；"
+                                "先处理那一件，或者等它结束再说一次。"
+                            ),
+                            "outcome": result.outcome.value,
+                            "plan": reserved,
+                            "record": None,
+                        },
+                        reserved,
+                    )
                 state = str(getattr(getattr(old_record, "state", None), "value", "") or "")
                 if state and not self._task_state_is_terminal(state):
                     return (
@@ -609,7 +654,10 @@ class AgentPlanService:
                 fingerprint=plan_fingerprint(
                     source=PlanSource.LIFE,
                     objective=objective,
-                    target_key=f"{target.status}:{target.player_uuid or ''}",
+                    # 7D.2 §1.2.6：server_id 也进指纹（不同服务器绝不共用一份计划）
+                    target_key=(
+                        f"{target.status}:{target.player_uuid or ''}@{target.server_id or ''}"
+                    ),
                     proposal_id=str(proposal.proposal_id),
                     bucket=plan_time_bucket(moment),
                 ),
@@ -847,34 +895,74 @@ class AgentPlanService:
         return expired
 
     async def recover(self, *, now: float | None = None) -> dict[str, Any]:
-        """重启恢复（§六）：过期清理 + **孤儿 PLANNING 补偿**；绝不复活终态、绝不自动重规划。
+        """重启恢复（§六）：过期清理 + 孤儿 PLANNING/APPROVED 补偿；绝不复活终态。
 
-        7D.1 P1-1 的崩溃边界：reserve（PLANNING 落盘）与 link（建任务 + 落 LINKED）
-        之间进程中断 → 留下一条没有 task_id 的 PLANNING 记录。它对应的任务**不存在**
-        （还没建），所以补偿 = CANCELLED（可审计），绝不自动重规划或复活。
+        三个崩溃边界（7D.1 P1-1 + 7D.2 P1-2）：
+
+        * reserve（PLANNING 落盘）与 link（建任务 + 落 LINKED）之间中断
+          → 没有 task_id 的 PLANNING 记录。任务**不存在**（还没建）→ CANCELLED；
+        * 批准占用（APPROVED）与"建任务 + 关联"之间中断
+          → 没有 task_id 的 APPROVED 记录。它是**未完成的批准占用**：
+          - 不创建 Task（自动恢复执行 = 越权）；不回退成 READY_FOR_APPROVAL（会被再次批准）；
+          - 补偿为 CANCELLED（可审计），原因写明是"批准占用未完成"；
+        * 关联**半写**（任务确实建了、列说 APPROVED + 有 task_id，payload 还是 READY）
+          → 查得到任务就**修复**为 LINKED（补 task_id；不取消 —— 它可能正等着用户确认），
+          查不到才与真孤儿一样补偿 CANCELLED。
+
+        判据以**行级列事实**为准（``state_rows``）：payload 是读取视图，``status`` /
+        ``task_id`` 列才是 CAS 与唯一索引的判定所在，也是崩溃留下的痕迹。恢复动作前
+        先确认 payload 不是终结态（幂等：第二遍 PLANNING/APPROVED 已不在 → 零动作）。
         """
         moment = self._now(now)
         try:
             expired = await self.expire_due(now=moment)
-            rows = await self.recent(50)
+            rows = await self.store.state_rows(limit=50)
             orphans = 0
-            for plan in rows:
-                if plan.status != PlanStatus.PLANNING.value or plan.task_id:
+            open_count = 0
+            for row in rows:
+                plan_id = str(row.get("plan_id") or "")
+                col_status = str(row.get("status") or "")
+                col_task = str(row.get("task_id") or "")
+                # payload 视图（可能滞后于列：半写态就是这种）
+                plan = await self.store.get(plan_id)
+                if plan is None:
+                    # payload 读不出来 → 不做无信息的破坏性补偿（不猜）
                     continue
-                cancelled = await self.store.update_status(
-                    plan.plan_id,
-                    PlanStatus.CANCELLED,
-                    reason="orphan_planning_recovered",
-                    now=moment,
-                )
-                if cancelled is not None:
+                if plan.open:
+                    open_count += 1
+                if plan.terminal or plan.status == PlanStatus.LINKED.value:
+                    continue  # 终态 / 已关联的计划不碰（重启恢复也不覆盖）
+                if col_status == PlanStatus.PLANNING.value and not col_task:
+                    settled = await self.store.update_status(
+                        plan_id,
+                        PlanStatus.CANCELLED,
+                        reason="orphan_planning_recovered",
+                        now=moment,
+                    )
+                    kind = "reserved_plan"
+                    reason = "orphan_planning_recovered"
+                elif col_status == PlanStatus.APPROVED.value:
+                    # 7D.2 P1-2：批准占用未完成（占用成功但任务还没建/还没关联）。
+                    # APPROVED 没有到 CANCELLED 的状态机出口 —— 用 replace_plan 整行落账
+                    # （补偿/修复不是状态机转移，原因必须写清），并验证任务确实不存在。
+                    settled = await self._recover_orphan_approval(
+                        plan, column_task_id=col_task, now=moment
+                    )
+                    repaired = settled is not None and settled.status == PlanStatus.LINKED.value
+                    kind = "half_written_link" if repaired else "approved_occupation"
+                    reason = (
+                        "half_written_link_repaired" if repaired else "orphan_approval_recovered"
+                    )
+                else:
+                    continue
+                if settled is not None:
                     orphans += 1
                     await self.store.log_event(
-                        plan_id=plan.plan_id,
+                        plan_id=plan_id,
                         event="agentplan.compensated",
-                        reason="orphan_planning_recovered",
+                        reason=reason,
                         at=moment,
-                        detail={"kind": "reserved_plan", "task_id": ""},
+                        detail={"kind": kind, "task_id": col_task},
                     )
         except Exception as exc:  # noqa: BLE001 - 恢复失败只降级
             self.degraded_reason = f"{type(exc).__name__}"
@@ -883,10 +971,41 @@ class AgentPlanService:
             "action": "ok",
             "expired": len(expired),
             "orphans": orphans,
-            "open": sum(1 for item in rows if item.open),
+            "open": open_count,
             "recent": len(rows),
             "reason": "",
         }
+
+    async def _recover_orphan_approval(
+        self, plan: AgentPlan, *, column_task_id: str, now: float
+    ) -> AgentPlan | None:
+        """APPROVED 无 task_id 的恢复补偿（7D.2 P1-2 §2.2.5）。
+
+        ``column_task_id`` 是**列**里的 task_id（payload 可能没写）。有 task_id 时先查
+        任务是否真实存在（读任务失败 → 保守返回 None，不补偿）：存在 → 半写关联，修复成
+        LINKED；不存在/无 task_id → 真孤儿，补偿 CANCELLED。
+        """
+        task_id = str(column_task_id or plan.task_id or "")
+        if task_id and self.runtime is not None:
+            getter = getattr(self.runtime, "get", None)
+            if callable(getter):
+                try:
+                    record = await getter(task_id)
+                except Exception:  # noqa: BLE001 - 读不到任务 → 保守当作存在，不补偿
+                    return None
+                if record is not None:
+                    # 半写状态：任务确实建了，只是关联的 payload 没落上 → 修复关联，
+                    # 不取消（任务可能正等着用户确认）。
+                    payload = plan.to_payload()
+                    payload["task_id"] = str(getattr(record, "task_id", "") or task_id)
+                    payload["status"] = PlanStatus.LINKED.value
+                    payload["updated_at"] = float(now)
+                    return await self.store.replace_plan(AgentPlan.from_payload(payload))
+        payload = plan.to_payload()
+        payload["status"] = PlanStatus.CANCELLED.value
+        payload["reason"] = "orphan_approval_recovered"
+        payload["updated_at"] = float(now)
+        return await self.store.replace_plan(AgentPlan.from_payload(payload))
 
     async def plan_open_life_proposals(
         self, proposals: list[TaskProposal], *, now: float | None = None
