@@ -165,6 +165,12 @@ async def _move_to(service: Any, args: Mapping[str, Any]) -> dict[str, Any]:
     return await service.move_to(args.get("x"), args.get("y"), args.get("z"))
 
 
+async def _follow_player(service: Any, args: Mapping[str, Any]) -> dict[str, Any]:
+    """Phase 7D：跟随是**持续型**动作 —— 启动即返回 RUNNING + action_id，
+    终态（超时/目标丢失/停止）由 action 事件异步送达（与 LLM 工具路径同一服务方法）。"""
+    return await service.follow_player(args.get("username"), args.get("distance"))
+
+
 async def _dig(service: Any, args: Mapping[str, Any]) -> dict[str, Any]:
     return await service.dig(
         args.get("x"),
@@ -194,6 +200,7 @@ _SERVICE_ROUTES: dict[str, Callable[[Any, Mapping[str, Any]], Awaitable[dict[str
     "minecraft_dig_capability": _dig_capability,
     "minecraft_dropped_items": _dropped_items,
     "minecraft_move_to": _move_to,
+    "minecraft_follow_player": _follow_player,
     "minecraft_dig": _dig,
     "minecraft_equip": _equip,
     "minecraft_pickup_item": _pickup,

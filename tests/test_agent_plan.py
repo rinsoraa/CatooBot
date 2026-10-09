@@ -509,3 +509,16 @@ class _NullLog:
     def info(self, *args: Any, **kwargs: Any) -> None: ...
     def warning(self, *args: Any, **kwargs: Any) -> None: ...
     def exception(self, *args: Any, **kwargs: Any) -> None: ...
+
+
+class TestHandlerWiring:
+    """真机门禁抓到的缺口：QQ 入口的 handler 是独立实例，两个都必须注入。"""
+
+    def test_bot_wiring_injects_both_handlers(self) -> None:
+        from pathlib import Path
+
+        source = (Path(__file__).resolve().parent.parent / "app" / "core" / "bot.py").read_text(
+            encoding="utf-8"
+        )
+        assert "entry_handler._plans = service" in source
+        assert "self.task_turns._plans = service" in source

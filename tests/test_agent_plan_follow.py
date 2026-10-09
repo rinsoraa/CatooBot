@@ -195,3 +195,30 @@ class TestTaskRuntimeCarriesFollow:
         assert ("minecraft_stop", {}, "SAFE") in invoked
         # cancel() 把 pending_step 的动作标记为取消；步骤对象在重载后的 record 上
         assert cancelled.plan.steps[0].state is StepState.CANCELLED
+
+
+class TestServiceRouteRegistered:
+    """真机门禁抓到的缺口：任务适配器的服务路由表必须包含 follow_player。"""
+
+    def test_follow_player_has_a_service_route(self) -> None:
+        from app.integrations.minecraft.task_adapter import _SERVICE_ROUTES
+
+        assert "minecraft_follow_player" in _SERVICE_ROUTES
+
+    def test_route_calls_service_follow_player(self) -> None:
+        import asyncio
+
+        from app.integrations.minecraft.task_adapter import _SERVICE_ROUTES
+
+        calls: list[str] = []
+
+        class FakeService:
+            async def follow_player(self, username: Any, distance: Any = None) -> dict[str, Any]:
+                calls.append(f"{username}:{distance}")
+                return {"username": username, "status": "RUNNING", "action_id": "act_x"}
+
+        result = asyncio.run(
+            _SERVICE_ROUTES["minecraft_follow_player"](FakeService(), {"username": "RinsoraNeko"})
+        )
+        assert result["status"] == "RUNNING"
+        assert calls == ["RinsoraNeko:None"]
