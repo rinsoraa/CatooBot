@@ -1127,6 +1127,19 @@ class TaskRuntimeConfig(BaseModel):
     no_progress_limit: int = Field(default=3, ge=1, le=10)
 
 
+class AgentPlanConfig(BaseModel):
+    """Phase 7D：AgentPlan（规划 + 审计层）的旋钮。
+
+    ``enabled`` 只表示"**允许把提案/请求规划成结构化计划**"；执行永远走既有 TaskRuntime
+    链（修订 1：USER 一次确认、LIFE 两道门），所以默认开着是安全的。
+    重规划预算与计划时限**直接复用** ``task.max_replans`` / ``task.ttl_seconds``，不另造计时器。
+    """
+
+    enabled: bool = True
+    #: 只读视图一次显示多少条（§九；bounded）
+    view_limit: int = Field(default=10, ge=1, le=100)
+
+
 class MinecraftMemoryConfig(BaseModel):
     """Phase 5C：身份桥 + 持久世界记忆（只暴露真正需要的旋钮）。
 
@@ -1209,6 +1222,8 @@ class AppConfig(BaseModel):
     minecraft: MinecraftConfig = Field(default_factory=MinecraftConfig)
     #: Phase 5A：多步骤任务运行时（第一期只接入 Minecraft 工具回路）
     task: TaskRuntimeConfig = Field(default_factory=TaskRuntimeConfig)
+    #: Phase 7D：AgentPlan（规划 + 审计层）
+    agent_plans: AgentPlanConfig = Field(default_factory=AgentPlanConfig)
     world: WorldConfig = Field(default_factory=WorldConfig)
     sandbox: SandboxConfig = Field(default_factory=SandboxConfig)
     tools: ToolsConfig = Field(default_factory=ToolsConfig)

@@ -319,6 +319,18 @@ class QQTaskEntry:
 
         command = self.detector.control_command(text)
         status_query = self.detector.status_query(text)
+        # Phase 7D §四/§八：LIFE 计划的「批准」（第一道门）—— 必须在任务控制词之前拦截，
+        # 否则「批准」会被当成普通聊天漏过去。没在处理控制命令时才看计划层。
+        if not command:
+            consumed = await self._handle_agent_plan(identity, text)
+            if consumed:
+                return True
+        # Phase 7D §八场景 B：「跟着我」→ 身份桥解析目标 → 跟随计划 → 待确认任务。
+        # 它不是资源任务（没有方块目标），所以走计划层而不是 detector.detect。
+        if not command and not status_query and self.detector.detect_follow(text):
+            handled = await self._handle_follow_request(identity, text)
+            if handled:
+                return True
         wants_task = self.detector.detect(text).is_task
         if wants_task and not command and not status_query:
             blocked = await self._other_session_task(identity)
@@ -327,6 +339,13 @@ class QQTaskEntry:
                     identity,
                     self.replies.busy.format(objective=blocked.objective, state=""),
                 )
+                return True
+        # Phase 7D 修订 2：跟随任务的「确认」在执行前**复核身份仍然有效**
+        # （计划到确认之间绑定可能被撤销/冲突 —— 复核失败就取消任务，绝不带着旧目标跑）。
+        if command == "confirm":
+            veto = await self._verify_follow_identity(identity)
+            if veto is not None:
+                await self._say(identity, veto)
                 return True
 
         self._handling += 1
@@ -387,6 +406,131 @@ class QQTaskEntry:
             )
         except Exception:  # noqa: BLE001 - 记账失败绝不影响用户任务
             self._log.debug("[Task/QQ] 提案记账失败（忽略）", exc_info=True)
+
+    # --------------------------------------------- Phase 7D：计划层入口（全部可失败）
+
+    async def _handle_agent_plan(self, identity: QQIdentity, text: str) -> bool:
+        """LIFE 计划的「批准」（修订 1 第一道门）。返回 True = 这条消息归计划层管。"""
+        plans = getattr(self.bot, "agent_plans", None)
+        if plans is None or not callable(getattr(plans, "handle_qq", None)):
+            return False
+        try:
+            out = await plans.handle_qq(
+                text=str(text),
+                user_id=str(identity.user_id),
+                session_id=str(identity.session_id),
+            )
+        except Exception:  # noqa: BLE001 - 计划层失败不拖垮任务/聊天
+            self._log.debug("[AgentPlan] 批准处理失败（忽略）", exc_info=True)
+            return False
+        if out is None:
+            return False
+        await self._say(identity, str(out.get("reply") or "好的。"))
+        return True
+
+    async def _handle_follow_request(self, identity: QQIdentity, text: str) -> bool:
+        """「跟着我」（§八场景 B）：身份桥解析 → 跟随计划 → 待确认任务（不执行）。
+
+        目标**只**来自当前说话者的 VERIFIED 绑定（绝不从文本抠玩家名）；
+        解析不成立就如实拒绝 —— 任何失败都只影响这一条消息。
+        """
+        plans = getattr(self.bot, "agent_plans", None)
+        if plans is None or not callable(getattr(plans, "plan_follow_from_user", None)):
+            return False
+        proposals = getattr(self.bot, "proposals", None)
+        resolver = getattr(proposals, "resolve_target", None)
+        if not callable(resolver):
+            await self._say(identity, "我现在解析不了你是谁，先绑定一下身份再说？")
+            return True
+        try:
+            target = await resolver(user_id=str(identity.user_id), server_id=self._server_id())
+            out = await plans.plan_follow_from_user(
+                objective=str(text),
+                user_id=str(identity.user_id),
+                session_id=str(identity.session_id),
+                target=target,
+            )
+        except Exception:  # noqa: BLE001 - 跟随入口绝不把异常抛给事件总线
+            self._log.exception("[Task/QQ] 跟随计划失败（忽略）")
+            await self._say(identity, "这条请求我处理不了，等会儿再试。")
+            return True
+        action = str(out.get("action") or "")
+        if action == "created":
+            record = out.get("record")
+            summary = str(out.get("reply") or "")
+            risk = dict(getattr(out.get("plan"), "risk_summary", {}) or {})
+            duration = risk.get("duration_note")
+            self._log.info(
+                "[Task/QQ] follow plan created task=%s plan=%s target=%s",
+                getattr(record, "task_id", "-"),
+                getattr(out.get("plan"), "plan_id", "-"),
+                (out.get("plan").target.player_name if out.get("plan") is not None else "-"),
+            )
+            # §八场景 A：明确展示目标玩家、操作内容与持续时间限制（修订 2）
+            target_name = out.get("plan").target.player_name
+            reply = f"罐头准备这样做：跟随 {target_name}（来自已验证的身份绑定）。"
+            if duration:
+                reply += f"\n期限：{duration}"
+            reply += "\n需要你确认后我才会动。\n回复「确认」开始。"
+            await self._say(identity, reply if not summary else f"{reply}")
+            return True
+        await self._say(identity, str(out.get("reply") or "这件事现在做不了。"))
+        return True
+
+    async def _verify_follow_identity(self, identity: QQIdentity) -> str | None:
+        """确认执行前复核跟随目标身份（修订 2）。返回 None = 放行；返回文案 = 已否决。"""
+        plans = getattr(self.bot, "agent_plans", None)
+        if plans is None or not callable(getattr(plans, "plan_for_task", None)):
+            return None
+        runtime = self.runtime
+        current_getter = getattr(runtime, "current", None)
+        if not callable(current_getter):
+            return None
+        try:
+            record = await current_getter(identity.session_id)
+        except Exception:  # noqa: BLE001 - 读不到任务就照常走既有链
+            return None
+        if record is None or str(getattr(getattr(record, "state", None), "value", "")) != (
+            "PENDING_CONFIRMATION"
+        ):
+            return None
+        try:
+            plan = await plans.plan_for_task(str(record.task_id))
+        except Exception:  # noqa: BLE001
+            return None
+        if plan is None:
+            return None  # 不是跟随任务 → 既有链自己处理
+        target = getattr(plan, "target", None)
+        player_uuid = str(getattr(target, "player_uuid", "") or "")
+        if not player_uuid:
+            return None  # 非跟随计划（资源任务没有目标玩家）
+        proposals = getattr(self.bot, "proposals", None)
+        resolver = getattr(proposals, "resolve_target", None)
+        if not callable(resolver):
+            return None
+        try:
+            resolved = await resolver(user_id=str(identity.user_id), server_id=self._server_id())
+        except Exception:  # noqa: BLE001 - 解析失败按"身份失效"处理（fail-closed）
+            resolved = None
+        uuid_now = str(getattr(resolved, "player_uuid", "") or "")
+        status_now = str(getattr(resolved, "status", "") or "")
+        if status_now == "VERIFIED" and uuid_now == player_uuid:
+            return None
+        try:
+            await runtime.cancel(str(record.task_id), reason="follow identity no longer valid")
+        except Exception:  # noqa: BLE001 - 取消失败也不放行
+            self._log.exception("[Task/QQ] 跟随任务取消失败")
+        if self._log is not None:
+            self._log.info(
+                "[Task/QQ] follow confirm vetoed task=%s identity=%s expected_uuid=…%s",
+                record.task_id,
+                status_now or "unavailable",
+                player_uuid[-4:],
+            )
+        return (
+            "你的 Minecraft 身份绑定现在对不上了（可能已解除或换号），"
+            "这个跟随任务我取消了。重新绑定后再试。"
+        )
 
     def _server_id(self) -> str:
         """当前连接到的服务器 id（拿不到就空 —— 身份解析会如实记为"没有绑定"）。

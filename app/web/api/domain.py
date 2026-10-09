@@ -300,6 +300,32 @@ class DomainApiRoutes(SocialApiRoutes, WebContext):
             ) from exc
         return ok(payload, request=request)
 
+    async def _v1_world_agent_plans(self, request: web.Request) -> web.Response:
+        """Phase 7D §九：AgentPlan 的**只读**视图。
+
+        返回计划（来源/目标实体/步骤/检查结论/版本与重规划预算）+ 关联任务的**实时**
+        执行状态（修订 3：计划层不持久化执行状态）。**没有**批准 / 执行 / 确认按钮 ——
+        批准只走 QQ（修订 1），执行只走既有 TaskRuntime 链。
+        """
+        service = getattr(self._bot, "agent_plans", None)
+        if service is None:
+            return ok(
+                {"enabled": False, "execution_layer": "TASK_RUNTIME", "plans": []},
+                request=request,
+            )
+        try:
+
+            async def _reader(task_id: str) -> Any:
+                getter = getattr(getattr(self._bot, "tasks", None), "get", None)
+                return await getter(task_id) if callable(getter) else None
+
+            payload = await service.view(task_reader=_reader)
+        except Exception as exc:  # noqa: BLE001 - 只读视图失败不冒泡成 500
+            raise unavailable(
+                f"agent plan view unavailable: {type(exc).__name__}", code="agentplan.view"
+            ) from exc
+        return ok(payload, request=request)
+
     async def _v1_world_proposals(self, request: web.Request) -> web.Response:
         """Phase 7C §十二：TaskProposal 的**只读**视图。
 
@@ -712,6 +738,8 @@ class DomainApiRoutes(SocialApiRoutes, WebContext):
         app.router.add_get(f"{API_PREFIX}/world/initiative", wrap(self._v1_world_initiative))
         # Phase 7C：TaskProposal 只读视图（§十二；**没有**执行 / 确认 / 启动入口）
         app.router.add_get(f"{API_PREFIX}/world/proposals", wrap(self._v1_world_proposals))
+        # Phase 7D：AgentPlan 只读视图（§九；批准只在 QQ，**没有**任何授权按钮）
+        app.router.add_get(f"{API_PREFIX}/world/agent-plans", wrap(self._v1_world_agent_plans))
         app.router.add_get(f"{API_PREFIX}/world/trace", wrap(self._v1_world_trace))
         app.router.add_get(f"{API_PREFIX}/world/timeline", wrap(self._v1_world_timeline))
         app.router.add_get(f"{API_PREFIX}/world/topics", wrap(self._v1_world_topics))

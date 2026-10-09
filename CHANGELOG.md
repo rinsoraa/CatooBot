@@ -1,5 +1,28 @@
 # Changelog
 
+## Minecraft Phase 7D — Agent Harness: Bounded Planning & Authorized Execution
+
+* **规划与执行仍然分离，且分层更清楚**（§一审计 + 修订 3）：新增 `AgentPlan` ——
+  "准备怎样做"的**结构化计划层**（`app/tasks/agent_plan.py` + `agent_plan_store.py` +
+  迁移 **33** 的 `task_agent_plans` 一张表）。它**不是**第二套任务状态机：
+  状态里没有 RUNNING/EXECUTING/SUCCEEDED，步骤执行状态一律**实时读**关联 Task 的
+  checkpoint/事件；执行永远走既有 TaskRuntime → Policy → ActionRuntime，零语义改动。
+* **可审计的规划结论**（§三）：`PlanningOutcome` 六值（READY_FOR_APPROVAL /
+  NEEDS_MORE_INFORMATION / UNSUPPORTED / BLOCKED_BY_POLICY / BLOCKED_BY_PRECONDITION /
+  REPLAN_REQUIRED）。受限规划器只从已注册 19 工具选操作：资源目标复用 5A
+  `plan_resource_task`（SAFE 观察），其余用 7C 能力目录如实判 UNSUPPORTED（不现场造工具）。
+* **确认次数钉死**（修订 1）：USER 计划与待确认任务**同建**，同一次「确认」生效（一次确认）；
+  LIFE 计划只规划不建 Task，QQ「批准」→ 才建待确认任务 → 再「确认」→ 执行（两道门）。
+  批准者写进计划并成为任务 owner —— 第二道门的既有校验（同 user + 同 session）天然接住。
+* **「跟着我」进既有链**（§八场景 B，7C 遗留缺口）：`detect_follow` 只认意图不认目标；
+  跟随模板单步 `minecraft_follow_player`，目标**只**来自 VERIFIED IdentityLink
+  （含 UUID + server_id），确认前**复核身份仍有效**（撤销/换号 → 取消任务）；
+  修订 2 的生命周期逐条证明：validate_plan 接受 follow 步骤、detached RUNNING ≠ 成功、
+  cancel/expire 走既有 `minecraft_stop`、三层期限（授权 60s / 动作 120s / 任务 600s）分层如实展示。
+* **测试**：新增 **45** 项（六值结论 / 来源隔离与确认次数 / 身份 / 状态机 / 源码级安全边界 /
+  QQ 路由 / 真运行时 follow 生命周期）；冻结测试 32→33；全量 3366 pytest + 528 vitest 绿。
+
+
 本文件记录 CatooBot 的版本演进。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号见 `pyproject.toml`；日期取自真实提交历史（本仓库 2026-09-30 起）。
 

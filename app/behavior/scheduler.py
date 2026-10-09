@@ -248,7 +248,7 @@ class BehaviorScheduler:
         except Exception:  # noqa: BLE001 - 提案失败不拖垮调度（更不影响任务/活动）
             self._log.exception("[TaskProposal] 提案生成失败（忽略）")
             return
-        created = list(out.get("created") or ())
+        created = list(out.get("created") or [])
         if created or out.get("merged"):
             self._log.info(
                 "[TaskProposal] pass action=%s created=%d merged=%d skipped=%d",
@@ -260,6 +260,37 @@ class BehaviorScheduler:
         else:
             self._log.debug(
                 "[TaskProposal] pass action=%s skipped=%s",
+                out.get("action", ""),
+                out.get("skipped", []),
+            )
+        await self._agent_plan_pass(created)
+
+    async def _agent_plan_pass(self, proposals: list[Any]) -> None:
+        """Phase 7D §四：把**新建的 LIFE 提案**变成 AgentPlan（只规划，绝不建 Task）。
+
+        USER 计划在 QQ 入口同建；这里只走 LIFE 那条腿。失败只是没有计划。
+        """
+        if not proposals:
+            return
+        plans = getattr(self._bot, "agent_plans", None)
+        if plans is None or not callable(getattr(plans, "plan_open_life_proposals", None)):
+            return
+        try:
+            out = await plans.plan_open_life_proposals(proposals)
+        except Exception:  # noqa: BLE001 - 计划失败不拖垮调度
+            self._log.exception("[AgentPlan] LIFE 规划 pass 失败（忽略）")
+            return
+        planned = list(out.get("planned") or ())
+        if planned:
+            self._log.info(
+                "[AgentPlan] pass action=%s planned=%d skipped=%d",
+                out.get("action", ""),
+                len(planned),
+                len(out.get("skipped") or ()),
+            )
+        else:
+            self._log.debug(
+                "[AgentPlan] pass action=%s skipped=%s",
                 out.get("action", ""),
                 out.get("skipped", []),
             )

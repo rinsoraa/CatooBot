@@ -906,6 +906,11 @@ _NOTES: dict[str, str] = {
     "world.proposals.recent_limit": "提案只读视图一次显示几条（默认 10）",
     "world.proposals.max_per_pass": "一次 pass 最多把几条新意图变成提案（防爆上限，默认 3）",
     "world.proposals.ttl_hours": "提案存活小时数，到点即 EXPIRED 终态（默认 6）",
+    "agent_plans.enabled": (
+        "AgentPlan（Phase 7D）：把提案/请求变成**结构化计划**（只规划；"
+        "USER 与待确认任务同建，LIFE 需用户「批准」后才建任务）"
+    ),
+    "agent_plans.view_limit": "计划只读视图一次显示几条（默认 10）",
     "minecraft.memory.enabled": "Minecraft 身份桥 + 世界记忆（关掉只是「不记得」，权限照旧）",
     "minecraft.memory.reconcile_interval_seconds": "多久拿当前世界核对一次记忆（对账）",
     "minecraft.memory.context_items": "每次对话最多带几条 Minecraft 记忆（≤5）",
@@ -1028,6 +1033,7 @@ _SECTION_LABELS: dict[str, str] = {
     "world.activity.model_advisor": "模型顾问（软判断的参谋 · Phase 6D）",
     "world.initiative": "意图（Initiative / LifeIntent · Phase 7A）",
     "world.proposals": "任务提案（TaskProposal · Phase 7C）",
+    "agent_plans": "任务计划（AgentPlan · Phase 7D）",
     "minecraft": "Minecraft 集成",
     "minecraft.agent": "Minecraft 智能体（LLM 工具）",
     "minecraft.agent.tools": "模型可以做什么（风险分级）",

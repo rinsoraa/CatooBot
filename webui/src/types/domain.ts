@@ -246,6 +246,45 @@ export interface WorldPlanItem {
   intent_id?: string
 }
 
+/**
+ * Phase 7D §九：一份 AgentPlan 的**只读**投影。
+ * 计划层没有执行状态：`task_state` 实时读关联 Task（修订 3）。
+ */
+export interface WorldAgentPlan {
+  plan_id: string
+  source: string
+  objective: string
+  status: string
+  proposal_id: string
+  intent_id: string
+  task_id: string
+  target: {
+    status: string
+    player_name: string
+    server_id: string
+    uuid_suffix: string
+    reason: string
+  }
+  version: number
+  steps: { step_id: string; tool: string; risk: string }[]
+  checks: Record<string, unknown>[]
+  risk_summary: Record<string, unknown>
+  reason: string
+  replans: number
+  replan_budget: number
+  approver_user_id: string
+  created_at: number
+  expires_at: number
+  task_state: string
+}
+
+/** Phase 7D §九：任务计划只读视图（执行层 = TASK_RUNTIME，批准只在 QQ）。 */
+export interface WorldAgentPlansView {
+  enabled: boolean
+  execution_layer: string
+  plans: WorldAgentPlan[]
+}
+
 /** Phase 6C：一个候选（含资格、拒绝原因与打分明细；score **不是**概率）。 */
 export interface WorldPlanCandidate {
   activity: string

@@ -1483,6 +1483,57 @@ CREATE INDEX IF NOT EXISTS idx_task_proposals_status
     ON task_proposals(status, created_at DESC);
 """,
     ),
+    (
+        33,
+        "task agent plans (Phase 7D)",
+        """
+-- Phase 7D §二/修订 3：AgentPlan 的最小存储。先查过现有库：
+--   tasks/agent_task_runs —— 是**执行系统**（5A），AgentPlan 只保存关联 task_id，
+--                           步骤执行状态一律实时读 Task 的 checkpoint/事件，绝不在这里复制；
+--   task_proposals        —— 是"知道需要什么能力"（7C），AgentPlan 是"准备怎样做"的结构化计划；
+--   behavior_events       —— append-only 审计表，7D **复用它**记录计划历史（agentplan.* 前缀）。
+-- 状态只有 PLANNING/READY_FOR_APPROVAL/NEEDS_MORE_INFORMATION/UNSUPPORTED/BLOCKED_BY_POLICY/
+-- BLOCKED_BY_PRECONDITION/APPROVED/LINKED/REPLAN_REQUIRED/REJECTED/EXPIRED/CANCELLED ——
+-- 表名用 task_agent_plans：库里已有 agent 子系统的 agent_plans 表，绝不混用。
+-- **没有** EXECUTING / RUNNING / SUCCEEDED（修订 3：AgentPlan 不是第二套任务状态机）。
+CREATE TABLE IF NOT EXISTS task_agent_plans (
+    id                   INTEGER PRIMARY KEY AUTOINCREMENT,
+    plan_id              TEXT NOT NULL UNIQUE,
+    source               TEXT NOT NULL DEFAULT 'SYSTEM',
+    objective            TEXT NOT NULL DEFAULT '',
+    status               TEXT NOT NULL DEFAULT 'PLANNING',
+    proposal_id          TEXT NOT NULL DEFAULT '',
+    intent_id            TEXT NOT NULL DEFAULT '',
+    task_id              TEXT NOT NULL DEFAULT '',
+    initiator            TEXT NOT NULL DEFAULT '',
+    approver_user_id     TEXT NOT NULL DEFAULT '',
+    approver_session_id  TEXT NOT NULL DEFAULT '',
+    approved_at          REAL NOT NULL DEFAULT 0,
+    target               TEXT NOT NULL DEFAULT '{}',
+    plan                 TEXT NOT NULL DEFAULT '{}',
+    plan_hash            TEXT NOT NULL DEFAULT '',
+    version              INTEGER NOT NULL DEFAULT 0,
+    history              TEXT NOT NULL DEFAULT '[]',
+    checks               TEXT NOT NULL DEFAULT '[]',
+    risk_summary         TEXT NOT NULL DEFAULT '{}',
+    reason               TEXT NOT NULL DEFAULT '',
+    replans              INTEGER NOT NULL DEFAULT 0,
+    replan_budget        INTEGER NOT NULL DEFAULT 2,
+    replan_reason        TEXT NOT NULL DEFAULT '',
+    fingerprint          TEXT NOT NULL,
+    created_at           REAL NOT NULL DEFAULT 0,
+    expires_at           REAL NOT NULL DEFAULT 0,
+    updated_at           REAL NOT NULL DEFAULT 0,
+    payload              TEXT NOT NULL DEFAULT '{}'
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_task_agent_plans_fingerprint
+    ON task_agent_plans(fingerprint);
+CREATE INDEX IF NOT EXISTS idx_task_agent_plans_created
+    ON task_agent_plans(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_task_agent_plans_status
+    ON task_agent_plans(status, created_at DESC);
+""",
+    ),
 ]
 
 

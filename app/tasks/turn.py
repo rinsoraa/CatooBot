@@ -181,6 +181,7 @@ class TaskTurnHandler:
         replies: TaskReplies | None = None,
         source: str = "minecraft_chat",
         objective_limit: int = 120,
+        plans: Any = None,
     ) -> None:
         self._runtime = runtime
         self._observe = observe
@@ -188,6 +189,8 @@ class TaskTurnHandler:
         self._replies = replies or IN_GAME_REPLIES
         self._source = str(source or "minecraft_chat")
         self._limit = max(20, int(objective_limit))
+        #: Phase 7D：AgentPlan 服务（鸭子类型注入；None = 不记账，任务链完全不受影响）
+        self._plans = plans
 
     # ------------------------------------------------------------ 入口
 
@@ -228,6 +231,23 @@ class TaskTurnHandler:
                 ),
             )
         return await self._create(session_id, user_id, message)
+
+    async def _record_agent_plan(
+        self, message: str, record: Any, *, session_id: str, user_id: str
+    ) -> None:
+        if self._plans is None:
+            return
+        try:
+            planned = type("P", (), {"plan": getattr(record, "plan", None), "risk_summary": {}})()
+            await self._plans.record_user_plan(
+                objective=str(message),
+                user_id=str(user_id),
+                session_id=str(session_id),
+                task_id=str(record.task_id),
+                planned=planned,
+            )
+        except Exception:  # noqa: BLE001 - 计划记账失败绝不影响任务链
+            log.debug("[Task] agent plan 记账失败（忽略）", exc_info=True)
 
     # ------------------------------------------------------------ 控制命令
 
@@ -458,6 +478,8 @@ class TaskTurnHandler:
             return TaskTurnOutcome(
                 True, action="busy", reply="我手上还有一件事没做完，先做完这个再说。"
             )
+        # Phase 7D §四（修订 1）：USER 计划与待确认任务**同时**建立（记账失败不影响任务）。
+        await self._record_agent_plan(message, record, session_id=session_id, user_id=user_id)
         summary = self._runtime.summary_of(record)
         reply = self._replies.created.format(
             summary=summary,

@@ -15,6 +15,7 @@ import type {
   WorldActivityView,
   WorldData,
   WorldInitiativeView,
+  WorldAgentPlansView,
   WorldProposalsView,
   WorldTimelineRow,
 } from '@/types/domain'
@@ -96,6 +97,14 @@ export const worldApi = {
    */
   worldProposals() {
     return api.get<WorldProposalsView>('/world/proposals')
+  },
+
+  /**
+   * Phase 7D §九：任务计划只读视图。
+   * 只读：**没有**批准 / 执行 / 确认入口 —— 批准只在 QQ，执行只在既有任务链。
+   */
+  worldAgentPlans() {
+    return api.get<WorldAgentPlansView>('/world/agent-plans')
   },
 
   timeline(limit = 100) {

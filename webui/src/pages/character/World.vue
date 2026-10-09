@@ -29,6 +29,8 @@ import type {
   WorldActivityPlanView,
   WorldActivityView,
   WorldInitiativeView,
+  WorldAgentPlan,
+  WorldAgentPlansView,
   WorldProposalsView,
   WorldTaskProposal,
 } from '@/types/domain'
@@ -223,6 +225,33 @@ function targetText(view: WorldTaskProposal['target']): string {
   return `${view.status} · ${who}${suffix}${view.reason ? ` · ${view.reason}` : ''}`
 }
 
+// Phase 7D §九：任务计划的**只读**视图（批准只在 QQ，这里没有任何授权按钮）。
+const agentPlans = ref<WorldAgentPlansView | null>(null)
+const agentPlansError = ref('')
+
+async function loadAgentPlans(): Promise<void> {
+  try {
+    agentPlans.value = await worldApi.worldAgentPlans()
+    agentPlansError.value = ''
+  } catch (caught) {
+    agentPlansError.value = errorMessage(caught)
+  }
+}
+
+function agentPlanStateText(plan: WorldAgentPlan): string {
+  const state = plan.task_state ? ` · 任务 ${plan.task_state}` : ''
+  return `${plan.status}${state}`
+}
+
+function planTargetText(plan: WorldAgentPlan): string {
+  const t = plan.target
+  if (!t) return '—'
+  if (t.status === 'VERIFIED' && !t.player_name) return '不需要指定玩家'
+  const who = t.player_name || '未知玩家'
+  const suffix = t.uuid_suffix ? `（……${t.uuid_suffix}）` : ''
+  return `${t.status} · ${who}${suffix}`
+}
+
 function receiptText(view: WorldActivityAdvisorView | null): string {
   const receipt = view?.last_receipt
   if (!receipt || !receipt.attempted) return '还没问过'
@@ -239,6 +268,7 @@ onMounted(() => {
   void loadAdvisor()
   void loadInitiative()
   void loadProposals()
+  void loadAgentPlans()
 })
 
 function reload(): void {
@@ -1158,6 +1188,54 @@ function previewMoodText(): string {
           只读：提案只会被**记录 / 检查能力 / 判可行性 / 过期**。它不会创建任务、不会调用 Minecraft
           工具、不会自动确认、不会发消息，也不会自己动世界 —— 这里没有任何执行按钮，
           「可执行」也只是一句**描述**，真执行时仍要重新检查当前世界、能力、授权与风险。
+        </p>
+      </section>
+
+      <!-- Phase 7D §九：任务计划（AgentPlan）**只读** —— 批准只在 QQ，这里没有授权按钮 -->
+      <section class="cb-card cb-world__section" data-test="world-agent-plans">
+        <SectionHeader
+          title="任务计划（她准备怎样做 · 有边界）"
+          description="USER 计划与待确认任务同建（一次确认）；LIFE 计划需要你在 QQ 里「批准」后才建任务，再「确认」才执行"
+        />
+        <p v-if="agentPlansError" class="cb-world__readonly" data-test="world-agent-plans-error">
+          计划读取失败：{{ agentPlansError }}
+        </p>
+        <div
+          v-for="item in agentPlans?.plans ?? []"
+          :key="item.plan_id"
+          class="cb-world__facts"
+          data-test="world-agent-plan-row"
+        >
+          <div>
+            <dt>{{ item.plan_id }}</dt>
+            <dd>{{ item.source }} · {{ item.objective }}</dd>
+          </div>
+          <div>
+            <dt>状态</dt>
+            <dd data-test="world-agent-plan-status">{{ agentPlanStateText(item) }}</dd>
+          </div>
+          <div>
+            <dt>目标</dt>
+            <dd>{{ planTargetText(item) }}</dd>
+          </div>
+          <div>
+            <dt>步骤</dt>
+            <dd>
+              {{ item.steps.map((s) => `${s.tool}(${s.risk})`).join(' → ') || '—' }}
+              · v{{ item.version }} · 重规划 {{ item.replans }}/{{ item.replan_budget }}
+            </dd>
+          </div>
+        </div>
+        <p
+          v-if="agentPlans && !agentPlans.plans.length"
+          class="cb-world__readonly"
+          data-test="world-agent-plans-empty"
+        >
+          现在没有任何计划（真实请求或已批准的意图才会产生；没有就什么都不写）。
+        </p>
+        <p class="cb-world__readonly" data-test="world-agent-plans-readonly">
+          只读：这里展示计划的来源、目标、步骤与关联任务的实时状态。批准入口只在 QQ，
+          执行永远走既有任务链 —— 这里没有任何批准 / 执行按钮。
         </p>
       </section>
 

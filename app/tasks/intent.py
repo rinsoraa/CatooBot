@@ -84,6 +84,17 @@ _RESOURCE_WORDS = (
     "block",
 )
 
+#: Phase 7D §八场景 B：跟随意图（7C 留下的缺口 —— "跟着我"不是资源任务，但确实是
+#: 一个需要授权的 Minecraft 操作）。目标**绝不**取自这句话本身，只来自可信身份桥。
+FOLLOW_INTENT_KEYWORDS = (
+    "跟着",
+    "跟住",
+    "跟随",
+    "跟我",
+    "跟过来",
+    "来我身边",
+)
+
 #: 纯查询类请求：即使命中上面的词也**不**创建任务（§四十三）
 _QUERY_PATTERNS = (
     re.compile(r"(在哪里|在哪儿|在哪|什么位置|坐标)"),
@@ -167,6 +178,17 @@ class TaskIntentDetector:
         if not message or len(message) > 60:
             return False
         return any(pattern.search(message) for pattern in _STATUS_PATTERNS)
+
+    def detect_follow(self, text: str) -> bool:
+        """这句话是不是在要她**跟随某个玩家**（Phase 7D §八场景 B）。
+
+        只认意图、不认目标 —— 目标只能来自可信身份桥（谁说的话就解析谁，
+        绝不从文本里抠玩家名，那等于按昵称猜人）。
+        """
+        message = str(text or "").strip()
+        if not message or len(message) > 60:
+            return False
+        return any(keyword in message for keyword in FOLLOW_INTENT_KEYWORDS)
 
     def control_command(self, text: str) -> str:
         """用户对当前任务的控制命令（§六十）：confirm / pause / resume / cancel / ''。"""

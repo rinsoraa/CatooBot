@@ -46,6 +46,7 @@ from app.tasks.proposal_store import (
     day_text,
     proposal_id_for,
 )
+from tests.agent_plan_fakes import PlanRig
 from tests.proposal_fakes import SERVER, T0, FakeConfig, FakeIdentity, ProposalRig, intent, link
 
 # --------------------------------------------------------------------- 1
@@ -918,3 +919,52 @@ class TestProposalsEndpoint:
             await api._v1_world_proposals(None)
         assert caught.value.code == "proposal.view"
         assert "RuntimeError" in caught.value.message
+
+
+class TestAgentPlansEndpoint:
+    """§九：计划只读视图（修订 3 —— 执行状态实时读 Task）。"""
+
+    def _api(self, plans: Any, tasks: Any = None) -> Any:
+        from app.web.api.domain import DomainApiRoutes
+
+        api = DomainApiRoutes.__new__(DomainApiRoutes)
+        api._bot = type("B", (), {"agent_plans": plans, "tasks": tasks})()
+        return api
+
+    async def test_disabled_shape_when_service_is_absent(self) -> None:
+        import json
+
+        api = self._api(None)
+        response = await api._v1_world_agent_plans(None)
+        data = json.loads(response.text)["data"]
+        assert data["enabled"] is False
+        assert data["execution_layer"] == "TASK_RUNTIME"
+
+    async def test_view_joins_the_live_task_state(self) -> None:
+        import json
+
+        rig = PlanRig()
+        out = await rig.service.plan_follow_from_user(
+            objective="跟着我",
+            user_id="u",
+            session_id="s",
+            target=TargetResolution(
+                status="VERIFIED", server_id=SERVER, player_uuid="a" * 32, player_name="Rinsora"
+            ),
+        )
+        task_id = out["record"].task_id
+
+        class FakeRecord:
+            class state:
+                value = "PENDING_CONFIRMATION"
+
+        async def reader(tid: str) -> Any:
+            return FakeRecord() if tid == task_id else None
+
+        api = self._api(rig.service, type("T", (), {"get": staticmethod(reader)})())
+        response = await api._v1_world_agent_plans(None)
+        data = json.loads(response.text)["data"]
+        row = next(item for item in data["plans"] if item["task_id"] == task_id)
+        assert row["task_state"] == "PENDING_CONFIRMATION"
+        assert row["target"]["player_name"] == "Rinsora"
+        assert row["target"]["uuid_suffix"] == "aaaa"

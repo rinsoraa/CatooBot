@@ -329,6 +329,8 @@ class Bot:
         self.initiative: Any = None
         # Phase 7C：TaskProposal 服务（**只产生提案**；执行层恒为 NONE，没装配就是 None）
         self.proposals: Any = None
+        # Phase 7D：AgentPlan 服务（**只规划 + 记账**；执行永远走既有 TaskRuntime 链）
+        self.agent_plans: Any = None
         self.activity_sandbox: Any = None
         self.activity_tasks: Any = None
         self.activity_observation: Any = None
@@ -1219,6 +1221,83 @@ class Bot:
         recovered = await service.recover()
         self.log.info(
             "[TaskProposal] ready character=%s recovered=%s expired=%d open=%d",
+            service.character_id,
+            recovered.get("action", "none"),
+            int(recovered.get("expired", 0) or 0),
+            int(recovered.get("open", 0) or 0),
+        )
+        # Phase 7D：AgentPlan 层（规划 + 审计；执行永远走既有 TaskRuntime 链）。
+        # 装配点放在提案层之后：得先有"知道需要什么能力"，才谈得上"准备怎样做"。
+        try:
+            await self._setup_agent_plans()
+        except Exception:  # noqa: BLE001 - 计划层装配失败不拖垮启动
+            self.log.exception("Agent plans initialization failed; continuing without it")
+            self.agent_plans = None
+
+    async def _setup_agent_plans(self) -> None:
+        """Phase 7D §三/§四：把 AgentPlan 层接上。
+
+        * 规划器只从已注册能力选操作（BoundedAgentPlanner）；
+        * USER 路径与待确认任务同建（一次确认）；LIFE 路径只规划，「批准」后才建任务；
+        * 执行永远走既有 TaskRuntime → Policy → ActionRuntime（这里没有任何执行入口）。
+        """
+        from app.tasks.agent_plan_store import SqliteAgentPlanStore
+        from app.tasks.agent_planner import BoundedAgentPlanner
+        from app.tasks.agent_service import AgentPlanService
+
+        plan_config = getattr(self.config, "agent_plans", None)
+        if plan_config is not None and not getattr(plan_config, "enabled", True):
+            self.log.info("[AgentPlan] 已在配置里关闭")
+            self.agent_plans = None
+            return
+        task_config = getattr(self.config, "task", None)
+        tools_config = getattr(
+            getattr(getattr(self.config, "minecraft", None), "agent", None), "tools", None
+        )
+        follow_timeout = 120.0
+        action_cfg = getattr(getattr(self.config, "minecraft", None), "action", None)
+        follow_cfg = getattr(action_cfg, "follow_player", None)
+        if follow_cfg is not None:
+            try:
+                follow_timeout = float(getattr(follow_cfg, "timeout", 120.0))
+            except (TypeError, ValueError):
+                follow_timeout = 120.0
+        planner = BoundedAgentPlanner(
+            allow_safe=bool(getattr(tools_config, "allow_safe", True)),
+            allow_low=bool(getattr(tools_config, "allow_low", True)),
+            allow_medium=bool(getattr(tools_config, "allow_medium", False)),
+            follow_timeout_seconds=follow_timeout,
+        )
+        # observe 复用与 TaskTurnHandler 同一条既有工具通道（绝不直连 mineflayer）
+        from app.integrations.minecraft.task_adapter import MinecraftTaskInvoker
+
+        minecraft_agent = getattr(getattr(self, "minecraft", None), "agent", None)
+        if minecraft_agent is None:
+            self.log.info("[AgentPlan] Minecraft 未启用：计划层只做 LIFE 规划与记账")
+            invoker = None
+        else:
+            invoker = MinecraftTaskInvoker(minecraft_agent)
+        service = AgentPlanService(
+            store=SqliteAgentPlanStore(self.database, logger=self.log),
+            planner=planner,
+            task_runtime=getattr(self, "tasks", None),
+            proposal_service=getattr(self, "proposals", None),
+            observe=None
+            if invoker is None
+            else (lambda tool, arguments: invoker(tool, dict(arguments))),
+            character_id=self._activity_character_id(),
+            plan_ttl_seconds=float(getattr(task_config, "ttl_seconds", 600.0)),
+            replan_budget=int(getattr(task_config, "max_replans", 2)),
+            view_limit=int(getattr(plan_config, "view_limit", 10)),
+            logger=self.log,
+        )
+        self.agent_plans = service
+        # TaskTurnHandler 拿到计划服务（USER 计划与待确认任务同建；鸭子类型注入）
+        if self.task_turns is not None:
+            self.task_turns._plans = service  # noqa: SLF001 - 装配点注入
+        recovered = await service.recover()
+        self.log.info(
+            "[AgentPlan] ready character=%s recovered=%s expired=%d open=%d",
             service.character_id,
             recovered.get("action", "none"),
             int(recovered.get("expired", 0) or 0),
