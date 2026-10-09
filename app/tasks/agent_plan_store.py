@@ -38,6 +38,8 @@ class AgentPlanStore(Protocol):
         self, plan_id: str, status: PlanStatus, *, reason: str = "", now: float | None = None
     ) -> AgentPlan | None: ...
     async def replace_plan(self, plan: AgentPlan) -> AgentPlan | None: ...
+    async def occupy_for_approval(self, plan_id: str, *, now: float) -> AgentPlan | None: ...
+    async def count_by_stem(self, stem: str) -> int: ...
     async def log_event(
         self,
         *,
@@ -108,6 +110,29 @@ class InMemoryAgentPlanStore:
             return None
         self._rows[str(plan.plan_id)] = plan
         return plan
+
+    async def occupy_for_approval(self, plan_id: str, *, now: float) -> AgentPlan | None:
+        """批准的原子占用（7D.1 P1-3）：READY_FOR_APPROVAL → APPROVED，且**未过期**。
+
+        两个并发批准只有一个成功（CAS）；过期的计划占用失败（expire_due 只是清理，
+        这里才是批准入口的安全边界）。
+        """
+        current = self._rows.get(str(plan_id))
+        if current is None:
+            return None
+        if current.status != PlanStatus.READY_FOR_APPROVAL.value or current.expired_at(float(now)):
+            return None
+        payload = current.to_payload()
+        payload["status"] = PlanStatus.APPROVED.value
+        payload["updated_at"] = float(now)
+        updated = AgentPlan.from_payload(payload)
+        self._rows[updated.plan_id] = updated
+        return updated
+
+    async def count_by_stem(self, stem: str) -> int:
+        """同词干（指纹去掉最后一段）的既有行数 —— follow 重试序号的确定性依据。"""
+        stem = str(stem)
+        return sum(1 for item in self._rows.values() if item.fingerprint.startswith(stem))
 
     async def log_event(
         self,
@@ -313,6 +338,36 @@ class SqliteAgentPlanStore:
         if not await self._db.run_in_transaction(_run):
             return None
         return await self.get(plan.plan_id)
+
+    async def occupy_for_approval(self, plan_id: str, *, now: float) -> AgentPlan | None:
+        """批准的原子占用（7D.1 P1-3）：单条 CAS UPDATE，状态与过期条件都在 WHERE 里。"""
+        moment = float(now)
+
+        def _run(conn: Any) -> bool:
+            cursor = conn.execute(
+                "UPDATE task_agent_plans SET status = ?, updated_at = ?"
+                " WHERE plan_id = ? AND status = ?"
+                " AND (expires_at <= 0 OR expires_at > ?)",
+                (
+                    PlanStatus.APPROVED.value,
+                    moment,
+                    str(plan_id),
+                    PlanStatus.READY_FOR_APPROVAL.value,
+                    moment,
+                ),
+            )
+            return bool(cursor.rowcount)
+
+        if not await self._db.run_in_transaction(_run):
+            return None
+        return await self.get(plan_id)
+
+    async def count_by_stem(self, stem: str) -> int:
+        row = await self._db.fetchone(
+            "SELECT COUNT(*) AS n FROM task_agent_plans WHERE fingerprint LIKE ?",
+            (str(stem) + "|%",),
+        )
+        return int((row or {}).get("n") or 0)
 
     async def log_event(
         self,

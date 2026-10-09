@@ -206,7 +206,11 @@ class AgentPlanService:
         """USER 请求的计划记账（修订 1：与待确认任务**同时**建立，批准状态由 Task 派生）。
 
         ``planned`` 是 planner 的 :class:`PlanningResult` 或 5A 的 :class:`PlannedTask`。
-        失败只吞掉 —— 记账绝不影响既有任务链。
+
+        7D.1 P1-1：任务**已经建了**才走到这里，所以指纹必须绑死 task_id（每个任务一份
+        计划，永不去重合并）—— 否则同桶重复请求会把新任务挂到旧计划的 task_id 上。
+        记账失败 → **安全补偿**：取消这个还没有任何计划关联的待确认任务（它还没执行过
+        任何动作），并留审计；绝不留下一个"没有可信计划关联"的孤儿任务。
         """
         moment = self._now(now)
         plan_payload = self._plan_payload(planned)
@@ -218,7 +222,7 @@ class AgentPlanService:
             status=PlanStatus.LINKED.value if task_id else PlanStatus.READY_FOR_APPROVAL.value,
             task_id=str(task_id or ""),
             initiator=str(user_id),
-            target=PlanTarget(),  # 资源目标不需要指定玩家；跟随目标在 plan_from_follow 里存
+            target=PlanTarget(),  # 资源目标不需要指定玩家；跟随目标在 plan_follow_from_user 里存
             plan=plan_payload,
             plan_hash=plan_hash,
             version=1,
@@ -228,13 +232,20 @@ class AgentPlanService:
             fingerprint=plan_fingerprint(
                 source=PlanSource.USER,
                 objective=objective,
+                target_key=f"task:{task_id}" if task_id else "",
                 bucket=plan_time_bucket(moment),
             ),
             created_at=moment,
             expires_at=moment + self.plan_ttl_seconds,
             updated_at=moment,
         )
-        return await self._create(record, now=moment)
+        stored, created = await self._create(record, now=moment)
+        if not created and str(task_id):
+            # 指纹合并 = 这份计划描述的是**别的**任务 → 新任务成了孤儿 → 补偿取消
+            await self._compensate_orphan_task(
+                str(task_id), reason="agent_plan_fingerprint_merged", now=moment
+            )
+        return stored
 
     async def plan_follow_from_user(
         self,
@@ -245,9 +256,19 @@ class AgentPlanService:
         target: PlanTarget,
         now: float | None = None,
     ) -> dict[str, Any]:
-        """「跟着我」这条链（§八场景 B）：规划 →（同一次批准语义下）建待确认任务。
+        """「跟着我」这条链（§八场景 B）：规划 → 建待确认任务。
 
-        返回 ``{"action": ..., "reply": ..., "plan": AgentPlan|None, "record": Task|None}``。
+        7D.1 P1-1 **reserve-then-link**：先原子占用指纹（AgentPlan 以 PLANNING 落盘，
+        唯一索引保证同桶同目标只有一个占用者），**任务建立成功后**才落 LINKED 并绑
+        task_id。顺序反了会出现"任务已建但计划合并到旧行"的孤儿 —— 真机基线的缺陷。
+
+        * 占用失败（拿到的别人/旧记录）：读旧记录关联 Task 的实际状态 —— 还开着就
+          如实返回"已有任务"，终态就按**重试序号**生成新指纹重试一次（有界、确定）。
+        * 任务建立失败/返回非待确认状态 → 计划补偿为 CANCELLED（LINKED/CANCELLED
+          均可从 PLANNING 到达），绝不留下说不出来历的半完成记录。
+        * 任务建好但计划关联（replace_plan）失败 → 取消**尚未执行**的待确认任务。
+
+        返回 ``{"action": ..., "reply": ..., "plan": ..., "record": ...}``。
         """
         moment = self._now(now)
         result = await self.planner.plan(objective, target=target, observe=self.observe)
@@ -267,6 +288,46 @@ class AgentPlanService:
                 "plan": None,
                 "record": None,
             }
+        base = plan_fingerprint(
+            source=PlanSource.USER,
+            objective=objective,
+            target_key=f"{target.status}:{target.player_uuid or ''}",
+            bucket=plan_time_bucket(moment),
+        )
+        stem = base.rsplit("|", 1)[0]
+        reserved, created = await self._create(
+            AgentPlan(
+                plan_id="",
+                source=PlanSource.USER.value,
+                objective=result.plan.plan.objective,
+                status=PlanStatus.PLANNING.value,  # 占用位：任务还没建
+                initiator=str(user_id),
+                target=target,
+                plan=result.plan.plan.to_payload(),
+                version=1,
+                checks=result.checks,
+                risk_summary=dict(result.risk_summary),
+                replan_budget=self.replan_budget,
+                fingerprint=base,
+                created_at=moment,
+                expires_at=moment + self.plan_ttl_seconds,
+                updated_at=moment,
+            ),
+            now=moment,
+        )
+        if not created:
+            # 同指纹已有记录：看它关联 Task 的**实际状态**决定让路还是重试
+            verdict, reserved = await self._follow_retry_or_yield(
+                reserved,
+                stem=stem,
+                objective=objective,
+                user_id=user_id,
+                target=target,
+                result=result,
+                moment=moment,
+            )
+            if verdict is not None:
+                return verdict
         try:
             record = await self.runtime.create_task(
                 result.plan.plan.objective,
@@ -278,50 +339,227 @@ class AgentPlanService:
                 source="qq",
             )
         except Exception as exc:  # noqa: BLE001 - 任务忙等既有异常照既有话术处理
+            await self._compensate_reserved_plan(
+                reserved, reason=f"task_create_failed:{type(exc).__name__}", now=moment
+            )
             return {
                 "action": "busy" if type(exc).__name__ == "TaskBusy" else "create_failed",
                 "reply": "我手上还有一件事没做完，先做完这个再说。"
                 if type(exc).__name__ == "TaskBusy"
                 else "任务建立失败，等会儿再试。",
                 "outcome": result.outcome.value,
-                "plan": None,
+                "plan": reserved,
                 "record": None,
             }
-        agent_plan = await self._create(
+        state = str(getattr(getattr(record, "state", None), "value", "") or "")
+        if state != "PENDING_CONFIRMATION":
+            # create_task 校验失败时返回 FAILED 记录而不是抛异常 —— 不是成功，安全补偿
+            await self._compensate_reserved_plan(
+                reserved, reason=f"task_unexpected_state:{state or 'unknown'}", now=moment
+            )
+            return {
+                "action": "create_failed",
+                "reply": "任务建立失败，等会儿再试。",
+                "outcome": result.outcome.value,
+                "plan": reserved,
+                "record": record,
+            }
+        linked = await self._link_reserved_plan(
+            reserved,
+            task_id=str(record.task_id),
+            plan_hash=str(record.plan_hash),
+            now=moment,
+        )
+        if linked is None:
+            # 关联持久化失败 → 取消**尚未执行**的待确认任务（安全补偿），不宣称成功
+            await self._compensate_orphan_task(
+                str(record.task_id), reason="agent_plan_link_failed", now=moment
+            )
+            return {
+                "action": "create_failed",
+                "reply": "任务建立失败，等会儿再试。",
+                "outcome": result.outcome.value,
+                "plan": reserved,
+                "record": record,
+            }
+        summary = self.runtime.summary_of(record)
+        return {
+            "action": "created",
+            "reply": summary,
+            "outcome": result.outcome.value,
+            "plan": linked,
+            "record": record,
+        }
+
+    async def _follow_retry_or_yield(
+        self,
+        reserved: AgentPlan,
+        *,
+        stem: str,
+        objective: str,
+        user_id: str,
+        target: PlanTarget,
+        result: Any,
+        moment: float,
+    ) -> tuple[dict[str, Any] | None, AgentPlan]:
+        """指纹已被占用时的有界重试/让路（7D.1 §1.2.2/§1.2.3）。
+
+        返回 ``(verdict, reserve)``：``verdict`` 非 None = 让路（调用方直接返回）；
+        ``verdict`` 为 None = 已用**重试序号**（同词干行数，确定性、有界）占到了新指纹，
+        ``reserve`` 是新的占用记录，调用方继续建任务。
+        """
+        existing_task = str(reserved.task_id or "")
+        if existing_task and self.runtime is not None:
+            getter = getattr(self.runtime, "get", None)
+            if callable(getter):
+                try:
+                    old_record = await getter(existing_task)
+                except Exception:  # noqa: BLE001 - 读不到就按无任务处理
+                    old_record = None
+                state = str(getattr(getattr(old_record, "state", None), "value", "") or "")
+                if state and not self._task_state_is_terminal(state):
+                    return (
+                        {
+                            "action": "already_planned",
+                            "reply": (
+                                f"这件事我已经在办了（任务 {existing_task}，状态 {state}）；"
+                                "先处理那一件，或者等它结束再说一次。"
+                            ),
+                            "outcome": result.outcome.value,
+                            "plan": reserved,
+                            "record": old_record,
+                        },
+                        reserved,
+                    )
+        # 旧计划已终态 / Task 已终态 / 没有关联 → 有界重试：新指纹 = 词干 + 重试序号
+        attempts = int(await self.store.count_by_stem(stem))
+        if attempts > self.replan_budget + 2:  # 有界：超过预算不再重试（防爆）
+            return (
+                {
+                    "action": "already_planned",
+                    "reply": "这个请求短时间内重复太多次了，先歇一会儿再说。",
+                    "outcome": result.outcome.value,
+                    "plan": reserved,
+                    "record": None,
+                },
+                reserved,
+            )
+        retry_fp = f"{stem}|r{attempts}"
+        retry, created = await self._create(
             AgentPlan(
                 plan_id="",
                 source=PlanSource.USER.value,
                 objective=result.plan.plan.objective,
-                status=PlanStatus.LINKED.value,
-                task_id=record.task_id,
+                status=PlanStatus.PLANNING.value,
                 initiator=str(user_id),
                 target=target,
                 plan=result.plan.plan.to_payload(),
-                plan_hash=str(record.plan_hash),
                 version=1,
                 checks=result.checks,
                 risk_summary=dict(result.risk_summary),
                 replan_budget=self.replan_budget,
-                fingerprint=plan_fingerprint(
-                    source=PlanSource.USER,
-                    objective=objective,
-                    target_key=f"{target.status}:{target.player_uuid or ''}",
-                    bucket=plan_time_bucket(moment),
-                ),
+                fingerprint=retry_fp,
                 created_at=moment,
                 expires_at=moment + self.plan_ttl_seconds,
                 updated_at=moment,
             ),
             now=moment,
         )
-        summary = self.runtime.summary_of(record)
+        if created:
+            return None, retry
+        # 重试指纹也被占（并发）：让路给那份
         return {
-            "action": "created",
-            "reply": summary,
+            "action": "already_planned",
+            "reply": "这件事我已经在办了；先处理那一件，或者等它结束再说一次。",
             "outcome": result.outcome.value,
-            "plan": agent_plan,
-            "record": record,
-        }
+            "plan": retry,
+            "record": None,
+        }, reserved
+
+    @staticmethod
+    def _task_state_is_terminal(state: str) -> bool:
+        from app.tasks.models import TaskState
+
+        try:
+            return TaskState(state).terminal
+        except ValueError:
+            return False
+
+    async def _link_reserved_plan(
+        self, reserved: AgentPlan, *, task_id: str, plan_hash: str, now: float
+    ) -> AgentPlan | None:
+        """占用成功后把计划落到 LINKED（带 task_id / plan_hash / 审计）。"""
+        payload = reserved.to_payload()
+        payload["status"] = PlanStatus.LINKED.value
+        payload["task_id"] = str(task_id)
+        payload["plan_hash"] = str(plan_hash)
+        payload["updated_at"] = float(now)
+        linked = AgentPlan.from_payload(payload)
+        try:
+            updated = await self.store.replace_plan(linked)
+        except Exception as exc:  # noqa: BLE001 - 存储故障 = 关联失败 → 调用方补偿
+            if self._log is not None:
+                self._log.exception("[AgentPlan] link 持久化失败 task=%s", task_id)
+            self.degraded_reason = f"{type(exc).__name__}"
+            return None
+        if updated is None:
+            return None
+        await self.store.log_event(
+            plan_id=updated.plan_id,
+            event="agentplan.linked",
+            reason=f"task={task_id}",
+            at=now,
+            detail={"task_id": str(task_id), "plan_hash": str(plan_hash)},
+        )
+        if self._log is not None:
+            self._log.info("[AgentPlan] linked id=%s task=%s", updated.plan_id, task_id)
+        return updated
+
+    async def _compensate_reserved_plan(
+        self, reserved: AgentPlan, *, reason: str, now: float
+    ) -> None:
+        """占用后任务建立失败 → 计划补偿为 CANCELLED（可审计，绝不留半完成）。"""
+        cancelled = await self.store.update_status(
+            reserved.plan_id, PlanStatus.CANCELLED, reason=reason, now=now
+        )
+        if cancelled is None:
+            # 已被并发改掉（终态不可覆盖）→ 尊重现状，只留审计
+            reason = f"{reason} (already_{reserved.status})"
+        await self.store.log_event(
+            plan_id=reserved.plan_id,
+            event="agentplan.compensated",
+            reason=reason,
+            at=now,
+            detail={"kind": "reserved_plan"},
+        )
+        if self._log is not None:
+            self._log.warning("[AgentPlan] compensated plan=%s reason=%s", reserved.plan_id, reason)
+
+    async def _compensate_orphan_task(self, task_id: str, *, reason: str, now: float) -> None:
+        """取消一个还没有可信计划关联的待确认任务（它没有执行过任何动作）。"""
+        cancel = getattr(self.runtime, "cancel", None) if self.runtime is not None else None
+        ok = False
+        if callable(cancel):
+            try:
+                await cancel(task_id, reason=f"agent_plan:{reason}")
+                ok = True
+            except Exception:  # noqa: BLE001 - 取消失败也必须留审计
+                if self._log is not None:
+                    self._log.exception("[AgentPlan] 孤儿任务取消失败 task=%s", task_id)
+        await self.store.log_event(
+            plan_id="-",
+            event="agentplan.orphan_task",
+            reason=f"{reason} cancelled={ok}",
+            at=now,
+            detail={"task_id": str(task_id)},
+        )
+        if self._log is not None:
+            self._log.warning(
+                "[AgentPlan] orphan task compensated task=%s cancelled=%s reason=%s",
+                task_id,
+                ok,
+                reason,
+            )
 
     # ------------------------------------------------------------ LIFE 路径（两道门）
 
@@ -351,7 +589,7 @@ class AgentPlanService:
             PlanningOutcome.BLOCKED_BY_PRECONDITION: PlanStatus.BLOCKED_BY_PRECONDITION,
         }
         plan_status = status_map.get(result.outcome, PlanStatus.NEEDS_MORE_INFORMATION)
-        record = await self._create(
+        stored_plan, _created = await self._create(
             AgentPlan(
                 plan_id="",
                 source=PlanSource.LIFE.value,
@@ -381,7 +619,7 @@ class AgentPlanService:
             ),
             now=moment,
         )
-        return {"action": "planned", "plan": record, "outcome": result.outcome.value}
+        return {"action": "planned", "plan": stored_plan, "outcome": result.outcome.value}
 
     async def approve(
         self,
@@ -406,6 +644,24 @@ class AgentPlanService:
                 "action": "not_approvable",
                 "reply": f"这份计划现在的状态是 {plan.status}，不能批准。",
                 "plan": plan,
+                "record": None,
+            }
+        # 7D.1 P1-3：批准入口**直接**检查过期（expire_due 只是清理，不是安全边界）。
+        if plan.expired_at(moment):
+            expired = await self.store.update_status(
+                plan.plan_id, PlanStatus.EXPIRED, reason="approved_after_ttl", now=moment
+            )
+            await self.store.log_event(
+                plan_id=plan.plan_id,
+                event="agentplan.compensated",
+                reason="approve_on_expired_plan",
+                at=moment,
+                detail={"gate": "plan_approval"},
+            )
+            return {
+                "action": "not_approvable",
+                "reply": "这份计划已经过期了，不能批准。",
+                "plan": expired or plan,
                 "record": None,
             }
         if not (plan.plan or {}).get("steps"):
@@ -433,6 +689,17 @@ class AgentPlanService:
                 "plan": plan,
                 "record": None,
             }
+        # 原子占用（7D.1 P1-3）：READY_FOR_APPROVAL → APPROVED 只有一个并发请求能成功，
+        # 且占用条件里带过期检查 —— 并发批准绝不会建出两份 Task。
+        occupied = await self.store.occupy_for_approval(plan.plan_id, now=moment)
+        if occupied is None:
+            return {
+                "action": "not_approvable",
+                "reply": "这份计划刚刚被处理过（已批准或已过期），不能重复批准。",
+                "plan": await self.store.get(plan.plan_id) or plan,
+                "record": None,
+            }
+        plan = occupied
         try:
             record = await self.runtime.create_task(
                 task_plan.objective,
@@ -445,6 +712,13 @@ class AgentPlanService:
             )
         except Exception as exc:  # noqa: BLE001
             busy = type(exc).__name__ == "TaskBusy"
+            # 占用后建任务失败 → 占用状态安全终结（绝不留 APPROVED 半完成记录）
+            await self._finalize_occupied_plan(
+                plan,
+                status=PlanStatus.CANCELLED,
+                reason=f"task_create_failed:{type(exc).__name__}",
+                now=moment,
+            )
             return {
                 "action": "busy" if busy else "create_failed",
                 "reply": "我手上还有一件事没做完，先做完这个再说。"
@@ -453,44 +727,100 @@ class AgentPlanService:
                 "plan": plan,
                 "record": None,
             }
-        approved = await self.store.update_status(
-            plan.plan_id, PlanStatus.LINKED, reason=f"approved_by:{user_id}", now=moment
-        )
-        if approved is not None:
-            payload = approved.to_payload()
-            payload["task_id"] = record.task_id
-            payload["approver_user_id"] = str(user_id)
-            payload["approver_session_id"] = str(session_id)
-            payload["approved_at"] = moment
-            updated = AgentPlan.from_payload(payload)
-            approved = await self.store.replace_plan(updated) or approved
-            await self.store.log_event(
-                plan_id=approved.plan_id,
-                event="agentplan.approved",
-                reason=f"approver={user_id} task={record.task_id}",
-                at=moment,
-                detail={"gate": "plan_approval", "next_gate": "execution_confirmation"},
+        state = str(getattr(getattr(record, "state", None), "value", "") or "")
+        if state != "PENDING_CONFIRMATION":
+            # create_task 校验失败返回 FAILED 记录 —— 不是成功，安全补偿
+            await self._finalize_occupied_plan(
+                plan,
+                status=PlanStatus.CANCELLED,
+                reason=f"task_unexpected_state:{state}",
+                now=moment,
             )
+            return {
+                "action": "create_failed",
+                "reply": "任务建立失败，等会儿再试。",
+                "plan": plan,
+                "record": record,
+            }
+        # 关联更新必须有明确结果：失败 → 取消待确认任务（安全补偿），不宣称批准完成
+        payload = plan.to_payload()
+        payload["task_id"] = record.task_id
+        payload["approver_user_id"] = str(user_id)
+        payload["approver_session_id"] = str(session_id)
+        payload["approved_at"] = moment
+        payload["status"] = PlanStatus.LINKED.value
+        payload["reason"] = f"approved_by:{user_id}"
+        linked = AgentPlan.from_payload(payload)
+        approved = await self.store.replace_plan(linked)
+        if approved is None:
+            await self._compensate_orphan_task(
+                str(record.task_id), reason="agent_plan_link_failed", now=moment
+            )
+            return {
+                "action": "create_failed",
+                "reply": "任务建立失败，等会儿再试。",
+                "plan": plan,
+                "record": record,
+            }
+        await self.store.log_event(
+            plan_id=approved.plan_id,
+            event="agentplan.approved",
+            reason=f"approver={user_id} task={record.task_id}",
+            at=moment,
+            detail={"gate": "plan_approval", "next_gate": "execution_confirmation"},
+        )
         return {
             "action": "approved",
             "plan": approved,
             "record": record,
-            # 文案明确这是第一道门（修订 1：让用户知道现在站在哪道门前）
+            # 文案明确这是第一道门（修订 1），并带上被批准计划的可识别摘要
+            # （7D.1 §3.2.9：不能含糊地批准用户没看过的计划）
             "reply": (
-                "计划已批准（第 1/2 步）。任务已建立，还需要你回复「确认」才会真正开始。\n"
-                + self.runtime.summary_of(record)
+                f"计划已批准（第 1/2 步）：{approved.objective}\n"
+                "任务已建立，还需要你回复「确认」才会真正开始。\n" + self.runtime.summary_of(record)
             ),
         }
+
+    async def _finalize_occupied_plan(
+        self, plan: AgentPlan, *, status: PlanStatus, reason: str, now: float
+    ) -> None:
+        """占用（APPROVED）之后的失败补偿：落到明确的终态并留审计。
+
+        APPROVED 没有到 CANCELLED 的状态机出口，所以这里用 ``replace_plan`` 整行落账
+        —— 这是**补偿**，不是状态机转移；原因必须写清。
+        """
+        payload = plan.to_payload()
+        payload["status"] = status.value
+        payload["reason"] = reason
+        payload["updated_at"] = float(now)
+        await self.store.replace_plan(AgentPlan.from_payload(payload))
+        await self.store.log_event(
+            plan_id=plan.plan_id,
+            event="agentplan.compensated",
+            reason=reason,
+            at=now,
+            detail={"from": PlanStatus.APPROVED.value, "to": status.value},
+        )
+        if self._log is not None:
+            self._log.warning(
+                "[AgentPlan] occupied plan compensated id=%s to=%s reason=%s",
+                plan.plan_id,
+                status.value,
+                reason,
+            )
 
     async def handle_qq(self, *, text: str, user_id: str, session_id: str) -> dict[str, Any] | None:
         """QQ 消息入口：只认 LIFE 计划的「批准」（返回 None = 不归计划管，交给任务/聊天）。"""
         if not is_approve_plan_command(text):
             return None
+        moment = self._now()
+        # 7D.1 §3.2.2：选择候选时就排除已过期计划（expire_due 只是清理，不是安全边界）
         pending = [
             item
             for item in await self.store.open_plans()
             if item.source == PlanSource.LIFE.value
             and item.status == PlanStatus.READY_FOR_APPROVAL.value
+            and not item.expired_at(moment)
         ]
         if not pending:
             return None  # 没有待批准计划 → 让「批准」变成普通聊天（与 5A 的确认同哲学）
@@ -517,17 +847,42 @@ class AgentPlanService:
         return expired
 
     async def recover(self, *, now: float | None = None) -> dict[str, Any]:
-        """重启恢复（§六）：只处理过期与统计，**绝不**复活终态、绝不自动重规划。"""
+        """重启恢复（§六）：过期清理 + **孤儿 PLANNING 补偿**；绝不复活终态、绝不自动重规划。
+
+        7D.1 P1-1 的崩溃边界：reserve（PLANNING 落盘）与 link（建任务 + 落 LINKED）
+        之间进程中断 → 留下一条没有 task_id 的 PLANNING 记录。它对应的任务**不存在**
+        （还没建），所以补偿 = CANCELLED（可审计），绝不自动重规划或复活。
+        """
         moment = self._now(now)
         try:
             expired = await self.expire_due(now=moment)
             rows = await self.recent(50)
+            orphans = 0
+            for plan in rows:
+                if plan.status != PlanStatus.PLANNING.value or plan.task_id:
+                    continue
+                cancelled = await self.store.update_status(
+                    plan.plan_id,
+                    PlanStatus.CANCELLED,
+                    reason="orphan_planning_recovered",
+                    now=moment,
+                )
+                if cancelled is not None:
+                    orphans += 1
+                    await self.store.log_event(
+                        plan_id=plan.plan_id,
+                        event="agentplan.compensated",
+                        reason="orphan_planning_recovered",
+                        at=moment,
+                        detail={"kind": "reserved_plan", "task_id": ""},
+                    )
         except Exception as exc:  # noqa: BLE001 - 恢复失败只降级
             self.degraded_reason = f"{type(exc).__name__}"
             return {"action": "degraded", "expired": 0, "open": 0, "reason": "error"}
         return {
             "action": "ok",
             "expired": len(expired),
+            "orphans": orphans,
             "open": sum(1 for item in rows if item.open),
             "recent": len(rows),
             "reason": "",
@@ -560,7 +915,8 @@ class AgentPlanService:
 
     # ------------------------------------------------------------ 内部
 
-    async def _create(self, plan: AgentPlan, *, now: float) -> AgentPlan | None:
+    async def _create(self, plan: AgentPlan, *, now: float) -> tuple[AgentPlan, bool]:
+        """落盘（原子占用）；返回 ``(计划, 是否新建)`` —— 合并 = 拿到的是已有记录。"""
         stored, created = await self.store.create(plan)
         event = "agentplan.created" if created else "agentplan.deduplicated"
         if created:
@@ -590,7 +946,7 @@ class AgentPlanService:
                 stored.task_id or "-",
                 stored.proposal_id or "-",
             )
-        return stored
+        return stored, created
 
     def _plan_payload(self, planned: Any) -> dict[str, Any]:
         plan = getattr(planned, "plan", None)

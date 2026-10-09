@@ -104,6 +104,9 @@ ALLOWED_PLAN_TRANSITIONS: dict[PlanStatus, frozenset[PlanStatus]] = {
             PlanStatus.UNSUPPORTED,
             PlanStatus.BLOCKED_BY_POLICY,
             PlanStatus.BLOCKED_BY_PRECONDITION,
+            # 7D.1 P1-1：reserve-then-link —— 先原子占用指纹（PLANNING），任务建立成功后
+            # 才落 LINKED；建立失败/进程中断 → CANCELLED（恢复期清理孤儿 PLANNING）。
+            PlanStatus.LINKED,
             PlanStatus.CANCELLED,
         }
     ),

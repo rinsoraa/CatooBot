@@ -478,58 +478,141 @@ class QQTaskEntry:
         return True
 
     async def _verify_follow_identity(self, identity: QQIdentity) -> str | None:
-        """确认执行前复核跟随目标身份（修订 2）。返回 None = 放行；返回文案 = 已否决。"""
-        plans = getattr(self.bot, "agent_plans", None)
-        if plans is None or not callable(getattr(plans, "plan_for_task", None)):
-            return None
+        """确认执行前复核跟随目标身份（7D.1 P1-2，**fail-closed**）。
+
+        返回 ``None`` = 放行（只有两种情况：当前没有待确认任务；或能**证明**它是
+        普通非跟随任务）。其余一切"读不到 / 缺失 / 不一致 / 异常"都返回否决文案
+        并走既有安全路径取消待确认任务 —— 绝不因异常路径静默放行。
+
+        复核依据是**当前 Task 的冻结步骤**（不依赖 AgentPlan 是否存在来判定任务类型），
+        且至少核对 VERIFIED 状态、player_uuid、server_id 与冻结的 username。
+        """
         runtime = self.runtime
         current_getter = getattr(runtime, "current", None)
         if not callable(current_getter):
-            return None
+            # 连"有没有待确认任务"都读不到 → 无法证明这不是跟随任务 → 安全拒绝
+            self._log.warning("[Task/QQ] follow re-check: runtime 不可读，确认被拒绝")
+            return self._follow_veto_message("任务状态读不出来")
         try:
             record = await current_getter(identity.session_id)
-        except Exception:  # noqa: BLE001 - 读不到任务就照常走既有链
-            return None
-        if record is None or str(getattr(getattr(record, "state", None), "value", "")) != (
-            "PENDING_CONFIRMATION"
-        ):
-            return None
+        except Exception:
+            self._log.exception("[Task/QQ] follow re-check: current() 失败，确认被拒绝")
+            return self._follow_veto_message("任务状态读不出来")
+        if record is None:
+            return None  # 当前会话没有任务 → 「确认」是普通聊天（既有链处理）
+        state = str(getattr(getattr(record, "state", None), "value", "") or "")
+        if state != "PENDING_CONFIRMATION":
+            return None  # 不是待确认 → 既有链自己处理（busy 等）
+        # ---- 从**冻结步骤**判定任务类型（不依赖 AgentPlan 是否存在）
+        plan_obj = getattr(record, "plan", None)
+        steps = list(getattr(plan_obj, "steps", None) or [])
+        if not steps:
+            self._log.exception("[Task/QQ] follow re-check: 冻结步骤读不到 task=%s", record.task_id)
+            return self._follow_veto_message("计划步骤读不出来")
+        follow_steps = [
+            s for s in steps if str(getattr(s, "tool", "")) == "minecraft_follow_player"
+        ]
+        if not follow_steps:
+            return None  # 能证明是普通非跟随任务 → 既有链处理
+        frozen = follow_steps[0]
+        frozen_username = str((getattr(frozen, "arguments", None) or {}).get("username", "") or "")
+        if not frozen_username:
+            self._log.warning(
+                "[Task/QQ] follow re-check: 冻结 username 缺失 task=%s", record.task_id
+            )
+            return self._follow_veto_message("计划的目标玩家读不出来")
+        # ---- 跟随任务：缺任何复核依据都拒绝（不再"查不到就放行"）
+        plans = getattr(self.bot, "agent_plans", None)
+        plan_getter = getattr(plans, "plan_for_task", None)
+        if plans is None or not callable(plan_getter):
+            self._log.warning(
+                "[Task/QQ] follow re-check: AgentPlan 层不可用 task=%s", record.task_id
+            )
+            return self._follow_veto_message("计划关联读不出来")
         try:
-            plan = await plans.plan_for_task(str(record.task_id))
-        except Exception:  # noqa: BLE001
-            return None
-        if plan is None:
-            return None  # 不是跟随任务 → 既有链自己处理
-        target = getattr(plan, "target", None)
-        player_uuid = str(getattr(target, "player_uuid", "") or "")
-        if not player_uuid:
-            return None  # 非跟随计划（资源任务没有目标玩家）
+            agent_plan = await plan_getter(str(record.task_id))
+        except Exception:
+            self._log.exception(
+                "[Task/QQ] follow re-check: plan_for_task 失败 task=%s", record.task_id
+            )
+            return self._follow_veto_message("计划关联读不出来")
+        if agent_plan is None:
+            self._log.warning("[Task/QQ] follow re-check: 无计划关联 task=%s", record.task_id)
+            return self._follow_veto_message("计划关联读不出来")
+        target = getattr(agent_plan, "target", None)
+        plan_uuid = str(getattr(target, "player_uuid", "") or "")
+        plan_server = str(getattr(target, "server_id", "") or "")
+        if not plan_uuid:
+            self._log.warning(
+                "[Task/QQ] follow re-check: 计划目标 UUID 缺失 task=%s", record.task_id
+            )
+            return self._follow_veto_message("计划的目标身份不完整")
+        # ---- 当前服务器身份必须可靠（跨服务器同名玩家绝不当成当前目标）
+        server_now = self._server_id()
+        if not server_now:
+            self._log.warning(
+                "[Task/QQ] follow re-check: 当前服务器身份不可确认 task=%s", record.task_id
+            )
+            return self._follow_veto_message("当前服务器身份确认不了")
+        # ---- 可信身份桥解析
         proposals = getattr(self.bot, "proposals", None)
         resolver = getattr(proposals, "resolve_target", None)
         if not callable(resolver):
-            return None
+            self._log.warning("[Task/QQ] follow re-check: 身份解析不可用 task=%s", record.task_id)
+            return self._follow_veto_message("身份解析读不出来")
         try:
-            resolved = await resolver(user_id=str(identity.user_id), server_id=self._server_id())
-        except Exception:  # noqa: BLE001 - 解析失败按"身份失效"处理（fail-closed）
+            resolved = await resolver(user_id=str(identity.user_id), server_id=server_now)
+        except Exception:
+            self._log.exception("[Task/QQ] follow re-check: 身份解析失败 task=%s", record.task_id)
             resolved = None
         uuid_now = str(getattr(resolved, "player_uuid", "") or "")
         status_now = str(getattr(resolved, "status", "") or "")
-        if status_now == "VERIFIED" and uuid_now == player_uuid:
+        server_resolved = str(getattr(resolved, "server_id", "") or "")
+        name_now = str(getattr(resolved, "player_name", "") or "")
+        # ---- 全部一致才放行：VERIFIED + uuid 相同 + server 一致 + username 与冻结参数一致
+        consistent = (
+            status_now == "VERIFIED"
+            and uuid_now == plan_uuid
+            and server_resolved == plan_server
+            and server_now == plan_server
+            and name_now == frozen_username
+        )
+        if consistent:
             return None
-        try:
-            await runtime.cancel(str(record.task_id), reason="follow identity no longer valid")
-        except Exception:  # noqa: BLE001 - 取消失败也不放行
-            self._log.exception("[Task/QQ] 跟随任务取消失败")
-        if self._log is not None:
-            self._log.info(
-                "[Task/QQ] follow confirm vetoed task=%s identity=%s expected_uuid=…%s",
-                record.task_id,
-                status_now or "unavailable",
-                player_uuid[-4:],
-            )
-        return (
-            "你的 Minecraft 身份绑定现在对不上了（可能已解除或换号），"
+        reason = (
+            f"identity={status_now or 'unavailable'} uuid_match={uuid_now == plan_uuid}"
+            f" server_match={server_resolved == plan_server}"
+            f" name_match={name_now == frozen_username}"
+        )
+        self._log.warning(
+            "[Task/QQ] follow re-check FAILED task=%s %s expected_uuid=…%s server=%s",
+            record.task_id,
+            reason,
+            plan_uuid[-4:],
+            plan_server,
+        )
+        # ---- 既有安全路径取消待确认任务；取消失败也要记录并继续阻止确认
+        cancel = getattr(runtime, "cancel", None)
+        cancelled = False
+        if callable(cancel):
+            try:
+                await cancel(str(record.task_id), reason="follow identity no longer valid")
+                cancelled = True
+            except Exception:
+                self._log.exception("[Task/QQ] follow re-check: 取消失败 task=%s", record.task_id)
+        detail = (
             "这个跟随任务我取消了。重新绑定后再试。"
+            if cancelled
+            else ("这个跟随任务我暂时停不下来，但我不会开始执行它。请稍后再试一次「停止」。")
+        )
+        return "你的 Minecraft 身份绑定和计划对不上了（可能已解除、换号或换了服务器），" + detail
+
+    def _follow_veto_message(self, reason: str) -> str:
+        """fail-closed 的统一否决文案（原因写给用户，细节在日志/审计里）。"""
+        self._log.warning("[Task/QQ] follow re-check vetoed: %s", reason)
+        return (
+            f"开始之前我需要再核对一次你的 Minecraft 身份，但{reason}，"
+            "这次「确认」我先不执行。请稍后再试或重新绑定。"
         )
 
     def _server_id(self) -> str:

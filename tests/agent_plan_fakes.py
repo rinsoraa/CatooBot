@@ -31,13 +31,15 @@ class FakeRuntimeConfig:
 
 
 class FakeTaskRecord:
-    def __init__(self, task_id: str, plan: Any) -> None:
+    def __init__(self, task_id: str, plan: Any, *, session_id: str = "s") -> None:
         self.task_id = task_id
         self.plan = plan
         self.plan_hash = "hash-" + task_id
         self.objective = getattr(plan, "objective", "")
         self.state = type("S", (), {"value": "PENDING_CONFIRMATION"})()
         self.plan_version = 1
+        self.session_id = session_id
+        self.user_id = "u"
 
 
 class FakeTaskRuntime:
@@ -45,8 +47,10 @@ class FakeTaskRuntime:
 
     def __init__(self, *, busy: bool = False) -> None:
         self.created: list[dict[str, Any]] = []
+        self.cancelled: list[str] = []
         self.busy = busy
         self._seq = 0
+        self.records: dict[str, FakeTaskRecord] = {}
 
     async def create_task(
         self,
@@ -64,7 +68,9 @@ class FakeTaskRuntime:
 
             raise TaskBusy(FakeTaskRecord("busy", plan))
         self._seq += 1
-        record = FakeTaskRecord(f"T-{self._seq:03d}", plan)
+        record = FakeTaskRecord(f"T-{self._seq:03d}", plan, session_id=session_id)
+        record.user_id = user_id
+        self.records[record.task_id] = record
         self.created.append(
             {
                 "objective": objective,
@@ -75,6 +81,16 @@ class FakeTaskRuntime:
                 "steps": [step.tool for step in plan.steps],
             }
         )
+        return record
+
+    async def get(self, task_id: str) -> FakeTaskRecord | None:
+        return self.records.get(str(task_id))
+
+    async def cancel(self, task_id: str, *, reason: str = "") -> Any:
+        self.cancelled.append(str(task_id))
+        record = self.records.get(str(task_id))
+        if record is not None:
+            record.state = type("S", (), {"value": "CANCELLED"})()
         return record
 
     def summary_of(self, record: Any) -> str:

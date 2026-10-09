@@ -241,7 +241,7 @@ class TestSourceRouting:
         rig = PlanRig()
         from app.tasks.agent_plan import AgentPlan, PlanSource
 
-        empty = await rig.service._create(
+        empty, _created = await rig.service._create(
             AgentPlan(
                 plan_id="",
                 source=PlanSource.LIFE.value,
@@ -445,9 +445,12 @@ class TestQQEntryRouting:
         assert any("确认" in text for text in said), "批准文案必须指向第二道门"
 
     async def test_confirm_veto_when_identity_no_longer_verified(self) -> None:
-        """修订 2：确认前复核身份 —— 撤销/换号 → 取消任务，绝不带着旧目标跑。"""
+        """修订 2：确认前复核身份 —— 撤销/换号 → 取消任务，绝不带着旧目标跑。
+
+        复核依据是**冻结步骤**（不依赖 AgentPlan 是否存在）。
+        """
         rig = PlanRig()
-        await rig.service.plan_follow_from_user(
+        out = await rig.service.plan_follow_from_user(
             objective="跟着我",
             user_id="2731431246",
             session_id="s",
@@ -455,27 +458,40 @@ class TestQQEntryRouting:
                 status="VERIFIED", server_id=SERVER, player_uuid="a" * 32, player_name="Rinsora"
             ),
         )
+        assert out["action"] == "created"
+        task_id = out["record"].task_id
         plan = (await rig.store.recent())[0]
-        assert plan.task_id
+        assert plan.task_id == task_id
 
         cancelled: list[str] = []
 
         class CancelableRuntime(FakeTaskRuntime):
-            async def cancel(self, task_id: str, *, reason: str = "") -> Any:
-                cancelled.append(task_id)
+            async def cancel(self, tid: str, *, reason: str = "") -> Any:
+                cancelled.append(tid)
                 return None
 
             async def current(self, session_id: str | None = None) -> Any:
+                # 冻结步骤：跟随目标 Rinsora（与 plan.target 一致）
+                from app.tasks.models import TaskStep
+
+                step = TaskStep(
+                    step_id="step_1",
+                    tool="minecraft_follow_player",
+                    arguments={"username": "Rinsora"},
+                    risk="LOW",
+                )
+                fake_plan = type("P", (), {"steps": [step]})()
                 return type(
                     "R",
                     (),
                     {
-                        "task_id": plan.task_id,
+                        "task_id": task_id,
                         "state": type("S", (), {"value": "PENDING_CONFIRMATION"})(),
+                        "plan": fake_plan,
                     },
                 )()
 
-        # 现在身份解析成另一个 uuid（换号）→ 否决
+        # 现在身份解析成另一个 uuid（换号）→ 否决 + 取消
         from app.tasks.proposal import TargetResolution
 
         async def resolver(user_id: str, server_id: str = "") -> Any:
@@ -496,7 +512,7 @@ class TestQQEntryRouting:
         entry.runtime = runtime
         entry._server_id = lambda: SERVER  # type: ignore[method-assign]
         veto = await entry._verify_follow_identity(self._Identity())
-        assert veto is not None and cancelled == [plan.task_id]
+        assert veto is not None and cancelled == [task_id]
 
 
 class _Say:
