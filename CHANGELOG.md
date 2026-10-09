@@ -48,16 +48,15 @@
   cancel/expire 走既有 `minecraft_stop`、三层期限（授权 60s / 动作 120s / 任务 600s）分层如实展示。
 * **测试**：新增 **48** 项（六值结论 / 来源隔离与确认次数 / 身份 / 状态机 / 源码级安全边界 /
   QQ 路由 / 真运行时 follow 生命周期 / 服务路由注册 / 双 handler 注入）；冻结测试 32→33。
-* **真机（2026-10-09 15:35–17:05 + 7D.1 整改 22:36）—— 全部取证**：跟随任务经身份桥 + 计划展示（目标玩家 +
+* **真机（2026-10-09 15:35–17:05 + 7D.1 整改 22:36）—— 取证**：跟随任务经身份桥 + 计划展示（目标玩家 +
   三层期限）+「确认」→ 真实 `follow_player(RinsoraNeko)`，在途 11.8s「停止」→ CANCELLED，
   另一轮精确跑满 **120001ms** 被动作超时收尾；资源任务 6 步全 SUCCEEDED；LIFE 两道门
   （17 点真实桶：意图→提案→AP-005 只规划→QQ「批准」建任务→「确认」→4 步 SUCCEEDED）；
   重启恢复零重复；不支持的目标零计划零任务。真机抓出两个缺口并修复：任务适配器缺
   `follow_player` 服务路由、QQ 入口 handler 未注入计划服务。
-* **7D.1 Real Java C（22:36）**：第二客户端（RinsoraNeko 的 MC 窗口）多次 `/setblock … air`
-  真实改变任务目标区域的世界状态 → 任务 dig SUCCEEDED → dropped_items SUCCEEDED →
-  pickup_item **TIMEOUT**（30s，掉落物因地形变化不可达）→ 任务 **PAUSED**（安全暂停，非盲目继续）。
-  完整时间线与证据链见 `docs/MINECRAFT_PHASE7D.md` §9.2。
+* **7D.1 Real Java C（22:36）—— 已作废**：该轮世界变化发生在**任务确认之前**，且实际 dig
+  坐标与声称清除的区域不一致（见 `docs/MINECRAFT_PHASE7D.md` §9.2）。已按任务书重做，
+  见本文件顶部的 **Phase 7D.2**（严格「先运行、后改变世界」）。
 
 
 本文件记录 CatooBot 的版本演进。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，

@@ -315,5 +315,11 @@ _create: block_for(text) 认方块 → plan_resource_task()（确定性模板）
 
 ### 10.5 代码 / 文档 / CI 一致性
 
-* 源码、测试、文档、CHANGELOG 同一次镜像提交；镜像 commit 见下方「镜像」行。
-* CI（GitHub Actions，`lint · format · types · tests` + `webui`）在该 commit 上全绿。
+* **代码 + 测试 + 文档（本文件 §10 + CHANGELOG 的 7D.2 条目）**：镜像 commit
+  **`6551f16`** —— GitHub Actions 两个 job（`lint · format · types · tests` /
+  `webui · typecheck · tests · build`）**全部 success**。
+* **文档一致性补丁**（`docs/README.md` 索引行 + CHANGELOG 里 7D.1 旧条目的作废说明）：
+  紧随其后的镜像 commit（见 7D.2 最终报告的「镜像」行）。
+* 环境还原：本阶段的临时脚本已删除（根目录 `_p7d2_*`）；`config/` 与
+  `config/overrides.yaml` 未做任何改动（确认 TTL 的进程内残留在 §10.4 已披露）；
+  真实世界里操作者放入/移除的方块已复原。
