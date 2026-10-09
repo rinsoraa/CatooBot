@@ -182,6 +182,7 @@ class TaskTurnHandler:
         source: str = "minecraft_chat",
         objective_limit: int = 120,
         plans: Any = None,
+        skills: Any = None,
     ) -> None:
         self._runtime = runtime
         self._observe = observe
@@ -191,6 +192,9 @@ class TaskTurnHandler:
         self._limit = max(20, int(objective_limit))
         #: Phase 7D：AgentPlan 服务（鸭子类型注入；None = 不记账，任务链完全不受影响）
         self._plans = plans
+        #: Phase 7E：程序性技能服务（鸭子类型注入）。它只能提供**计划候选**：
+        #: 适配性通过时用它物化的计划，否则原样回退既有确定性模板；异常一律回退。
+        self._skills = skills
 
     # ------------------------------------------------------------ 入口
 
@@ -442,6 +446,18 @@ class TaskTurnHandler:
 
     # ------------------------------------------------------------ 新任务
 
+    async def _skill_plan(self, objective: str) -> Any:
+        """Phase 7E：技能给出的计划候选（没有/不适用/异常 → None = 用既有模板）。"""
+
+        skills = getattr(self, "_skills", None)
+        if skills is None:
+            return None
+        try:
+            return await skills.suggest(objective)
+        except Exception:  # noqa: BLE001 - 技能异常绝不改变既有行为
+            log.exception("[Task] 技能复用失败（忽略，按原模板规划）")
+            return None
+
     async def _create(self, session_id: str, user_id: str, message: str) -> TaskTurnOutcome:
         block = block_for(message)
         if not block:
@@ -450,12 +466,16 @@ class TaskTurnHandler:
         objective = message[: self._limit]
         drop = DROP_OVERRIDES.get(block, block)
         try:
-            planned = await plan_resource_task(
-                objective,
-                observe=self._observe,
-                block_name=block,
-                drop_item=drop,
-            )
+            # Phase 7E §7.5：先问一次技能（适用 → 用它的计划候选；不适用/异常 → 原样回退）。
+            # 技能只是**计划候选**：下面照旧走 create_task → validate_plan → 确认门。
+            planned = await self._skill_plan(objective)
+            if planned is None:
+                planned = await plan_resource_task(
+                    objective,
+                    observe=self._observe,
+                    block_name=block,
+                    drop_item=drop,
+                )
         except ObservationFailed as exc:
             return TaskTurnOutcome(
                 True, action="plan_failed", reply=f"我看了一圈，现在做不了：{exc}。"

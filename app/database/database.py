@@ -1534,6 +1534,100 @@ CREATE INDEX IF NOT EXISTS idx_task_agent_plans_status
     ON task_agent_plans(status, created_at DESC);
 """,
     ),
+    (
+        34,
+        "procedural skills + learning ledger (Phase 7E)",
+        """
+-- Phase 7E §7.1/§9：程序性技能的最小存储（两张表）。先查过现有库：
+--   memories           —— 通用记忆引擎：合并/压缩会改写正文、保留策略会过期删除、
+--                         配额会裁剪、语义检索会把技能当聊天记忆注入 —— 与"结构化、带版本、
+--                         带条件、终态不可复活"的技能语义相反，**不塞**（对比见 7E 文档 §2.1）；
+--   task_agent_plans   —— 是"准备怎样做"的计划层（7D），技能是"已经验证过的方法"，
+--                         且必须跨任务存活并带证据计数，语义不同；
+--   sandbox_memory_candidates —— 沙盒"经历 → 记忆"的候选表（迁移 22），与程序性技能无关；
+--   behavior_events    —— append-only 审计表，7E **复用它**记录 skill.* 历史，
+--                         所以这里只有这两张表：没有第二套记忆引擎、没有第二套任务状态机。
+-- 状态只有 CANDIDATE/ACTIVE/STALE/INVALIDATED/REJECTED（§7.1）—— 没有 RUNNING/EXECUTING，
+-- 技能不是任务；也没有任何执行入口。
+-- 幂等：fingerprint 唯一索引（同一方法只留一条）；证据表
+-- UNIQUE(subject_key, task_id, plan_version, plan_hash) —— 重复终态事件 / 重复回调 /
+-- 重启恢复都只落一条证据，成功/失败计数不会重复累加（§7.2 第 4 条）。
+CREATE TABLE IF NOT EXISTS procedural_skills (
+    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+    skill_id            TEXT NOT NULL UNIQUE,
+    schema_version      INTEGER NOT NULL DEFAULT 1,
+    name                TEXT NOT NULL DEFAULT '',
+    objective_pattern   TEXT NOT NULL DEFAULT '',
+    summary             TEXT NOT NULL DEFAULT '',
+    status              TEXT NOT NULL DEFAULT 'CANDIDATE',
+    character_id        TEXT NOT NULL DEFAULT '',
+    server_id           TEXT NOT NULL DEFAULT '',
+    environment         TEXT NOT NULL DEFAULT '',
+    tools_signature     TEXT NOT NULL DEFAULT '',
+    max_risk            TEXT NOT NULL DEFAULT 'SAFE',
+    version             INTEGER NOT NULL DEFAULT 1,
+    supersedes_skill_id TEXT NOT NULL DEFAULT '',
+    superseded_by       TEXT NOT NULL DEFAULT '',
+    success_count       INTEGER NOT NULL DEFAULT 0,
+    failure_count       INTEGER NOT NULL DEFAULT 0,
+    ambiguous_count     INTEGER NOT NULL DEFAULT 0,
+    fingerprint         TEXT NOT NULL,
+    reason              TEXT NOT NULL DEFAULT '',
+    created_at          REAL NOT NULL DEFAULT 0,
+    updated_at          REAL NOT NULL DEFAULT 0,
+    last_learned_at     REAL NOT NULL DEFAULT 0,
+    last_verified_at    REAL NOT NULL DEFAULT 0,
+    last_used_at        REAL NOT NULL DEFAULT 0,
+    payload             TEXT NOT NULL DEFAULT '{}'
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_procedural_skills_fingerprint
+    ON procedural_skills(fingerprint);
+CREATE INDEX IF NOT EXISTS idx_procedural_skills_status
+    ON procedural_skills(status, updated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_procedural_skills_scope
+    ON procedural_skills(character_id, server_id, status);
+
+CREATE TABLE IF NOT EXISTS procedural_skill_evidence (
+    id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+    evidence_id        TEXT NOT NULL UNIQUE,
+    skill_id           TEXT NOT NULL DEFAULT '',
+    subject_key        TEXT NOT NULL DEFAULT '',
+    task_id            TEXT NOT NULL DEFAULT '',
+    plan_version       INTEGER NOT NULL DEFAULT 0,
+    plan_hash          TEXT NOT NULL DEFAULT '',
+    outcome            TEXT NOT NULL DEFAULT '',
+    verdict            TEXT NOT NULL DEFAULT '',
+    reason_code        TEXT NOT NULL DEFAULT '',
+    step_ids           TEXT NOT NULL DEFAULT '[]',
+    postcondition_kind TEXT NOT NULL DEFAULT '',
+    postcondition_ok   INTEGER NOT NULL DEFAULT 0,
+    detail             TEXT NOT NULL DEFAULT '{}',
+    created_at         REAL NOT NULL DEFAULT 0,
+    payload            TEXT NOT NULL DEFAULT '{}'
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_procedural_skill_evidence_once
+    ON procedural_skill_evidence(subject_key, task_id, plan_version, plan_hash);
+CREATE INDEX IF NOT EXISTS idx_procedural_skill_evidence_skill
+    ON procedural_skill_evidence(skill_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_procedural_skill_evidence_recent
+    ON procedural_skill_evidence(created_at DESC);
+
+-- 技能使用链（§7.6 回流）：物化发生在"任务还不存在"之前，所以先按
+-- (objective, plan_hash) 记账；任务收尾时用同两个值反查，就能把结果回流到正确的技能。
+-- 不落 task_id：任务可能建失败（busy / 校验失败），那样这行就是"未被使用的记账"，无害。
+CREATE TABLE IF NOT EXISTS procedural_skill_usage (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    skill_id    TEXT NOT NULL,
+    usage_key   TEXT NOT NULL UNIQUE,
+    objective   TEXT NOT NULL DEFAULT '',
+    plan_hash   TEXT NOT NULL DEFAULT '',
+    created_at  REAL NOT NULL DEFAULT 0,
+    payload     TEXT NOT NULL DEFAULT '{}'
+);
+CREATE INDEX IF NOT EXISTS idx_procedural_skill_usage_skill
+    ON procedural_skill_usage(skill_id, created_at DESC);
+""",
+    ),
 ]
 
 

@@ -1140,6 +1140,25 @@ class AgentPlanConfig(BaseModel):
     view_limit: int = Field(default=10, ge=1, le=100)
 
 
+class SkillsConfig(BaseModel):
+    """Phase 7E：程序性技能（技能学习 / 复用）的旋钮（**就这五个**）。
+
+    ``enabled`` 只表示"**允许从真实成功任务里学方法、并在后续请求里检索/评估**"——
+    技能**没有**执行权：它的唯一出口是"计划候选"，仍然要过既有批准/确认与
+    ``TaskRuntime → Policy → ActionRuntime``（§7.5）。所以默认开着是安全的。
+    """
+
+    enabled: bool = True
+    #: 一次请求最多检索几条候选技能（§7.4 有界）
+    retrieve_limit: int = Field(default=5, ge=1, le=20)
+    #: 晋升成 ACTIVE 需要几条**独立**合格证据（§7.2 两段式：不是模型打分）
+    promotion_min_successes: int = Field(default=2, ge=2, le=10)
+    #: 复用后连续几条反例就 INVALIDATED（在此之前先转 STALE 待复核，§7.6）
+    invalidate_after_failures: int = Field(default=2, ge=1, le=5)
+    #: dig 时长信号：实测 < 预期 × 该比例 ⇒ 判定"挖到之前方块就没了"（7D §10.4 隔离）
+    dig_short_ratio: float = Field(default=0.5, ge=0.1, le=0.95)
+
+
 class MinecraftMemoryConfig(BaseModel):
     """Phase 5C：身份桥 + 持久世界记忆（只暴露真正需要的旋钮）。
 
@@ -1224,6 +1243,8 @@ class AppConfig(BaseModel):
     task: TaskRuntimeConfig = Field(default_factory=TaskRuntimeConfig)
     #: Phase 7D：AgentPlan（规划 + 审计层）
     agent_plans: AgentPlanConfig = Field(default_factory=AgentPlanConfig)
+    #: Phase 7E：程序性技能（技能学习 + 有界复用；唯一出口是"计划候选"）
+    skills: SkillsConfig = Field(default_factory=SkillsConfig)
     world: WorldConfig = Field(default_factory=WorldConfig)
     sandbox: SandboxConfig = Field(default_factory=SandboxConfig)
     tools: ToolsConfig = Field(default_factory=ToolsConfig)

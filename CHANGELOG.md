@@ -1,5 +1,32 @@
 # Changelog
 
+## Minecraft Phase 7E — Skill Learning & Procedural Memory
+
+* **学习资格门（只认真实证据）**：`SkillService.on_task_finished(record)` 只吃**持久化**
+  `TaskRecord`（不是模型自述/聊天记忆/提案文本）；非 `SUCCEEDED`、非终态、最终计划版本未完成、
+  步骤没真跑过、工具不再注册/风险不符 —— 全部拒绝并给稳定 reason code。**改动世界的步骤必须有
+  独立后置条件**（运行时 `_finish` 用新鲜 SAFE 背包读算出的 `inventory_delta`）才算正向证据。
+* **dig 归因歧义隔离（7D §10.4）**：不可归因的挖掘样本判 `AMBIGUOUS`（无后置条件 / 实测时长
+  < 预期×0.5 且确实异步）→ 保留来源但**不计正向**；执行路径本身未改（该缺陷仍按独立 follow-up 跟踪）。
+* **结构化技能**：槽位归一化（坐标折叠成 `target_position`，`entity_id` 走既有引用）+ 指纹去重
+  （角色/服务器/工具契约/归一化步骤）+ 版本 lineage（方法变 → 新版本，旧版 STALE 且 `superseded_by`
+  回链）+ 五态生命周期（CANDIDATE 绝不参与复用；ACTIVE 需**两条独立**合格证据）。
+* **有界检索 + 适用性**：按方法类只取 ACTIVE（上限 5）；工具契约指纹/服务器/风险（与
+  `minecraft.agent.tools.*` **同源**）/新鲜 SAFE 前置（读不到 = `UNKNOWN`，永不升级）逐项可审计。
+* **计划候选接入既有链**：`SkillAwarePlanner`（只对资源类目标问技能，且必须过基规划器的风险闸门）
+  + `TaskTurnHandler` 接缝；技能物化必须过**同一个** `validate_plan`，仍要用户确认、仍走
+  `TaskRuntime → Policy → ActionRuntime`。技能层没有执行入口（AST 守卫）。
+* **结果回流**：成功累计 / 反例 → STALE → 连续反例 INVALIDATED；使用链按 `(objective, plan_hash)`
+  持久记账（重启不丢）。
+* **存储**：迁移 **34** 三张表（`procedural_skills` / `procedural_skill_evidence` /
+  `procedural_skill_usage`）+ 复用 `behavior_events` 审计；对比过"塞进通用记忆引擎"方案并说明为何不采用。
+* **测试**：新增 **80** 项（资格门 / 歧义隔离 / 归一化去重版本 / 真库重启幂等 / 真实 TaskRuntime
+  学习与复用 / 反馈回流 / 隔离与降级 / 接线与只读 API / AST 安全边界）；全量 **3510 passed**。
+* **边界**：19 工具、ActionRuntime 动作、TaskRuntime 状态、`allow_medium=false` 一律未改；
+  没有第二套记忆引擎/任务状态机/调度循环；技能不能授予任何权限。
+* 真机：本轮为"真实 TaskRuntime + 真实 SQLite + 真实迁移"的端到端闭环（含重启后检索）；
+  **真实 Java 服务器门禁 SKIPPED**（本阶段不要求，理由见 `docs/MINECRAFT_PHASE7E.md` §10）。
+
 ## Minecraft Phase 7D.2.1 — Follow Veto Cancellation Result Closure
 
 * **缺口**：`_follow_veto_message()` 只看「`cancel()` 有没有抛异常」就宣称取消成功，

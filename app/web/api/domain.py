@@ -326,6 +326,35 @@ class DomainApiRoutes(SocialApiRoutes, WebContext):
             ) from exc
         return ok(payload, request=request)
 
+    async def _v1_world_skills(self, request: web.Request) -> web.Response:
+        """Phase 7E §7.5/E15：程序性技能的**只读**观测视图。
+
+        只投影"有哪些技能、什么状态、来源与最近的学习/检索/拒绝原因（为什么没晋升）"——
+        **没有**任何批准 / 执行 / 确认入口：技能的唯一出口是计划候选，仍然走既有
+        批准与确认门。技能层缺失或降级时恒 200 + ``enabled/degraded``（读端点不 503）。
+        """
+        service = getattr(self._bot, "skills", None)
+        if service is None:
+            return ok(
+                {
+                    "enabled": False,
+                    "degraded": False,
+                    "reason": "",
+                    "counts": {},
+                    "skills": [],
+                    "evidence": [],
+                    "stats": {},
+                },
+                request=request,
+            )
+        try:
+            payload = await service.view(limit=20)
+        except Exception as exc:  # noqa: BLE001 - 只读视图失败不冒泡成 500
+            raise unavailable(
+                f"skill view unavailable: {type(exc).__name__}", code="skill.view"
+            ) from exc
+        return ok(payload, request=request)
+
     async def _v1_world_proposals(self, request: web.Request) -> web.Response:
         """Phase 7C §十二：TaskProposal 的**只读**视图。
 
@@ -740,6 +769,8 @@ class DomainApiRoutes(SocialApiRoutes, WebContext):
         app.router.add_get(f"{API_PREFIX}/world/proposals", wrap(self._v1_world_proposals))
         # Phase 7D：AgentPlan 只读视图（§九；批准只在 QQ，**没有**任何授权按钮）
         app.router.add_get(f"{API_PREFIX}/world/agent-plans", wrap(self._v1_world_agent_plans))
+        # Phase 7E：程序性技能只读视图（§7.5；**没有**任何执行 / 复用触发入口）
+        app.router.add_get(f"{API_PREFIX}/world/skills", wrap(self._v1_world_skills))
         app.router.add_get(f"{API_PREFIX}/world/trace", wrap(self._v1_world_trace))
         app.router.add_get(f"{API_PREFIX}/world/timeline", wrap(self._v1_world_timeline))
         app.router.add_get(f"{API_PREFIX}/world/topics", wrap(self._v1_world_topics))

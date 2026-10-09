@@ -331,6 +331,10 @@ class Bot:
         self.proposals: Any = None
         # Phase 7D：AgentPlan 服务（**只规划 + 记账**；执行永远走既有 TaskRuntime 链）
         self.agent_plans: Any = None
+        # Phase 7E：程序性技能（学习 + 有界复用；唯一出口是"计划候选"，没有执行入口）
+        self.skills: Any = None
+        #: Phase 7E：包装规划器（技能优先、失败原样回退 BoundedAgentPlanner）
+        self.skill_planner: Any = None
         self.activity_sandbox: Any = None
         self.activity_tasks: Any = None
         self.activity_observation: Any = None
@@ -1234,6 +1238,14 @@ class Bot:
             self.log.exception("Agent plans initialization failed; continuing without it")
             self.agent_plans = None
 
+        # Phase 7E：程序性技能层（学习 / 检索 / 适用性；执行仍然只走既有 TaskRuntime 链）。
+        # 装配点放在计划层之后：技能需要"当前工具契约"和"真实的成功任务记录"。
+        try:
+            await self._setup_skills()
+        except Exception:  # noqa: BLE001 - 技能层装配失败不拖垮启动
+            self.log.exception("Procedural skills initialization failed; continuing without it")
+            self.skills = None
+
     async def _setup_agent_plans(self) -> None:
         """Phase 7D §三/§四：把 AgentPlan 层接上。
 
@@ -1307,6 +1319,132 @@ class Bot:
             recovered.get("action", "none"),
             int(recovered.get("expired", 0) or 0),
             int(recovered.get("open", 0) or 0),
+        )
+
+    async def _setup_skills(self) -> None:
+        """Phase 7E §7.5：把程序性技能层接上（学习 + 有界复用）。
+
+        * 技能**没有**执行面：本层只读持久化 TaskRecord、只用既有 SAFE 观察通道、
+          只产出 ``PlannedTask``（计划候选）交给既有入口；
+        * 工具契约（名字 / 风险 / schema 指纹）来自**真实工具运行时**，技能无权修改；
+        * 计划层（``AgentPlanService``）与非 AgentPlan 的资源任务入口（``TaskTurnHandler``）
+          都注入同一个技能服务：前者用包装规划器，后者在模板之前问一次；
+        * 装配失败只降级：聊天、既有规划与任务链行为逐字不变。
+        """
+        from app.tasks.skill_service import SkillService, ToolsSnapshot, tools_signature_of
+        from app.tasks.skill_store import SqliteSkillStore
+
+        config = getattr(self.config, "skills", None)
+        if config is not None and not getattr(config, "enabled", True):
+            self.log.info("[Skill] 已在配置里关闭")
+            self.skills = None
+            return
+        from app.integrations.minecraft.agent import ACTION_RISK
+        from app.integrations.minecraft.task_adapter import _tool_of as mc_tool_of
+
+        registry = getattr(getattr(self, "tools", None), "registry", None)
+        names: list[str] = []
+        if registry is not None:
+            try:
+                names = sorted(str(item) for item in registry.names())
+            except Exception:  # noqa: BLE001 - 读不到工具面就当作"技能不可用"
+                names = []
+        # 风险用任务/策略的**权威表**（ACTION_RISK），不是工具元数据里的展示值；
+        # schema 用真实注册的工具定义（与 build_minecraft_task_runtime 同一读法）。
+        risk_table = {str(key): str(value) for key, value in ACTION_RISK.items()}
+        tool_runtime = getattr(self, "tools", None)
+
+        def _schema_for(tool: str) -> Any:
+            found = mc_tool_of(tool_runtime, tool) if tool_runtime is not None else None
+            if found is None:
+                return None
+            try:
+                return found.metadata.input_schema
+            except Exception:  # noqa: BLE001
+                return None
+
+        signature = tools_signature_of(names, risk_table, _schema_for)
+
+        def _snapshot() -> ToolsSnapshot:
+            #: 每次读都是**当前**的真实工具面（工具被禁用/改名 → 旧技能自动转 STALE）
+            current = (
+                sorted(str(item) for item in registry.names()) if registry is not None else names
+            )
+            return ToolsSnapshot(
+                registered=frozenset(current),
+                risks=dict(risk_table),
+                signature=signature,
+            )
+
+        from app.integrations.minecraft.task_adapter import MinecraftTaskInvoker
+        from app.tasks.turn import block_for
+
+        minecraft_agent = getattr(getattr(self, "minecraft", None), "agent", None)
+        invoker = None if minecraft_agent is None else MinecraftTaskInvoker(minecraft_agent)
+        observe = (
+            None if invoker is None else (lambda tool, arguments: invoker(tool, dict(arguments)))
+        )
+
+        def _classify(text: str) -> str:
+            """方法类键（确定性）：资源目标按"方块:掉落物"归类，其它只做空白归一。"""
+
+            from app.tasks.turn import DROP_OVERRIDES
+
+            block = block_for(text)
+            if not block:
+                return "text:" + " ".join(str(text or "").split()).lower()[:120]
+            return f"resource:{block}:{DROP_OVERRIDES.get(block, block)}"
+
+        # 风险开关与规划器**同源**（minecraft.agent.tools.*）——技能不得自己放宽
+        risk_tools = getattr(
+            getattr(getattr(self.config, "minecraft", None), "agent", None), "tools", None
+        )
+
+        def _allowed_risks(risk: str) -> bool:
+            allowed = {
+                "SAFE": bool(getattr(risk_tools, "allow_safe", True)),
+                "LOW": bool(getattr(risk_tools, "allow_low", True)),
+                "MEDIUM": bool(getattr(risk_tools, "allow_medium", False)),
+            }
+            return bool(allowed.get(str(risk).upper(), False))
+
+        service = SkillService(
+            store=SqliteSkillStore(self.database, logger=self.log),
+            config=config,
+            character_id=self._activity_character_id(),
+            observe=observe,
+            server_id=lambda: str(
+                getattr(getattr(self, "minecraft_memory", None), "server_id", lambda: "")() or ""
+            ),
+            tools_snapshot=_snapshot,
+            classify=_classify,
+            schema_of=_schema_for,
+            validate_arguments=None,
+            allowed_risks=_allowed_risks,
+            logger=self.log,
+        )
+        self.skills = service
+        # 计划层：技能优先（包装规划器），不适用/异常原样回退基规划器
+        plans = getattr(self, "agent_plans", None)
+        if plans is not None:
+            from app.tasks.skill_planner import SkillAwarePlanner
+
+            wrapper = SkillAwarePlanner(plans.planner, skills=service)
+            plans.planner = wrapper
+            self.skill_planner = wrapper
+        # 非 AgentPlan 的资源任务入口（QQ / 游戏内聊天）：模板之前问一次技能
+        for handler in (
+            getattr(self, "task_turns", None),
+            getattr(getattr(self, "task_entry", None), "handler", None),
+        ):
+            if handler is not None:
+                handler._skills = service  # noqa: SLF001 - 装配点注入（鸭子类型）
+        view = await service.view(limit=5)
+        self.log.info(
+            "[Skill] ready character=%s counts=%s degraded=%s",
+            service.character_id,
+            view.get("counts") or {},
+            view.get("degraded"),
         )
 
     async def _active_task_states(self) -> tuple[str, ...]:
@@ -1560,12 +1698,19 @@ class Bot:
     # ------------------------------------------------- Phase 5B：任务入口/事件
 
     def _remember_task_outcome(self, event: str, payload: dict[str, Any]) -> None:
-        """任务终态 → 记忆（后台写；记忆层故障绝不影响任务）。"""
+        """任务终态 → 记忆 + 技能学习（后台写；任一层故障都不影响任务）。
+
+        两条支路**互不依赖**：记忆桥没装配（memory 关闭 / 没接 Minecraft）时，
+        技能层照样能拿到终态记录去学习或回流（Phase 7E §7.2 第 1 条：学习证据来自
+        真实持久化记录，而不是"记忆服务恰好开着"）。
+        """
         memory = getattr(self, "minecraft_memory", None)
+        skills = getattr(self, "skills", None)
         tasks = getattr(self, "tasks", None)
-        if memory is None or tasks is None:
+        if tasks is None or (memory is None and skills is None):
             return
-        if str(event) not in {"task.succeeded", "task.failed", "task.expired"}:
+        terminal = {"task.succeeded", "task.failed", "task.expired", "task.cancelled"}
+        if str(event) not in terminal:
             return
         task_id = str(payload.get("task_id") or "")
         if not task_id:
@@ -1573,8 +1718,18 @@ class Bot:
 
         async def write() -> None:
             record = await tasks.get(task_id)
-            if record is not None:
+            if record is None:
+                return
+            # 记忆桥只认它自己的终态集合（SUCCEEDED/FAILED/EXPIRED）；技能层额外收到
+            # cancelled —— 复用过的技能必须能看到反例（资格门自己拒绝"取消也算学会"）。
+            if memory is not None and str(event) in {
+                "task.succeeded",
+                "task.failed",
+                "task.expired",
+            }:
                 await memory.on_task_finished(record)
+            if skills is not None:
+                await skills.on_task_finished(record)
 
         self._spawn_memory(write())
 

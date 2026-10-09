@@ -226,7 +226,8 @@ class TestSqlitePlanStore:
     async def test_latest_migration_is_idempotent(self, tmp_path: Path) -> None:
         """§六十七：迁移可重复执行（再连一次不会炸、也不会重复建表）。
 
-        Phase 7D 把上限推到 **33**（``task_agent_plans``）—— 这条断言就是"冻结面"的守卫：
+        Phase 7D 把上限推到 **33**（``task_agent_plans``）；Phase 7E 推到 **34**
+        （``procedural_skills`` + ``procedural_skill_evidence``）—— 这条断言就是"冻结面"的守卫：
         任何一次新的迁移都必须同时改这里，逼作者想清楚"真的需要新表吗"。
         """
         path = tmp_path / "again.db"
@@ -234,7 +235,7 @@ class TestSqlitePlanStore:
             database = Database(DatabaseConfig(url=f"sqlite:///{path}"))
             await database.connect()
             version = await database.fetchone("SELECT MAX(version) AS v FROM schema_migrations")
-            assert (version or {}).get("v") == 33
+            assert (version or {}).get("v") == 34
             await database.close()
 
     async def test_plan_write_is_transactional(self, tmp_path: Path) -> None:

@@ -911,6 +911,20 @@ _NOTES: dict[str, str] = {
         "USER 与待确认任务同建，LIFE 需用户「批准」后才建任务）"
     ),
     "agent_plans.view_limit": "计划只读视图一次显示几条（默认 10）",
+    "skills.enabled": (
+        "程序性技能（Phase 7E）：从**真实成功任务**里学可复用的方法，并在后续请求里检索/判断"
+        "适用性。技能没有执行权 —— 它的唯一下游是「计划候选」，仍要过既有批准/确认与任务链"
+    ),
+    "skills.retrieve_limit": "一次请求最多检索几条候选技能（有界，默认 5）",
+    "skills.promotion_min_successes": (
+        "晋升成 ACTIVE 需要几条**独立**合格证据（默认 2；未达标的候选不参与复用）"
+    ),
+    "skills.invalidate_after_failures": (
+        "复用后连续几条反例就判失效（默认 2；在此之前先转 STALE 待复核）"
+    ),
+    "skills.dig_short_ratio": (
+        "实测挖掘时长 < 预期 × 该比例 ⇒ 证据判为挖到之前方块就没了（歧义，不计正向）"
+    ),
     "minecraft.memory.enabled": "Minecraft 身份桥 + 世界记忆（关掉只是「不记得」，权限照旧）",
     "minecraft.memory.reconcile_interval_seconds": "多久拿当前世界核对一次记忆（对账）",
     "minecraft.memory.context_items": "每次对话最多带几条 Minecraft 记忆（≤5）",
@@ -1034,6 +1048,7 @@ _SECTION_LABELS: dict[str, str] = {
     "world.initiative": "意图（Initiative / LifeIntent · Phase 7A）",
     "world.proposals": "任务提案（TaskProposal · Phase 7C）",
     "agent_plans": "任务计划（AgentPlan · Phase 7D）",
+    "skills": "程序性技能（Phase 7E）",
     "minecraft": "Minecraft 集成",
     "minecraft.agent": "Minecraft 智能体（LLM 工具）",
     "minecraft.agent.tools": "模型可以做什么（风险分级）",
