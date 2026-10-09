@@ -77,17 +77,23 @@ USER 提案没有 `intent_id`，LIFE 提案必有。来源由**代码路径**决
 
 ```python
 TaskProposal(
-    proposal_id,          # TP-YYYYMMDD-NNN（与 7A 的 INT-… 同一套编号风格）
-    source,               # USER | LIFE | SYSTEM
-    objective,            # 一句可检查的目标（标题+描述+关联记忆，最多 200 字）
-    intent_id, initiator, # 关联意图 / 发起人（审计用）
-    target,               # {status, server_id, player_uuid, player_name, source, reason}
-    required_capabilities,# 扁平能力 id 列表（§十二 的 Required Capabilities）
-    requirements,         # 逐条 {capability_id, gap, risk_class, available, reason}
-    expected_effects,     # 预期会改变什么（来自能力目录的说明）
-    risk_summary,         # {classes, max_risk, would_require_confirmation, source}
-    feasibility,          # SUPPORTED | PARTIALLY_SUPPORTED | UNSUPPORTED | UNKNOWN
-    status, created_at, expires_at, updated_at, fingerprint, reason,
+    proposal_id,  # TP-YYYYMMDD-NNN（与 7A 的 INT-… 同一套编号风格）
+    source,  # USER | LIFE | SYSTEM
+    objective,  # 一句可检查的目标（标题+描述+关联记忆，最多 200 字）
+    intent_id,
+    initiator,  # 关联意图 / 发起人（审计用）
+    target,  # {status, server_id, player_uuid, player_name, source, reason}
+    required_capabilities,  # 扁平能力 id 列表（§十二 的 Required Capabilities）
+    requirements,  # 逐条 {capability_id, gap, risk_class, available, reason}
+    expected_effects,  # 预期会改变什么（来自能力目录的说明）
+    risk_summary,  # {classes, max_risk, would_require_confirmation, source}
+    feasibility,  # SUPPORTED | PARTIALLY_SUPPORTED | UNSUPPORTED | UNKNOWN
+    status,
+    created_at,
+    expires_at,
+    updated_at,
+    fingerprint,
+    reason,
 )
 ```
 
