@@ -563,13 +563,30 @@ class TestVetoCancelsTask:
         resolved: Any = None,
         plan_error: bool = False,
         server_id: str = SERVER,
-        cancel_fail: bool = False,
+        cancel_outcome: str = "CANCELLED",
         current_error: bool = False,
     ) -> Any:
+        """``cancel_outcome`` 模拟**真实**取消返回契约（7D.2.1）：
+
+        * ``TaskState`` 的值（如 ``CANCELLED`` / ``SUCCEEDED`` / ``EXPIRED`` / ``PAUSED``）
+          → 返回带该状态的真实枚举记录；
+        * ``"none"`` 返回 None；``"no_state"`` 返回缺 state 的对象；
+          ``"weird"`` 返回状态串不认识的对象；``"raises"`` 抛异常。
+        """
+        from app.tasks.models import TaskState
         from app.tasks.qq_entry import QQTaskEntry
 
         cancelled: list[str] = []
         confirm_calls: list[str] = []
+
+        def _cancel_return(task_id: str) -> Any:
+            if cancel_outcome == "none":
+                return None
+            if cancel_outcome == "no_state":
+                return type("R", (), {"task_id": task_id})()
+            if cancel_outcome == "weird":
+                return type("R", (), {"task_id": task_id, "state": "NOT_A_REAL_STATE"})()
+            return type("R", (), {"task_id": task_id, "state": TaskState(cancel_outcome)})()
 
         class Runtime:
             async def current(self, session_id: str | None = None) -> Any:
@@ -578,10 +595,10 @@ class TestVetoCancelsTask:
                 return record
 
             async def cancel(self, task_id: str, *, reason: str = "") -> Any:
-                if cancel_fail:
-                    raise RuntimeError("cancel down")
                 cancelled.append(task_id)
-                return None
+                if cancel_outcome == "raises":
+                    raise RuntimeError("cancel down")
+                return _cancel_return(task_id)
 
             async def confirm_and_start(self, *args: Any, **kwargs: Any) -> Any:
                 confirm_calls.append(str(args))
@@ -735,12 +752,197 @@ class TestVetoCancelsTask:
                 "server_id": SERVER,
                 "player_name": "Rinsora",
             },
-            cancel_fail=True,
+            cancel_outcome="raises",
         )
         veto = await harness.entry._verify_follow_identity(_Identity())
         assert veto is not None
         assert "停不下来" in veto or "取消未能确认" in veto, "如实说取消失败"
-        assert harness.cancelled == []
+        assert harness.cancelled == ["T-1"], "取消仍被调用（失败点在被调用之后）"
+
+    async def test_cancelled_state_reports_success(self) -> None:
+        """取消返回真实 ``CANCELLED`` → 正常路径仍显示"已取消"（不因本修复被破坏）。"""
+        plan = AgentPlan(
+            plan_id="AP-1",
+            source=PlanSource.USER.value,
+            objective="跟着我",
+            status=PlanStatus.LINKED.value,
+            task_id="T-1",
+            target=VERIFIED,
+            fingerprint="f",
+        )
+        harness = self._harness(
+            record=_pending_follow_record("T-1"),
+            plan=plan,
+            resolved={
+                "status": "REVOKED",
+                "player_uuid": "a" * 32,
+                "server_id": SERVER,
+                "player_name": "Rinsora",
+            },
+            cancel_outcome="CANCELLED",
+        )
+        veto = await harness.entry._verify_follow_identity(_Identity())
+        assert veto is not None
+        assert "这个跟随任务我取消了" in veto
+        assert "取消未能确认" not in veto and "停不下来" not in veto
+
+    @pytest.mark.parametrize("state", ["SUCCEEDED", "FAILED", "EXPIRED", "PAUSED"])
+    async def test_non_cancelled_state_never_claims_success(self, state: str) -> None:
+        """``cancel()`` 返回别的状态（既有契约：已终态任务原样返回）→ 不算取消成功。"""
+        plan = AgentPlan(
+            plan_id="AP-1",
+            source=PlanSource.USER.value,
+            objective="跟着我",
+            status=PlanStatus.LINKED.value,
+            task_id="T-1",
+            target=VERIFIED,
+            fingerprint="f",
+        )
+        harness = self._harness(
+            record=_pending_follow_record("T-1"),
+            plan=plan,
+            resolved={
+                "status": "REVOKED",
+                "player_uuid": "a" * 32,
+                "server_id": SERVER,
+                "player_name": "Rinsora",
+            },
+            cancel_outcome=state,
+        )
+        veto = await harness.entry._verify_follow_identity(_Identity())
+        assert veto is not None, "否决必须保留"
+        assert "我取消了" not in veto, f"状态 {state} 绝不能报成取消成功"
+        assert state in veto and "不是取消成功" in veto, "如实报状态"
+        assert harness.cancelled == ["T-1"], "仍然调用了既有取消路径"
+        # 入口链：本次「确认」不得被执行
+        await harness.entry._handle(_identity_event("确认"))
+        assert harness.confirm_calls == []
+
+    @pytest.mark.parametrize("outcome", ["none", "no_state", "weird"])
+    async def test_unverifiable_cancel_result_is_conservative(self, outcome: str) -> None:
+        """返回 None / 缺状态 / 状态串不认识 → 保守拒绝且不声称取消成功。"""
+        plan = AgentPlan(
+            plan_id="AP-1",
+            source=PlanSource.USER.value,
+            objective="跟着我",
+            status=PlanStatus.LINKED.value,
+            task_id="T-1",
+            target=VERIFIED,
+            fingerprint="f",
+        )
+        harness = self._harness(
+            record=_pending_follow_record("T-1"),
+            plan=plan,
+            resolved={
+                "status": "REVOKED",
+                "player_uuid": "a" * 32,
+                "server_id": SERVER,
+                "player_name": "Rinsora",
+            },
+            cancel_outcome=outcome,
+        )
+        veto = await harness.entry._verify_follow_identity(_Identity())
+        assert veto is not None, "否决必须保留"
+        assert "我取消了" not in veto, f"取消结果 {outcome} 无法核验，绝不能说成功"
+        assert "取消未能确认" in veto
+        await harness.entry._handle(_identity_event("确认"))
+        assert harness.confirm_calls == []
+
+    async def test_cancel_contract_with_the_real_task_runtime(self) -> None:
+        """**真 TaskRuntime 契约**（不是测试桩）：
+
+        * 待确认任务 → ``cancel()`` 返回 ``CANCELLED`` → 报"已取消"；
+        * 已经终态（EXPIRED）任务 → ``cancel()`` **原样返回该记录**（不抛异常、也不取消）
+          → 修复后必须**不**报"已取消"（修复前这里会被误报成功）。
+        """
+        from app.tasks.models import TaskPlan, TaskState, TaskStep
+        from app.tasks.runtime import TaskConfig, TaskRuntime
+        from app.tasks.store import InMemoryTaskStore
+
+        async def invoke(tool: str, arguments: dict[str, Any], **kwargs: Any) -> Any:
+            raise AssertionError(f"跟随否决链不应该调用工具：{tool}")
+
+        class FakeConfirmations:
+            def __init__(self) -> None:
+                self.pending: dict[str, dict[str, Any]] = {}
+                self._seq = 0
+
+            async def request(self, *, task_id: str, **kwargs: Any) -> str:
+                self._seq += 1
+                cid = f"conf-{self._seq}"
+                self.pending[cid] = {"task_id": task_id, **kwargs}
+                return cid
+
+            async def consume(self, confirmation_id: str, **kwargs: Any) -> tuple[bool, str]:
+                return False, "minecraft.confirmation_mismatch"
+
+            async def cancel(self, confirmation_id: str) -> None:
+                self.pending.pop(str(confirmation_id), None)
+
+        def make_runtime() -> Any:
+            return TaskRuntime(
+                store=InMemoryTaskStore(),
+                invoke=invoke,
+                confirmations=FakeConfirmations(),
+                config=TaskConfig(ttl_seconds=600.0),
+                risk_of=lambda tool: "LOW" if tool == "minecraft_follow_player" else "",
+                is_registered=lambda tool: tool == "minecraft_follow_player",
+                schema_of=lambda tool: (
+                    {
+                        "type": "object",
+                        "properties": {"username": {"type": "string"}},
+                        "required": ["username"],
+                    }
+                    if tool == "minecraft_follow_player"
+                    else None
+                ),
+            )
+
+        plan = TaskPlan(
+            objective="跟着我",
+            steps=[
+                TaskStep(
+                    step_id="step_1",
+                    tool="minecraft_follow_player",
+                    arguments={"username": "Rinsora"},
+                    risk="LOW",
+                )
+            ],
+        )
+
+        # ---- 场景 1：真实的待确认任务 → 真实 cancel() → CANCELLED
+        runtime = make_runtime()
+        record = await runtime.create_task(
+            "跟着我", session_id="s", user_id="u", origin="user", plan=plan
+        )
+        assert record.state is TaskState.PENDING_CONFIRMATION
+        cancelled = await runtime.cancel(record.task_id, reason="probe")
+        assert cancelled.state is TaskState.CANCELLED, "真契约：可取消的任务返回 CANCELLED"
+
+        harness = self._harness(record=_pending_follow_record(record.task_id), plan=None)
+        harness.entry.runtime = runtime
+        veto = await harness.entry._follow_veto_message(
+            "测试原因", task_id=record.task_id, runtime=runtime
+        )
+        assert "这个跟随任务我取消了" in veto, "真 CANCELLED 仍要报成功"
+
+        # ---- 场景 2：真实的已终态（EXPIRED）任务 → 真实 cancel() 原样返回 → 不得报成功
+        runtime2 = make_runtime()
+        record2 = await runtime2.create_task(
+            "跟着我", session_id="s", user_id="u", origin="user", plan=plan
+        )
+        expired = await runtime2.expire(record2.task_id, reason="probe ttl")
+        assert expired.state is TaskState.EXPIRED
+        returned = await runtime2.cancel(record2.task_id, reason="probe cancel")
+        assert returned.state is TaskState.EXPIRED, "真契约：已终态任务被原样返回（不抛异常）"
+
+        harness2 = self._harness(record=_pending_follow_record(record2.task_id), plan=None)
+        harness2.entry.runtime = runtime2
+        veto2 = await harness2.entry._follow_veto_message(
+            "测试原因", task_id=record2.task_id, runtime=runtime2
+        )
+        assert "我取消了" not in veto2, "已终态任务被原样返回时绝不能报取消成功"
+        assert "EXPIRED" in veto2 and "不是取消成功" in veto2
 
     async def test_consistent_identity_allows(self) -> None:
         plan = AgentPlan(

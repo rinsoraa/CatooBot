@@ -235,10 +235,17 @@ class _EntryHarness:
                 return record
 
             async def cancel(self, task_id: str, *, reason: str = "") -> Any:
+                """模拟**真实**契约（7D.2.1）：成功取消返回带 ``CANCELLED`` 状态的记录。
+
+                真 ``TaskRuntime.cancel()`` 从不返回 ``None`` —— 可取消时返回 CANCELLED，
+                已终态时原样返回该记录；所以测试桩也不该再用 ``None`` 冒充成功。
+                """
+                from app.tasks.models import TaskState
+
                 if cancel_fail:
                     raise RuntimeError("cancel down")
                 cancelled.append(task_id)
-                return None
+                return type("R", (), {"task_id": task_id, "state": TaskState.CANCELLED})()
 
         class Plans:
             async def plan_for_task(self, task_id: str) -> Any:

@@ -1,5 +1,23 @@
 # Changelog
 
+## Minecraft Phase 7D.2.1 — Follow Veto Cancellation Result Closure
+
+* **缺口**：`_follow_veto_message()` 只看「`cancel()` 有没有抛异常」就宣称取消成功，
+  **丢弃了返回值**；而既有 `TaskRuntime.cancel()` 对**已终态**任务是**原样返回**该记录
+  （`SUCCEEDED`/`FAILED`/`EXPIRED`，不抛异常也不取消）—— 竞态下会把"没取消成功"报成
+  "已取消"。
+* **修复**：新增 `_task_state_value()` / `_classify_cancel_result()` 两个纯函数，
+  `_request_follow_cancel()` 取回返回值，三种判决三种文案 ——
+  只有 `CANCELLED` 才说「已取消」；其它已识别状态如实报 `{state}` + 「不是取消成功」；
+  `None` / 缺状态 / 状态串不认识 / 抛异常一律保守「取消未能确认」。
+  既有 fail-closed 分支（无 task_id、任务读不到）与「无论结果都不放行」的语义原样保留。
+* **测试**：测试桩改为模拟真实返回契约（不再用 `None` 冒充成功），新增 **9** 项
+  （CANCELLED 成功路径 / SUCCEEDED·FAILED·EXPIRED·PAUSED 不误报 / none·no_state·weird 保守 /
+  用**真 `TaskRuntime` + 真 store** 证明契约本身）。变异验证：改回旧语义 → 8 项失败。
+  全量 **3430 passed**。
+* **边界**：只关这一个缺口 —— 不重做 Real Java C，不改 Policy/风险/确认授权/`allow_medium`/
+  TaskRuntime 状态集合/工具集合/迁移。证据与门禁见 `docs/MINECRAFT_PHASE7D.md` §11。
+
 ## Minecraft Phase 7D.2 — Concurrency & Persistence Closure
 
 * **P1-1 跨 session 的跟随预留竞态**：同指纹记录处于 `PLANNING` 且**无 task_id**

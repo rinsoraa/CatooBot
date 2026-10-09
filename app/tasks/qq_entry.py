@@ -253,6 +253,38 @@ def qq_replies_to_bot(bot: Any, event: Any) -> bool:
     return False
 
 
+#: 7D.2.1：取消结果判定 —— `TaskRuntime.cancel()` 对**已经是终态**的任务是"原样返回、
+#: 不报错也不取消"，所以"调用没抛异常"绝不等于"取消成功"。
+_CANCEL_CANCELLED = "cancelled"
+_CANCEL_OTHER_STATE = "other_state"
+_CANCEL_UNCONFIRMED = "unconfirmed"
+
+
+def _task_state_value(record: Any) -> str:
+    """从 TaskRecord（或等价测试桩）读状态串；读不出来返回空串（**绝不猜**）。"""
+    state = getattr(record, "state", None)
+    value = getattr(state, "value", state)
+    return "" if value is None else str(value)
+
+
+def _classify_cancel_result(result: Any) -> tuple[str, str]:
+    """把 ``TaskRuntime.cancel()`` 的返回值判成 ``(verdict, state)``（7D.2.1）。
+
+    * 状态确实是 ``CANCELLED`` → ``("cancelled", "CANCELLED")``；
+    * 其它**已识别**的 Task 状态（SUCCEEDED / FAILED / EXPIRED / PAUSED / …）
+      → ``("other_state", state)``（如实报状态，但**不算**取消成功）；
+    * 返回 ``None`` / 缺 ``state`` / 状态串不认识 → ``("unconfirmed", "")``（保守）。
+    """
+    state = _task_state_value(result)
+    try:
+        recognized = TaskState(state)
+    except ValueError:
+        return _CANCEL_UNCONFIRMED, ""
+    if recognized is TaskState.CANCELLED:
+        return _CANCEL_CANCELLED, state
+    return _CANCEL_OTHER_STATE, state
+
+
 class QQTaskEntry:
     """QQ 侧的任务入口（订阅消息事件 + 任务事件）。"""
 
@@ -610,10 +642,12 @@ class QQTaskEntry:
     async def _follow_veto_message(
         self, reason: str, *, task_id: str = "", runtime: Any = None
     ) -> str:
-        """fail-closed 的统一否决 + **取消**（7D.2 P1-3）。
+        """fail-closed 的统一否决 + **取消**（7D.2 P1-3；结果判定收口于 7D.2.1）。
 
-        * 有 task_id（跟随任务已确认身份）→ 走既有 ``TaskRuntime.cancel()`` 取消待确认任务；
-          取消失败 → 如实说"取消未能确认"，绝不伪称已取消；
+        * 有 task_id（跟随任务已确认身份）→ 走既有 ``TaskRuntime.cancel()`` 取消待确认任务，
+          并**核验它返回的记录状态**：只有 ``CANCELLED`` 才报"已取消"；返回记录是别的
+          状态（SUCCEEDED/FAILED/EXPIRED/…）→ 如实报状态、明确"不是取消成功"；返回
+          ``None`` / 缺状态 / 状态串不认识 / 调用抛异常 → 一律保守，不声称取消成功；
         * 没有 task_id（连任务都读不到）→ 明确记录"任务无法读取，无法执行取消"；
         * 无论取消结果如何，都不放行 —— 调用方收到非 None 即拦截「确认」。
         """
@@ -624,30 +658,51 @@ class QQTaskEntry:
                 f"开始之前我需要再核对一次你的 Minecraft 身份，但{reason}，"
                 "这次「确认」我先不执行。请稍后再试或重新绑定。"
             )
-        cancelled = False
-        cancel = getattr(runtime, "cancel", None)
-        if callable(cancel):
-            try:
-                await_cancel = cancel(task_id, reason="follow identity re-check failed")
-                # cancel 可能是同步的也可能是异步的（测试桩/真 runtime 都有）
-                if hasattr(await_cancel, "__await__"):
-                    await await_cancel
-                cancelled = True
-            except Exception:
-                self._log.exception(
-                    "[Task/QQ] follow re-check: 取消失败 task=%s（确认仍被拒绝）", task_id
-                )
-        if cancelled:
+        verdict, state = await self._request_follow_cancel(task_id, runtime=runtime)
+        if verdict == _CANCEL_CANCELLED:
             self._log.info("[Task/QQ] follow re-check: 已取消待确认跟随任务 task=%s", task_id)
             return (
                 f"开始之前我需要再核对一次你的 Minecraft 身份，但{reason}，"
                 "这个跟随任务我取消了。请稍后再试或重新绑定。"
             )
+        if verdict == _CANCEL_OTHER_STATE:
+            # 取消没能把它带到 CANCELLED（例如它已经 SUCCEEDED/EXPIRED，或正被别的路径推走）
+            self._log.warning(
+                "[Task/QQ] follow re-check: 取消未生效，任务状态=%s task=%s", state, task_id
+            )
+            return (
+                f"开始之前我需要再核对一次你的 Minecraft 身份，但{reason}，"
+                f"这次「确认」我先不执行。这个跟随任务现在的状态是 {state}，"
+                "不是取消成功 —— 我不会用它执行这次「确认」。"
+            )
+        self._log.warning("[Task/QQ] follow re-check: 取消结果无法确认 task=%s", task_id)
         return (
             f"开始之前我需要再核对一次你的 Minecraft 身份，但{reason}，"
             "这次「确认」我先不执行，跟随任务暂时停不下来（取消未能确认）。"
             "请稍后再试一次「停止」。"
         )
+
+    async def _request_follow_cancel(self, task_id: str, *, runtime: Any) -> tuple[str, str]:
+        """调既有取消并**核验返回状态**（7D.2.1）：返回 ``(verdict, state)``。
+
+        既有 ``TaskRuntime.cancel()`` 的契约：任务可取消时返回 ``CANCELLED`` 的记录；
+        任务**已经是终态**时**原样返回它**（不抛异常）；任务不存在时抛异常。因此
+        "没抛异常"不能当作成功 —— 必须读返回记录的状态。
+        """
+        cancel = getattr(runtime, "cancel", None)
+        if not callable(cancel):
+            self._log.warning("[Task/QQ] follow re-check: runtime 没有取消能力 task=%s", task_id)
+            return _CANCEL_UNCONFIRMED, ""
+        try:
+            pending = cancel(task_id, reason="follow identity re-check failed")
+            # cancel 可能是同步的也可能是异步的（测试桩/真 runtime 都有）—— 都要拿到返回值
+            result = await pending if hasattr(pending, "__await__") else pending
+        except Exception:
+            self._log.exception(
+                "[Task/QQ] follow re-check: 取消失败 task=%s（确认仍被拒绝）", task_id
+            )
+            return _CANCEL_UNCONFIRMED, ""
+        return _classify_cancel_result(result)
 
     def _server_id(self) -> str:
         """当前连接到的服务器 id（拿不到就空 —— 身份解析会如实记为"没有绑定"）。

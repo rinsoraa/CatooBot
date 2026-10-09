@@ -323,3 +323,78 @@ _create: block_for(text) 认方块 → plan_resource_task()（确定性模板）
 * 环境还原：本阶段的临时脚本已删除（根目录 `_p7d2_*`）；`config/` 与
   `config/overrides.yaml` 未做任何改动（确认 TTL 的进程内残留在 §10.4 已披露）；
   真实世界里操作者放入/移除的方块已复原。
+
+---
+
+## 11. 7D.2.1 取消结果判定收口（2026-10-10，基线 `c7bf23a`）
+
+**缺口（7D.2 验收复核发现）**：`_follow_veto_message()` 只依据「`cancel()` 有没有抛异常」
+判定取消成功，**丢弃了返回值**。而既有 `TaskRuntime.cancel()` 的契约是：
+
+* 任务可取消 → 返回状态为 `CANCELLED` 的记录；
+* 任务**已经是终态** → **原样返回该记录**（`SUCCEEDED`/`FAILED`/`EXPIRED`，不抛异常、也不取消）；
+* 任务不存在 → 抛 `TaskAuthorizationError(task.not_found)`。
+
+所以存在一条真实路径：跟随任务在「身份复核读到 PENDING」与「调用 cancel」之间被别的路径
+推到终态（确认超时/成功/失败/过期），此时旧代码会**对用户宣称「这个跟随任务我取消了」**。
+
+### 11.1 修复（只动 `_follow_veto_message` 的结果判定）
+
+新增两个模块级纯函数（`app/tasks/qq_entry.py`）：
+
+* `_task_state_value(record)`：从 TaskRecord（或等价测试桩）读状态串，读不出来返回空串；
+* `_classify_cancel_result(result)` → `(verdict, state)`：
+  - 状态确为 `CANCELLED` → `("cancelled", "CANCELLED")`；
+  - 其它**已识别**的 Task 状态（`SUCCEEDED`/`FAILED`/`EXPIRED`/`PAUSED`/…）→ `("other_state", state)`；
+  - 返回 `None` / 缺 `state` / 状态串不是合法 `TaskState` → `("unconfirmed", "")`（保守）。
+
+`_request_follow_cancel()` 负责调用并**取回返回值**（同步桩/异步真实现都先 await），
+`_follow_veto_message()` 按判决出三种文案：
+
+| 判决 | 用户可见文案 | 是否宣称取消成功 |
+| --- | --- | --- |
+| `cancelled` | 「…这个跟随任务我取消了。请稍后再试或重新绑定。」 | **是**（真实 CANCELLED 的正常路径不变） |
+| `other_state` | 「…这个跟随任务现在的状态是 {state}，不是取消成功 —— 我不会用它执行这次「确认」。」 | 否（如实报状态） |
+| `unconfirmed` | 「…跟随任务暂时停不下来（取消未能确认）。请稍后再试一次「停止」。」 | 否（保守） |
+
+不变的部分：没有 `task_id` / 读不到任务状态 / 身份解析失败等既有 fail-closed 分支**原样保留**；
+无论取消结果如何都返回非 None 文案 —— 本次「确认」不会被消费、`confirm_and_start()` 不会被执行。
+
+### 11.2 回归测试（`tests/test_agent_plan_closure.py` + `tests/test_agent_plan_negative.py`）
+
+测试桩改为模拟**真实返回契约**（成功取消返回带 `TaskState.CANCELLED` 的记录，
+不再用 `None` 冒充成功）。新增 **9** 项：
+
+* `test_cancelled_state_reports_success`：真实 `CANCELLED` → 仍报「已取消」（不破坏正常路径）；
+* `test_non_cancelled_state_never_claims_success[SUCCEEDED/FAILED/EXPIRED/PAUSED]`：
+  保留否决、如实报状态、**绝不含「我取消了」**，且入口链断言 `confirm_and_start()` 未被调用；
+* `test_unverifiable_cancel_result_is_conservative[none/no_state/weird]`：保守拒绝 + 不误报；
+* `test_cancel_contract_with_the_real_task_runtime`：用**真 `TaskRuntime` + 真 store** 证明契约本身
+  （待确认任务 → `CANCELLED`；已过期任务 → `cancel()` **原样返回 EXPIRED 记录**），并断言
+  后者在本修复下不会被报成取消成功。
+
+**变异验证**（证明测试真的会咬）：把 `_classify_cancel_result(result)` 临时改回旧语义
+（「没抛异常 = 成功」）后重跑 —— **8 项失败**（含真契约那条与全部不可核验场景），随后恢复。
+
+### 11.3 门禁（本轮，本地 `.venv` 工具链）
+
+| 门禁 | 结果 |
+| --- | --- |
+| `ruff check .` / `ruff format --check .` | All checks passed / 619 files already formatted |
+| `mypy app` | Success: no issues found in 330 source files |
+| `pytest tests -q` | **3430 passed**（3421 → +9） |
+| WebUI `typecheck` / `vitest` / `build` / 浏览器 E2E | 通过 / 528 passed / 通过 / 7 passed |
+| Minecraft runtime（单测 + flying-squid E2E） | `ALL CHECKS PASSED` |
+| GitHub Actions CI | 见 §11.4 |
+
+> 说明：Node E2E 的两条 follow 时序检查在**与全量 pytest 并发**时曾连续超时（
+> `runtime 看见 Followee/Ghost`）；等 pytest 跑完、机器空载后重跑即 **ALL CHECKS PASSED**。
+> 这是已知的时序敏感检查（`test/e2e.js` 里已有重发 `/tp` 的缓解），与本阶段改动无关
+> —— 本阶段没有触碰任何 Node 代码。
+
+### 11.4 镜像与 CI
+
+* 本阶段改动（源码 + 测试 + 本文件 + CHANGELOG）随本阶段镜像提交推送；
+  精确 commit SHA 与 GitHub Actions run/job 链接见 **7D.2.1 最终报告**（不 force-push）。
+* 未改动的边界：Policy / 风险级别 / 确认授权语义 / `allow_medium` / TaskRuntime 状态集合 /
+  Minecraft 工具集合 / 数据库迁移 —— 一律没碰；不重做已完成的 Real Java C。
