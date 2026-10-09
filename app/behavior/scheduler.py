@@ -225,6 +225,66 @@ class BehaviorScheduler:
                 out.get("reason", ""),
                 out.get("candidate_count", 0),
             )
+        await self._proposal_pass(created)
+
+    async def _proposal_pass(self, intent_ids: list[Any]) -> None:
+        """Phase 7C §四/§十一：把**新产生的意图**变成只读提案（执行层 NONE）。
+
+        入参是 7A ``check()`` 给的那串 **intent_id**（它的公开契约是 id 列表），
+        所以这里先把 id 换成意图本体再交给提案层 —— 提案层只认对象，不认 id。
+        只处理"这次 check 真的新建的意图"（已经挂着的老意图由指纹去重兜住，不重复提案）；
+        整段失败只是没有提案 —— 绝不反过来影响意图层或任何任务链。
+        """
+        if not intent_ids:
+            return
+        service = getattr(self._bot, "proposals", None)
+        if service is None or not getattr(service, "enabled", False):
+            return
+        intents = await self._resolve_intents(intent_ids)
+        if not intents:
+            return
+        try:
+            out = await service.propose_open_intents(intents)
+        except Exception:  # noqa: BLE001 - 提案失败不拖垮调度（更不影响任务/活动）
+            self._log.exception("[TaskProposal] 提案生成失败（忽略）")
+            return
+        created = list(out.get("created") or ())
+        if created or out.get("merged"):
+            self._log.info(
+                "[TaskProposal] pass action=%s created=%d merged=%d skipped=%d",
+                out.get("action", ""),
+                len(created),
+                len(out.get("merged") or ()),
+                len(out.get("skipped") or ()),
+            )
+        else:
+            self._log.debug(
+                "[TaskProposal] pass action=%s skipped=%s",
+                out.get("action", ""),
+                out.get("skipped", []),
+            )
+
+    async def _resolve_intents(self, items: list[Any]) -> list[Any]:
+        """intent_id / LifeIntent 混着给都能用（**查不到就跳过，绝不猜**）。"""
+        initiative = getattr(self._bot, "initiative", None)
+        created = tuple(getattr(initiative, "last_created", ()) or ())
+        by_id = {str(getattr(item, "intent_id", "") or ""): item for item in created}
+        store = getattr(initiative, "store", None)
+        getter = getattr(store, "get", None)
+        out: list[Any] = []
+        for item in items:
+            if not isinstance(item, str):
+                out.append(item)  # 已经是对象（测试与直接调用方）
+                continue
+            found = by_id.get(str(item))
+            if found is None and callable(getter):
+                try:
+                    found = await getter(str(item))
+                except Exception:  # noqa: BLE001 - 只读回查失败就当这条不存在
+                    found = None
+            if found is not None:
+                out.append(found)
+        return out
 
     async def _initiative_pass(self) -> None:
         if self._bot.character is None:

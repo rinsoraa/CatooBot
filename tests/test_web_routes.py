@@ -87,6 +87,7 @@ ROUTES = [
     "GET /api/v1/world/activity/decision",
     "GET /api/v1/world/activity/plan",
     "GET /api/v1/world/initiative",
+    "GET /api/v1/world/proposals",
     "GET /api/v1/world/timeline",
     "GET /api/v1/world/topics",
     "GET /api/v1/world/trace",

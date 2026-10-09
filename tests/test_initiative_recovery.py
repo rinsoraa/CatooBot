@@ -60,12 +60,21 @@ class TestSqlitePersistence:
             await database.close()
 
     async def test_no_new_history_table_and_migration_is_31(self, tmp_path: Path) -> None:
-        """§六十六：只新增最小存储（``life_intents``），历史复用既有审计表。"""
+        """§六十六：7A 只新增最小存储（``life_intents``），历史复用既有审计表。
+
+        这里**不**钉"最新迁移号" —— 后续阶段本来就会把它推高（7C 的 32）；
+        最新的迁移号由 ``test_activity_plan_persistence`` 的冻结面守卫钉住。
+        """
         database = Database(DatabaseConfig(url=f"sqlite:///{tmp_path / 'mig.db'}"))
         await database.connect()
         try:
-            row = await database.fetchone("SELECT MAX(version) AS v FROM schema_migrations")
-            assert (row or {}).get("v") == 31
+            row = await database.fetchone("SELECT name FROM schema_migrations WHERE version = 31")
+            assert row is not None, "7A 的迁移 31（life_intents）应该还在"
+            assert "intent" in str(row["name"])
+            tables = await database.fetchall(
+                "SELECT name FROM sqlite_master WHERE type = 'table' AND name LIKE '%intent%'"
+            )
+            assert {item["name"] for item in tables} == {"life_intents"}
         finally:
             await database.close()
 

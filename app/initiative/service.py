@@ -92,6 +92,10 @@ class LifeIntentService:
         self.started_at = float(self._clock())
         self.recovered_at = self.started_at
         self.last_decision: GateDecision | None = None
+        #: Phase 7C §四：最近一次 check **真的新建**的意图本体（只读）。
+        #: ``check()`` 的公开契约是返回 intent_id 列表；需要本体的下游（提案层）读这里，
+        #: 免得把"字符串 id"当成意图对象（那会让提案静默地一条都生不出来）。
+        self.last_created: tuple[LifeIntent, ...] = ()
         #: Phase 7B §三：给 ActivityPlanner 的**只读建议**（bounded；只在 check/recover 刷新，
         #: 于是"每 30 秒重算整个 horizon"这件事**不会**发生，§十一）
         self._open_hints: tuple[dict[str, Any], ...] = ()
@@ -318,6 +322,7 @@ class LifeIntentService:
             candidates, context=context, config=self.config, recent_intents=recent
         )
         self.last_decision = decision
+        self.last_created = ()
 
         created: list[str] = []
         created_intents: list[LifeIntent] = []
@@ -360,6 +365,8 @@ class LifeIntentService:
                     timestamp=moment,
                     reason=verdict.reason,
                 )
+        # Phase 7C：把这次真正新建的意图留成只读字段（下游要本体，不要 id）
+        self.last_created = tuple(created_intents)
         self.degraded_reason = ""
         # §九：**硬 guard 命中时连建议都不给**（任务占位 / 待确认 / 睡着 / 刚重启 …）——
         # 已经提过的旧想法也不能在这个时刻继续给 Planner 加权（那不是"自由时的想法"了）。
@@ -420,6 +427,7 @@ class LifeIntentService:
         """§四十五：重启对账 —— 载入既有意图、按 ``expires_at`` 收尾，**不**批量新造。"""
         moment = self._now()
         self.recovered_at = moment
+        self.last_created = ()  # 恢复**不**新造意图（§四十五），所以这里恒为空
         rows = await self.store.recent(self.character_id, limit=RECENT_INTENT_LIMIT)
         expired = await self.expire_due(now=moment)
         proposed = [item for item in rows if item.status is LifeIntentStatus.PROPOSED]

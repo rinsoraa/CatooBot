@@ -1442,6 +1442,47 @@ CREATE INDEX IF NOT EXISTS idx_behavior_events_scope_type
     ON behavior_events(scope_key, type, id);
 """,
     ),
+    (
+        32,
+        "task proposals (Phase 7C)",
+        """
+-- Phase 7C §十：TaskProposal 的最小存储。先查过现有库：
+--   tasks            —— 是**已进入执行系统**的任务（5A），7C 的提案**绝不**写它（§五）；
+--   life_intents     —— 是"为什么想做"（7A），提案是"准备怎样做"，语义不同，不能塞；
+--   behavior_events  —— append-only 审计表，7C **复用它**记录提案历史（proposal.* 前缀），
+--                       所以只有这一张新表：没有第二张历史表、没有候选表、没有第二套 TaskRuntime。
+-- 幂等（§十）：fingerprint = 来源|目标|目标键|意图|时间桶，唯一索引保证
+-- "同一份提案"在一个时间桶里只会有一行 —— 重启 / 崩溃重放都不会多出一条。
+-- 状态只有 REJECTED/NEEDS_MORE_INFORMATION/NEEDS_USER_APPROVAL/READY_FOR_FUTURE_EXECUTION/
+-- EXPIRED/CANCELLED —— **没有** RUNNING / EXECUTING / CONFIRMED（§一：本阶段执行层是 NONE）。
+CREATE TABLE IF NOT EXISTS task_proposals (
+    id                    INTEGER PRIMARY KEY AUTOINCREMENT,
+    proposal_id           TEXT NOT NULL UNIQUE,
+    source                TEXT NOT NULL DEFAULT 'SYSTEM',
+    objective             TEXT NOT NULL DEFAULT '',
+    status                TEXT NOT NULL DEFAULT 'NEEDS_MORE_INFORMATION',
+    intent_id             TEXT NOT NULL DEFAULT '',
+    initiator             TEXT NOT NULL DEFAULT '',
+    target                TEXT NOT NULL DEFAULT '{}',
+    required_capabilities TEXT NOT NULL DEFAULT '[]',
+    risk_summary          TEXT NOT NULL DEFAULT '{}',
+    feasibility           TEXT NOT NULL DEFAULT 'UNKNOWN',
+    suggestions           TEXT NOT NULL DEFAULT '[]',
+    reason                TEXT NOT NULL DEFAULT '',
+    fingerprint           TEXT NOT NULL,
+    created_at            REAL NOT NULL DEFAULT 0,
+    expires_at            REAL NOT NULL DEFAULT 0,
+    updated_at            REAL NOT NULL DEFAULT 0,
+    payload               TEXT NOT NULL DEFAULT '{}'
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_task_proposals_fingerprint
+    ON task_proposals(fingerprint);
+CREATE INDEX IF NOT EXISTS idx_task_proposals_created
+    ON task_proposals(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_task_proposals_status
+    ON task_proposals(status, created_at DESC);
+""",
+    ),
 ]
 
 

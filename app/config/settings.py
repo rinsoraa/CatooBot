@@ -1086,14 +1086,32 @@ class WorldInitiativeConfig(BaseModel):
     recent_interaction_suppress_minutes: int = Field(default=10, ge=0, le=240)
 
 
+class WorldProposalConfig(BaseModel):
+    """Phase 7C §一：TaskProposal 的旋钮（**就这四个**）。
+
+    ``enabled`` 只表示"**允许把意图 / 用户请求记成提案**"，**不是**允许自主执行 ——
+    7C 的执行层恒为 ``NONE``，所以默认开着是安全的。
+    """
+
+    enabled: bool = True
+    #: WebUI 只读视图一次显示多少条（§十二；bounded）
+    recent_limit: int = Field(default=10, ge=1, le=100)
+    #: 一次 pass 最多把几条**新产生的意图**变成提案（§十；bounded）
+    max_per_pass: int = Field(default=3, ge=1, le=20)
+    #: 提案的存活时间（小时；§十：过期即终态，重启也不会复活）
+    ttl_hours: int = Field(default=6, ge=1, le=168)
+
+
 class WorldConfig(BaseModel):
-    """Phase 6A：角色世界（时钟 + 活动）；Phase 7A 加 Initiative。"""
+    """Phase 6A：角色世界（时钟 + 活动）；Phase 7A 加 Initiative；Phase 7C 加 TaskProposal。"""
 
     #: 世界时钟的时区（§二十二：默认 Asia/Singapore，可配置）
     timezone: str = "Asia/Singapore"
     activity: WorldActivityConfig = Field(default_factory=WorldActivityConfig)
     #: Phase 7A §六十四：Initiative / LifeIntent（只产生意图，**不执行**任何东西）
     initiative: WorldInitiativeConfig = Field(default_factory=WorldInitiativeConfig)
+    #: Phase 7C：TaskProposal（只产生提案，**不执行**任何东西）
+    proposals: WorldProposalConfig = Field(default_factory=WorldProposalConfig)
 
 
 class TaskRuntimeConfig(BaseModel):

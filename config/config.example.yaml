@@ -595,6 +595,16 @@ world:
     max_proposals_per_hour: 3          # 每小时最多产生几条（0~60；0 = 不限）
     recent_interaction_suppress_minutes: 10   # 你刚说过话之后的抑制窗口（0~240）
 
+  # ---- Phase 7C：任务提案（TaskProposal）
+  # 把「意图 / 用户请求」变成一份**可审计、知道自身能力边界**的提案：
+  # 记录来源与目标、检查需要哪些能力、判可行性、给缺口建议、到点过期。
+  # 它**不会**创建任务、不会调用 Minecraft 工具、不会自动确认、不会改世界 —— 执行层恒为 NONE。
+  proposals:
+    enabled: true                      # 只表示"允许记成提案"，不是允许自主执行
+    recent_limit: 10                   # 只读视图一次显示几条（1~100）
+    max_per_pass: 3                    # 一次最多把几条新意图变成提案（1~20）
+    ttl_hours: 6                       # 存活小时数，到点即 EXPIRED 终态（1~168）
+
 # ============================================================
 # Minecraft 连接层（Phase 1）
 # 让罐头以配置好的账号加入 Minecraft Java 服务器，并把连接状态、

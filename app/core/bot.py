@@ -327,6 +327,8 @@ class Bot:
         self.activity: Any = None
         # Phase 7A：Initiative / LifeIntent 服务（只产生意图；没装配就是 None）
         self.initiative: Any = None
+        # Phase 7C：TaskProposal 服务（**只产生提案**；执行层恒为 NONE，没装配就是 None）
+        self.proposals: Any = None
         self.activity_sandbox: Any = None
         self.activity_tasks: Any = None
         self.activity_observation: Any = None
@@ -903,6 +905,13 @@ class Bot:
         except Exception:  # noqa: BLE001 - 意图层装配失败不拖垮启动
             self.log.exception("World initiative initialization failed; continuing without it")
             self.initiative = None
+        # Phase 7C：TaskProposal（把意图/用户请求变成**可审计的提案**，到此为止 ——
+        # 执行层恒为 NONE）。装配点放在意图层之后：得先有"想做什么"，才谈得上"准备怎样做"。
+        try:
+            await self._setup_task_proposals()
+        except Exception:  # noqa: BLE001 - 提案层装配失败不拖垮启动
+            self.log.exception("Task proposals initialization failed; continuing without it")
+            self.proposals = None
         await self.adapter.start()
         story.boot_step("OneBot 适配器已监听", detail=self.config.onebot.url)
         if self.watchdog is not None:
@@ -1177,6 +1186,43 @@ class Bot:
             recovered.get("action", "none"),
             int(recovered.get("proposed", 0) or 0),
             len(INITIATIVE_EVENT_NAMES),
+        )
+
+    async def _setup_task_proposals(self) -> None:
+        """Phase 7C §一：把 TaskProposal 层接上。
+
+        这一层是**只读输入 + 一个状态存储 + 一个只读身份探针**（§四/§五/§八）：
+        没有 TaskRuntime / ActionRuntime 的动作面 / Policy / ConfirmationStore / QQ 发送器，
+        也没有 ``create_task`` / ``confirm_and_start`` 可调 —— 执行层恒为 ``NONE``。
+        """
+        from app.tasks.proposal_service import TaskProposalService
+        from app.tasks.proposal_store import SqliteTaskProposalStore
+
+        config = getattr(getattr(self.config, "world", None), "proposals", None)
+        if config is None or not getattr(config, "enabled", True):
+            self.proposals = None
+            self.log.info("[TaskProposal] 已在配置里关闭")
+            return
+        # §八：**真正的** IdentityStore（`minecraft_identity` 是 QQ 绑定命令处理器，
+        # 没有 `links_for`；存放在记忆桥的 `identities` 上 —— 真机门禁抓到的接线错误）
+        identity = getattr(getattr(self, "minecraft_memory", None), "identities", None)
+        service = TaskProposalService(
+            store=SqliteTaskProposalStore(self.database, logger=self.log),
+            config=config,
+            character_id=self._activity_character_id(),
+            identity=identity,
+            registry=getattr(getattr(self, "tools", None), "registry", None),
+            minecraft=getattr(self, "minecraft", None),
+            logger=self.log,
+        )
+        self.proposals = service
+        recovered = await service.recover()
+        self.log.info(
+            "[TaskProposal] ready character=%s recovered=%s expired=%d open=%d",
+            service.character_id,
+            recovered.get("action", "none"),
+            int(recovered.get("expired", 0) or 0),
+            int(recovered.get("open", 0) or 0),
         )
 
     async def _active_task_states(self) -> tuple[str, ...]:

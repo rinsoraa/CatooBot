@@ -3,6 +3,51 @@
 本文件记录 CatooBot 的版本演进。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号见 `pyproject.toml`；日期取自真实提交历史（本仓库 2026-09-30 起）。
 
+## Minecraft Phase 7C — Life Intent → Task Proposal / Intent Execution Boundary
+
+* **把"想"变成"准备怎样做"，但绝不变成"已获得权限"**（§零/§一）：新增
+  `LifeIntent → TaskProposal` 这条安全桥。四件事严格分开：
+  `LifeIntent`（为什么想做，7A）→ `TaskProposal`（准备怎样做，7C）→ `Task`（已进入执行系统，5A）
+  → `Action`（真实世界操作，4B+）。执行层仍然恒为 **NONE**：提案**不建任务、不调工具、
+  不自动确认、不动世界、不发 QQ**。新增 5 个模块（全部在 `app/tasks/`）：
+  `capabilities` / `proposal` / `proposal_store` / `proposal_events` / `proposal_service`。
+* **不建第二套 TaskRuntime**（§二）：7C 一次都没有 import `app.tasks.runtime`（源码级 AST 断言）。
+  也没有新 Minecraft 工具（`capability_catalog()` 条目数与既有 `ACTION_RISK` 严格相等 = 19）、
+  没有新 ActionRuntime action、没有新 TaskRuntime 状态
+  （`ProposalStatus` 里**没有** `RUNNING`/`EXECUTING`/`CONFIRMED`）。
+* **能力目录复用既有风险表**（§六/§九）：19 个原子工具 → `capability_id / description /
+  input_schema / expected_effect / risk_class / available / limitations`；风险分类**一个字没改**；
+  `available` 由**真实连接状态**决定（离线时世界类能力一律不可用，不假装可用）；
+  只读 `enabled`/`snapshot` 与 `registry.metadata()`，**从不调用任何工具**。
+* **能力缺口如实**（§六/§七）：`SUPPORTED / PARTIALLY_SUPPORTED / UNSUPPORTED / UNKNOWN` +
+  建议 `NEEDS_NEW_SKILL / NEEDS_NEW_TOOL / NEEDS_WORLD_OBSERVATION / NEEDS_USER_INPUT`。
+  "有工具 ≠ 目标可完成"：`刷铁机`这类必须先有方案的目标一律 `UNKNOWN` +
+  `NEEDS_MORE_INFORMATION`，**绝不靠猜把 UNKNOWN 升级成 SUPPORTED**。
+* **USER 与 LIFE 来源隔离**（§四）：两条路径共用同一套 schema / 能力目录 / 可行性检查 / 风险表，
+  但授权规则不同 —— LIFE 只能停在提案，USER 仍走既有 5A/5B 任务链（7C 只是**旁路记账**）。
+  来源由**代码路径**决定，输入文本改不了它；LIFE 不比 USER 多任何权限（同目标同风险同结论）。
+* **目标只认可信身份桥**（§八）：需要指定玩家的提案必须走
+  `QQ user → VERIFIED IdentityLink → (server_id, player_uuid)`；`REVOKED`/`CONFLICT` → `REJECTED`、
+  无绑定 → `NEEDS_MORE_INFORMATION`、服务器不匹配 → `MISSING`、多条 VERIFIED 指向不同 UUID →
+  `CONFLICT`（**绝不**把两名真实用户合并）。身份层读不到只降级 + 如实记录，**不猜目标**。
+  只读视图只给 UUID 后四位。
+* **去重与过期**（§十）：指纹 = `来源|目标|目标状态:目标键|意图|时间桶`（同桶唯一索引 +
+  `INSERT OR IGNORE`），重启/崩溃重放不会多出第二条；默认 TTL 6 小时；**终态不可覆盖**
+  （`REJECTED/EXPIRED/CANCELLED` 只有入没有出，CAS 更新 + 恢复只碰开着的行）——
+  过期/撤销/失效的提案**永远不会被恢复成有效的自动执行请求**。
+* **只新增一张表**（迁移 **32**，`task_proposals`）：历史/审计**复用既有** append-only 的
+  `behavior_events`（`scope_key='proposal'`、`type='proposal.*'`），所以**没有第二张历史表**。
+* **接线**：`Bot._setup_task_proposals()`（装配在意图层之后，失败只降级）；
+  调度器生命意图那一趟把**新建**的意图交给提案层（一次最多 3 条，失败只是没有提案）；
+  QQ 任务入口**窄规则**旁路记账（真的建了任务，或这句话明确在指某个玩家 —— 普通闲聊与提问
+  不会留提案）；配置 `world.proposals.{enabled, recent_limit, max_per_pass, ttl_hours}` 进
+  WebUI 配置注册表与 `config.example.yaml`。
+* **测试**：新增 **79** 项（`tests/test_task_proposal.py` 61 + `tests/test_proposal_security.py` 18）
+  覆盖任务书 §十三 的 17 项矩阵；安全边界与 7A 同一写法（AST 源码级 + 运行时句柄级），
+  白名单里只有两样**只读**事实（风险表 + 身份桥）；`conn.execute` 不被当成"执行动作"。
+* **真机门禁**：见 `docs/MINECRAFT_PHASE7C.md` §15（Real Java A–E / Real QQ A–B 的取证与结论）。
+  **在真机跑完之前，本节不写任何"已通过"的结论。**
+
 ## Minecraft Phase 7B — Virtual Autonomous Activity / Initiative-to-Plan Integration
 
 * **闭合 7A 留的那条缝**（§零）：`LifeIntent → InitiativeActivityHint → ActivityPlanner →

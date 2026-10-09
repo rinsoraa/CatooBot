@@ -15,6 +15,7 @@ import type {
   WorldActivityView,
   WorldData,
   WorldInitiativeView,
+  WorldProposalsView,
   WorldTimelineRow,
 } from '@/types/domain'
 
@@ -87,6 +88,14 @@ export const worldApi = {
    */
   worldInitiative() {
     return api.get<WorldInitiativeView>('/world/initiative')
+  },
+
+  /**
+   * Phase 7C §十二：任务提案只读视图。
+   * 只读：**没有** Execute / Confirm / Start / Run —— 执行层恒为 NONE。
+   */
+  worldProposals() {
+    return api.get<WorldProposalsView>('/world/proposals')
   },
 
   timeline(limit = 100) {

@@ -26,9 +26,11 @@ import { toast } from '@/composables/toast'
 import { useWorldStore } from '@/stores/world'
 import type {
   WorldActivityAdvisorView,
-  WorldInitiativeView,
   WorldActivityPlanView,
   WorldActivityView,
+  WorldInitiativeView,
+  WorldProposalsView,
+  WorldTaskProposal,
 } from '@/types/domain'
 import type {
   BehaviorPreviewInput,
@@ -189,6 +191,38 @@ function cooldownText(view: WorldInitiativeView | null): string {
   return `冷却 ${cooldown.minutes} 分钟 · 剩余 ${remain} 秒 · 本小时 ${cooldown.proposals_last_hour}/${cooldown.max_proposals_per_hour}`
 }
 
+// Phase 7C §十二：任务提案的**只读**视图（执行层 NONE）。
+// 界面上**没有** Execute / Confirm / Start / Run —— 提案不会自己获得执行权。
+const proposals = ref<WorldProposalsView | null>(null)
+const proposalError = ref('')
+
+async function loadProposals(): Promise<void> {
+  try {
+    proposals.value = await worldApi.worldProposals()
+    proposalError.value = ''
+  } catch (caught) {
+    proposalError.value = errorMessage(caught)
+  }
+}
+
+function proposalStateText(view: WorldProposalsView | null): string {
+  if (!view || !view.enabled) return '未启用'
+  if (view.degraded_reason) return `降级（${view.degraded_reason}）`
+  return `运行中（开着 ${view.open} 份）`
+}
+
+function gapText(item: { capability_id: string; gap: string; reason: string }): string {
+  return `${item.capability_id || '（未指明能力）'}：${item.gap}${item.reason ? `（${item.reason}）` : ''}`
+}
+
+function targetText(view: WorldTaskProposal['target']): string {
+  if (!view) return '—'
+  if (view.status === 'VERIFIED' && !view.player_name && !view.uuid_suffix) return '不需要指定玩家'
+  const who = view.player_name || '未知玩家'
+  const suffix = view.uuid_suffix ? `（……${view.uuid_suffix}）` : ''
+  return `${view.status} · ${who}${suffix}${view.reason ? ` · ${view.reason}` : ''}`
+}
+
 function receiptText(view: WorldActivityAdvisorView | null): string {
   const receipt = view?.last_receipt
   if (!receipt || !receipt.attempted) return '还没问过'
@@ -204,6 +238,7 @@ onMounted(() => {
   void loadPlan()
   void loadAdvisor()
   void loadInitiative()
+  void loadProposals()
 })
 
 function reload(): void {
@@ -1036,6 +1071,93 @@ function previewMoodText(): string {
         <p class="cb-world__readonly" data-test="world-initiative-readonly">
           只读：意图只会被**提出 / 评估 / 记录 / 抑制 / 过期**。它不会创建任务、不会调用工具、
           不会自动确认、不会发消息，也不会自己动 Minecraft —— 这里没有任何执行按钮。
+        </p>
+      </section>
+
+      <!-- Phase 7C §十二：任务提案（TaskProposal）**只读** —— 执行层 NONE，没有任何执行入口 -->
+      <section class="cb-card cb-world__section" data-test="world-proposals">
+        <SectionHeader
+          title="任务提案（她准备怎样做）"
+          description="提案不是任务：它记录了来源、目标、需要的能力与缺口，但不会被执行"
+        />
+        <p v-if="proposalError" class="cb-world__readonly" data-test="world-proposals-error">
+          提案读取失败：{{ proposalError }}
+        </p>
+        <dl v-if="proposals" class="cb-world__facts" data-test="world-proposals-facts">
+          <div>
+            <dt>状态</dt>
+            <dd data-test="world-proposals-enabled">{{ proposalStateText(proposals) }}</dd>
+          </div>
+          <div>
+            <dt>执行层</dt>
+            <dd data-test="world-proposals-execution">{{ text(proposals.execution_layer) }}</dd>
+          </div>
+          <div>
+            <dt>Minecraft</dt>
+            <dd data-test="world-proposals-online">{{ proposals.minecraft_online ? '已连接' : '未连接' }}</dd>
+          </div>
+          <div>
+            <dt>合计</dt>
+            <dd data-test="world-proposals-totals">
+              新提 {{ proposals.created_total }} · 去重合并 {{ proposals.merged_total }}
+            </dd>
+          </div>
+        </dl>
+        <div
+          v-for="item in proposals?.proposals ?? []"
+          :key="item.proposal_id"
+          class="cb-world__facts"
+          data-test="world-proposal-row"
+        >
+          <div>
+            <dt>{{ item.proposal_id }}</dt>
+            <dd>
+              {{ item.source }} · {{ item.objective }}
+            </dd>
+          </div>
+          <div>
+            <dt>状态 / 可行性</dt>
+            <dd>{{ item.status }} · {{ item.feasibility }}{{ item.terminal ? '（终态）' : '' }}</dd>
+          </div>
+          <div>
+            <dt>关联意图</dt>
+            <dd>{{ item.intent_id || '—（用户请求）' }}</dd>
+          </div>
+          <div>
+            <dt>目标</dt>
+            <dd>{{ targetText(item.target) }}</dd>
+          </div>
+          <div>
+            <dt>需要的能力</dt>
+            <dd>{{ item.required_capabilities.join('、') || '—' }}</dd>
+          </div>
+          <div v-if="item.capability_gaps.length">
+            <dt>能力缺口</dt>
+            <dd>{{ item.capability_gaps.map(gapText).join('；') }}</dd>
+          </div>
+          <div>
+            <dt>风险</dt>
+            <dd>
+              最高 {{ text(item.risk_summary.max_risk) }} ·
+              {{ item.risk_summary.would_require_confirmation ? '将来执行需要确认' : '无需确认' }}
+            </dd>
+          </div>
+          <div>
+            <dt>有效期</dt>
+            <dd>{{ intentTime(item.expires_at) }}</dd>
+          </div>
+        </div>
+        <p
+          v-if="proposals && !proposals.proposals.length"
+          class="cb-world__readonly"
+          data-test="world-proposals-empty"
+        >
+          现在没有任何提案（有真实意图或用户请求时才会记一条；没有就什么都不写）。
+        </p>
+        <p class="cb-world__readonly" data-test="world-proposals-readonly">
+          只读：提案只会被**记录 / 检查能力 / 判可行性 / 过期**。它不会创建任务、不会调用 Minecraft
+          工具、不会自动确认、不会发消息，也不会自己动世界 —— 这里没有任何执行按钮，
+          「可执行」也只是一句**描述**，真执行时仍要重新检查当前世界、能力、授权与风险。
         </p>
       </section>
 

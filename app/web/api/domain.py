@@ -300,6 +300,37 @@ class DomainApiRoutes(SocialApiRoutes, WebContext):
             ) from exc
         return ok(payload, request=request)
 
+    async def _v1_world_proposals(self, request: web.Request) -> web.Response:
+        """Phase 7C §十二：TaskProposal 的**只读**视图。
+
+        返回 Proposal ID / Source / Objective / Related Intent / Target / Required Capabilities /
+        Capability Gaps / Risk Summary / Status / Expiry，以及 **execution_layer="NONE"**。
+
+        **没有** Execute / Confirm / Start / Run / Approve —— 一个都没有（§一/§十二/§十五）。
+        """
+        service = getattr(self._bot, "proposals", None)
+        if service is None:
+            return ok(
+                {
+                    "enabled": False,
+                    "execution_layer": "NONE",
+                    "proposals": [],
+                    "open": 0,
+                    "created_total": 0,
+                    "merged_total": 0,
+                    "minecraft_online": False,
+                    "degraded_reason": "",
+                },
+                request=request,
+            )
+        try:
+            payload = await service.view()
+        except Exception as exc:  # noqa: BLE001 - 只读视图失败不冒泡成 500
+            raise unavailable(
+                f"proposal view unavailable: {type(exc).__name__}", code="proposal.view"
+            ) from exc
+        return ok({**payload, "execution_layer": "NONE"}, request=request)
+
     async def _v1_world_activity_advisor(self, request: web.Request) -> web.Response:
         """Phase 6D §八十九：模型顾问的**只读**回执视图。
 
@@ -679,6 +710,8 @@ class DomainApiRoutes(SocialApiRoutes, WebContext):
         )
         # Phase 7A：Initiative / LifeIntent 只读视图（§四九；执行层 NONE，没有任何执行入口）
         app.router.add_get(f"{API_PREFIX}/world/initiative", wrap(self._v1_world_initiative))
+        # Phase 7C：TaskProposal 只读视图（§十二；**没有**执行 / 确认 / 启动入口）
+        app.router.add_get(f"{API_PREFIX}/world/proposals", wrap(self._v1_world_proposals))
         app.router.add_get(f"{API_PREFIX}/world/trace", wrap(self._v1_world_trace))
         app.router.add_get(f"{API_PREFIX}/world/timeline", wrap(self._v1_world_timeline))
         app.router.add_get(f"{API_PREFIX}/world/topics", wrap(self._v1_world_topics))

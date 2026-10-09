@@ -189,6 +189,49 @@ export interface WorldInitiativeView {
   }[]
 }
 
+/**
+ * Phase 7C §十二：一份任务提案的**只读**投影。
+ * 提案不是任务：这里没有 `steps`、没有确认、没有任何执行入口。
+ */
+export interface WorldTaskProposal {
+  proposal_id: string
+  source: string
+  objective: string
+  /** 关联的 LifeIntent（USER 来源的提案为空串） */
+  intent_id: string
+  initiator: string
+  target: {
+    status: string
+    player_name: string
+    server_id: string
+    /** 只给后四位（与 QQ / WebUI 其它地方一致，绝不回显完整 UUID） */
+    uuid_suffix: string
+    reason: string
+  }
+  required_capabilities: string[]
+  capability_gaps: { capability_id: string; gap: string; reason: string }[]
+  feasibility: string
+  risk_summary: Record<string, unknown>
+  status: string
+  reason: string
+  created_at: number
+  expires_at: number
+  updated_at: number
+  terminal: boolean
+}
+
+/** Phase 7C §十二：任务提案只读视图（执行层恒为 NONE）。 */
+export interface WorldProposalsView {
+  enabled: boolean
+  execution_layer: string
+  proposals: WorldTaskProposal[]
+  open: number
+  created_total: number
+  merged_total: number
+  minecraft_online: boolean
+  degraded_reason: string
+}
+
 export interface WorldPlanItem {
   activity: string
   planned_start: number

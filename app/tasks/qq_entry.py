@@ -47,6 +47,7 @@ from app.tasks.models import (
     TASK_SUCCEEDED,
     TaskState,
 )
+from app.tasks.proposal_service import should_record_user_proposal
 from app.tasks.turn import QQ_REPLIES, TaskReplies, TaskTurnHandler
 
 log = logging.getLogger("CatooBot.Tasks.QQ")
@@ -338,6 +339,10 @@ class QQTaskEntry:
         finally:
             self._handling -= 1
             self._handling = max(0, self._handling)
+        # Phase 7C §四/§八：**旁路**记一份 USER 提案（窄规则，见 should_record_user_proposal）。
+        # 放在这里而不是"建了任务之后"：既有的任务检测器不把「跟着我」认成任务，
+        # 而 §八 恰恰要求那句话也要走可信身份桥解析目标。
+        await self._record_proposal(identity, text, outcome)
         if not outcome.handled or not outcome.reply:
             await self._drain(outcome=None)
             return False
@@ -356,6 +361,57 @@ class QQTaskEntry:
             identity.session_id,
         )
         return True
+
+    async def _record_proposal(self, identity: QQIdentity, text: str, outcome: Any) -> None:
+        """Phase 7C §四：把这次**用户请求**旁路记成一份提案（source=USER）。
+
+        **它不参与**任务链的决策：任务照旧由既有 5A/5B 链创建与执行，这里只是把
+        "用户想要什么 / 需要哪些能力 / 目标玩家能不能可信解析"留成可审计的一条。
+        因此任何失败都只吞掉 —— 绝不回头影响回复或任务（§四/§十三）。
+
+        命中的条件很窄（``should_record_user_proposal``）：真的建了任务，或这句话
+        明确在指某个玩家。普通闲聊与提问不会留下提案。
+        """
+        if not should_record_user_proposal(text, str(getattr(outcome, "action", ""))):
+            return
+        service = getattr(self.bot, "proposals", None)
+        if service is None or not getattr(service, "enabled", False):
+            return
+        try:
+            await service.record_user_request(
+                objective=str(text),
+                user_id=str(identity.user_id),
+                session_id=str(identity.session_id),
+                server_id=self._server_id(),
+                task_id=str(getattr(outcome, "task_id", "") or ""),
+            )
+        except Exception:  # noqa: BLE001 - 记账失败绝不影响用户任务
+            self._log.debug("[Task/QQ] 提案记账失败（忽略）", exc_info=True)
+
+    def _server_id(self) -> str:
+        """当前连接到的服务器 id（拿不到就空 —— 身份解析会如实记为"没有绑定"）。
+
+        复用 5C 的身份桥口径（``edition|host|port|world_key`` 的稳定摘要），
+        绝不把 ``127.0.0.1:25565`` 当成永久身份。
+        """
+        memory = getattr(self.bot, "minecraft_memory", None)
+        probe = getattr(memory, "server_id", None)
+        if callable(probe):
+            try:
+                found = str(probe() or "")
+                if found:
+                    return found
+            except Exception:  # noqa: BLE001 - 只读探针，失败就退回本地推导
+                pass
+        service = getattr(self.bot, "minecraft", None)
+        try:
+            snapshot = service.snapshot() if service is not None else None
+        except Exception:  # noqa: BLE001
+            return ""
+        connection = dict((snapshot or {}).get("connection") or {})
+        from app.integrations.minecraft.identity import server_identity
+
+        return server_identity(connection.get("host"), connection.get("port")).server_id
 
     def _text_of(self, event: Any) -> str:
         return qq_text_of(event)
