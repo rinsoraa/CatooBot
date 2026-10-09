@@ -284,6 +284,35 @@ class TestMigration34:
         assert int((version or {}).get("v") or 0) >= 34
         await again.close()
 
+    async def test_upgrade_from_a_v33_database_applies_34(self, tmp_path: Path) -> None:
+        """旧库升级兼容：已有 33 版的库（含业务数据）连上来会补上 34，且不动既有表。"""
+
+        url = f"sqlite:///{tmp_path / 'upgrade.db'}"
+        database = Database(DatabaseConfig(url=url))
+        await database.connect()
+        # 模拟"升级前"：删掉 34 的三张表与迁移记录（既有表与数据保留）
+        await database.execute("DROP TABLE IF EXISTS procedural_skill_usage")
+        await database.execute("DROP TABLE IF EXISTS procedural_skill_evidence")
+        await database.execute("DROP TABLE IF EXISTS procedural_skills")
+        await database.execute("DELETE FROM schema_migrations WHERE version >= 34")
+        await database.execute(
+            "INSERT INTO memories (scope_key, category, content, content_hash, created_at,"
+            " updated_at) VALUES ('character:x', 'fact', '既有数据', 'h1', 1, 1)"
+        )
+        await database.close()
+        # 再连一次 = 真实升级路径
+        upgraded = Database(DatabaseConfig(url=url))
+        await upgraded.connect()
+        rows = await upgraded.fetchall(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name LIKE 'procedural%'"
+        )
+        assert len(rows) == 3, "升级后三张表都在"
+        version = await upgraded.fetchone("SELECT MAX(version) AS v FROM schema_migrations")
+        assert int((version or {}).get("v") or 0) == 34
+        kept = await upgraded.fetchall("SELECT COUNT(*) AS n FROM memories")
+        assert int(kept[0]["n"]) == 1, "既有业务数据不受影响"
+        await upgraded.close()
+
     async def test_evidence_uniqueness_is_enforced_by_the_database(self, tmp_path: Path) -> None:
         from app.tasks.skill import EvidenceVerdict, SkillEvidence
         from app.tasks.skill_store import SqliteSkillStore

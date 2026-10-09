@@ -20,8 +20,8 @@
   持久记账（重启不丢）。
 * **存储**：迁移 **34** 三张表（`procedural_skills` / `procedural_skill_evidence` /
   `procedural_skill_usage`）+ 复用 `behavior_events` 审计；对比过"塞进通用记忆引擎"方案并说明为何不采用。
-* **测试**：新增 **80** 项（资格门 / 歧义隔离 / 归一化去重版本 / 真库重启幂等 / 真实 TaskRuntime
-  学习与复用 / 反馈回流 / 隔离与降级 / 接线与只读 API / AST 安全边界）；全量 **3510 passed**。
+* **测试**：新增 **81** 项（资格门 / 歧义隔离 / 归一化去重版本 / 真库重启幂等 / 真实 TaskRuntime
+  学习与复用 / 反馈回流 / 隔离与降级 / 接线与只读 API / AST 安全边界）；全量 **3511 passed**。
 * **边界**：19 工具、ActionRuntime 动作、TaskRuntime 状态、`allow_medium=false` 一律未改；
   没有第二套记忆引擎/任务状态机/调度循环；技能不能授予任何权限。
 * 真机：本轮为"真实 TaskRuntime + 真实 SQLite + 真实迁移"的端到端闭环（含重启后检索）；

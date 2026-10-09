@@ -268,7 +268,7 @@ procedural_skill_evidence                -- 学习账本（一次任务一行，
 | `ruff check .` | All checks passed |
 | `ruff format --check .` | 629 files already formatted |
 | `mypy app` | Success: no issues found in 335 source files |
-| `pytest tests -q` | **3510 passed**（7D.2.1 基线 3430 → +80 项 7E 测试） |
+| `pytest tests -q` | **3511 passed**（7D.2.1 基线 3430 → +81 项 7E 测试） |
 | WebUI `typecheck` / `vitest` / `build` / 浏览器 E2E | 通过 / 528 passed / 通过 / 7 passed |
 | Minecraft runtime（Node 单测 + flying-squid E2E） | `ALL CHECKS PASSED`（按仓库规定，**在全量 pytest 结束后单独跑**） |
 | 迁移 / 恢复 / 幂等 | `TestMigration34`（三张表 + 连两次幂等）+ 真库幂等/重启用例 |
