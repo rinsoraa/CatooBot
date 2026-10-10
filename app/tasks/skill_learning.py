@@ -12,13 +12,15 @@
 → ``dig_attribution_unproven:<step>`` → ``ambiguous_world_change:<step>``
 → ``no_postcondition`` → 全部通过 = QUALIFIED。
 
-**7D §10.4 dig 歧义（Phase 7D Follow-up 已收口）**：挖掘的"世界发生了变化"与"是罐头亲手挖的"
+**7D §10.4 dig 歧义（Phase 7D.3 收口）**：挖掘的"世界发生了变化"与"是罐头亲手挖的"
 是两件事，本地运行时把两者分开回报（`minecraft_runtime/dig_attribution.js` 的契约：
 ``world_effect`` ∈ BLOCK_REMOVED/BLOCK_REMAINS/UNKNOWN，``attribution`` ∈
-SELF_CONFIRMED/EXTERNAL_INDICATED/AMBIGUOUS，随动作终态事件进 ``TaskStep.result``）：
+SELF_CONFIRMED/SELF_INFERRED/EXTERNAL_INDICATED/AMBIGUOUS，随动作终态事件进 ``TaskStep.result``）：
 
-* **归属门（主）**：``minecraft_dig`` 步骤必须有 ``world_effect == BLOCK_REMOVED`` 且
-  ``attribution == SELF_CONFIRMED``；缺失/外部/歧义 → ``dig_attribution_unproven:<step_id>``
+* **归属门（主，严格）**：``minecraft_dig`` 步骤必须有 ``world_effect == BLOCK_REMOVED`` +
+  ``attribution == SELF_CONFIRMED`` + 严格依据 ``confirm_basis == self_break_progress`` +
+  ``strict_self_proof is True`` + 载荷精确绑定本步（``action_id`` 一致）；缺失、串号、
+  ``SELF_INFERRED``（时序推断）、外部、歧义 → ``dig_attribution_unproven:<step_id>``
   （``AMBIGUOUS`` 证据，只隔离、不计正向也不计反例）。
 * **后置条件（仍是效果证据）**：运行时自己的新鲜 SAFE 复核（方块确实不在了）或
   ``inventory_delta`` —— 它们只能证明"世界/背包变了"，**不证明是谁弄掉的**，因此不再单独
@@ -82,26 +84,51 @@ _POSITION_KEYS = ("x", "y", "z")
 POSITION_SLOT = "target_position"
 ENTITY_SLOT = "target_entity"
 
-# ---------------------------------------------------------------- 挖掘归因（7D Follow-up）
+# ---------------------------------------------------------------- 挖掘归因（7D.3）
 
 #: 会改动世界的挖掘工具（归因门只对它有额外要求）
 DIG_TOOL = "minecraft_dig"
-#: 世界效果：目标坐标上原来的方块已经不在了
+#: 世界效果：目标坐标上原来那个方块已经不在了
 WORLD_EFFECT_BLOCK_REMOVED = "BLOCK_REMOVED"
-#: 执行归属：现有证据表明是罐头亲手挖的（本地运行时同名字段，契约见 dig_attribution.js）
+#: 执行归属：有**直接执行者证据**（本客户端观察到自己的实体在目标坐标的破坏进度）
 ATTRIBUTION_SELF_CONFIRMED = "SELF_CONFIRMED"
+#: 执行归属：只有自身挖掘生命周期 + 时序推断（是推断，不是严格证明）
+ATTRIBUTION_SELF_INFERRED = "SELF_INFERRED"
 #: 执行归属：有正面证据表明**别人**在挖同一个坐标
 ATTRIBUTION_EXTERNAL_INDICATED = "EXTERNAL_INDICATED"
 #: 执行归属：证据不足以归因
 ATTRIBUTION_AMBIGUOUS = "AMBIGUOUS"
 
+#: 只有这些归因依据才算**严格**自证（时序推断 ``dig_lifecycle_timing`` 不在内）
+STRICT_SELF_CONFIRM_BASES = frozenset({"self_break_progress"})
+#: 能读懂的归因契约版本（1 = 历史的过宽契约，2 = 引入 SELF_INFERRED 分级）
+SUPPORTED_ATTRIBUTION_SCHEMAS = frozenset({1, 2})
+
+
+def _is_plain_bool(value: Any) -> bool:
+    """真正的布尔（``True``/``False``）；``1`` / ``"true"`` 这类真值转换一律不算。"""
+
+    return isinstance(value, bool)
+
+
+def _valid_target(value: Any) -> bool:
+    """归因载荷必须带**完整、类型正确**的目标坐标。"""
+
+    if not isinstance(value, Mapping):
+        return False
+    for axis in ("x", "y", "z"):
+        number = value.get(axis)
+        if isinstance(number, bool) or not isinstance(number, (int, float)):
+            return False
+    return True
+
 
 def dig_attribution(step: Any) -> dict[str, Any] | None:
-    """读一步挖掘的**归因结论**（`TaskStep.result["attribution"]`，契约见 dig_attribution.js）。
+    """读一步挖掘的**归因结论**并做严格校验（`TaskStep.result["attribution"]`）。
 
-    只读两种公认结构（``dict`` 或 JSON 文本）；缺字段、类型不对、解析失败一律返回 ``None``
-    —— 调用方按"无法归因"处理（fail-closed），**绝不**从方块名、背包变化、目标文本或
-    模型输出里倒推归属。
+    只有**完整、类型正确、版本可读**的载荷才会被接受；缺字段、类型不对、解析失败、
+    版本不认识一律返回 ``None`` —— 调用方按"无法归因"处理（fail-closed），**绝不**从方块名、
+    背包变化、目标文本或模型输出里倒推归属。
     """
 
     result = getattr(step, "result", None)
@@ -120,42 +147,86 @@ def dig_attribution(step: Any) -> dict[str, Any] | None:
             return None
     if not isinstance(payload, Mapping):
         return None
-    world_effect = str(payload.get("world_effect") or "")
-    verdict = str(payload.get("attribution") or "")
-    if not world_effect or not verdict:
+
+    kind = payload.get("kind")
+    if kind is not None and str(kind) != "dig_attribution":
+        return None
+    schema = payload.get("schema")
+    if isinstance(schema, bool) or not isinstance(schema, int):
+        return None
+    if schema not in SUPPORTED_ATTRIBUTION_SCHEMAS:
+        return None
+    world_effect = payload.get("world_effect")
+    verdict = payload.get("attribution")
+    basis = payload.get("confirm_basis")
+    if not isinstance(world_effect, str) or not world_effect:
+        return None
+    if not isinstance(verdict, str) or not verdict:
+        return None
+    if not isinstance(basis, str):
+        return None
+    # ``strict_self_proof`` 必须是**真布尔**：类型转换不算（7D.3 §2.2）。
+    if not _is_plain_bool(payload.get("strict_self_proof")):
+        return None
+    action_id = payload.get("action_id")
+    if action_id is not None and not isinstance(action_id, str):
+        return None
+    target = payload.get("target")
+    if not _valid_target(target) or not isinstance(target, Mapping):
+        return None
+    reason = payload.get("reason_code")
+    if reason is not None and not isinstance(reason, str):
         return None
     return {
+        "schema": schema,
         "world_effect": world_effect,
         "attribution": verdict,
-        "reason_code": str(payload.get("reason_code") or ""),
-        "confirm_basis": str(payload.get("confirm_basis") or ""),
-        "action_id": str(payload.get("action_id") or ""),
-        "strict_self_proof": bool(payload.get("strict_self_proof")),
+        "reason_code": str(reason or ""),
+        "confirm_basis": basis,
+        "action_id": str(action_id or ""),
+        "strict_self_proof": payload.get("strict_self_proof"),
+        "assurance": str(payload.get("assurance") or ""),
+        "target": {axis: target[axis] for axis in ("x", "y", "z")},
     }
 
 
 def _dig_attribution_verdict(step: Any) -> tuple[str, dict[str, Any]]:
-    """``(子原因, detail)``：子原因为 ``""`` 表示"归属证明通过"（自证 + 世界效果确认）。"""
+    """``(子原因, detail)``：子原因为 ``""`` 表示**严格**归属证明通过。
+
+    严格通过 = 世界效果确认移除 + ``SELF_CONFIRMED`` + 严格依据（``self_break_progress``）
+    + ``strict_self_proof is True`` + 载荷精确绑定到**这一步**（action_id 一致、目标坐标完整）。
+    ``SELF_INFERRED``（时序推断）与 ``EXTERNAL_INDICATED`` / ``AMBIGUOUS`` 一律不算。
+    """
 
     payload = dig_attribution(step)
     if payload is None:
         return "missing", {}
     detail = {
+        "schema": payload["schema"],
         "world_effect": payload["world_effect"],
         "attribution": payload["attribution"],
+        "assurance": payload["assurance"],
         "reason_code": payload["reason_code"],
         "confirm_basis": payload["confirm_basis"],
         "action_id": payload["action_id"],
         "strict_self_proof": payload["strict_self_proof"],
     }
     step_action = str(getattr(step, "action_id", "") or "")
-    if step_action and payload["action_id"] and step_action != payload["action_id"]:
-        # 归因载荷必须属于**这一步**：串了/过期了/张冠李戴 → 一律无法归因
+    if not step_action:
+        # 严格归因必须能精确关联到**当前步骤**：步骤没有动作 id 就无从绑定（fail-closed）。
+        return "action_id_missing", {**detail, "step_action_id": ""}
+    if payload["action_id"] != step_action:
+        # 归因载荷必须属于**这一步**：缺失 / 串了 / 过期了 → 一律无法归因。
         return "action_id_mismatch", {**detail, "step_action_id": step_action}
     if payload["world_effect"] != WORLD_EFFECT_BLOCK_REMOVED:
         return "world_effect_not_removed", detail
     if payload["attribution"] != ATTRIBUTION_SELF_CONFIRMED:
         return payload["reason_code"] or payload["attribution"].lower(), detail
+    if payload["confirm_basis"] not in STRICT_SELF_CONFIRM_BASES:
+        # ``SELF_CONFIRMED`` + ``dig_lifecycle_timing``（历史过宽契约）不能被当成严格自证。
+        return "confirm_basis_not_strict", detail
+    if payload["strict_self_proof"] is not True:
+        return "strict_self_proof_false", detail
     return "", detail
 
 
@@ -166,10 +237,11 @@ def dig_attribution_reason(step: Any) -> tuple[str, dict[str, Any]]:
 
 
 def self_dig_confirmed(step: Any) -> bool:
-    """这一步是不是"罐头亲手挖掉、且世界效果已确认"（两个条件必须同时成立）。
+    """这一步是不是**严格**"罐头亲手挖掉、且世界效果已确认"。
 
+    时序推断（``SELF_INFERRED``）、外部迹象、身份未知与缺失载荷一律为 ``False``：
     ``block_absent`` / ``inventory_delta`` 这类**效果证据**不参与判定 —— 它们只证明
-    "世界/背包变了"，不证明是谁弄掉的。
+    "世界/背包变了"，不证明是谁弄掉的；推断也绝不能冒充已确认的亲身经历。
     """
 
     return _dig_attribution_verdict(step)[0] == ""
@@ -658,7 +730,10 @@ __all__ = [
     "ATTRIBUTION_AMBIGUOUS",
     "ATTRIBUTION_EXTERNAL_INDICATED",
     "ATTRIBUTION_SELF_CONFIRMED",
+    "ATTRIBUTION_SELF_INFERRED",
     "DIG_TOOL",
+    "STRICT_SELF_CONFIRM_BASES",
+    "SUPPORTED_ATTRIBUTION_SCHEMAS",
     "ENTITY_SLOT",
     "INVENTORY_VERIFIED_TOOLS",
     "POSITION_SLOT",

@@ -527,7 +527,17 @@ async function main() {
   const localOnly = attributionOf(results.local_view_only)
   const checks = [
     ['S 自己挖：world_effect = BLOCK_REMOVED', Boolean(self) && self.world_effect === 'BLOCK_REMOVED'],
-    ['S 自己挖：attribution = SELF_CONFIRMED', Boolean(self) && self.attribution === 'SELF_CONFIRMED'],
+    [
+      'S 自己挖：归因为 SELF_CONFIRMED（严格）或 SELF_INFERRED（推断）',
+      Boolean(self) && (self.attribution === 'SELF_CONFIRMED' || self.attribution === 'SELF_INFERRED'),
+    ],
+    [
+      'S 自己挖：strict_self_proof 只可能对应 SELF_CONFIRMED（推断不得伪装成严格自证）',
+      Boolean(self) &&
+        (self.attribution === 'SELF_CONFIRMED'
+          ? self.strict_self_proof === true
+          : self.strict_self_proof === false),
+    ],
     ['E 中途被外部改掉：不是 SELF_CONFIRMED', Boolean(external) && external.attribution !== 'SELF_CONFIRMED'],
     ['X 双客户端：不是 SELF_CONFIRMED', Boolean(two) && two.attribution !== 'SELF_CONFIRMED'],
     [
@@ -577,7 +587,8 @@ async function main() {
       ),
   )
   // 取证探针：只报事实。任何一项不成立 → 退出码 1（让脚本化调用能看出来）。
-  if (checks.some(([, ok]) => !ok)) process.exit(1)
+  // 显式退出：spawned runtime 子进程 / receiver 可能仍持有句柄，不能让进程一直挂着。
+  process.exit(checks.some(([, ok]) => !ok) ? 1 : 0)
 }
 
 main().catch((error) => {

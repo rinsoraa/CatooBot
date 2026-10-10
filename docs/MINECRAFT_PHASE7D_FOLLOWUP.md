@@ -206,3 +206,113 @@ function onBlockUpdate (oldBlock, newBlock) {
 | 第一轮镜像（真机门禁前） | 代码 `eb139e1`（16 文件）+ 标签 `1af16ea` + 文档 `fa8478b`、`65e24f1` |
 | 第二轮镜像（真机门禁 + 修正 A/B + e2e 断言 + 本文件） | 代码 **`7be2831`**（8 文件：`dig_attribution.js`、`runtime.js`、`test/dig_attribution.test.js`、`test/e2e.js`、`test/probe_dig_attribution_real.js`、本文件、`CHANGELOG.md`、`docs/README.md`） |
 | 第二轮 CI | run `38063595076` **attempt 1 双 job 全部 success**（`lint · format · types · tests` + `webui · typecheck · tests · build`） |
+
+---
+
+# Phase 7D.3 — Attribution Assurance Semantics & Fail-Closed Consumers
+
+> 独立成章，**不覆盖** §1–§9 的历史结论。本阶段把 7D Follow-up 留下的
+> `strict_self_proof` 语义收严：**时序推断不得再伪装成严格自挖证明**，
+> 并让所有生产消费者（Runtime / 技能学习 / 复用反馈 / 长期记忆）只认严格证据。
+> 基线 commit `d60d380`。
+
+## 10.1 根因（真实代码路径）
+
+* **`minecraft_runtime/dig_attribution.js`（7D Follow-up 版本）**：`SELF_CONFIRMED` 由
+  证据分支给出，`strict_self_proof` 判据是
+  `verdict === SELF_CONFIRMED && (basis === SELF_BREAK_PROGRESS || serverUpdateSaysAir)`；
+  而时序推断分支（`dig_lifecycle_timing`）本身就把 verdict 置为 `SELF_CONFIRMED`。
+  于是 **"服务端确认 air + 自己的完成回执 + 时序达标" 会被标成 `strict_self_proof=true`** ——
+  这正是任务书 §2.1 的语义过宽。
+* **`app/tasks/skill_learning.py`**：`_dig_attribution_verdict()` 只核对
+  `world_effect == BLOCK_REMOVED` 与 `attribution == SELF_CONFIRMED`；
+  `action_id` 仅"两侧都非空时才判不匹配"，且没有校验 schema / 类型 / 目标坐标。
+  它**从没读** `strict_self_proof`，也没有区分严格自证与时序推断（§2.2）。
+* **`minecraft_runtime/dig_attribution.js::onBreakProgress/End`**：实体对象缺失时
+  `id === null` → 落到 `EXTERNAL_BREAK_PROGRESS`；未解析实体被当成外部迹象（§2.3）。
+* **世界效果**：`serverSaysAir()` / `serverSaysPresent()` 用 `some()`，`worldEffectOf`
+  先看 air 再看 present → 多条互相矛盾的服务端更新会得到不收敛的结论（§2.4）。
+
+## 10.2 归因契约（schema 2）：世界效果 × 保证等级
+
+* `world_effect` ∈ `BLOCK_REMOVED` / `BLOCK_REMAINS` / `UNKNOWN`（判据改为
+  **按到达顺序裁决服务端更新**，见 `resolveServerUpdates`）。
+* `attribution` 四级 + `assurance`：
+  * `SELF_CONFIRMED` / `assurance=STRICT`：有**直接执行者证据** —— 本客户端观察到
+    **自己实体 id** 在目标坐标的破坏进度（`self_break_progress`），且服务端确认移除、
+    无未解决冲突。这是**唯一** `strict_self_proof === true` 的来源。
+  * `SELF_INFERRED` / `assurance=INFERRED`：只有自身挖掘生命周期按时序走完
+    （`diggingCompleted` 在预期时长之后、`ratio >= 0.85`）+ 服务端确认移除 + 无外部信号。
+    是**推断**，`strict_self_proof === false`。
+  * `EXTERNAL_INDICATED` / `assurance=EXTERNAL`：第三方实体身份**已可靠解析**且确非自身。
+  * `AMBIGUOUS` / `assurance=NONE`：身份未知、证据冲突、服务端未确认、被替换、自相矛盾等。
+* `strict_self_proof` 兼容保留，但**只有 `SELF_CONFIRMED` 才为真**；历史 schema 1
+  载荷若用 `dig_lifecycle_timing` 支撑 `SELF_CONFIRMED`，在 Python 侧按
+  `confirm_basis_not_strict` fail-closed。
+
+## 10.3 Runtime 改动（`dig_attribution.js` / `runtime.js`）
+
+* 新增 `SELF_INFERRED`、`ASSURANCE`、`DIG_ATTRIBUTION_SCHEMA = 2`、
+  `resolveServerUpdates()`、`UNRESOLVED_BREAK_PROGRESS/END` 证据种类与三态实体解析
+  （`self` / `external` / `unresolved`）。
+* 服务端方块更新记录 `state_id` 与解析出的 `block_name_after`，
+  按**最后一条**裁决世界效果，并显式区分 `present_same` / `replaced` / `conflict` /
+  `present_unknown` —— `type != 0` 不再单独等于"原方块还在"。
+* `runtime.js` 的 dig `wait()` 改为传 `serverUpdates: collector.serverUpdates()`，
+  `localViewOnly` 改用 `serverConfirmed()`。
+
+## 10.4 Python 消费者改动
+
+* `skill_learning.py`：`dig_attribution()` 严格校验
+  `kind` / `schema∈{1,2}` / `world_effect` / `attribution` / `confirm_basis` /
+  `strict_self_proof`（必须是**真布尔**）/ `action_id` / `target{x,y,z}` / `reason_code` 类型；
+  `_dig_attribution_verdict()` 要求 `action_id` **两侧非空且一致**、
+  `attribution == SELF_CONFIRMED`、`confirm_basis ∈ {self_break_progress}`、
+  `strict_self_proof is True`，否则 fail-closed（`action_id_missing` /
+  `action_id_mismatch` / `confirm_basis_not_strict` / `strict_self_proof_false` 等稳定原因码）。
+  `SELF_INFERRED` 落在既有 `dig_attribution_unproven:<step_id>` → `AMBIGUOUS` 分支：
+  只隔离、不计正向也不计反例。
+* `memory_bridge.py::_remember_task_target()` 复用 `self_dig_confirmed()`，
+  因此只有严格自证的已完成 dig 步骤才写 `TASK_RESULT` 的"她亲手挖过"资源事实；
+  `SELF_INFERRED` 不再产生该强陈述。
+
+## 10.5 测试与真实服务器门禁
+
+* **Node 单测**：`test/dig_attribution.test.js` 由 62 → **71** 项，新增
+  `SELF_CONFIRMED`/`SELF_INFERRED` 分级、被替换、服务端自相矛盾、身份未知、
+  有序更新等判定矩阵；`npm test` 全绿。
+* **Python**：`tests/test_dig_attribution.py` 由 24 → **28** 项；`tests/skill_fakes.py`
+  的 dig 由同步假动作升级为**持续型动作**（RUNNING + action_id + 异步终态），
+  否则严格 `action_id` 绑定形同虚设。全量 **`3589 passed`**（基线 3585）。
+* **真实 Java 门禁（Fabric 1.21.1 @127.0.0.1:25565）`PASS`**，探针
+  `minecraft_runtime/test/probe_dig_attribution_real.js`：
+  * **S 自己挖** → `SELF_INFERRED` / `dig_lifecycle_timing` / `strict_self_proof=false` /
+    `ratio=1.000` / 服务端确认 air（服务器包比本地乐观更新晚 **44ms**）。
+    —— 印证"标准 Java 客户端不给直接执行者证据"，自挖只能是推断。
+  * **E 中途 `/setblock ... air`** → `AMBIGUOUS` / `block_removed_before_self_dig_completion` /
+    `ratio=0.114`。
+  * **X 第二个真实客户端抢占** → `EXTERNAL_INDICATED` / `external_break_progress` /
+    实体名 `CatodayoMate`（entity_id 3043，8 段进度）/ `ratio=0.670`。
+  * **P 非 op 在 spawn-protection 内挖掘** → 服务端回纠正包（state_id 1 = `stone`）→
+    `world_effect=BLOCK_REMAINS` / `AMBIGUOUS` / `block_still_present`，
+    服务器侧复核方块仍是 `stone`。
+
+## 10.6 历史技能证据审计
+
+* **只读审计生产库 `data/catoobot.db`（migration 33）**：`procedural_skill_evidence` /
+  `procedural_skills` 两张表**尚不存在**（7E 的迁移 34/35/36 从未在该库上执行）。
+  因此**没有任何历史 `POSITIVE` 技能证据**依赖旧的 `dig_lifecycle_timing`，
+  也**没有已晋升技能**需要失效/重算。**未删除、未重置、未改写任何学习数据。**
+* 兼容边界：若将来遇到 schema 1 且 `confirm_basis == dig_lifecycle_timing` 的历史载荷，
+  新门禁一律按 `confirm_basis_not_strict` 判为无法归因（不自动包装成
+  `SELF_CONFIRMED`）；schema 1 且 `confirm_basis == self_break_progress` 的真实严格证据仍被接受。
+
+## 10.7 范围冻结与残余限制
+
+* **无新表、无新迁移**（最高仍 **36**）；19 个工具、`ACTION_RISK`、
+  `allow_medium`、用户确认/授权/取消/暂停/超时/离线和 World Changed 语义全部不变；
+  未触碰 `.env` / 真实密钥 / Character Bible / 敏感配置 / 测试账号权限文件。
+* 残余限制（客户端协议固有）：单玩家自挖只能得到 `SELF_INFERRED`；
+  要得到 `SELF_CONFIRMED` 需要本客户端观察到**自己实体**的破坏进度包
+  （服务器是否回显取决于服务端实现）。这正是本阶段的设计目标 ——
+  **宁可把推断如实标成推断，也不让技能学习与长期记忆冒充"已确认的亲身经历"。**

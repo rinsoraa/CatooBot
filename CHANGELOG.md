@@ -1,5 +1,40 @@
 # Changelog
 
+## Minecraft Phase 7D.3 — Attribution Assurance Semantics & Fail-Closed Consumers
+
+* **根因**：Phase 7D Follow-up 的 `strict_self_proof` 语义过宽 —— 它是
+  `SELF_CONFIRMED && (basis == self_break_progress || serverUpdateSaysAir)`，而 `SELF_CONFIRMED`
+  本身把 `dig_lifecycle_timing`（纯时序推断）也算了进去。于是"服务端确认 air + 自己的完成回执 +
+  时序达标"会被标成 `strict_self_proof=true`；Python 侧 `_dig_attribution_verdict()` 又从没读过
+  `strict_self_proof`，`action_id` 只在两侧都非空时才比对。
+* **契约（schema 2）**：`attribution` 升级为四级 + `assurance` 等级 ——
+  `SELF_CONFIRMED`（严格：直接执行者证据 = 本客户端观察到**自己实体**在目标坐标的破坏进度）/
+  `SELF_INFERRED`（推断：只有自身挖掘生命周期 + 时序 + 服务端确认移除）/
+  `EXTERNAL_INDICATED`（第三方实体身份**已可靠解析**且确非自身）/
+  `AMBIGUOUS`。`strict_self_proof` 只为 `SELF_CONFIRMED` 置真；`resolveServerUpdates()` 按**到达
+  顺序**裁决服务端更新（`removed`/`present_same`/`replaced`/`conflict`/`present_unknown`），
+  用注册表把 `type` 状态 id 解析回方块名，不再用 `type != 0` 冒充"原方块还在"；未解析实体
+  记 `UNRESOLVED_BREAK_PROGRESS`（**绝不**判成外部）。
+* **Python 消费门禁收紧**：`dig_attribution()` 严格校验 schema / 类型 / `strict_self_proof` 为真布尔 /
+  `action_id` / `target`；`_dig_attribution_verdict()` 要求 `action_id` 两侧非空且一致 +
+  `SELF_CONFIRMED` + `confirm_basis == self_break_progress` + `strict_self_proof is True`，否则
+  fail-closed（`action_id_missing`/`action_id_mismatch`/`confirm_basis_not_strict`/
+  `strict_self_proof_false` 等）。`SELF_INFERRED`/外部/歧义 → 既有
+  `dig_attribution_unproven:<step_id>`（`AMBIGUOUS`，只隔离不计分）。`memory_bridge.py`
+  复用 `self_dig_confirmed()`，因此"她亲手挖过"的资源事实只来自严格自证的已完成 dig 步骤。
+* **测试**：Node 单测 62 → **71** 项（`SELF_CONFIRMED`/`SELF_INFERRED` 分级、被替换、服务端
+  自相矛盾、身份未知、有序更新）；Python `tests/test_dig_attribution.py` 24 → **28** 项，
+  `tests/skill_fakes.py` 的 dig 升级为**持续型动作**（RUNNING + action_id + 异步终态）以便
+  严格 `action_id` 绑定生效；全量 **`3589 passed`**（基线 3585）。**真实 Java 门禁 `PASS`**：
+  S 自己挖 → `SELF_INFERRED`（`strict_self_proof=false`，ratio 1.000）/ E `/setblock` 中途移除 →
+  `AMBIGUOUS`（ratio 0.114）/ X 第二个真实客户端抢占 → `EXTERNAL_INDICATED`（实体 `CatodayoMate`）/
+  P 非 op 在 spawn-protection 内被拒 → `BLOCK_REMAINS`（服务器纠正包，方块仍在）。
+* **历史证据审计**：生产库 `data/catoobot.db` 仍在 migration 33，`procedural_skill_evidence`
+  尚未建表 → **不存在**依赖旧 `dig_lifecycle_timing` 的 `POSITIVE` 证据，**未删除/未重置任何学习数据**。
+* **范围**：**无新表、无新迁移**（最高仍 **36**）；19 工具 / `ACTION_RISK` / `allow_medium` /
+  确认·授权·取消·暂停·超时语义不变；未触碰 `.env` / 密钥 / Character Bible / 敏感配置。
+  残余限制：标准 Java 客户端单玩家自挖只能是 `SELF_INFERRED`（协议里没有"这个方块是我破坏的"回执）。
+
 ## Minecraft Phase 7D Follow-up — Minecraft Dig Attribution（挖掘结果归因根因修复）
 
 * **根因**：mineflayer **4.39.0** 的 `digging.js` 用「目标坐标变成 air」判定挖掘结束

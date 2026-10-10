@@ -21,7 +21,8 @@
  *   1. 如实记录与本次动作**同一作用域**（同一 action_id / 同一坐标 / 同一时间窗）的原始证据；
  *   2. 用**纯函数**（`resolveAttribution`）给出两个**互相独立**的结论：
  *      * `world_effect`   —— 世界里发生了什么（BLOCK_REMOVED / BLOCK_REMAINS / UNKNOWN）
- *      * `attribution`    —— 现有证据把它归给谁（SELF_CONFIRMED / EXTERNAL_INDICATED / AMBIGUOUS）
+ *      * `attribution`    —— 现有证据把它归给谁
+ *                           （SELF_CONFIRMED / SELF_INFERRED / EXTERNAL_INDICATED / AMBIGUOUS）
  *
  * ## 证据来源（全部带坐标过滤 + 时间窗过滤，绝不外溢到别的动作）
  *
@@ -38,17 +39,20 @@
  * ## 判定规则（保守优先，原因码见 `ATTRIBUTION_REASONS`）
  *
  *  1. 世界效果不是 BLOCK_REMOVED → AMBIGUOUS（没有"方块没了"这件事就谈不上归因）；
- *  2. 观察到**别人**在该坐标的破坏进度 → EXTERNAL_INDICATED；
- *  3. 同时观察到别人的进度**并且**自己也在预期时刻挖完 → AMBIGUOUS（证据冲突，不站队）；
- *  4. 观察到**自己**在该坐标的破坏进度 → SELF_CONFIRMED（正面自证）；
- *  5. 自己的挖掘生命周期在**预期时长之后**走完（且没有外部信号）→ SELF_CONFIRMED
- *     （mineflayer 的 `diggingCompleted` 语义就是"我们的挖掘任务还在进行时该坐标变成了 air"，
- *     而**早于**预期完成时刻的变化只可能来自我们自己的完成包之外的力量 → 判歧义）；
- *  6. 其余（没有完成证据、早于预期、无预期时长、坐标在开始前就变了）→ AMBIGUOUS + 稳定原因码。
+ *  2. 世界效果由**按到达顺序**裁决的服务端更新决定（见 `resolveServerUpdates`）：
+ *     最后一条说 air → 移除；最后一条说非 air 且仍是原方块 → 还在；
+ *     最后一条说非 air 但已换成另一个方块 → 原方块被替换（不归给任何人）；
+ *     服务端先确认移除、之后又报非 air → 自相矛盾，判 UNKNOWN/AMBIGUOUS；
+ *     只有本地乐观视图、没有权威确认 → UNKNOWN。
+ *  3. 观察到**身份已可靠解析的别人**在该坐标的破坏进度 → EXTERNAL_INDICATED；
+ *  4. 观察到**自己**在该坐标的破坏进度（直接执行者证据）→ SELF_CONFIRMED（严格自证）；
+ *  5. 只有自身挖掘生命周期在**预期时长之后**走完（且无外部/未知信号）→ SELF_INFERRED（自挖推断）；
+ *  6. 同时观察到别人的进度/未知身份的进度**并且**自己也在预期时刻挖完 → AMBIGUOUS（冲突，不站队）；
+ *  7. 其余（没有完成证据、早于预期、无预期时长、坐标在开始前就变了、身份未知）→ AMBIGUOUS + 稳定原因码。
  *
- * 第 5 条是**推断**而不是过程证明：客户端协议里没有"这个方块是我破坏的"这种回执。
- * 它之所以成立，靠的是"我们自己发出完成包的时刻"这个**因果分界**：早于它的变化不是我们干的。
- * 因此 payload 里始终保留 `confirm_basis` 与 `flags`，让上层自己决定要多严。
+ * `SELF_CONFIRMED` 与 `SELF_INFERRED` 必须分开：客户端协议里**没有**"这个方块是我破坏的"这种回执，
+ * 第 5 条靠的是"我们自己发出完成包的时刻"这个**因果分界**，是**推断**而不是过程证明。
+ * `strict_self_proof` 只为 `SELF_CONFIRMED` 置真；时序推断只产生 `SELF_INFERRED`。
  *
  * 本模块**不做**任何等待/睡眠/超时修改，**不**改动作结果的成功判据（方块真的变了才算成功），
  * **不**写世界，**不**申请新的风险级别或权限。
@@ -66,15 +70,40 @@ const WORLD_EFFECT = Object.freeze({
   UNKNOWN: 'UNKNOWN',
 })
 
-/** 执行归属：现有证据把这次世界变化归给谁。刻意**没有**过强的 `EXTERNAL_CONFIRMED`。 */
+/**
+ * 执行归属：现有证据把这次世界变化归给谁。刻意**没有**过强的 `EXTERNAL_CONFIRMED`。
+ *
+ * 7D.3 起自证明确分成两档：
+ *  - `SELF_CONFIRMED`：有**直接执行者证据**（本客户端观察到**自己实体 id** 在目标坐标的破坏进度），
+ *    且服务端确认了方块移除、没有未解决的冲突 —— 这是**严格**自证；
+ *  - `SELF_INFERRED`：只有自身挖掘生命周期 + 时序推断（`diggingCompleted` 在预期时长之后、
+ *    服务端确认移除、没有外部信号）—— 这是**推断**，不是过程证明。
+ */
 const ATTRIBUTION = Object.freeze({
-  /** 有正面证据表明是罐头自己挖掉的（自己的破坏进度 / 自己的挖掘生命周期在预期时刻走完） */
+  /** 严格自证：直接执行者证据 + 服务端移除确认（`strict_self_proof === true` 的唯一来源） */
   SELF_CONFIRMED: 'SELF_CONFIRMED',
-  /** 有正面证据表明**别人**在挖同一个坐标 */
+  /** 自挖推断：自身挖掘生命周期按时序走完 + 服务端移除确认；是推断，不是严格证明 */
+  SELF_INFERRED: 'SELF_INFERRED',
+  /** 有正面证据表明**别人**（实体身份已可靠解析且确非自身）在挖同一个坐标 */
   EXTERNAL_INDICATED: 'EXTERNAL_INDICATED',
   /** 证据不足以归因（绝不倒向任何一边） */
   AMBIGUOUS: 'AMBIGUOUS',
 })
+
+/** 保证等级（payload 的 `assurance`）：与 `attribution` 一一对应，供上层按等级消费。 */
+const ASSURANCE = Object.freeze({
+  /** 严格亲自证据 */
+  STRICT: 'STRICT',
+  /** 自挖推断 */
+  INFERRED: 'INFERRED',
+  /** 外部迹象 */
+  EXTERNAL: 'EXTERNAL',
+  /** 无充分证据 */
+  NONE: 'NONE',
+})
+
+/** 归因契约版本。2 = 引入 SELF_CONFIRMED / SELF_INFERRED 分级（1 为历史的过宽契约）。 */
+const DIG_ATTRIBUTION_SCHEMA = 2
 
 /** 自证依据（payload 的 `confirm_basis`）：正面进度 > 生命周期+时序推断。 */
 const CONFIRM_BASIS = Object.freeze({
@@ -100,6 +129,12 @@ const ATTRIBUTION_REASONS = Object.freeze({
   NO_TARGET_CHANGE: 'no_block_change_observed_at_target',
   //: 真机取证：只有本地乐观视图说方块没了，服务器没有确认过（例如出生点保护挡住了非 op 的挖掘）
   LOCAL_VIEW_ONLY: 'block_change_not_confirmed_by_server',
+  //: 目标坐标被服务端改成了**另一个非 air 方块**（不是普通的挖空，不归给任何人）
+  BLOCK_REPLACED: 'block_replaced_by_other_block',
+  //: 目标坐标的服务端更新互相矛盾（先说没了、后又说还在），顺序无法收敛
+  CONFLICTING_SERVER_UPDATES: 'conflicting_server_updates',
+  //: 观察到目标坐标的破坏进度，但**无法解析**是谁（实体身份未知 / 自身 id 尚未可用）
+  UNRESOLVED_BREAK_ACTOR: 'break_actor_unresolved',
 })
 
 /** 证据种类（`evidence[].kind`）。 */
@@ -110,6 +145,8 @@ const EVIDENCE_KINDS = Object.freeze({
   SELF_BREAK_END: 'self_break_end',
   EXTERNAL_BREAK_PROGRESS: 'external_break_progress',
   EXTERNAL_BREAK_END: 'external_break_end',
+  UNRESOLVED_BREAK_PROGRESS: 'unresolved_break_progress',
+  UNRESOLVED_BREAK_END: 'unresolved_break_end',
   SELF_DIG_COMPLETED: 'self_dig_completed',
   SELF_DIG_ABORTED: 'self_dig_aborted',
 })
@@ -171,7 +208,58 @@ function entityNameOf(entity) {
 }
 
 /**
- * 由**真实读到的**方块名 + **服务器亲口说了什么**推出世界效果。
+ * 按**到达顺序**裁决目标坐标的服务端方块更新（7D.3 §2.4）。
+ *
+ * 旧的 `some(to_air)` / `first(to_air)` 会在"先说没了、后又说还在"这类自相矛盾的序列上
+ * 产生不收敛的结论。这里只认**最后一条**服务端更新，并显式区分：
+ *
+ *  - `removed`         —— 最后一条说变成 air → 权威确认移除；
+ *  - `present_same`    —— 最后一条说非 air，且本地读数仍是**原方块** → 原方块还在；
+ *  - `replaced`        —— 最后一条说非 air，但本地读数已是**另一个方块** → 原方块被替换；
+ *  - `conflict`        —— 先被确认移除，之后又被服务端报成非 air（互相矛盾，无法收敛）；
+ *  - `present_unknown` —— 最后一条说非 air，但读不到本地方块名，无法区分"还在"与"被替换"；
+ *  - `none`            —— 根本没有服务端更新（只有本地乐观视图）。
+ *
+ * `type != 0` 只说明"不是 air"，**不能**单独证明原方块仍然存在。
+ */
+function resolveServerUpdates(updates, blockBefore, blockAfter) {
+  const list = (Array.isArray(updates) ? updates : []).filter(
+    (item) => item && (item.to_air === true || item.to_air === false),
+  )
+  if (list.length === 0) {
+    return { authoritative: false, kind: 'none', conflict: false, replaced: false }
+  }
+  const latest = list[list.length - 1]
+  if (latest.to_air === true) {
+    return { authoritative: true, kind: 'removed', conflict: false, replaced: false }
+  }
+  // 最后一条说"非 air"
+  if (list.slice(0, -1).some((item) => item.to_air === true)) {
+    return { authoritative: true, kind: 'conflict', conflict: true, replaced: false }
+  }
+  // 优先用**这条服务端更新自己解析出的**方块名（协议 `type` → 方块名），
+  // 退化到调用方给出的本地读数。`type != 0` 只能说明"不是 air"，必须再看是不是原方块。
+  const resolvedAfter =
+    typeof latest.block_name_after === 'string' && latest.block_name_after
+      ? latest.block_name_after
+      : typeof blockAfter === 'string' && blockAfter
+        ? blockAfter
+        : null
+  if (typeof blockBefore === 'string' && blockBefore && resolvedAfter) {
+    if (resolvedAfter === blockBefore) {
+      return { authoritative: true, kind: 'present_same', conflict: false, replaced: false }
+    }
+    if (resolvedAfter === 'air') {
+      // 状态 id 说非 air 但解析成 air → 无法解释，绝不猜
+      return { authoritative: true, kind: 'present_unknown', conflict: false, replaced: false }
+    }
+    return { authoritative: true, kind: 'replaced', conflict: false, replaced: true }
+  }
+  return { authoritative: true, kind: 'present_unknown', conflict: false, replaced: false }
+}
+
+/**
+ * 由**真实读到的**方块名 + **按顺序裁决的服务端更新**推出世界效果。
  *
  * 真机取证（2026-10-10，Fabric 1.21.1）发现两件事，都必须照实处理：
  *
@@ -182,18 +270,25 @@ function entityNameOf(entity) {
  *  2. 服务器会为**它拒绝的挖掘**回一个"这里还是那个方块"的纠正包（``type != 0``，即
  *     ``to_air: false``）—— 那是"没有发生移除"的**正面证据**，绝不能当成"变了"。
  *
- * 于是规则是：
+ * 于是规则是（服务端更新按到达顺序裁决，见 `resolveServerUpdates`）：
  *
- *   * 服务器说该坐标变成 air（``to_air: true``）→ ``BLOCK_REMOVED``（唯一可信的移除）；
- *   * 服务器说该坐标还是非 air（``to_air: false``）→ ``BLOCK_REMAINS``（纠正包 = 没移除）；
- *   * 只有本地视图说没了、服务器什么都没说 → ``UNKNOWN``（**不知道**，绝不写成"世界变了"）；
+ *   * 最后一条服务端更新说 air → ``BLOCK_REMOVED``（唯一可信的移除）；
+ *   * 最后一条说非 air、且仍是原方块 → ``BLOCK_REMAINS``（纠正包 = 没移除）；
+ *   * 最后一条说非 air、但已换成另一个方块 → ``BLOCK_REMOVED``（原方块被替换；上层强制 AMBIGUOUS）；
+ *   * 服务端自相矛盾 / 读不到方块名 → ``UNKNOWN``（**不知道**，绝不写成"世界变了"）；
+ *   * 只有本地视图变了、服务器什么都没说 → ``UNKNOWN``；
  *   * 本地读数与原方块一致 → ``BLOCK_REMAINS``；读不到 → ``UNKNOWN``。
  */
 function worldEffectOf(blockBefore, blockAfter, options) {
-  const serverSaysAir = Boolean(options && options.serverSaysAir)
-  const serverSaysPresent = Boolean(options && options.serverSaysPresent)
-  if (serverSaysAir) return WORLD_EFFECT.BLOCK_REMOVED
-  if (serverSaysPresent) return WORLD_EFFECT.BLOCK_REMAINS
+  const opts = options || {}
+  const resolution = resolveServerUpdates(opts.serverUpdates, blockBefore, blockAfter)
+  if (resolution.authoritative) {
+    if (resolution.kind === 'removed') return WORLD_EFFECT.BLOCK_REMOVED
+    if (resolution.kind === 'present_same') return WORLD_EFFECT.BLOCK_REMAINS
+    if (resolution.kind === 'replaced') return WORLD_EFFECT.BLOCK_REMOVED
+    return WORLD_EFFECT.UNKNOWN // conflict / present_unknown
+  }
+  // 没有权威服务端更新：本地读数只能证明"和原来一样"，其余一律不知道
   if (typeof blockAfter !== 'string' || !blockAfter) return WORLD_EFFECT.UNKNOWN
   if (String(blockBefore) === blockAfter) return WORLD_EFFECT.BLOCK_REMAINS
   return WORLD_EFFECT.UNKNOWN
@@ -252,18 +347,18 @@ function createDigAttribution(options) {
     return collector.evidence.some((item) => item.kind === EVIDENCE_KINDS.SERVER_BLOCK_UPDATE)
   }
 
-  /** 服务器亲口说该坐标变成了 air（唯一可信的"移除发生过"）。 */
-  collector.serverSaysAir = function serverSaysAir() {
-    return collector.evidence.some(
-      (item) => item.kind === EVIDENCE_KINDS.SERVER_BLOCK_UPDATE && item.to_air === true,
-    )
-  }
-
-  /** 服务器亲口说该坐标还是非 air（纠正包 = 它没让这次破坏生效）。 */
-  collector.serverSaysPresent = function serverSaysPresent() {
-    return collector.evidence.some(
-      (item) => item.kind === EVIDENCE_KINDS.SERVER_BLOCK_UPDATE && item.to_air !== true,
-    )
+  /** 服务器对该坐标说过的**有序**更新（`to_air` 布尔），供世界效果按顺序裁决。 */
+  collector.serverUpdates = function serverUpdates() {
+    return collector.evidence
+      .filter((item) => item.kind === EVIDENCE_KINDS.SERVER_BLOCK_UPDATE)
+      .map((item) => ({
+        to_air: item.to_air === true,
+        block_name_after:
+          typeof item.block_name_after === 'string' && item.block_name_after
+            ? item.block_name_after
+            : null,
+        at_ms: item.at_ms,
+      }))
   }
 
   /** 现在真的在听吗（挂了监听器）。假 bot / 已摘除 → false：等"服务器确认"没有意义。 */
@@ -301,26 +396,51 @@ function createDigAttribution(options) {
       record(EVIDENCE_KINDS.SELF_DIG_ABORTED, {})
     }
 
+    /**
+     * 把一次破坏动画的实体解析成三态（7D.3 §2.3）：
+     *  - `'self'`       —— 实体身份已可靠解析，且等于罐头自己的实体 id；
+     *  - `'external'`   —— 实体身份已可靠解析，且**确非**自身（自身 id 已知）；
+     *  - `'unresolved'` —— 实体对象缺失 / 无 id / 自身 id 未知 → 身份无法可靠判定。
+     * 关键：未解析**绝不**当成外部。
+     */
+    const breakActorOf = (entity) => {
+      const resolvedObject = entity !== undefined && entity !== null
+      const id = entityIdOf(entity)
+      if (!resolvedObject || id === null) return 'unresolved'
+      if (collector._selfEntityId === null) return 'unresolved'
+      return id === collector._selfEntityId ? 'self' : 'external'
+    }
+
     const onBreakProgress = (block, destroyStage, entity) => {
       if (!samePosition(blockPosition(block), target)) return
-      const id = entityIdOf(entity)
-      const mine = id !== null && collector._selfEntityId !== null && id === collector._selfEntityId
-      record(mine ? EVIDENCE_KINDS.SELF_BREAK_PROGRESS : EVIDENCE_KINDS.EXTERNAL_BREAK_PROGRESS, {
-        entity_id: id,
+      const actor = breakActorOf(entity)
+      const kind =
+        actor === 'self'
+          ? EVIDENCE_KINDS.SELF_BREAK_PROGRESS
+          : actor === 'external'
+            ? EVIDENCE_KINDS.EXTERNAL_BREAK_PROGRESS
+            : EVIDENCE_KINDS.UNRESOLVED_BREAK_PROGRESS
+      record(kind, {
+        entity_id: entityIdOf(entity),
         entity_name: entityNameOf(entity),
         stage: Number.isFinite(destroyStage) ? destroyStage : null,
-        entity_resolved: entity !== undefined && entity !== null,
+        entity_resolved: actor !== 'unresolved',
       })
     }
 
     const onBreakProgressEnd = (block, entity) => {
       if (!samePosition(blockPosition(block), target)) return
-      const id = entityIdOf(entity)
-      const mine = id !== null && collector._selfEntityId !== null && id === collector._selfEntityId
-      record(mine ? EVIDENCE_KINDS.SELF_BREAK_END : EVIDENCE_KINDS.EXTERNAL_BREAK_END, {
-        entity_id: id,
+      const actor = breakActorOf(entity)
+      const kind =
+        actor === 'self'
+          ? EVIDENCE_KINDS.SELF_BREAK_END
+          : actor === 'external'
+            ? EVIDENCE_KINDS.EXTERNAL_BREAK_END
+            : EVIDENCE_KINDS.UNRESOLVED_BREAK_END
+      record(kind, {
+        entity_id: entityIdOf(entity),
         entity_name: entityNameOf(entity),
-        entity_resolved: entity !== undefined && entity !== null,
+        entity_resolved: actor !== 'unresolved',
       })
     }
 
@@ -331,10 +451,21 @@ function createDigAttribution(options) {
         const name = String((meta && meta.name) || '').replace(/^packet_/, '')
         if (!SERVER_BLOCK_PACKET_NAMES.has(name)) return
         if (!samePosition(positionOf(data && data.location), target)) return
-        // 新版协议里 `type` 是全局方块状态 id（0 = air）；老版 `block_change` 同形
-        const isAir = Number(data && data.type) === 0
+        // 新版协议里 `type` 是全局方块状态 id（0 = air）；老版 `block_change` 同形。
+        // 用注册表把状态 id 解析回**方块名**，才能区分"原方块还在"与"被换成另一个方块"。
+        const stateId = Number(data && data.type)
+        const isAir = stateId === 0
+        let blockNameAfter = isAir ? 'air' : null
+        if (!isAir && bot.registry && bot.registry.blocksByStateId) {
+          const entry = bot.registry.blocksByStateId[stateId]
+          if (entry && typeof entry.name === 'string' && entry.name) blockNameAfter = entry.name
+        }
         collector._serverConfirmedAt = nowMs()
-        record(EVIDENCE_KINDS.SERVER_BLOCK_UPDATE, { to_air: isAir })
+        record(EVIDENCE_KINDS.SERVER_BLOCK_UPDATE, {
+          to_air: isAir,
+          state_id: Number.isFinite(stateId) ? stateId : null,
+          block_name_after: blockNameAfter,
+        })
       }
       client.on('packet', onPacket)
     }
@@ -384,8 +515,6 @@ function createDigAttribution(options) {
     const evidence = collector.evidence.slice(0, MAX_EVIDENCE)
     const first = (kind) => evidence.find((item) => item.kind === kind) || null
     const removal = first(EVIDENCE_KINDS.BLOCK_BECAME_AIR) || first(EVIDENCE_KINDS.SERVER_BLOCK_UPDATE)
-    const serverUpdate = first(EVIDENCE_KINDS.SERVER_BLOCK_UPDATE)
-    const serverUpdateSaysAir = Boolean(serverUpdate && serverUpdate.to_air === true)
     const selfProgress = first(EVIDENCE_KINDS.SELF_BREAK_PROGRESS)
     const completed = first(EVIDENCE_KINDS.SELF_DIG_COMPLETED)
     const aborted = first(EVIDENCE_KINDS.SELF_DIG_ABORTED)
@@ -395,6 +524,21 @@ function createDigAttribution(options) {
         item.kind === EVIDENCE_KINDS.EXTERNAL_BREAK_END,
     )
     const externalSeen = external.length > 0
+    const unresolvedSeen = evidence.some(
+      (item) =>
+        item.kind === EVIDENCE_KINDS.UNRESOLVED_BREAK_PROGRESS ||
+        item.kind === EVIDENCE_KINDS.UNRESOLVED_BREAK_END,
+    )
+    // 服务端更新**按到达顺序**收集；世界效果只认最后一条（7D.3 §2.4）。
+    const serverUpdates = evidence
+      .filter((item) => item.kind === EVIDENCE_KINDS.SERVER_BLOCK_UPDATE)
+      .map((item) => ({ to_air: item.to_air === true, at_ms: item.at_ms }))
+    const serverUpdate = serverUpdates.length ? serverUpdates[serverUpdates.length - 1] : null
+    const serverResolution = resolveServerUpdates(
+      serverUpdates,
+      collector.target.block_before,
+      details.blockAfter,
+    )
     const removalAt = removal ? removal.at_ms : null
     const removalElapsed = removalAt === null ? null : removalAt - collector.action_started_at_ms
     const expected = collector.expected_dig_ms
@@ -409,8 +553,12 @@ function createDigAttribution(options) {
     // 不能把它并进"自己到底有没有按时挖完"的判断里（否则冲突检测会自我抵消）。
     const selfCompletedAtExpected =
       Boolean(completed) && expected !== null && ratio !== null && ratio >= SELF_MIN_RATIO
-    const conflict =
-      externalSeen && (Boolean(selfProgress) || selfCompletedAtExpected)
+    // 外部**和身份未知**的破坏迹象都算"竞争信号"：与自身证据冲突时绝不站队（7D.3 §2.3）。
+    const rivalSeen = externalSeen || unresolvedSeen
+    const conflict = rivalSeen && (Boolean(selfProgress) || selfCompletedAtExpected)
+    const serverConflict = serverResolution.conflict === true
+    const replaced = serverResolution.replaced === true
+    const serverSaysAir = serverResolution.kind === 'removed'
 
     if (worldEffect === WORLD_EFFECT.BLOCK_REMAINS) {
       reason = ATTRIBUTION_REASONS.BLOCK_REMAINS
@@ -419,9 +567,17 @@ function createDigAttribution(options) {
       reason =
         details.localViewOnly === true
           ? ATTRIBUTION_REASONS.LOCAL_VIEW_ONLY
-          : ATTRIBUTION_REASONS.WORLD_EFFECT_UNKNOWN
+          : serverConflict
+            ? ATTRIBUTION_REASONS.CONFLICTING_SERVER_UPDATES
+            : ATTRIBUTION_REASONS.WORLD_EFFECT_UNKNOWN
+    } else if (serverConflict) {
+      // 服务端更新自相矛盾（先说没了、后又说还在）→ 不收敛，绝不形成严格证明
+      reason = ATTRIBUTION_REASONS.CONFLICTING_SERVER_UPDATES
+    } else if (replaced) {
+      // 目标块被换成了另一个非 air 方块：原方块没了，但这不是普通挖空，不归给任何人
+      reason = ATTRIBUTION_REASONS.BLOCK_REPLACED
     } else if (conflict) {
-      // 别人在挖同一个坐标，而我们自己的挖掘也在预期时刻走完了（或有自己的破坏进度）
+      // 别人/身份未知的力量在挖同一个坐标，而我们自己的挖掘也在预期时刻走完了（或有自己的破坏进度）
       // → 证据冲突，绝不站队
       verdict = ATTRIBUTION.AMBIGUOUS
       reason = ATTRIBUTION_REASONS.CONFLICTING_EVIDENCE
@@ -429,7 +585,11 @@ function createDigAttribution(options) {
       verdict = ATTRIBUTION.EXTERNAL_INDICATED
       basis = CONFIRM_BASIS.EXTERNAL_BREAK_PROGRESS
       reason = ATTRIBUTION_REASONS.EXTERNAL_PROGRESS_OBSERVED
+    } else if (unresolvedSeen) {
+      // 有破坏迹象但"是谁"说不清 → 绝不判成外部，也不升级成自挖
+      reason = ATTRIBUTION_REASONS.UNRESOLVED_BREAK_ACTOR
     } else if (selfProgress) {
+      // 直接执行者证据：本客户端观察到自己的实体在目标坐标的破坏进度
       verdict = ATTRIBUTION.SELF_CONFIRMED
       basis = CONFIRM_BASIS.SELF_BREAK_PROGRESS
       reason = ATTRIBUTION_REASONS.SELF_PROGRESS_OBSERVED
@@ -444,25 +604,35 @@ function createDigAttribution(options) {
     } else if (ratio < SELF_MIN_RATIO) {
       reason = ATTRIBUTION_REASONS.REMOVED_BEFORE_SELF_COMPLETION
     } else {
-      verdict = ATTRIBUTION.SELF_CONFIRMED
+      // 时序推断：自身挖掘生命周期在预期时刻走完 + 服务端确认移除 + 无外部信号
+      // → 推断为自挖，但**不是**严格自证
+      verdict = ATTRIBUTION.SELF_INFERRED
       basis = CONFIRM_BASIS.DIG_LIFECYCLE_TIMING
       reason = ATTRIBUTION_REASONS.SELF_COMPLETED_AT_EXPECTED
     }
 
+    const assurance =
+      verdict === ATTRIBUTION.SELF_CONFIRMED
+        ? ASSURANCE.STRICT
+        : verdict === ATTRIBUTION.SELF_INFERRED
+          ? ASSURANCE.INFERRED
+          : verdict === ATTRIBUTION.EXTERNAL_INDICATED
+            ? ASSURANCE.EXTERNAL
+            : ASSURANCE.NONE
+
     return {
       kind: 'dig_attribution',
-      schema: 1,
+      schema: DIG_ATTRIBUTION_SCHEMA,
       action_id: collector.action_id,
       target: { ...collector.target },
       session_id: collector.session_id,
       dimension: collector.dimension,
       world_effect: worldEffect,
       attribution: verdict,
+      assurance,
       confirm_basis: basis,
       reason_code: reason,
-      strict_self_proof:
-        verdict === ATTRIBUTION.SELF_CONFIRMED &&
-        (basis === CONFIRM_BASIS.SELF_BREAK_PROGRESS || serverUpdateSaysAir),
+      strict_self_proof: verdict === ATTRIBUTION.SELF_CONFIRMED,
       expected_dig_ms: expected,
       action_window: {
         started_at_ms: collector.action_started_at_ms,
@@ -480,12 +650,15 @@ function createDigAttribution(options) {
         external_break_entities: external
           .map((item) => item.entity_name || item.entity_id)
           .filter((value) => value !== null && value !== undefined),
+        unresolved_break_observed: unresolvedSeen,
         self_break_observed: Boolean(selfProgress),
         self_dig_completed: Boolean(completed),
         self_dig_aborted: Boolean(aborted),
-        server_block_update_observed: Boolean(serverUpdate),
-        server_block_update_says_air: serverUpdateSaysAir,
+        server_block_update_observed: serverUpdates.length > 0,
+        server_block_update_says_air: serverSaysAir,
         server_block_update_says_present: Boolean(serverUpdate && serverUpdate.to_air !== true),
+        server_block_update_conflict: serverConflict,
+        server_block_update_replaced: replaced,
         conflict,
         //: 本地视图（可能是乐观更新）读到的方块名 + "只有本地视图"标记（审计用）
         local_block_after: details.blockAfter === undefined ? null : details.blockAfter,
@@ -500,13 +673,16 @@ function createDigAttribution(options) {
 }
 
 module.exports = {
+  ASSURANCE,
   ATTRIBUTION,
   ATTRIBUTION_REASONS,
   CONFIRM_BASIS,
+  DIG_ATTRIBUTION_SCHEMA,
   EVIDENCE_KINDS,
   MAX_EVIDENCE,
   SELF_MIN_RATIO,
   WORLD_EFFECT,
   createDigAttribution,
+  resolveServerUpdates,
   worldEffectOf,
 }

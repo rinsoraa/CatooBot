@@ -2256,18 +2256,13 @@ const ACTION_REGISTRY = {
           // Phase 7D Follow-up：本地读数可能只是 mineflayer 的乐观更新 → 等**服务器自己的**
           // 方块变化包（有界真证据窗口，且绝不吃掉动作自身的 timeout 预算）。
           await awaitDigServerConfirmation(collector, digConfirmBudgetMs(controller))
-          const serverSaysAir = Boolean(collector && collector.serverSaysAir())
-          const serverSaysPresent = Boolean(collector && collector.serverSaysPresent())
+          // Phase 7D.3：世界效果只认**按到达顺序**裁决的服务端更新（旧 some()/first() 会自相矛盾）。
+          const serverConfirmed = Boolean(collector && collector.serverConfirmed())
           const localViewOnly = Boolean(
-            collector &&
-              !serverSaysAir &&
-              !serverSaysPresent &&
-              rawAfterName !== null &&
-              rawAfterName !== state.blockName,
+            collector && !serverConfirmed && rawAfterName !== null && rawAfterName !== state.blockName,
           )
           const worldEffect = worldEffectOf(state.blockName, rawAfterName, {
-            serverSaysAir,
-            serverSaysPresent,
+            serverUpdates: collector && collector.serverUpdates ? collector.serverUpdates() : [],
           })
           if (after && after.name === state.blockName) {
             payload = resolveDigAttribution(collector, state, {

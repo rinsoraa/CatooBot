@@ -31,20 +31,43 @@ DIG_MS = 600
 #: Phase 7D Follow-up：挖掘归因夹具（与 ``minecraft_runtime/dig_attribution.js`` 的载荷同形）。
 #: 真实的 ``minecraft_dig`` 步骤结果里就有这一份（随动作终态事件回报），
 #: 所以夹具必须有能力表达"自证 / 外部 / 歧义 / 缺字段 / 方块还在"五种真实形态。
+#: **严格**自证（schema 2）：直接执行者证据 = 本客户端观察到自己的实体在目标坐标的破坏进度
 DIG_ATTRIBUTION_SELF: dict[str, Any] = {
     "kind": "dig_attribution",
-    "schema": 1,
+    "schema": 2,
     "action_id": "act_dig_1",
     "target": dict(POSITION),
     "dimension": "minecraft:overworld",
     "world_effect": "BLOCK_REMOVED",
     "attribution": "SELF_CONFIRMED",
+    "assurance": "STRICT",
+    "confirm_basis": "self_break_progress",
+    "reason_code": "self_break_progress_observed",
+    "strict_self_proof": True,
+}
+#: **推断**自证（schema 2）：只有自身挖掘生命周期 + 时序推断，不算严格自证
+DIG_ATTRIBUTION_INFERRED: dict[str, Any] = {
+    **DIG_ATTRIBUTION_SELF,
+    "attribution": "SELF_INFERRED",
+    "assurance": "INFERRED",
     "confirm_basis": "dig_lifecycle_timing",
     "reason_code": "self_dig_completed_at_expected_time",
-    "strict_self_proof": True,
+    "strict_self_proof": False,
 }
 DIG_ATTRIBUTION_PRESETS: dict[str, dict[str, Any] | None] = {
     "self": DIG_ATTRIBUTION_SELF,
+    "self_inferred": DIG_ATTRIBUTION_INFERRED,
+    #: 历史过宽契约：SELF_CONFIRMED + 时序依据 + strict_self_proof=True（必须被新门禁拒绝）
+    "legacy_self": {
+        **DIG_ATTRIBUTION_SELF,
+        "schema": 1,
+        "confirm_basis": "dig_lifecycle_timing",
+        "reason_code": "self_dig_completed_at_expected_time",
+    },
+    #: strict_self_proof 用字符串（类型转换不得通过）
+    "strict_not_bool": {**DIG_ATTRIBUTION_SELF, "strict_self_proof": "true"},
+    #: 未知 schema（不可读版本 → fail-closed）
+    "bad_schema": {**DIG_ATTRIBUTION_SELF, "schema": 99},
     "external": {
         **DIG_ATTRIBUTION_SELF,
         "attribution": "EXTERNAL_INDICATED",
@@ -523,10 +546,13 @@ class FakeConfirmations:
 
 
 def build_task_runtime() -> Any:
+    from app.tasks.models import TaskState
     from app.tasks.runtime import TaskConfig, TaskInvocation, TaskRuntime
     from app.tasks.store import InMemoryTaskStore
 
     inventory_reads = {"n": 0}
+    dig_results: dict[str, dict[str, Any]] = {}
+    dig_seq = {"n": 0}
 
     async def invoke(tool: str, arguments: dict[str, Any], **kwargs: Any) -> Any:
         # 语义投影的形状与真实 MinecraftService 一致（引用路径 ``items.0.entity_id`` 要能解出来）。
@@ -544,20 +570,56 @@ def build_task_runtime() -> Any:
                 ok=True, status="SUCCEEDED", result={"items": items, "held_item": None}
             )
         if tool == "minecraft_dig":
-            # Phase 7D Follow-up：真实 dig 的结果里带世界效果 + 执行归属（这里同形投影）
-            return TaskInvocation(
-                ok=True,
-                status="SUCCEEDED",
-                result={
-                    "position": {axis: arguments.get(axis) for axis in ("x", "y", "z")},
-                    "block_before": str(arguments.get("expected_block") or BLOCK),
-                    "block_after": "air",
-                    "attribution": {**DIG_ATTRIBUTION_SELF, "action_id": ""},
+            # 真实 minecraft_dig 是**持续型动作**：启动即返回 RUNNING + action_id，
+            # 终态（含归因载荷）由 action 事件异步送达。夹具必须同形，否则严格归因的
+            # action_id 绑定形同虚设（7D.3 §2.2）。
+            dig_seq["n"] += 1
+            action_id = f"act_dig_{dig_seq['n']}"
+            position = {axis: arguments.get(axis) for axis in ("x", "y", "z")}
+            dig_results[action_id] = {
+                "position": position,
+                "block_before": str(arguments.get("expected_block") or BLOCK),
+                "block_after": "air",
+                "attribution": {
+                    **DIG_ATTRIBUTION_SELF,
+                    "action_id": action_id,
+                    "target": dict(position),
                 },
-            )
+            }
+            return TaskInvocation(ok=True, status="RUNNING", action_id=action_id)
         return TaskInvocation(ok=True, status="SUCCEEDED", result={})
 
-    return TaskRuntime(
+    class _AutoDigRuntime(TaskRuntime):
+        """把持续型的 dig 自动"按时"完成，让既有资源任务测试能一次跑完。"""
+
+        async def _finish_pending_dig(self, record: Any) -> Any:
+            while (
+                record is not None
+                and record.state is TaskState.WAITING_ACTION
+                and getattr(record, "pending_action_id", "")
+            ):
+                action_id = str(record.pending_action_id)
+                result = dig_results.get(action_id)
+                if result is None:
+                    return record
+                step = record.step(record.pending_step_id) if record.pending_step_id else None
+                if step is not None:
+                    # 模拟真实 started→finished 间隔（预期 600ms），否则会被"时长过短"辅助信号拦下
+                    step.started_at = self._clock() - (DIG_MS / 1000.0)
+                    await self._save(record)
+                record = await self.on_action_event(
+                    action_id=action_id,
+                    event="minecraft.action.completed",
+                    status="SUCCEEDED",
+                    result=dict(result),
+                )
+            return record
+
+        async def confirm_and_start(self, task_id: str, **kwargs: Any) -> Any:
+            record = await super().confirm_and_start(task_id, **kwargs)
+            return await self._finish_pending_dig(record)
+
+    return _AutoDigRuntime(
         store=InMemoryTaskStore(),
         invoke=invoke,
         confirmations=FakeConfirmations(),

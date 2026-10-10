@@ -54,7 +54,7 @@ def dig_result(attribution: Any) -> dict[str, Any]:
 class Step:
     """最小的"步骤"替身：只需要 ``result`` / ``action_id``（读归因只认这两个字段）。"""
 
-    def __init__(self, result: Any, *, action_id: str = "") -> None:
+    def __init__(self, result: Any, *, action_id: str = "act_dig_1") -> None:
         self.result = result
         self.action_id = action_id
 
@@ -66,8 +66,11 @@ class TestAttributionPayload:
     def test_reads_a_well_formed_payload(self) -> None:
         payload = dig_attribution(Step(dig_result(DIG_ATTRIBUTION_PRESETS["self"])))
         assert payload is not None
+        assert payload["schema"] == 2
         assert payload["world_effect"] == "BLOCK_REMOVED"
         assert payload["attribution"] == "SELF_CONFIRMED"
+        assert payload["assurance"] == "STRICT"
+        assert payload["confirm_basis"] == "self_break_progress"
         assert payload["strict_self_proof"] is True
 
     def test_tolerates_json_text(self) -> None:
@@ -86,21 +89,52 @@ class TestAttributionPayload:
         assert dig_attribution(Step("不是 JSON")) is None
         assert dig_attribution(object()) is None
 
-    def test_self_dig_confirmed_needs_both_axes(self) -> None:
+    def test_self_dig_confirmed_needs_strict_evidence(self) -> None:
         assert self_dig_confirmed(Step(dig_result(DIG_ATTRIBUTION_PRESETS["self"]))) is True
-        for name in ("external", "ambiguous", "conflict", "remains", "unknown_effect", "missing"):
+        for name in (
+            "external",
+            "ambiguous",
+            "conflict",
+            "remains",
+            "unknown_effect",
+            "missing",
+            "self_inferred",
+            "legacy_self",
+            "strict_not_bool",
+            "bad_schema",
+        ):
             step = Step(dig_result(DIG_ATTRIBUTION_PRESETS[name]))
             assert self_dig_confirmed(step) is False, name
 
-    def test_lifecycle_inference_still_counts_as_self_confirmed(self) -> None:
-        """``dig_lifecycle_timing``（本地运行时按时序推断）就是 SELF_CONFIRMED 的一种依据。"""
-        preset = {**DIG_ATTRIBUTION_PRESETS["self"], "strict_self_proof": False}
-        step = Step(dig_result(preset))
-        assert self_dig_confirmed(step) is True
-        assert dig_attribution(step)["strict_self_proof"] is False  # 审计字段仍然如实保留
+    def test_lifecycle_inference_is_not_strict_self_confirmation(self) -> None:
+        """``dig_lifecycle_timing``（本地运行时按时序推断）是 SELF_INFERRED，**不是**严格自证。"""
+        step = Step(dig_result(DIG_ATTRIBUTION_PRESETS["self_inferred"]))
+        assert self_dig_confirmed(step) is False
+        # 子原因是**推断**本身的原因码（如实留痕），而不是被误当成严格自证
+        assert dig_attribution_reason(step)[0] == "self_dig_completed_at_expected_time"
+        # 审计字段仍然如实保留
+        assert dig_attribution(step)["attribution"] == "SELF_INFERRED"
+        assert dig_attribution(step)["assurance"] == "INFERRED"
+
+    def test_legacy_strict_self_proof_true_is_rejected(self) -> None:
+        """历史过宽契约：SELF_CONFIRMED + 时序依据 + strict_self_proof=True —— 必须被拦。"""
+        step = Step(dig_result(DIG_ATTRIBUTION_PRESETS["legacy_self"]))
+        assert self_dig_confirmed(step) is False
+        assert dig_attribution_reason(step)[0] == "confirm_basis_not_strict"
+
+    def test_strict_proof_type_conversion_is_rejected(self) -> None:
+        """``strict_self_proof`` 必须是真布尔；字符串"true"不能靠类型转换通过。"""
+        step = Step(dig_result(DIG_ATTRIBUTION_PRESETS["strict_not_bool"]))
+        assert dig_attribution(step) is None
+        assert self_dig_confirmed(step) is False
+
+    def test_unknown_schema_fails_closed(self) -> None:
+        step = Step(dig_result(DIG_ATTRIBUTION_PRESETS["bad_schema"]))
+        assert dig_attribution(step) is None
+        assert self_dig_confirmed(step) is False
 
     def test_reason_codes_are_stable(self) -> None:
-        assert dig_attribution_reason(Step({})) == ("missing", {})
+        assert dig_attribution_reason(Step({}, action_id="act_dig_1")) == ("missing", {})
         reason, detail = dig_attribution_reason(
             Step(dig_result(DIG_ATTRIBUTION_PRESETS["external"]))
         )
@@ -111,18 +145,36 @@ class TestAttributionPayload:
         )
 
     def test_action_id_mismatch_is_not_attribution(self) -> None:
-        """归因载荷必须属于这一步：action_id 串了/过期了 → 无法归因（fail-closed）。"""
+        """归因载荷必须精确属于这一步：串号/缺失 → 无法归因（fail-closed）。"""
         payload = {**DIG_ATTRIBUTION_PRESETS["self"], "action_id": "act_other"}
         step = Step(dig_result(payload), action_id="act_dig_1")
         assert self_dig_confirmed(step) is False
         reason, detail = dig_attribution_reason(step)
         assert reason == "action_id_mismatch"
         assert detail["step_action_id"] == "act_dig_1"
-        # 步骤没有 action_id（同步路径/历史记录）→ 不做这项比对
-        assert self_dig_confirmed(Step(dig_result(payload))) is True
-        # 载荷没有 action_id → 也不做这项比对（不能凭空拒绝）
+        # 步骤没有 action_id（无从绑定）→ fail-closed
+        assert self_dig_confirmed(Step(dig_result(payload), action_id="")) is False
+        assert dig_attribution_reason(Step(dig_result(payload), action_id=""))[0] == (
+            "action_id_missing"
+        )
+        # 载荷没有 action_id → fail-closed（不能凭空使用）
         bare = {k: v for k, v in DIG_ATTRIBUTION_PRESETS["self"].items() if k != "action_id"}
-        assert self_dig_confirmed(Step(dig_result(bare), action_id="act_dig_1")) is True
+        assert self_dig_confirmed(Step(dig_result(bare), action_id="act_dig_1")) is False
+        assert dig_attribution_reason(Step(dig_result(bare), action_id="act_dig_1"))[0] == (
+            "action_id_mismatch"
+        )
+
+    def test_missing_identity_fields_fail_closed(self) -> None:
+        """载荷必须完整（target 坐标等关键身份字段缺失 → fail-closed）。"""
+        for name in ("no_target", "no_world_effect", "no_attribution"):
+            payload = {**DIG_ATTRIBUTION_PRESETS["self"]}
+            if name == "no_target":
+                payload.pop("target")
+            elif name == "no_world_effect":
+                payload.pop("world_effect")
+            else:
+                payload.pop("attribution")
+            assert dig_attribution(Step(dig_result(payload))) is None, name
 
 
 # ------------------------------------------------------------------ 技能资格门

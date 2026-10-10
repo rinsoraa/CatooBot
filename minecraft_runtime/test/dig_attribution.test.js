@@ -13,14 +13,17 @@ const { Vec3 } = require('vec3')
 
 const { ACTION_REGISTRY } = require('../runtime.js')
 const {
+  ASSURANCE,
   ATTRIBUTION,
   ATTRIBUTION_REASONS,
   CONFIRM_BASIS,
+  DIG_ATTRIBUTION_SCHEMA,
   EVIDENCE_KINDS,
   MAX_EVIDENCE,
   SELF_MIN_RATIO,
   WORLD_EFFECT,
   createDigAttribution,
+  resolveServerUpdates,
   worldEffectOf,
 } = require('../dig_attribution.js')
 
@@ -99,18 +102,26 @@ async function main() {
   console.log('[dig-attribution] 世界效果与世界效果的读法')
   {
     assert(
-      worldEffectOf('minecraft:stone', 'air', { serverSaysAir: true }) ===
-        WORLD_EFFECT.BLOCK_REMOVED,
-      '服务器说变 air 了 → BLOCK_REMOVED（唯一可信的移除）',
+      worldEffectOf('minecraft:stone', 'air', {
+        serverUpdates: [{ to_air: true, block_name_after: 'air' }],
+      }) === WORLD_EFFECT.BLOCK_REMOVED,
+      '服务端最后一条说变 air → BLOCK_REMOVED（唯一可信的移除）',
     )
     assert(
       worldEffectOf('minecraft:stone', 'air') === WORLD_EFFECT.UNKNOWN,
       '只有本地视图说没了 → UNKNOWN（真机踩过：乐观更新，绝不写成"世界变了"）',
     )
     assert(
-      worldEffectOf('minecraft:stone', 'air', { serverSaysPresent: true }) ===
-        WORLD_EFFECT.BLOCK_REMAINS,
-      '服务器回了纠正包（那个坐标还是非 air）→ BLOCK_REMAINS（真机踩过：出生点保护）',
+      worldEffectOf('minecraft:stone', 'air', {
+        serverUpdates: [{ to_air: false, block_name_after: 'minecraft:stone' }],
+      }) === WORLD_EFFECT.BLOCK_REMAINS,
+      '服务端纠正包证明原方块仍在 → BLOCK_REMAINS（真机踩过：出生点保护）',
+    )
+    assert(
+      worldEffectOf('minecraft:stone', 'air', {
+        serverUpdates: [{ to_air: false, block_name_after: 'minecraft:dirt' }],
+      }) === WORLD_EFFECT.BLOCK_REMOVED,
+      '服务端把原方块换成另一个非 air 方块 → 原方块已不在（BLOCK_REMOVED，交上层判歧义）',
     )
     assert(
       worldEffectOf('minecraft:stone', 'minecraft:stone', {}) === WORLD_EFFECT.BLOCK_REMAINS,
@@ -118,6 +129,32 @@ async function main() {
     )
     assert(worldEffectOf('minecraft:stone', null) === WORLD_EFFECT.UNKNOWN, '读不到 → UNKNOWN（绝不猜）')
     assert(worldEffectOf('minecraft:stone', '') === WORLD_EFFECT.UNKNOWN, '空字符串 → UNKNOWN')
+    assert(
+      worldEffectOf('minecraft:stone', 'minecraft:stone', {
+        serverUpdates: [
+          { to_air: true, block_name_after: 'air' },
+          { to_air: false, block_name_after: 'minecraft:stone' },
+        ],
+      }) === WORLD_EFFECT.UNKNOWN,
+      '先确认移除、后又报还在 → 冲突/UNKNOWN（绝不 some()/first() 拍板）',
+    )
+    assert(
+      worldEffectOf('minecraft:stone', 'air', {
+        serverUpdates: [
+          { to_air: false, block_name_after: 'minecraft:stone' },
+          { to_air: true, block_name_after: 'air' },
+        ],
+      }) === WORLD_EFFECT.BLOCK_REMOVED,
+      '先 present 后 air → 以最后一条为准 → BLOCK_REMOVED',
+    )
+    assert(
+      resolveServerUpdates(
+        [{ to_air: false, block_name_after: BLOCK_NAME }],
+        'minecraft:stone',
+        BLOCK_NAME,
+      ).replaced === true,
+      'resolveServerUpdates 能区分"被替换"',
+    )
   }
 
   console.log('[dig-attribution] 判定矩阵（纯函数）')
@@ -127,9 +164,13 @@ async function main() {
     withEvidence(self, [ev(EVIDENCE_KINDS.BLOCK_BECAME_AIR, 1010), ev(EVIDENCE_KINDS.SELF_DIG_COMPLETED, 1010)])
     const selfPayload = self.resolve({ worldEffect: WORLD_EFFECT.BLOCK_REMOVED, finishedAtMs: 1010 + 1000000 })
     assert(
-      selfPayload.attribution === ATTRIBUTION.SELF_CONFIRMED &&
+      selfPayload.attribution === ATTRIBUTION.SELF_INFERRED &&
         selfPayload.confirm_basis === CONFIRM_BASIS.DIG_LIFECYCLE_TIMING,
-      `自挖（预期时刻完成）→ SELF_CONFIRMED（得到 ${selfPayload.attribution}/${selfPayload.confirm_basis}）`,
+      `自挖（只有时序推断）→ SELF_INFERRED（得到 ${selfPayload.attribution}/${selfPayload.confirm_basis}）`,
+    )
+    assert(
+      selfPayload.strict_self_proof === false && selfPayload.assurance === ASSURANCE.INFERRED,
+      '时序推断不是严格自证（strict_self_proof=false / assurance=INFERRED）',
     )
     assert(
       selfPayload.reason_code === ATTRIBUTION_REASONS.SELF_COMPLETED_AT_EXPECTED,
@@ -150,7 +191,11 @@ async function main() {
         selfProgressPayload.confirm_basis === CONFIRM_BASIS.SELF_BREAK_PROGRESS,
       `自己的破坏进度 → SELF_CONFIRMED/${CONFIRM_BASIS.SELF_BREAK_PROGRESS}`,
     )
-    assert(selfProgressPayload.strict_self_proof === true, '自己的破坏进度算严格自证')
+    assert(
+      selfProgressPayload.strict_self_proof === true && selfProgressPayload.assurance === ASSURANCE.STRICT,
+      '自己的破坏进度算严格自证（strict_self_proof=true / assurance=STRICT）',
+    )
+    assert(selfProgressPayload.schema === DIG_ATTRIBUTION_SCHEMA, `schema=${DIG_ATTRIBUTION_SCHEMA}`)
 
     // 2）外部：别人在挖同一个坐标（而我们自己并没有在预期时刻挖完 → 不构成冲突）
     const external = collector()
@@ -267,18 +312,64 @@ async function main() {
       `被中断 → AMBIGUOUS（得到 ${abortedPayload.attribution}）`,
     )
 
-    // 3e）服务器确认过该坐标变了 → strict_self_proof 为真（但没有自证依据时仍不升级归属）
+    // 3e）服务端确认 air + 自己的完成回执 + 预期时刻，但**没有直接执行者证据**
+    // → 只能是 SELF_INFERRED（时序推断），绝不算严格自证
     const serverOnly = collector()
     withEvidence(serverOnly, [
-      ev(EVIDENCE_KINDS.SERVER_BLOCK_UPDATE, 1000, { to_air: true }),
+      ev(EVIDENCE_KINDS.SERVER_BLOCK_UPDATE, 1000, { to_air: true, block_name_after: 'air' }),
       ev(EVIDENCE_KINDS.SELF_DIG_COMPLETED, 1000),
     ])
     const serverOnlyPayload = serverOnly.resolve({ worldEffect: WORLD_EFFECT.BLOCK_REMOVED })
     assert(
-      serverOnlyPayload.attribution === ATTRIBUTION.SELF_CONFIRMED &&
-        serverOnlyPayload.strict_self_proof === true &&
+      serverOnlyPayload.attribution === ATTRIBUTION.SELF_INFERRED &&
+        serverOnlyPayload.strict_self_proof === false &&
         serverOnlyPayload.flags.server_block_update_observed === true,
-      '服务器包 + 自己的完成回执 + 预期时刻 → SELF_CONFIRMED 且严格自证',
+      '服务端确认 + 完成回执（无自己进度）→ SELF_INFERRED（不是严格自证）',
+    )
+
+    // 3f）目标块被服务端换成另一个非 air 方块 → 原方块没了，但不归给任何人（AMBIGUOUS）
+    const replaced = collector()
+    withEvidence(replaced, [
+      ev(EVIDENCE_KINDS.SERVER_BLOCK_UPDATE, 900, { to_air: false, block_name_after: 'minecraft:dirt' }),
+      ev(EVIDENCE_KINDS.SELF_DIG_COMPLETED, 1000),
+    ])
+    const replacedPayload = replaced.resolve({
+      worldEffect: WORLD_EFFECT.BLOCK_REMOVED,
+      blockAfter: 'minecraft:dirt',
+    })
+    assert(
+      replacedPayload.attribution === ATTRIBUTION.AMBIGUOUS &&
+        replacedPayload.reason_code === ATTRIBUTION_REASONS.BLOCK_REPLACED &&
+        replacedPayload.flags.server_block_update_replaced === true,
+      `被替换成别的方块 → AMBIGUOUS/${ATTRIBUTION_REASONS.BLOCK_REPLACED}`,
+    )
+
+    // 3g）服务端更新自相矛盾（先 air 后 present 同一个原方块）→ 冲突/UNKNOWN
+    const serverConf = collector()
+    withEvidence(serverConf, [
+      ev(EVIDENCE_KINDS.SERVER_BLOCK_UPDATE, 500, { to_air: true, block_name_after: 'air' }),
+      ev(EVIDENCE_KINDS.SERVER_BLOCK_UPDATE, 900, { to_air: false, block_name_after: BLOCK_NAME }),
+      ev(EVIDENCE_KINDS.SELF_DIG_COMPLETED, 1000),
+    ])
+    const serverConfPayload = serverConf.resolve({ worldEffect: WORLD_EFFECT.UNKNOWN })
+    assert(
+      serverConfPayload.attribution === ATTRIBUTION.AMBIGUOUS &&
+        serverConfPayload.flags.server_block_update_conflict === true,
+      '服务端更新自相矛盾 → AMBIGUOUS（server_block_update_conflict=true）',
+    )
+
+    // 3h）破坏进度但身份无法解析（实体缺失 / 自身 id 未知）→ 绝不判成外部
+    const unresolved = collector()
+    withEvidence(unresolved, [
+      ev(EVIDENCE_KINDS.UNRESOLVED_BREAK_PROGRESS, 300),
+      ev(EVIDENCE_KINDS.BLOCK_BECAME_AIR, 400),
+    ])
+    const unresolvedPayload = unresolved.resolve({ worldEffect: WORLD_EFFECT.BLOCK_REMOVED })
+    assert(
+      unresolvedPayload.attribution === ATTRIBUTION.AMBIGUOUS &&
+        unresolvedPayload.reason_code === ATTRIBUTION_REASONS.UNRESOLVED_BREAK_ACTOR &&
+        unresolvedPayload.flags.external_break_observed === false,
+      `身份未知的破坏进度 → AMBIGUOUS/${ATTRIBUTION_REASONS.UNRESOLVED_BREAK_ACTOR}（不判外部）`,
     )
 
     // 4）重复/迟到事件不改变结论，证据条数有上限
@@ -374,6 +465,8 @@ async function main() {
       bot.entity = { position: new Vec3(3, 64, 3), id: 7 }
       bot.heldItem = null
       bot.game = { dimension: 'minecraft:overworld' }
+      // 协议 `type` = 全局方块状态 id；注册表把 id 解析回方块名（真机 / 假 bot 同口径）
+      bot.registry = { blocksByStateId: { 0: { name: 'air' }, 1: { name: 'minecraft:stone' } } }
       // 预期时长与真实等待同口径：假 bot 用 100ms 模拟"按时挖完"
       bot.digTime = () => 100
       bot.blockAt = () => options.block || { name: 'minecraft:stone', type: 1, position: new Vec3(3, 64, 3) }
@@ -432,8 +525,9 @@ async function main() {
     assert(result.block_before === 'minecraft:stone' && result.block_after === 'air', '原有结果字段不变')
     assert(Boolean(result.attribution), '结果里带 attribution（归因）')
     assert(
-      result.attribution.attribution === ATTRIBUTION.SELF_CONFIRMED,
-      `正常自挖 → SELF_CONFIRMED（得到 ${result.attribution && result.attribution.attribution}）`,
+      result.attribution.attribution === ATTRIBUTION.SELF_INFERRED &&
+        result.attribution.strict_self_proof === false,
+      `正常自挖（只有时序推断）→ SELF_INFERRED（得到 ${result.attribution && result.attribution.attribution}）`,
     )
     assert(result.attribution.world_effect === WORLD_EFFECT.BLOCK_REMOVED, 'world_effect = BLOCK_REMOVED')
     assert(result.attribution.action_id === 'act_dig_1', '归因绑定本次 action_id')
