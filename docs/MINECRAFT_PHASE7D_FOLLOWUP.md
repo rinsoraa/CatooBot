@@ -125,11 +125,22 @@ function onBlockUpdate (oldBlock, newBlock) {
 | `ruff check .` | All checks passed |
 | `ruff format --check .` | 632 files already formatted |
 | `mypy app` | Success: no issues found in 335 source files |
-| `pytest tests -q` | 见 §8 报告（基线 3561 → 新增 `tests/test_dig_attribution.py` 24 项） |
+| `pytest tests -q` | **3585 passed**（基线 3561 → +24 = 新增 `tests/test_dig_attribution.py`） |
 | WebUI typecheck / Vitest / build / 浏览器 E2E | 通过 / 528 passed / 通过 / 7 passed |
-| Minecraft runtime Node 单测（16 个文件，含新增 `dig_attribution.test.js`） | 全部 OK |
+| Minecraft runtime Node 单测（16 个文件，含新增 `dig_attribution.test.js`） | 全部 OK（`dig_attribution` 56/56） |
 | flying-squid E2E | `ALL CHECKS PASSED`（**attempt 1 在 dig 夹具放置处超时**＝已知的 E2E 抖动，重跑即绿；本轮归因断言实测输出 `AMBIGUOUS/expected_dig_time_unknown`） |
-| 范围核对 | 迁移最高版本 **36**；`ACTION_RISK` 19 个工具；无新动作/新状态；`config/`、`.env`、`config/overrides.yaml` 未触碰 |
+| 范围核对 | 迁移最高版本 **36**（36 条，无新增）；`ACTION_RISK` 19 个工具；无新动作/新状态；`config/`、`.env`、`config/overrides.yaml` 未触碰 |
+| CI（GitHub Actions，两个 job） | **attempt 1 = `eb139e1`**：`webui · typecheck · tests · build` ✅ / `lint · format · types · tests` ❌ —— 失败点是 E2E 里既有的时间敏感跟随检查（`timeout waiting for: runtime 看见 FarTarget`），与本次改动无关的已知抖动；**attempt 2 = `1af16ea`**（同一棵树）：两个 job **全部 success** |
+
+### 6.1 交付（镜像与提交）
+
+| 项目 | 值 |
+| --- | --- |
+| 工作区 | `E:\WorkSpace ZCode\CatooBot`（改前基线 `73bfae5`） |
+| 镜像代码提交 | **`eb139e1`**（`sync_github.py --push`，16 个文件：3 个新增 + 13 个修改） |
+| 镜像标签提交 | **`1af16ea`**（空提交，仅给本轮一个可读标签；**树与 `eb139e1` 完全相同**） |
+| CI run | attempt 1 `38057711151`；attempt 2 `38058141116`（**ALL GREEN**） |
+| 本文件定稿 | 紧随其后的一次文档同步提交（内容：本 §6/§6.1 与 docs/README 索引行） |
 
 ## 7. 真实 Java 服务器门禁 —— `SKIPPED`（环境所限，如实记录）
 
