@@ -1628,6 +1628,50 @@ CREATE INDEX IF NOT EXISTS idx_procedural_skill_usage_skill
     ON procedural_skill_usage(skill_id, created_at DESC);
 """,
     ),
+    (
+        35,
+        "skill task bindings + subject key (Phase 7E.1)",
+        """
+-- Phase 7E.1 §2：把"技能被哪个**真实任务**用了"从派生键改成**每任务唯一**的持久绑定。
+--   procedural_skill_usage（34，按 objective+plan_hash 派生键）已废弃：任务还没建立就登记，
+--   之后同目标同计划哈希的普通任务会被误认成"用过技能" —— 这里直接删掉，绝不留兜底路径。
+-- 先查过现有库：tasks / agent_task_runs 是执行系统，不承载"技能归因"；
+-- behavior_events 是 append-only 审计，不适合做"一次性消费 + 撤销"的绑定；故新建一张最小表。
+-- 语义：一个任务最多一条绑定（task_id 唯一）；只有**任务真正建立之后**才写；
+-- 只按 task_id 精确查找（不再用派生键推断）；消费一次（consumed_at）；随任务 TTL 失效
+-- （expires_at，仅用于作废/清理：task_id 唯一，未来的任务不可能撞上旧绑定）。
+CREATE TABLE IF NOT EXISTS procedural_skill_bindings (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    binding_id   TEXT NOT NULL UNIQUE,
+    task_id      TEXT NOT NULL UNIQUE,
+    skill_id     TEXT NOT NULL,
+    subject_key  TEXT NOT NULL DEFAULT '',
+    plan_version INTEGER NOT NULL DEFAULT 0,
+    plan_hash    TEXT NOT NULL DEFAULT '',
+    created_at   REAL NOT NULL DEFAULT 0,
+    expires_at   REAL NOT NULL DEFAULT 0,
+    consumed_at  REAL NOT NULL DEFAULT 0,
+    outcome      TEXT NOT NULL DEFAULT '',
+    reason       TEXT NOT NULL DEFAULT '',
+    payload      TEXT NOT NULL DEFAULT '{}'
+);
+CREATE INDEX IF NOT EXISTS idx_procedural_skill_bindings_skill
+    ON procedural_skill_bindings(skill_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_procedural_skill_bindings_open
+    ON procedural_skill_bindings(consumed_at, expires_at);
+
+DROP TABLE IF EXISTS procedural_skill_usage;
+
+-- 技能行上补 subject_key 列（"同一条方法主题"的精确索引；歧义/拒绝证据要能附着到它）。
+-- ALTER 只在本迁移里出现一次，且放在所有幂等语句之后：迁移记录与结构变化同生共死。
+ALTER TABLE procedural_skills ADD COLUMN subject_key TEXT NOT NULL DEFAULT '';
+UPDATE procedural_skills
+   SET subject_key = COALESCE(json_extract(payload, '$.extra.subject_key'), '')
+ WHERE subject_key = '';
+CREATE INDEX IF NOT EXISTS idx_procedural_skills_subject
+    ON procedural_skills(character_id, server_id, subject_key);
+""",
+    ),
 ]
 
 

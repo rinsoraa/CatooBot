@@ -446,6 +446,18 @@ class TaskTurnHandler:
 
     # ------------------------------------------------------------ 新任务
 
+    async def _bind_skill_task(self, record: Any, planned: Any) -> None:
+        """技能 → 任务 的持久绑定（只在任务**确实建立**之后调用；失败只降级）。"""
+
+        skills = getattr(self, "_skills", None)
+        binder = getattr(skills, "bind_task_for_plan", None)
+        if binder is None or planned is None:
+            return
+        try:
+            await binder(record, getattr(planned, "plan", None))
+        except Exception:  # noqa: BLE001 - 绑定失败不影响任务本身
+            log.exception("[Task] 技能绑定失败（忽略，之后不会对该任务做技能反馈）")
+
     async def _skill_plan(self, objective: str) -> Any:
         """Phase 7E：技能给出的计划候选（没有/不适用/异常 → None = 用既有模板）。"""
 
@@ -498,6 +510,9 @@ class TaskTurnHandler:
             return TaskTurnOutcome(
                 True, action="busy", reply="我手上还有一件事没做完，先做完这个再说。"
             )
+        # Phase 7E.1 §2：任务**真的建立之后**才把"这条任务用了哪条技能"落成持久绑定
+        # （失败只降级：绑定不上就永远不反馈，绝不猜来源）。
+        await self._bind_skill_task(record, planned)
         # Phase 7D §四（修订 1）：USER 计划与待确认任务**同时**建立（记账失败不影响任务）。
         await self._record_agent_plan(message, record, session_id=session_id, user_id=user_id)
         summary = self._runtime.summary_of(record)

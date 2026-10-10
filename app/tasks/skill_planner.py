@@ -65,6 +65,9 @@ class SkillAwarePlanner:
                         "detail": {
                             "objective": " ".join(str(objective or "").split())[:120],
                             "steps": len(suggestion.plan.steps),
+                            # 7E.1 §2.3：LIFE 路径上计划 observations 不落库，但 AgentPlan.checks
+                            # 是真实持久列 —— 技能引用从这里安全传递到真正建立的 Task。
+                            **self._reference_of(suggestion),
                         },
                     },
                 ),
@@ -76,6 +79,16 @@ class SkillAwarePlanner:
                 },
             )
         return await self.base.plan(objective, target=target, observe=observe)
+
+    def _reference_of(self, suggestion: Any) -> dict[str, Any]:
+        """把技能引用从计划里取出来（供审计 check 使用）。"""
+
+        try:
+            from app.tasks.skill_service import _reference_from_plan
+
+            return dict(_reference_from_plan(getattr(suggestion, "plan", None)))
+        except Exception:  # noqa: BLE001 - 取不到就不写 check（不影响规划）
+            return {}
 
     async def _suggest(self, objective: str) -> Any:
         if self.skills is None:

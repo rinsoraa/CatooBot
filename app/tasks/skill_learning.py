@@ -162,12 +162,24 @@ def _step_duration_ms(step: Any) -> float | None:
     return (float(finished) - float(started)) * 1000.0
 
 
+def _template_arguments(step: Any) -> dict[str, Any]:
+    """取步骤的**冻结模板**参数（绝不用 ``effective_arguments`` 里的解析结果）。
+
+    已执行记录的 ``effective_arguments`` 会把 ``{"from_step","path"}`` 解析成字面量
+    （例如 ``entity_id: 42``）—— 那是一执行一次的动态值：进了模板会污染指纹，
+    也会把一次性 ID 写进技能正文（§7.3 / E6）。模板参数才是"这条方法长什么样"的事实。
+    """
+
+    template = getattr(step, "arguments", None)
+    if isinstance(template, Mapping) and template:
+        return dict(template)
+    return dict(getattr(step, "effective_arguments", None) or {})
+
+
 def _arguments_with_position_slot(step: Any) -> tuple[dict[str, Any], bool]:
     """把坐标替换成 ``{"$slot": "target_position"}``；返回 (参数, 是否真的换过)。"""
 
-    arguments = dict(
-        getattr(step, "effective_arguments", None) or getattr(step, "arguments", {}) or {}
-    )
+    arguments = _template_arguments(step)
     if not all(key in arguments for key in _POSITION_KEYS):
         return arguments, False
     for key in _POSITION_KEYS:

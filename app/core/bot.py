@@ -1432,6 +1432,8 @@ class Bot:
             wrapper = SkillAwarePlanner(plans.planner, skills=service)
             plans.planner = wrapper
             self.skill_planner = wrapper
+            #: 任务建立后登记技能绑定（LIFE 批准 / USER follow 两条路径都要）
+            plans.skills = service  # noqa: SLF001 - 装配点注入（鸭子类型）
         # 非 AgentPlan 的资源任务入口（QQ / 游戏内聊天）：模板之前问一次技能
         for handler in (
             getattr(self, "task_turns", None),

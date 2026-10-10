@@ -1,5 +1,35 @@
 # Changelog
 
+## Minecraft Phase 7E.1 — Skill Evidence Idempotency & Usage Attribution Closure
+
+* **缺口 A（证据计数不是原子操作）**：原顺序是「查重（读）→ await 后置条件 → 改计数/晋升 →
+  最后落证据」，同一 TaskRecord 的两个并发终态回调可以都通过读检查、各加一次 `success_count`
+  → 只有一条独立证据的技能被错误晋升 `ACTIVE`。修复：新增存储层原子操作
+  `claim_evidence()` —— 证据表唯一索引**先认领**（重复回调一个计数都不动），**计数由证据行
+  聚合派生**（并发收敛、无 lost update），状态由纯函数 `derive_skill_state()` 按
+  (当前状态, 派生计数, 阈值, 触发) 唯一决定，整行写回与认领同事务；SQLite 走
+  `run_in_transaction`，内存实现用无 await 临界区并有一致性测试。
+* **缺口 B（使用链在任务创建前登记）**：原 `materialize()` 按 `(objective, plan_hash)` 派生键
+  在**任务还不存在**时写使用链；计划哈希不含 observations、`TaskPlan.to_payload()` 也不序列化
+  observations，于是同目标同形**普通任务**会被误认成"用过技能"。修复：**删除**派生键使用链表
+  （迁移 35 `DROP TABLE`，不留兜底），改为**每任务唯一**的持久绑定
+  `procedural_skill_bindings`（`task_id` 唯一 / 可消费一次 / 随任务 TTL 失效），只在
+  `turn.py::_create`、`AgentPlanService.approve`、`AgentPlanService.plan_follow_from_user`
+  **任务真正建立之后**写入；归因只按 `task_id`，查不到就走普通学习（宁可不反馈，也不猜）。
+  LIFE 路径的技能引用通过**持久化的 AgentPlan checks** 传递（observations 不落库），
+  未批准 / 取消 / 过期 / 建任务失败的计划不留任何有效绑定。
+* **顺带修掉一个真缺陷**：已执行记录的 `effective_arguments` 会把 `{"from_step","path"}` 解析成
+  字面量（如 `entity_id: 42`）→ 同一方法的第二次学习指纹不同、会另建技能，还把一次性 ID 写进
+  技能正文。归一化改为取**冻结模板** `step.arguments`（引用保持引用、坐标折叠成槽位）。
+* **迁移 35**：新增绑定表 + `procedural_skills.subject_key` 列（回填 + 索引）+ 删除 34 的
+  派生键使用链表；最高版本冻结测试同步，新增 v34 → v35 升级兼容测试（既有业务数据不动）。
+* **测试**：新增 **17** 项（并发同任务/不同任务认领、歧义不串计、阈值参与派生、任务未建立不
+  误归因、重启后仍归因、同 plan_hash 只回流绑定那条、LIFE 路径绑定、无绑定不猜、两种 store
+  一致），7E 的顺序/重启/版本/终态用例全部保留；全量 **3528 passed**（3511 → +17）。
+* **边界**：19 工具、ActionRuntime 动作、TaskRuntime 状态、`allow_medium=false`、7D 的
+  确认/批准/身份/取消/暂停/恢复/超时语义一律未改；技能依旧只输出计划候选；CANDIDATE 不可复用、
+  终态不复活；7D §10.4 dig 归因缺陷仍独立跟踪（本轮只保证不可归因样本不计正向证据）。
+
 ## Minecraft Phase 7E — Skill Learning & Procedural Memory
 
 * **学习资格门（只认真实证据）**：`SkillService.on_task_finished(record)` 只吃**持久化**

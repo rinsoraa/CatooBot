@@ -17,7 +17,7 @@ from app.database.database import Database
 from app.tasks.agent_planner import BoundedAgentPlanner
 from app.tasks.models import TaskState
 from app.tasks.skill import SkillStatus
-from app.tasks.skill_service import SKILL_REFERENCE_TOOL, SkillService
+from app.tasks.skill_service import SkillService
 from app.tasks.skill_store import SqliteSkillStore
 from tests.skill_fakes import (
     BLOCK,
@@ -379,6 +379,7 @@ class TestLearningFromARealRun:
             source="qq",
         )
         assert reused.state is TaskState.PENDING_CONFIRMATION, "复用技能也要用户确认"
+        assert await service.bind_task_for_plan(reused, result.plan.plan)
         done = await runtime2.confirm_and_start(
             reused.task_id, user_id="u", session_id="s2", origin="user"
         )
@@ -423,6 +424,8 @@ class TestVerticalSlice:
         # 仍然要用户确认（技能没有绕过任何门）
         assert record.state is TaskState.PENDING_CONFIRMATION
         assert restarted.skill_reference_of(record)["skill_id"] == skill_id
+        # 入口在任务建立后做的事（7E.1 §2）：登记"这条任务用了哪条技能"的持久绑定
+        assert await restarted.bind_task_for_plan(record, planned.plan) == skill_id
         # 非 USER 回合不能确认（既有授权门原样生效）
         from app.tasks.runtime import TaskAuthorizationError
 
@@ -473,25 +476,32 @@ class TestFeedbackLoop:
         out = await promote(service)
         skill_id = out["second"]["skill_id"]
 
-        def used_record(task_id: str, state: TaskState) -> Any:
+        async def used_record(task_id: str, state: TaskState) -> Any:
+            """一条"由该技能物化、并且真的建立过"的任务（绑定是归因的唯一依据）。"""
+
             record = resource_record(task_id=task_id, state=state, verification={})
-            record.plan.observations.append(
-                {
-                    "tool": SKILL_REFERENCE_TOOL,
-                    "arguments": {},
-                    "result": {"skill_id": skill_id, "skill_version": 1},
-                    "summary": "复用技能",
-                }
+            skill = await service.store.get(skill_id)
+            assert skill is not None
+            assert await service.store.bind_task(
+                task_id=record.task_id,
+                skill_id=skill_id,
+                subject_key=str(skill.subject_key),
+                plan_version=record.plan_version,
+                plan_hash=record.plan_hash,
+                at=record.created_at,
+                expires_at=record.created_at + 600,
             )
             return record
 
-        first = await service.on_task_finished(used_record("task_use_1", TaskState.FAILED))
+        first = await service.on_task_finished(await used_record("task_use_1", TaskState.FAILED))
         assert first["action"] == "feedback" and first["verdict"] == "stale"
         skill = await service.store.get(skill_id)
         assert skill is not None and skill.status == "STALE" and skill.failure_count == 1
         assert await service.candidates_for("去挖一块橡木并捡回来") == [], "STALE 不再被复用"
 
-        second = await service.on_task_finished(used_record("task_use_2", TaskState.CANCELLED))
+        second = await service.on_task_finished(
+            await used_record("task_use_2", TaskState.CANCELLED)
+        )
         assert second["verdict"] == "invalidated"
         skill = await service.store.get(skill_id)
         assert skill is not None and skill.status == "INVALIDATED"
@@ -513,13 +523,14 @@ class TestFeedbackLoop:
         await service.store.replace_skill(stale)
 
         record = resource_record(task_id="task_use_ok")
-        record.plan.observations.append(
-            {
-                "tool": SKILL_REFERENCE_TOOL,
-                "arguments": {},
-                "result": {"skill_id": skill_id, "skill_version": 1},
-                "summary": "复用技能",
-            }
+        assert await service.store.bind_task(
+            task_id=record.task_id,
+            skill_id=skill_id,
+            subject_key=str(skill.subject_key),
+            plan_version=record.plan_version,
+            plan_hash=record.plan_hash,
+            at=record.created_at,
+            expires_at=record.created_at + 600,
         )
         feedback = await service.on_task_finished(record)
         assert feedback["verdict"] == "reuse_ok"

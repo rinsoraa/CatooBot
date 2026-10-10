@@ -23,7 +23,7 @@ import hashlib
 import json
 import time
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field
 from typing import Any
 
 from app.tasks.models import ExpectedFinalState, TaskPlan, TaskState, TaskStep
@@ -35,7 +35,7 @@ from app.tasks.skill import (
     ProceduralSkill,
     SkillEvidence,
     SkillStatus,
-    skill_transition_allowed,
+    SkillThresholds,
     subject_key_for,
 )
 from app.tasks.skill_learning import (
@@ -187,6 +187,15 @@ class SkillService:
         )
 
     @property
+    def thresholds(self) -> SkillThresholds:
+        """晋升/失效阈值（存储层在自己的事务里用它派生状态，保证与计数同一原子操作）。"""
+
+        return SkillThresholds(
+            promotion_min_successes=self.promotion_min_successes,
+            invalidate_after_failures=self.invalidate_after_failures,
+        )
+
+    @property
     def dig_short_ratio(self) -> float:
         return float(
             getattr(self.config, "dig_short_ratio", DEFAULT_DIG_SHORT_RATIO)
@@ -194,6 +203,62 @@ class SkillService:
         )
 
     # ------------------------------------------------------------ 学习（§7.2）
+
+    async def bind_task_for_plan(self, record: Any, plan: Any = None) -> str:
+        """任务**真正建立之后**才登记"这条任务用了哪条技能"（7E.1 §2）。
+
+        * 只认计划里那条 ``skill_reference``（进程内/已持久化的计划 payload 都行）；
+        * 绑定按 ``task_id`` 唯一、可消费一次、随任务 TTL 失效；失败只降级（不猜来源）；
+        * 没有引用（基规划器计划）→ 什么都不做，返回空串。
+        """
+
+        if not self.enabled:
+            return ""
+        task_id = str(getattr(record, "task_id", "") or "")
+        if not task_id:
+            return ""
+        reference = _reference_from_plan(
+            plan if plan is not None else getattr(record, "plan", None)
+        )
+        skill_id = str(reference.get("skill_id") or "")
+        if not skill_id:
+            return ""
+        try:
+            skill = await self.store.get(skill_id)
+        except Exception as exc:  # noqa: BLE001 - 读不到就不绑（保守：宁可不反馈）
+            self.degraded_reason = type(exc).__name__
+            self._warn("[Skill] 绑定前读取失败（不绑定）：%s", type(exc).__name__)
+            return ""
+        if skill is None:
+            self._warn("[Skill] 计划引用的技能不存在（不绑定）skill=%s", skill_id)
+            return ""
+        expires_at = float(getattr(record, "expires_at", 0.0) or 0.0)
+        try:
+            bound = await self.store.bind_task(
+                task_id=task_id,
+                skill_id=skill_id,
+                subject_key=str(skill.subject_key or skill.extra.get("subject_key") or ""),
+                plan_version=int(getattr(record, "plan_version", 0) or 0),
+                plan_hash=str(getattr(record, "plan_hash", "") or ""),
+                at=self._clock(),
+                expires_at=expires_at,
+            )
+        except Exception as exc:  # noqa: BLE001 - 绑定失败只降级
+            self.degraded_reason = type(exc).__name__
+            self._warn("[Skill] 绑定失败（不反馈）：%s", type(exc).__name__)
+            return ""
+        if bound:
+            await self.store.log_event(
+                skill_id=skill_id,
+                event="skill.bound",
+                reason="task_created",
+                at=self._clock(),
+                detail={
+                    "task_id": task_id,
+                    "plan_hash": str(getattr(record, "plan_hash", "") or ""),
+                },
+            )
+        return skill_id
 
     def skill_reference_of(self, record: Any) -> dict[str, Any]:
         """从持久化 TaskRecord 读"这次是不是用了某条技能"（只读观察条目，不进 plan_hash）。"""
@@ -228,21 +293,17 @@ class SkillService:
     async def _on_task_finished(self, record: Any) -> dict[str, Any]:
         state = getattr(getattr(record, "state", None), "value", getattr(record, "state", ""))
         outcome = str(state or "")
-        # §7.6：先查**持久**使用链（物化期按 (objective, plan_hash) 记的账）——
-        # 计划里的 observations 不随任务持久化，不能当唯一依据。
-        skill_id = ""
-        try:
-            skill_id = await self.store.usage_for(
-                objective=str(getattr(record, "objective", "") or ""),
-                plan_hash=str(getattr(record, "plan_hash", "") or ""),
-            )
-        except Exception:  # noqa: BLE001 - 反查失败就退回观察引用
-            skill_id = ""
-        if not skill_id:
-            reference = self.skill_reference_of(record)
-            skill_id = str(reference.get("skill_id") or "")
-        if skill_id:
-            return await self._record_reuse(skill_id, record, outcome=outcome)
+        # §7.6 / 7E.1 §2：归因**只**看这条任务自己的持久绑定（task_id 唯一）。
+        # 查不到绑定就绝不猜来源 —— 退回普通学习资格门（不反馈到任何技能）。
+        task_id = str(getattr(record, "task_id", "") or "")
+        binding = None
+        if task_id:
+            try:
+                binding = await self.store.binding_for(task_id)
+            except Exception:  # noqa: BLE001 - 读不到就当作没有绑定（保守）
+                binding = None
+        if binding is not None and float(binding.get("consumed_at") or 0) == 0:
+            return await self._record_reuse(binding, record, outcome=outcome)
         return await self._learn(record, outcome=outcome)
 
     async def _learn(self, record: Any, *, outcome: str) -> dict[str, Any]:
@@ -258,7 +319,9 @@ class SkillService:
             str(getattr(step, "step_id", "") or "")
             for step in (getattr(record.plan, "steps", None) or [])
         )
-        # 幂等（§7.2 第 4 条）：同一 (方法主题, task, plan 版本, plan hash) 只算一次
+        # 幂等（§7.2 第 4 条）：同一 (方法主题, task, plan 版本, plan hash) 只算一次。
+        # 这里只是"省一次后置条件观察"的**快速路径**；权威判据是 claim_evidence 里
+        # 证据表的唯一索引（7E.1 §1：认领、计数、状态、绑定消费是同一个原子操作）。
         existing = await self.store.evidence_for_task(str(record.task_id))
         plan_version = int(getattr(record, "plan_version", 0) or 0)
         plan_hash = str(getattr(record, "plan_hash", "") or "")
@@ -294,9 +357,11 @@ class SkillService:
             )
         )
         now = self._clock()
+        # 指纹已存在时把目标技能直接写进证据（存储层据此附着 → 计数由证据行派生）
+        existing = await self.store.by_fingerprint(result.fingerprint)
         evidence = SkillEvidence(
             evidence_id=f"{EVIDENCE_ID_PREFIX}-{str(record.task_id)}-{plan_version}",
-            skill_id="",
+            skill_id=str(existing.skill_id) if existing is not None else "",
             subject_key=subject_key,
             task_id=str(record.task_id),
             plan_version=plan_version,
@@ -311,129 +376,152 @@ class SkillService:
             at=now,
         )
         if not result.ok:
-            stored_evidence, created = await self.store.add_evidence(evidence)
-            if created:
-                if result.verdict is EvidenceVerdict.AMBIGUOUS:
-                    self.ambiguous_count += 1
-                    await self._bump_ambiguous(subject_key, now=now)
-                else:
-                    self.rejected_count += 1
-                await self.store.log_event(
-                    skill_id="",
-                    event="skill.evidence_rejected",
-                    reason=result.reason_code,
-                    at=now,
-                    detail={"task_id": str(record.task_id), "verdict": result.verdict.value},
-                )
+            claim = await self.store.claim_evidence(
+                evidence, thresholds=self.thresholds, attach_subject=True
+            )
+            if not claim.created:
+                return {
+                    "action": "duplicate",
+                    "evidence_id": claim.evidence.evidence_id,
+                    "verdict": claim.evidence.verdict,
+                }
+            if result.verdict is EvidenceVerdict.AMBIGUOUS:
+                self.ambiguous_count += 1
+            else:
+                self.rejected_count += 1
+            await self.store.log_event(
+                skill_id=claim.evidence.skill_id,
+                event="skill.evidence_rejected",
+                reason=result.reason_code,
+                at=now,
+                detail={
+                    "task_id": str(record.task_id),
+                    "verdict": result.verdict.value,
+                    "attached": bool(claim.evidence.skill_id),
+                },
+            )
             return {
                 "action": "rejected",
                 "reason": result.reason_code,
                 "verdict": result.verdict.value,
-                "evidence_id": stored_evidence.evidence_id,
+                "evidence_id": claim.evidence.evidence_id,
             }
 
-        skill, created_skill = await self._upsert_positive(
-            result, record, now=now, subject_key=subject_key
+        # 正向：指纹不存在时先备好"新技能"对象（版本 lineage 一起带上），
+        # 具体创建发生在 claim_evidence 的事务里（唯一索引保证并发只建一条）。
+        new_skill: ProceduralSkill | None = None
+        lineage: ProceduralSkill | None = None
+        if existing is None:
+            lineage = await self._previous_version(result.method_class)
+            new_skill = self._new_skill_object(
+                result, record, now=now, subject_key=subject_key, lineage=lineage
+            )
+        claim = await self.store.claim_evidence(
+            evidence, thresholds=self.thresholds, new_skill=new_skill
         )
-        # SkillEvidence 是 frozen 的：关联 skill_id 用 replace（不原地改）
-        evidence = replace(evidence, skill_id=skill.skill_id)
-        await self.store.add_evidence(evidence)
+        if not claim.created:
+            return {
+                "action": "duplicate",
+                "evidence_id": claim.evidence.evidence_id,
+                "verdict": claim.evidence.verdict,
+            }
+        skill = claim.skill
+        if skill is None:
+            # 认领成功但技能行读不回来（存储故障）→ 降级，不假装学会
+            self.degraded_reason = "skill_missing_after_claim"
+            return {"action": "degraded", "reason": "skill_missing_after_claim"}
+        if lineage is not None:
+            # 版本 lineage 的"旧版转 STALE"是幂等收尾写（不参与认领原子性；失败只降级）
+            await self._supersede_previous(lineage, new_skill_id=skill.skill_id, now=now)
         self.learned_count += 1
         await self.store.log_event(
             skill_id=skill.skill_id,
             event="skill.learned",
             reason=result.reason_code,
             at=now,
-            detail={"task_id": str(record.task_id), "status": skill.status, "new": created_skill},
+            detail={
+                "task_id": str(record.task_id),
+                "status": skill.status,
+                "success_count": int(skill.success_count),
+            },
         )
         return {
             "action": "learned",
             "skill_id": skill.skill_id,
             "status": skill.status,
             "success_count": skill.success_count,
-            "new": created_skill,
+            "new": existing is None,
         }
 
-    async def _upsert_positive(
+    def _new_skill_object(
         self,
         result: Any,
         record: Any,
         *,
         now: float,
         subject_key: str,
-    ) -> tuple[ProceduralSkill, bool]:
-        existing = await self.store.by_fingerprint(result.fingerprint)
-        if existing is None:
-            # §7.3 版本 lineage：同角色/同服务器/同方法类**但步骤变了** → 新版本，
-            # 旧版本转 STALE 并记 superseded_by（旧证据一条不丢，也不被覆盖）。
-            lineage = await self._previous_version(result.method_class)
-            skill = ProceduralSkill(
-                name=str(getattr(record, "objective", "") or "")[:80],
-                objective_pattern=result.method_class,
-                summary=f"{len(result.steps)} 步方法（来自真实成功任务）",
-                status=SkillStatus.CANDIDATE.value,
-                character_id=self.character_id,
-                server_id=self._server_id(),
-                tools_signature=self._tools_snapshot().signature,
-                slots=result.slots,
-                steps=result.steps,
-                preconditions=result.preconditions,
-                success_criteria=result.success_criteria,
-                required_capabilities=result.required_capabilities,
-                risk_summary={"max_risk": result.max_risk},
-                max_risk=result.max_risk,
-                version=1 if lineage is None else int(lineage.version) + 1,
-                supersedes_skill_id="" if lineage is None else lineage.skill_id,
-                fingerprint=result.fingerprint,
-                success_count=1,
-                created_at=now,
-                updated_at=now,
-                last_learned_at=now,
-                last_verified_at=now,
-                reason="candidate_from_first_success",
-                extra={
-                    "subject_key": subject_key,
-                    "sample_objective": str(getattr(record, "objective", "") or "")[:120],
-                    "source_task_id": str(record.task_id),
-                    #: 目标方块（方法类键的一部分；物化时用它做新鲜 find_blocks）
-                    "target_block": _target_block_of(result.steps),
-                },
+        lineage: ProceduralSkill | None,
+    ) -> ProceduralSkill:
+        """备好"新技能"对象（真正的创建发生在 claim_evidence 的事务里）。"""
+
+        return ProceduralSkill(
+            name=str(getattr(record, "objective", "") or "")[:80],
+            objective_pattern=result.method_class,
+            summary=f"{len(result.steps)} 步方法（来自真实成功任务）",
+            status=SkillStatus.CANDIDATE.value,
+            character_id=self.character_id,
+            server_id=self._server_id(),
+            tools_signature=self._tools_snapshot().signature,
+            subject_key=str(subject_key),
+            slots=result.slots,
+            steps=result.steps,
+            preconditions=result.preconditions,
+            success_criteria=result.success_criteria,
+            required_capabilities=result.required_capabilities,
+            risk_summary={"max_risk": result.max_risk},
+            max_risk=result.max_risk,
+            version=1 if lineage is None else int(lineage.version) + 1,
+            supersedes_skill_id="" if lineage is None else lineage.skill_id,
+            fingerprint=result.fingerprint,
+            success_count=1,
+            created_at=now,
+            updated_at=now,
+            last_learned_at=now,
+            last_verified_at=now,
+            reason="candidate_from_first_success",
+            extra={
+                "subject_key": subject_key,
+                "sample_objective": str(getattr(record, "objective", "") or "")[:120],
+                "source_task_id": str(record.task_id),
+                #: 目标方块（方法类键的一部分；物化时用它做新鲜 find_blocks）
+                "target_block": _target_block_of(result.steps),
+            },
+        )
+
+    async def _supersede_previous(
+        self, lineage: ProceduralSkill, *, new_skill_id: str, now: float
+    ) -> None:
+        """版本 lineage 的收尾写：旧版转 STALE 并回链（幂等；失败只降级）。"""
+
+        try:
+            superseded = ProceduralSkill.from_payload(lineage.to_payload())
+            if superseded.superseded_by == new_skill_id:
+                return
+            superseded.status = SkillStatus.STALE.value
+            superseded.superseded_by = str(new_skill_id)
+            superseded.reason = f"superseded_by:{new_skill_id}"
+            superseded.updated_at = now
+            await self.store.replace_skill(superseded)
+            await self.store.log_event(
+                skill_id=superseded.skill_id,
+                event="skill.superseded",
+                reason=f"new_version:{new_skill_id}",
+                at=now,
+                detail={"version": int(superseded.version)},
             )
-            stored, _ = await self.store.create_skill(skill)
-            if lineage is not None:
-                superseded = ProceduralSkill.from_payload(lineage.to_payload())
-                superseded.status = SkillStatus.STALE.value
-                superseded.superseded_by = stored.skill_id
-                superseded.reason = f"superseded_by:{stored.skill_id}"
-                superseded.updated_at = now
-                await self.store.replace_skill(superseded)
-                await self.store.log_event(
-                    skill_id=superseded.skill_id,
-                    event="skill.superseded",
-                    reason=f"new_version:{stored.skill_id}",
-                    at=now,
-                    detail={"version": int(stored.version)},
-                )
-            return stored, True
-
-        if existing.terminal:
-            # 终态不复活：只留证据（审计）
-            return existing, False
-
-        updated = ProceduralSkill.from_payload(existing.to_payload())
-        updated.success_count += 1
-        updated.updated_at = now
-        updated.last_verified_at = now
-        if updated.status_enum in {SkillStatus.CANDIDATE, SkillStatus.STALE}:
-            updated.last_learned_at = now
-            if updated.success_count >= self.promotion_min_successes:
-                target = SkillStatus.ACTIVE
-                if skill_transition_allowed(updated.status_enum, target):
-                    updated.status = target.value
-                    updated.reason = "promoted_by_independent_success"
-                    self.promoted_count += 1
-        replaced = await self.store.replace_skill(updated)
-        return (replaced or updated), False
+        except Exception as exc:  # noqa: BLE001 - lineage 收尾失败不影响新技能
+            self.degraded_reason = type(exc).__name__
+            self._warn("[Skill] lineage 收尾失败：%s", type(exc).__name__)
 
     async def _previous_version(self, method_class: str) -> ProceduralSkill | None:
         """同方法类的**上一条**技能（用来接版本 lineage；终态的不算）。"""
@@ -447,36 +535,28 @@ class SkillService:
             return None
         return row
 
-    async def _bump_ambiguous(self, subject_key: str, *, now: float) -> None:
-        """歧义证据只影响"同方法主题"的既有技能计数（绝不新建正向技能，§7.2 第 6 条）。"""
+    async def _record_reuse(
+        self, binding: Mapping[str, Any], record: Any, *, outcome: str
+    ) -> dict[str, Any]:
+        """复用回流（§7.6 + 7E.1 §2）：**只**按这条任务自己的持久绑定归因。
 
-        for skill in await self.store.recent(200, character_id=self.character_id):
-            if str(skill.extra.get("subject_key") or "") != subject_key:
-                continue
-            if skill.terminal:
-                continue
-            updated = ProceduralSkill.from_payload(skill.to_payload())
-            updated.ambiguous_count += 1
-            updated.updated_at = now
-            updated.reason = "ambiguous_evidence"
-            await self.store.replace_skill(updated)
+        认领证据、消费绑定、重算计数、派生状态全在存储层的同一个事务里完成；
+        绑定已被消费（重复终态回调）→ 直接 duplicate，不再动任何计数。
+        """
 
-    async def _record_reuse(self, skill_id: str, record: Any, *, outcome: str) -> dict[str, Any]:
-        """复用回流（§7.6）：成功累计；失败是反例 → STALE / 连续反例 → INVALIDATED。"""
-
-        skill = await self.store.get(skill_id)
         now = self._clock()
-        subject_key = ""
-        if skill is None:
-            return {"action": "skipped", "reason": "skill_missing", "skill_id": skill_id}
-        subject_key = str(skill.extra.get("subject_key") or "")
+        task_id = str(getattr(record, "task_id", "") or "")
+        skill_id = str(binding.get("skill_id") or "")
+        subject_key = str(binding.get("subject_key") or "")
         plan_version = int(getattr(record, "plan_version", 0) or 0)
         plan_hash = str(getattr(record, "plan_hash", "") or "")
+        if not skill_id:
+            return {"action": "skipped", "reason": "binding_without_skill", "task_id": task_id}
         evidence = SkillEvidence(
-            evidence_id=f"{EVIDENCE_ID_PREFIX}-{str(record.task_id)}-{plan_version}",
+            evidence_id=f"{EVIDENCE_ID_PREFIX}-{task_id}-{plan_version}",
             skill_id=skill_id,
             subject_key=subject_key,
-            task_id=str(record.task_id),
+            task_id=task_id,
             plan_version=plan_version,
             plan_hash=plan_hash,
             step_ids=tuple(
@@ -489,50 +569,50 @@ class SkillService:
                 if outcome == TaskState.SUCCEEDED.value
                 else EvidenceVerdict.COUNTEREXAMPLE.value
             ),
-            reason_code="reuse_succeeded"
-            if outcome == TaskState.SUCCEEDED.value
-            else f"reuse_{outcome.lower()}",
+            reason_code=(
+                "reuse_succeeded"
+                if outcome == TaskState.SUCCEEDED.value
+                else f"reuse_{outcome.lower()}"
+            ),
             at=now,
         )
-        stored_evidence, created = await self.store.add_evidence(evidence)
-        if not created:
-            return {"action": "duplicate", "evidence_id": stored_evidence.evidence_id}
-        updated = ProceduralSkill.from_payload(skill.to_payload())
-        updated.updated_at = now
-        updated.last_used_at = now
+        claim = await self.store.claim_evidence(
+            evidence,
+            thresholds=self.thresholds,
+            feedback=(task_id, skill_id),
+        )
+        if not claim.created:
+            return {"action": "duplicate", "evidence_id": claim.evidence.evidence_id}
+        if not claim.binding_consumed:
+            # 绑定在别处已经被消费（并发第二次回调）→ 认领到的证据也不再算反馈
+            return {"action": "duplicate", "evidence_id": claim.evidence.evidence_id}
+        skill = claim.skill
+        if skill is None:
+            return {"action": "feedback", "skill_id": skill_id, "verdict": "unknown", "status": ""}
         verdict = "reuse_ok"
-        if outcome == TaskState.SUCCEEDED.value:
-            updated.success_count += 1
-            updated.last_verified_at = now
-            if updated.status_enum is SkillStatus.STALE and skill_transition_allowed(
-                SkillStatus.STALE, SkillStatus.ACTIVE
-            ):
-                updated.status = SkillStatus.ACTIVE.value
-                updated.reason = "revalidated_by_reuse"
-        else:
-            updated.failure_count += 1
-            if updated.failure_count >= self.invalidate_after_failures:
-                if skill_transition_allowed(updated.status_enum, SkillStatus.INVALIDATED):
-                    updated.status = SkillStatus.INVALIDATED.value
-                    updated.reason = f"invalidated_after_failures:{updated.failure_count}"
-                    verdict = "invalidated"
-            elif skill_transition_allowed(updated.status_enum, SkillStatus.STALE):
-                updated.status = SkillStatus.STALE.value
-                updated.reason = f"counterexample:{outcome.lower()}"
-                verdict = "stale"
-        await self.store.replace_skill(updated)
+        if skill.status == SkillStatus.INVALIDATED.value:
+            verdict = "invalidated"
+        elif skill.status == SkillStatus.STALE.value and outcome != TaskState.SUCCEEDED.value:
+            verdict = "stale"
+        elif outcome == TaskState.SUCCEEDED.value and skill.status == SkillStatus.ACTIVE.value:
+            verdict = "reuse_ok"
         await self.store.log_event(
             skill_id=skill_id,
             event="skill.feedback",
             reason=verdict,
             at=now,
-            detail={"task_id": str(record.task_id), "status": updated.status},
+            detail={
+                "task_id": task_id,
+                "status": skill.status,
+                "success_count": int(skill.success_count),
+                "failure_count": int(skill.failure_count),
+            },
         )
         return {
             "action": "feedback",
             "skill_id": skill_id,
             "verdict": verdict,
-            "status": updated.status,
+            "status": skill.status,
         }
 
     # ------------------------------------------------------------ 后置条件（学习期，只读）
@@ -848,17 +928,6 @@ class SkillService:
         if problems:
             self._warn("[Skill] 技能物化未过校验：%s", problems[:2])
             return None
-        # §7.6：登记使用链 —— 任务还没建就先按 (objective, plan_hash) 记账，
-        # 收尾时用同两个值反查就能把结果回流到这条技能（不依赖任务模型加字段）。
-        try:
-            await self.store.note_usage(
-                skill.skill_id,
-                objective=plan.objective,
-                plan_hash=plan.plan_hash,
-                at=self._clock(),
-            )
-        except Exception:  # noqa: BLE001 - 记账失败不影响计划候选本身
-            self._warn("[Skill] 使用链登记失败（忽略）")
         return PlannedTask(objective=plan.objective, plan=plan, observations=observations)
 
     def _target_block(self, skill: ProceduralSkill) -> str:
@@ -946,6 +1015,37 @@ class SkillService:
     def _warn(self, message: str, *args: Any) -> None:
         if self._log is not None:
             self._log.warning(message, *args)
+
+
+def _reference_from_plan(plan: Any) -> dict[str, Any]:
+    """从计划里读 ``skill_reference``（dict 条目与 Observation 对象都支持）。"""
+
+    # AgentPlan（LIFE 路径）把技能引用放在**持久化**的 checks 里；TaskPlan 放在 observations 里
+    for check in getattr(plan, "checks", None) or []:
+        if not isinstance(check, Mapping):
+            continue
+        if str(check.get("check") or "") != "skill_reuse":
+            continue
+        detail = check.get("detail")
+        if isinstance(detail, Mapping) and str(detail.get("skill_id") or ""):
+            return dict(detail)
+    observations = getattr(plan, "observations", None)
+    if observations is None and isinstance(plan, Mapping):
+        observations = plan.get("observations")
+    for item in observations or []:
+        tool = ""
+        result: Any = None
+        if isinstance(item, Mapping):
+            tool = str(item.get("tool") or "")
+            result = item.get("result")
+        else:
+            tool = str(getattr(item, "tool", "") or "")
+            result = getattr(item, "result", None)
+        if tool != SKILL_REFERENCE_TOOL:
+            continue
+        if isinstance(result, Mapping):
+            return dict(result)
+    return {}
 
 
 def _coord(source: Mapping[str, Any], key: str) -> int | None:

@@ -74,6 +74,8 @@ class AgentPlanService:
         replan_budget: int = DEFAULT_REPLAN_BUDGET,
         view_limit: int = VIEW_LIMIT,
         reserve_lease_seconds: float = DEFAULT_RESERVE_LEASE_SECONDS,
+        #: Phase 7E.1：技能服务（只用于"任务建立后登记技能绑定"；鸭子类型，None = 不登记）
+        skills: Any = None,
         clock: Callable[[], float] = time.time,
         logger: Any = None,
     ) -> None:
@@ -82,6 +84,8 @@ class AgentPlanService:
         self.runtime = task_runtime
         self.proposals = proposal_service
         self.observe = observe
+        #: Phase 7E.1：技能服务（仅绑定用；None = 不登记绑定，行为与 7E 之前一致）
+        self.skills = skills
         self.character_id = str(character_id or "")
         self.plan_ttl_seconds = float(plan_ttl_seconds)
         self.replan_budget = int(replan_budget)
@@ -392,6 +396,7 @@ class AgentPlanService:
                 "plan": reserved,
                 "record": record,
             }
+        await self._bind_skill_task(record, result.plan.plan)
         summary = self.runtime.summary_of(record)
         return {
             "action": "created",
@@ -529,6 +534,27 @@ class AgentPlanService:
             return TaskState(state).terminal
         except ValueError:
             return False
+
+    async def _bind_skill_task(self, record: Any, plan: Any, task_plan: Any = None) -> None:
+        """任务真正建立后登记技能绑定（7E.1 §2；失败只降级，绝不影响任务）。
+
+        LIFE 路径上技能引用在 **AgentPlan.checks** 里（计划 observations 不落库），
+        USER 路径在两份计划的 observations 里 —— 两个都传进来，谁有就用谁。
+        """
+
+        binder = getattr(self.skills, "bind_task_for_plan", None)
+        if binder is None or record is None:
+            return
+        candidates = [item for item in (plan, task_plan) if item is not None]
+        if not candidates:
+            return
+        for candidate in candidates:
+            try:
+                if await binder(record, candidate):
+                    return
+            except Exception:  # noqa: BLE001 - 绑定失败不影响任务本身
+                if self._log is not None:
+                    self._log.exception("[AgentPlan] 技能绑定失败（忽略）")
 
     async def _link_reserved_plan(
         self, reserved: AgentPlan, *, task_id: str, plan_hash: str, now: float
@@ -810,6 +836,7 @@ class AgentPlanService:
                 "plan": plan,
                 "record": record,
             }
+        await self._bind_skill_task(record, plan, task_plan)
         await self.store.log_event(
             plan_id=approved.plan_id,
             event="agentplan.approved",

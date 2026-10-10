@@ -16,6 +16,7 @@ from app.core.bot import Bot
 from app.database.database import Database
 from app.tasks.agent_planner import BoundedAgentPlanner, PlanningOutcome
 from app.tasks.models import TaskState
+from app.tasks.skill import SkillThresholds
 from app.tasks.skill_planner import SKILL_REUSE_REASON, SkillAwarePlanner
 from app.tasks.turn import TaskTurnHandler
 from tests.skill_fakes import (
@@ -109,12 +110,10 @@ class TestTurnSeam:
         record = await runtime.get(outcome.task_id)
         assert record is not None
         assert record.state is TaskState.PENDING_CONFIRMATION
-        # 计划 observations 不随任务持久化（5A 既有语义）→ 引用只在进程内可读；
-        # **持久**的关联是技能使用链（§7.6 的回流据此反查，重启也不丢）。
-        usage = await service.store.usage_for(
-            objective=record.objective, plan_hash=record.plan_hash
-        )
-        assert usage, "必须留下持久的使用链"
+        # 7E.1 §2：入口在任务**真的建立之后**登记持久绑定（按 task_id 唯一、可消费一次）
+        binding = await service.store.binding_for(record.task_id)
+        assert binding is not None, "任务建立后必须留下持久绑定"
+        assert binding["skill_id"] and binding["consumed_at"] in (0, 0.0)
 
     async def test_without_a_skill_it_uses_the_existing_template(self) -> None:
         runtime = build_task_runtime()
@@ -260,7 +259,7 @@ class TestSetupSkills:
 # ---------------------------------------------------------------- 迁移 34
 
 
-class TestMigration34:
+class TestMigration35:
     async def test_tables_exist_and_migration_is_idempotent(self, tmp_path: Path) -> None:
         url = f"sqlite:///{tmp_path / 'mig.db'}"
         database = Database(DatabaseConfig(url=url))
@@ -272,29 +271,30 @@ class TestMigration34:
         assert {
             "procedural_skills",
             "procedural_skill_evidence",
-            "procedural_skill_usage",
+            "procedural_skill_bindings",
         } <= names
+        assert "procedural_skill_usage" not in names, "派生键使用链已在 35 里删除"
         version = await database.fetchone("SELECT MAX(version) AS v FROM schema_migrations")
-        assert int((version or {}).get("v") or 0) >= 34
+        assert int((version or {}).get("v") or 0) >= 35
         await database.close()
         # 再连一次（同一文件）：迁移必须幂等
         again = Database(DatabaseConfig(url=url))
         await again.connect()
         version = await again.fetchone("SELECT MAX(version) AS v FROM schema_migrations")
-        assert int((version or {}).get("v") or 0) >= 34
+        assert int((version or {}).get("v") or 0) >= 35
         await again.close()
 
-    async def test_upgrade_from_a_v33_database_applies_34(self, tmp_path: Path) -> None:
-        """旧库升级兼容：已有 33 版的库（含业务数据）连上来会补上 34，且不动既有表。"""
+    async def test_upgrade_from_a_v34_database_applies_35(self, tmp_path: Path) -> None:
+        """旧库升级兼容：v34 的库（含业务数据）连上来会补上 35，且改回缺失的列/表。"""
 
         url = f"sqlite:///{tmp_path / 'upgrade.db'}"
         database = Database(DatabaseConfig(url=url))
         await database.connect()
-        # 模拟"升级前"：删掉 34 的三张表与迁移记录（既有表与数据保留）
-        await database.execute("DROP TABLE IF EXISTS procedural_skill_usage")
-        await database.execute("DROP TABLE IF EXISTS procedural_skill_evidence")
-        await database.execute("DROP TABLE IF EXISTS procedural_skills")
-        await database.execute("DELETE FROM schema_migrations WHERE version >= 34")
+        # 模拟"升级前"（v34）：删掉 35 才有的东西 —— 绑定表、subject_key 列与迁移记录
+        await database.execute("DROP TABLE IF EXISTS procedural_skill_bindings")
+        await database.execute("DROP INDEX IF EXISTS idx_procedural_skills_subject")
+        await database.execute("ALTER TABLE procedural_skills DROP COLUMN subject_key")
+        await database.execute("DELETE FROM schema_migrations WHERE version >= 35")
         await database.execute(
             "INSERT INTO memories (scope_key, category, content, content_hash, created_at,"
             " updated_at) VALUES ('character:x', 'fact', '既有数据', 'h1', 1, 1)"
@@ -303,12 +303,24 @@ class TestMigration34:
         # 再连一次 = 真实升级路径
         upgraded = Database(DatabaseConfig(url=url))
         await upgraded.connect()
-        rows = await upgraded.fetchall(
-            "SELECT name FROM sqlite_master WHERE type='table' AND name LIKE 'procedural%'"
-        )
-        assert len(rows) == 3, "升级后三张表都在"
+        tables = {
+            str(row["name"])
+            for row in await upgraded.fetchall(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name LIKE 'procedural%'"
+            )
+        }
+        assert tables == {
+            "procedural_skills",
+            "procedural_skill_evidence",
+            "procedural_skill_bindings",
+        }
+        columns = {
+            str(row["name"])
+            for row in await upgraded.fetchall("PRAGMA table_info(procedural_skills)")
+        }
+        assert "subject_key" in columns, "升级要补回 subject_key 列"
         version = await upgraded.fetchone("SELECT MAX(version) AS v FROM schema_migrations")
-        assert int((version or {}).get("v") or 0) == 34
+        assert int((version or {}).get("v") or 0) == 35
         kept = await upgraded.fetchall("SELECT COUNT(*) AS n FROM memories")
         assert int(kept[0]["n"]) == 1, "既有业务数据不受影响"
         await upgraded.close()
@@ -320,6 +332,7 @@ class TestMigration34:
         database = Database(DatabaseConfig(url=f"sqlite:///{tmp_path / 'uniq.db'}"))
         await database.connect()
         store = SqliteSkillStore(database)
+        thresholds = SkillThresholds()
         evidence = SkillEvidence(
             evidence_id="EV-1",
             subject_key="subject",
@@ -329,12 +342,13 @@ class TestMigration34:
             verdict=EvidenceVerdict.POSITIVE.value,
             reason_code="QUALIFIED",
         )
-        first, created = await store.add_evidence(evidence)
-        assert created is True
-        second, created_again = await store.add_evidence(
-            SkillEvidence.from_payload({**evidence.to_payload(), "evidence_id": "EV-2"})
+        first = await store.claim_evidence(evidence, thresholds=thresholds)
+        assert first.created is True
+        second = await store.claim_evidence(
+            SkillEvidence.from_payload({**evidence.to_payload(), "evidence_id": "EV-2"}),
+            thresholds=thresholds,
         )
-        assert created_again is False and second.evidence_id == "EV-1"
+        assert second.created is False and second.evidence.evidence_id == "EV-1"
         await database.close()
 
 

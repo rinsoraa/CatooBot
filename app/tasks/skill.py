@@ -66,6 +66,73 @@ def skill_transition_allowed(current: SkillStatus, target: SkillStatus) -> bool:
     return target in ALLOWED_SKILL_TRANSITIONS.get(current, frozenset())
 
 
+@dataclass(frozen=True)
+class SkillCounts:
+    """一条技能的**证据计数**（7E.1：一律由证据行聚合派生，不做增量累加）。"""
+
+    positive: int = 0
+    counterexample: int = 0
+    ambiguous: int = 0
+    rejected: int = 0
+
+
+@dataclass(frozen=True)
+class SkillThresholds:
+    """晋升/失效阈值（来自配置；存储层在自己的事务里用它派生状态）。"""
+
+    promotion_min_successes: int = 2
+    invalidate_after_failures: int = 2
+
+
+#: 派生状态时的"触发事件"（决定这一次是不是能推着状态走）
+SKILL_TRIGGER_POSITIVE = "positive"
+SKILL_TRIGGER_COUNTEREXAMPLE = "counterexample"
+SKILL_TRIGGER_AMBIGUOUS = "ambiguous"
+SKILL_TRIGGER_REJECTED = "rejected"
+
+
+def derive_skill_state(
+    *,
+    current: SkillStatus,
+    counts: SkillCounts,
+    thresholds: SkillThresholds,
+    trigger: str,
+) -> tuple[SkillStatus, str]:
+    """由 **(当前状态, 派生计数, 阈值, 触发)** 唯一决定新状态（7E.1 §1 的纯规则）。
+
+    * 终态（INVALIDATED / REJECTED）不可复活 —— 只记账，不改状态；
+    * 正向（学习成功 / 复用成功）：CANDIDATE 或 STALE 达到阈值 → ACTIVE；
+    * 反例：连续达到 ``invalidate_after_failures`` → INVALIDATED，否则 → STALE；
+    * 歧义 / 拒绝：只影响计数，**不动状态**（单条歧义不足以否定一条已验证过的方法）。
+
+    纯函数：同样的输入永远给同样的结论 —— 所以"先算后写"在并发下收敛（不会 lost update）。
+    """
+
+    if current in TERMINAL_SKILL_STATUSES:
+        return current, "terminal"
+    if trigger is SKILL_TRIGGER_POSITIVE or trigger == SKILL_TRIGGER_POSITIVE:
+        if counts.positive >= int(thresholds.promotion_min_successes):
+            if current is SkillStatus.ACTIVE:
+                return SkillStatus.ACTIVE, "active"
+            if skill_transition_allowed(current, SkillStatus.ACTIVE):
+                return SkillStatus.ACTIVE, "promoted_by_independent_success"
+        return current, "candidate"
+    if trigger is SKILL_TRIGGER_COUNTEREXAMPLE or trigger == SKILL_TRIGGER_COUNTEREXAMPLE:
+        if counts.counterexample >= int(thresholds.invalidate_after_failures):
+            if skill_transition_allowed(current, SkillStatus.INVALIDATED):
+                return (
+                    SkillStatus.INVALIDATED,
+                    f"invalidated_after_failures:{counts.counterexample}",
+                )
+            return current, "terminal"
+        if skill_transition_allowed(current, SkillStatus.STALE):
+            return SkillStatus.STALE, "counterexample"
+        return current, "terminal"
+    if trigger is SKILL_TRIGGER_AMBIGUOUS or trigger == SKILL_TRIGGER_AMBIGUOUS:
+        return current, "ambiguous_evidence"
+    return current, "evidence_rejected"
+
+
 class Applicability(str, Enum):  # noqa: UP042 - 与项目其它面向 JSON 的枚举一致
     """适用性评估结论（§7.4）。``UNKNOWN`` **永远不能**自动升级成适用。"""
 
@@ -290,6 +357,8 @@ class ProceduralSkill:
     server_id: str = ""
     environment: str = ""
     tools_signature: str = ""
+    #: 方法主题键（同主题的证据要能精确附着到这条技能；列上有索引）
+    subject_key: str = ""
     slots: tuple[SkillSlot, ...] = ()
     steps: tuple[SkillStep, ...] = ()
     preconditions: tuple[SkillPrecondition, ...] = ()
@@ -359,6 +428,7 @@ class ProceduralSkill:
             "server_id": self.server_id,
             "environment": self.environment,
             "tools_signature": self.tools_signature,
+            "subject_key": self.subject_key,
             "slots": [
                 {
                     "name": item.name,
@@ -416,6 +486,9 @@ class ProceduralSkill:
             server_id=str(payload.get("server_id") or ""),
             environment=str(payload.get("environment") or ""),
             tools_signature=str(payload.get("tools_signature") or ""),
+            subject_key=str(
+                payload.get("subject_key") or (payload.get("extra") or {}).get("subject_key") or ""
+            ),
             slots=tuple(
                 SkillSlot(
                     name=str(item.get("name") or ""),
@@ -485,6 +558,13 @@ def task_state_enum(value: Any) -> TaskState | None:
 
 __all__ = [
     "ALLOWED_SKILL_TRANSITIONS",
+    "SKILL_TRIGGER_AMBIGUOUS",
+    "SKILL_TRIGGER_COUNTEREXAMPLE",
+    "SKILL_TRIGGER_POSITIVE",
+    "SKILL_TRIGGER_REJECTED",
+    "SkillCounts",
+    "SkillThresholds",
+    "derive_skill_state",
     "Applicability",
     "EvidenceVerdict",
     "OPEN_SKILL_STATUSES",

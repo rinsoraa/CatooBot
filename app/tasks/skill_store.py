@@ -17,9 +17,23 @@ from __future__ import annotations
 
 import json
 import time
+from dataclasses import dataclass, replace
 from typing import Any, Protocol
 
-from app.tasks.skill import ProceduralSkill, SkillEvidence, day_text, skill_id_for
+from app.tasks.skill import (
+    SKILL_TRIGGER_AMBIGUOUS,
+    SKILL_TRIGGER_COUNTEREXAMPLE,
+    SKILL_TRIGGER_POSITIVE,
+    SKILL_TRIGGER_REJECTED,
+    ProceduralSkill,
+    SkillCounts,
+    SkillEvidence,
+    SkillStatus,
+    SkillThresholds,
+    day_text,
+    derive_skill_state,
+    skill_id_for,
+)
 
 #: 审计里属于本阶段的类型前缀
 SKILL_EVENT_PREFIX = "skill."
@@ -31,10 +45,27 @@ def _dump(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False)
 
 
-def _usage_key(objective: str, plan_hash: str) -> str:
-    """使用链的键：物化期的 (objective, plan_hash) —— 任务还不存在也能记账（§7.6）。"""
+#: 证据 verdict → 派生状态用的触发词（7E.1：状态只由"触发 + 派生计数 + 阈值"决定）
+_TRIGGER_BY_VERDICT = {
+    "POSITIVE": SKILL_TRIGGER_POSITIVE,
+    "COUNTEREXAMPLE": SKILL_TRIGGER_COUNTEREXAMPLE,
+    "AMBIGUOUS": SKILL_TRIGGER_AMBIGUOUS,
+    "REJECTED": SKILL_TRIGGER_REJECTED,
+}
 
-    return " ".join(str(objective or "").split())[:160] + "|" + str(plan_hash or "")
+
+def _binding_id(task_id: str) -> str:
+    return f"SKB-{str(task_id)}"
+
+
+@dataclass(frozen=True)
+class ClaimOutcome:
+    """一次证据认领的结果（7E.1 §1：认领、计数、状态、绑定消费是**同一个**原子操作）。"""
+
+    evidence: SkillEvidence
+    created: bool
+    skill: ProceduralSkill | None = None
+    binding_consumed: bool = False
 
 
 def _from_skill_row(row: Any) -> ProceduralSkill | None:
@@ -80,15 +111,35 @@ class SkillStore(Protocol):
         self, *, character_id: str, server_id: str, method_class: str
     ) -> ProceduralSkill | None: ...
     async def status_counts(self, *, character_id: str = "") -> dict[str, int]: ...
-    async def add_evidence(self, evidence: SkillEvidence) -> tuple[SkillEvidence, bool]: ...
+    async def claim_evidence(
+        self,
+        evidence: SkillEvidence,
+        *,
+        thresholds: SkillThresholds,
+        new_skill: ProceduralSkill | None = None,
+        attach_subject: bool = False,
+        feedback: tuple[str, str] | None = None,
+    ) -> ClaimOutcome: ...
     async def recent_evidence(
         self, limit: int = 20, *, skill_id: str = "", subject_key: str = ""
     ) -> list[SkillEvidence]: ...
     async def evidence_for_task(self, task_id: str) -> list[SkillEvidence]: ...
-    async def note_usage(
-        self, skill_id: str, *, objective: str, plan_hash: str, at: float
+    async def skill_for_subject(
+        self, *, character_id: str, server_id: str, subject_key: str
+    ) -> ProceduralSkill | None: ...
+    async def bind_task(
+        self,
+        *,
+        task_id: str,
+        skill_id: str,
+        subject_key: str,
+        plan_version: int,
+        plan_hash: str,
+        at: float,
+        expires_at: float,
     ) -> bool: ...
-    async def usage_for(self, *, objective: str, plan_hash: str) -> str: ...
+    async def binding_for(self, task_id: str) -> dict[str, Any] | None: ...
+    async def prune_bindings(self, *, now: float, keep_seconds: float = 86400.0) -> int: ...
     async def log_event(
         self,
         *,
@@ -109,7 +160,8 @@ class InMemorySkillStore:
         self._order: list[str] = []
         self._evidence: list[SkillEvidence] = []
         self._evidence_keys: set[tuple[str, str, int, str]] = set()
-        self._usage: dict[str, str] = {}
+        #: task_id -> skill binding (single consumption, expires with the task TTL)
+        self._bindings: dict[str, dict[str, Any]] = {}
         self._events: list[dict[str, Any]] = []
         self._seq: dict[str, int] = {}
 
@@ -173,7 +225,18 @@ class InMemorySkillStore:
             counts[item.status] = counts.get(item.status, 0) + 1
         return counts
 
-    async def add_evidence(self, evidence: SkillEvidence) -> tuple[SkillEvidence, bool]:
+    async def claim_evidence(
+        self,
+        evidence: SkillEvidence,
+        *,
+        thresholds: SkillThresholds,
+        new_skill: ProceduralSkill | None = None,
+        attach_subject: bool = False,
+        feedback: tuple[str, str] | None = None,
+    ) -> ClaimOutcome:
+        """Atomic claim. Every awaited call inside is itself await-free, so no other
+        coroutine can slip between "claimed" and "counters written". Cross-process
+        atomicity is the SQLite implementation's job (see the Sqlite store)."""
         key = (
             evidence.subject_key,
             evidence.task_id,
@@ -181,17 +244,122 @@ class InMemorySkillStore:
             evidence.plan_hash,
         )
         if key in self._evidence_keys:
-            for item in self._evidence:
+            existing = next(
+                item
+                for item in self._evidence
                 if (
                     item.subject_key,
                     item.task_id,
                     int(item.plan_version),
                     item.plan_hash,
-                ) == key:
-                    return item, False
+                )
+                == key
+            )
+            current = self._rows.get(existing.skill_id) if existing.skill_id else None
+            return ClaimOutcome(evidence=existing, created=False, skill=current)
         self._evidence_keys.add(key)
+
+        binding_consumed = False
+        skill_id = ""
+        if feedback is not None:
+            task_id, _bound = feedback
+            row = self._bindings.get(str(task_id))
+            if row is not None and float(row.get("consumed_at") or 0) == 0:
+                row["consumed_at"] = float(evidence.at or 0)
+                row["outcome"] = str(evidence.outcome)
+                skill_id = str(row.get("skill_id") or "")
+                binding_consumed = True
+        elif evidence.skill_id:
+            skill_id = str(evidence.skill_id)
+        elif new_skill is not None:
+            stored, _ = await self.create_skill(new_skill)
+            skill_id = stored.skill_id
+        elif attach_subject and evidence.subject_key:
+            found = self._by_subject(evidence.subject_key)
+            skill_id = found.skill_id if found is not None else ""
+
+        if skill_id:
+            stored_evidence = replace(evidence, skill_id=skill_id)
+            self._evidence.append(stored_evidence)
+            updated = self._apply_derived_state(
+                skill_id,
+                thresholds=thresholds,
+                evidence=stored_evidence,
+                reuse=feedback is not None,
+            )
+            return ClaimOutcome(
+                evidence=stored_evidence,
+                created=True,
+                skill=updated,
+                binding_consumed=binding_consumed,
+            )
         self._evidence.append(evidence)
-        return evidence, True
+        return ClaimOutcome(
+            evidence=evidence, created=True, skill=None, binding_consumed=binding_consumed
+        )
+
+    def _by_subject(self, subject_key: str) -> ProceduralSkill | None:
+        for item in self._rows.values():
+            if item.subject_key and item.subject_key == str(subject_key):
+                return item
+        return None
+
+    def _counts_for(self, skill_id: str) -> SkillCounts:
+        totals = {"POSITIVE": 0, "COUNTEREXAMPLE": 0, "AMBIGUOUS": 0, "REJECTED": 0}
+        for item in self._evidence:
+            if item.skill_id != str(skill_id):
+                continue
+            bucket = str(item.verdict)
+            if bucket in totals:
+                totals[bucket] += 1
+        return SkillCounts(
+            positive=totals["POSITIVE"],
+            counterexample=totals["COUNTEREXAMPLE"],
+            ambiguous=totals["AMBIGUOUS"],
+            rejected=totals["REJECTED"],
+        )
+
+    def _apply_derived_state(
+        self,
+        skill_id: str,
+        *,
+        thresholds: SkillThresholds,
+        evidence: SkillEvidence,
+        reuse: bool,
+    ) -> ProceduralSkill | None:
+        """Derive counters/status from the evidence rows, then write the row once."""
+        current = self._rows.get(str(skill_id))
+        if current is None:
+            return None
+        counts = self._counts_for(skill_id)
+        status, reason = derive_skill_state(
+            current=SkillStatus(current.status),
+            counts=counts,
+            thresholds=thresholds,
+            trigger=_TRIGGER_BY_VERDICT.get(str(evidence.verdict), SKILL_TRIGGER_REJECTED),
+        )
+        moment = float(evidence.at or 0)
+        payload = current.to_payload()
+        payload.update(
+            {
+                "success_count": counts.positive,
+                "failure_count": counts.counterexample,
+                "ambiguous_count": counts.ambiguous,
+                "status": status.value,
+                "reason": reason,
+                "updated_at": moment,
+                "last_used_at": moment if reuse else float(current.last_used_at or 0),
+                "last_learned_at": (float(current.last_learned_at or 0) if reuse else moment),
+                "last_verified_at": (
+                    moment
+                    if str(evidence.verdict) == "POSITIVE"
+                    else float(current.last_verified_at or 0)
+                ),
+            }
+        )
+        updated = ProceduralSkill.from_payload(payload)
+        self._rows[str(skill_id)] = updated
+        return updated
 
     async def recent_evidence(
         self, limit: int = 20, *, skill_id: str = "", subject_key: str = ""
@@ -206,15 +374,62 @@ class InMemorySkillStore:
     async def evidence_for_task(self, task_id: str) -> list[SkillEvidence]:
         return [item for item in self._evidence if item.task_id == str(task_id)]
 
-    async def note_usage(self, skill_id: str, *, objective: str, plan_hash: str, at: float) -> bool:
-        key = _usage_key(objective, plan_hash)
-        if key in self._usage:
+    async def skill_for_subject(
+        self, *, character_id: str, server_id: str, subject_key: str
+    ) -> ProceduralSkill | None:
+        for item in self._rows.values():
+            if (
+                item.character_id == str(character_id)
+                and item.server_id == str(server_id)
+                and item.subject_key
+                and item.subject_key == str(subject_key)
+            ):
+                return item
+        return None
+
+    async def bind_task(
+        self,
+        *,
+        task_id: str,
+        skill_id: str,
+        subject_key: str,
+        plan_version: int,
+        plan_hash: str,
+        at: float,
+        expires_at: float,
+    ) -> bool:
+        """Bind one *really created* task to a skill (task_id unique; no-op if present)."""
+        key = str(task_id)
+        if key in self._bindings:
             return False
-        self._usage[key] = str(skill_id)
+        self._bindings[key] = {
+            "binding_id": _binding_id(key),
+            "task_id": key,
+            "skill_id": str(skill_id),
+            "subject_key": str(subject_key),
+            "plan_version": int(plan_version),
+            "plan_hash": str(plan_hash),
+            "created_at": float(at),
+            "expires_at": float(expires_at),
+            "consumed_at": 0.0,
+            "outcome": "",
+        }
         return True
 
-    async def usage_for(self, *, objective: str, plan_hash: str) -> str:
-        return self._usage.get(_usage_key(objective, plan_hash), "")
+    async def binding_for(self, task_id: str) -> dict[str, Any] | None:
+        row = self._bindings.get(str(task_id))
+        return dict(row) if row is not None else None
+
+    async def prune_bindings(self, *, now: float, keep_seconds: float = 86400.0) -> int:
+        stale = [
+            key
+            for key, row in self._bindings.items()
+            if float(row.get("expires_at") or 0) > 0
+            and float(row["expires_at"]) + float(keep_seconds) < float(now)
+        ]
+        for key in stale:
+            self._bindings.pop(key, None)
+        return len(stale)
 
     async def log_event(
         self,
@@ -245,26 +460,212 @@ class InMemorySkillStore:
 
 _SKILL_INSERT = (
     "INSERT OR IGNORE INTO procedural_skills (skill_id, schema_version, name, objective_pattern,"
-    " summary, status, character_id, server_id, environment, tools_signature, max_risk, version,"
-    " supersedes_skill_id, superseded_by, success_count, failure_count, ambiguous_count,"
+    " summary, status, character_id, server_id, environment, tools_signature, subject_key,"
+    " max_risk, version, supersedes_skill_id, superseded_by, success_count, failure_count,"
+    " ambiguous_count,"
     " fingerprint, reason, created_at, updated_at, last_learned_at, last_verified_at, last_used_at,"
-    " payload) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)"
+    " payload) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)"
 )
 
 _SKILL_UPDATE = (
     "UPDATE procedural_skills SET schema_version = ?, name = ?, objective_pattern = ?, summary = ?,"
     " status = ?, character_id = ?, server_id = ?, environment = ?, tools_signature = ?,"
-    " max_risk = ?, version = ?, supersedes_skill_id = ?, superseded_by = ?, success_count = ?,"
+    " subject_key = ?, max_risk = ?, version = ?, supersedes_skill_id = ?, superseded_by = ?,"
+    " success_count = ?,"
     " failure_count = ?, ambiguous_count = ?, fingerprint = ?, reason = ?, updated_at = ?,"
     " last_learned_at = ?, last_verified_at = ?, last_used_at = ?, payload = ?"
     " WHERE skill_id = ?"
 )
+
+
+def _evidence_params(evidence: SkillEvidence, payload: dict[str, Any]) -> tuple[Any, ...]:
+    """列值顺序与 ``_EVIDENCE_INSERT`` 一致（认领与审计两处共用）。"""
+
+    return (
+        evidence.evidence_id,
+        evidence.skill_id,
+        evidence.subject_key,
+        evidence.task_id,
+        int(evidence.plan_version),
+        evidence.plan_hash,
+        evidence.outcome,
+        str(evidence.verdict),
+        evidence.reason_code,
+        _dump(list(evidence.step_ids)),
+        evidence.postcondition_kind,
+        1 if evidence.postcondition_ok else 0,
+        _dump(evidence.detail),
+        float(evidence.at),
+        _dump(payload),
+    )
+
 
 _EVIDENCE_INSERT = (
     "INSERT OR IGNORE INTO procedural_skill_evidence (evidence_id, skill_id, subject_key, task_id,"
     " plan_version, plan_hash, outcome, verdict, reason_code, step_ids, postcondition_kind,"
     " postcondition_ok, detail, created_at, payload) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)"
 )
+
+
+def _skill_insert_params(
+    skill_id: str, payload: dict[str, Any], fingerprint: str
+) -> tuple[Any, ...]:
+    """列值顺序与 ``_SKILL_INSERT`` 一致（单一真相：三处写入共用，避免占位符错位）。"""
+
+    return (
+        str(skill_id),
+        int(payload["schema_version"]),
+        payload["name"],
+        payload["objective_pattern"],
+        payload["summary"],
+        payload["status"],
+        payload["character_id"],
+        payload["server_id"],
+        payload["environment"],
+        payload["tools_signature"],
+        str(payload.get("subject_key") or ""),
+        payload["max_risk"],
+        int(payload["version"]),
+        payload["supersedes_skill_id"],
+        payload["superseded_by"],
+        int(payload["success_count"]),
+        int(payload["failure_count"]),
+        int(payload["ambiguous_count"]),
+        str(fingerprint),
+        payload["reason"],
+        float(payload["created_at"]),
+        float(payload["updated_at"]),
+        float(payload["last_learned_at"]),
+        float(payload["last_verified_at"]),
+        float(payload["last_used_at"]),
+        _dump(payload),
+    )
+
+
+def _skill_update_params(
+    payload: dict[str, Any], fingerprint: str, skill_id: str
+) -> tuple[Any, ...]:
+    """列值顺序与 ``_SKILL_UPDATE`` 一致（末尾的 skill_id 是 WHERE 条件）。"""
+
+    return (
+        int(payload["schema_version"]),
+        payload["name"],
+        payload["objective_pattern"],
+        payload["summary"],
+        payload["status"],
+        payload["character_id"],
+        payload["server_id"],
+        payload["environment"],
+        payload["tools_signature"],
+        str(payload.get("subject_key") or ""),
+        payload["max_risk"],
+        int(payload["version"]),
+        payload["supersedes_skill_id"],
+        payload["superseded_by"],
+        int(payload["success_count"]),
+        int(payload["failure_count"]),
+        int(payload["ambiguous_count"]),
+        str(fingerprint),
+        payload["reason"],
+        float(payload["updated_at"]),
+        float(payload["last_learned_at"]),
+        float(payload["last_verified_at"]),
+        float(payload["last_used_at"]),
+        _dump(payload),
+        str(skill_id),
+    )
+
+
+def _next_skill_id(conn: Any, day: str) -> str:
+    prefix = f"{skill_id_for(day, 0).rsplit('-', 1)[0]}-"
+    row = conn.execute(
+        "SELECT MAX(CAST(SUBSTR(skill_id, ?) AS INTEGER)) AS seq FROM procedural_skills"
+        " WHERE skill_id LIKE ?",
+        (len(prefix) + 1, f"{prefix}%"),
+    ).fetchone()
+    sequence = int((row[0] if row else 0) or 0) + 1
+    return skill_id_for(day, sequence)
+
+
+def _insert_skill_in_tx(conn: Any, skill: ProceduralSkill) -> str:
+    """事务内插入技能（指纹唯一索引去重）→ 返回实际落库的 skill_id（空 = 已存在）。"""
+
+    payload = skill.to_payload()
+    skill_id = _next_skill_id(conn, day_text(skill.created_at or time.time()))
+    payload["skill_id"] = skill_id
+    cursor = conn.execute(_SKILL_INSERT, _skill_insert_params(skill_id, payload, skill.fingerprint))
+    return skill_id if cursor.rowcount else ""
+
+
+def _skill_in_tx(conn: Any, skill_id: str) -> ProceduralSkill | None:
+    row = conn.execute(
+        "SELECT payload FROM procedural_skills WHERE skill_id = ?", (str(skill_id),)
+    ).fetchone()
+    if row is None:
+        return None
+    return _from_skill_row({"payload": row["payload"]})
+
+
+def _counts_in_tx(conn: Any, skill_id: str) -> SkillCounts:
+    """证据计数由证据行**聚合派生**（并发认领时天然收敛，不会 lost update）。"""
+
+    rows = conn.execute(
+        "SELECT verdict, COUNT(*) AS n FROM procedural_skill_evidence WHERE skill_id = ?"
+        " GROUP BY verdict",
+        (str(skill_id),),
+    ).fetchall()
+    totals = {"POSITIVE": 0, "COUNTEREXAMPLE": 0, "AMBIGUOUS": 0, "REJECTED": 0}
+    for row in rows:
+        bucket = str(row["verdict"])
+        if bucket in totals:
+            totals[bucket] = int(row["n"] or 0)
+    return SkillCounts(
+        positive=totals["POSITIVE"],
+        counterexample=totals["COUNTEREXAMPLE"],
+        ambiguous=totals["AMBIGUOUS"],
+        rejected=totals["REJECTED"],
+    )
+
+
+def _apply_derived_state_in_tx(
+    conn: Any,
+    skill_id: str,
+    *,
+    thresholds: SkillThresholds,
+    evidence: SkillEvidence,
+    reuse: bool,
+) -> ProceduralSkill | None:
+    current = _skill_in_tx(conn, skill_id)
+    if current is None:
+        return None
+    counts = _counts_in_tx(conn, skill_id)
+    status, reason = derive_skill_state(
+        current=SkillStatus(current.status),
+        counts=counts,
+        thresholds=thresholds,
+        trigger=_TRIGGER_BY_VERDICT.get(str(evidence.verdict), SKILL_TRIGGER_REJECTED),
+    )
+    moment = float(evidence.at or 0)
+    payload = current.to_payload()
+    payload.update(
+        {
+            "success_count": counts.positive,
+            "failure_count": counts.counterexample,
+            "ambiguous_count": counts.ambiguous,
+            "status": status.value,
+            "reason": reason,
+            "updated_at": moment,
+            "last_used_at": moment if reuse else float(current.last_used_at or 0),
+            "last_learned_at": float(current.last_learned_at or 0) if reuse else moment,
+            "last_verified_at": (
+                moment
+                if str(evidence.verdict) == "POSITIVE"
+                else float(current.last_verified_at or 0)
+            ),
+        }
+    )
+    conn.execute(_SKILL_UPDATE, _skill_update_params(payload, current.fingerprint, skill_id))
+    return ProceduralSkill.from_payload(payload)
 
 
 class SqliteSkillStore:
@@ -280,50 +681,9 @@ class SqliteSkillStore:
         fingerprint = str(skill.fingerprint or "")
         if not fingerprint:
             raise ValueError("skill.fingerprint 不能为空")
-        payload = skill.to_payload()
 
         def _run(conn: Any) -> str:
-            day = day_text(skill.created_at or time.time())
-            prefix = f"{skill_id_for(day, 0).rsplit('-', 1)[0]}-"
-            row = conn.execute(
-                "SELECT MAX(CAST(SUBSTR(skill_id, ?) AS INTEGER)) AS seq FROM procedural_skills"
-                " WHERE skill_id LIKE ?",
-                (len(prefix) + 1, f"{prefix}%"),
-            ).fetchone()
-            sequence = int((row[0] if row else 0) or 0) + 1
-            skill_id = skill_id_for(day, sequence)
-            payload["skill_id"] = skill_id
-            cursor = conn.execute(
-                _SKILL_INSERT,
-                (
-                    skill_id,
-                    int(payload["schema_version"]),
-                    payload["name"],
-                    payload["objective_pattern"],
-                    payload["summary"],
-                    payload["status"],
-                    payload["character_id"],
-                    payload["server_id"],
-                    payload["environment"],
-                    payload["tools_signature"],
-                    payload["max_risk"],
-                    int(payload["version"]),
-                    payload["supersedes_skill_id"],
-                    payload["superseded_by"],
-                    int(payload["success_count"]),
-                    int(payload["failure_count"]),
-                    int(payload["ambiguous_count"]),
-                    fingerprint,
-                    payload["reason"],
-                    float(payload["created_at"]),
-                    float(payload["updated_at"]),
-                    float(payload["last_learned_at"]),
-                    float(payload["last_verified_at"]),
-                    float(payload["last_used_at"]),
-                    _dump(payload),
-                ),
-            )
-            return skill_id if cursor.rowcount else ""
+            return _insert_skill_in_tx(conn, skill)
 
         created_id = str(await self._db.run_in_transaction(_run) or "")
         if created_id:
@@ -357,32 +717,7 @@ class SqliteSkillStore:
         def _run(conn: Any) -> bool:
             cursor = conn.execute(
                 _SKILL_UPDATE,
-                (
-                    int(payload["schema_version"]),
-                    payload["name"],
-                    payload["objective_pattern"],
-                    payload["summary"],
-                    payload["status"],
-                    payload["character_id"],
-                    payload["server_id"],
-                    payload["environment"],
-                    payload["tools_signature"],
-                    payload["max_risk"],
-                    int(payload["version"]),
-                    payload["supersedes_skill_id"],
-                    payload["superseded_by"],
-                    int(payload["success_count"]),
-                    int(payload["failure_count"]),
-                    int(payload["ambiguous_count"]),
-                    payload["fingerprint"],
-                    payload["reason"],
-                    float(payload["updated_at"]),
-                    float(payload["last_learned_at"]),
-                    float(payload["last_verified_at"]),
-                    float(payload["last_used_at"]),
-                    _dump(payload),
-                    str(skill.skill_id),
-                ),
+                _skill_update_params(payload, str(skill.fingerprint or ""), skill.skill_id),
             )
             return bool(cursor.rowcount)
 
@@ -440,43 +775,108 @@ class SqliteSkillStore:
 
     # ------------------------------------------------------------ 学习账本
 
-    async def add_evidence(self, evidence: SkillEvidence) -> tuple[SkillEvidence, bool]:
+    async def claim_evidence(
+        self,
+        evidence: SkillEvidence,
+        *,
+        thresholds: SkillThresholds,
+        new_skill: ProceduralSkill | None = None,
+        attach_subject: bool = False,
+        feedback: tuple[str, str] | None = None,
+    ) -> ClaimOutcome:
+        """Atomic claim inside **one** transaction (7E.1 §1).
+
+        Order matters: the UNIQUE index decides who owns this task's evidence; only the
+        owner recomputes counters (aggregated from the evidence rows, so concurrent
+        claims converge instead of losing updates) and derives the status. Reuse
+        feedback additionally consumes the durable task binding in the same transaction,
+        so a second terminal callback finds nothing to consume.
+        """
+
         payload = evidence.to_payload()
+        fingerprint = str(new_skill.fingerprint or "") if new_skill is not None else ""
 
-        def _run(conn: Any) -> bool:
-            cursor = conn.execute(
-                _EVIDENCE_INSERT,
-                (
-                    evidence.evidence_id,
-                    evidence.skill_id,
-                    evidence.subject_key,
-                    evidence.task_id,
-                    int(evidence.plan_version),
-                    evidence.plan_hash,
-                    evidence.outcome,
-                    str(evidence.verdict),
-                    evidence.reason_code,
-                    _dump(list(evidence.step_ids)),
-                    evidence.postcondition_kind,
-                    1 if evidence.postcondition_ok else 0,
-                    _dump(evidence.detail),
-                    float(evidence.at),
-                    _dump(payload),
-                ),
-            )
-            return bool(cursor.rowcount)
+        def _run(conn: Any) -> tuple[str, bool, str, bool]:
+            cursor = conn.execute(_EVIDENCE_INSERT, _evidence_params(evidence, payload))
+            if not cursor.rowcount:
+                row = conn.execute(
+                    "SELECT payload FROM procedural_skill_evidence WHERE subject_key = ?"
+                    " AND task_id = ? AND plan_version = ? AND plan_hash = ?",
+                    (
+                        evidence.subject_key,
+                        evidence.task_id,
+                        int(evidence.plan_version),
+                        evidence.plan_hash,
+                    ),
+                ).fetchone()
+                return (str(row["payload"]) if row is not None else "", False, "", False)
 
-        if await self._db.run_in_transaction(_run):
-            return evidence, True
-        rows = await self.evidence_for_task(evidence.task_id)
-        for item in rows:
-            if (
-                item.subject_key == evidence.subject_key
-                and int(item.plan_version) == int(evidence.plan_version)
-                and item.plan_hash == evidence.plan_hash
-            ):
-                return item, False
-        return evidence, False
+            skill_id = ""
+            consumed = False
+            if feedback is not None:
+                task_id, bound_skill = feedback
+                cur = conn.execute(
+                    "UPDATE procedural_skill_bindings SET consumed_at = ?, outcome = ?"
+                    " WHERE task_id = ? AND consumed_at <= 0",
+                    (float(evidence.at or 0), str(evidence.outcome), str(task_id)),
+                )
+                consumed = bool(cur.rowcount)
+                if consumed:
+                    skill_id = str(bound_skill or "")
+            elif evidence.skill_id:
+                skill_id = str(evidence.skill_id)
+            elif new_skill is not None:
+                created_id = _insert_skill_in_tx(conn, new_skill)
+                if created_id:
+                    skill_id = created_id
+                else:
+                    row = conn.execute(
+                        "SELECT skill_id FROM procedural_skills WHERE fingerprint = ? LIMIT 1",
+                        (fingerprint,),
+                    ).fetchone()
+                    skill_id = str(row["skill_id"] or "") if row is not None else ""
+            elif attach_subject and evidence.subject_key:
+                row = conn.execute(
+                    "SELECT skill_id FROM procedural_skills WHERE subject_key = ?"
+                    " ORDER BY updated_at DESC, id DESC LIMIT 1",
+                    (str(evidence.subject_key),),
+                ).fetchone()
+                skill_id = str(row["skill_id"] or "") if row is not None else ""
+
+            stored_payload = payload
+            updated_payload = ""
+            if skill_id:
+                stored_payload = {**payload, "skill_id": skill_id}
+                conn.execute(
+                    "UPDATE procedural_skill_evidence SET skill_id = ? WHERE evidence_id = ?",
+                    (skill_id, evidence.evidence_id),
+                )
+                applied = _apply_derived_state_in_tx(
+                    conn,
+                    skill_id,
+                    thresholds=thresholds,
+                    evidence=replace(evidence, skill_id=skill_id),
+                    reuse=feedback is not None,
+                )
+                updated_payload = _dump(applied.to_payload()) if applied is not None else ""
+            return (_dump(stored_payload), True, updated_payload, consumed)
+
+        raw, created, skill_raw, consumed = await self._db.run_in_transaction(_run)
+        stored = evidence
+        if isinstance(raw, str) and raw:
+            try:
+                stored = SkillEvidence.from_payload(json.loads(raw))
+            except (TypeError, ValueError):
+                stored = evidence
+        skill = None
+        if isinstance(skill_raw, str) and skill_raw:
+            try:
+                skill = ProceduralSkill.from_payload(json.loads(skill_raw))
+            except (TypeError, ValueError):
+                skill = None
+        return ClaimOutcome(
+            evidence=stored, created=bool(created), skill=skill, binding_consumed=bool(consumed)
+        )
 
     async def recent_evidence(
         self, limit: int = 20, *, skill_id: str = "", subject_key: str = ""
@@ -505,33 +905,76 @@ class SqliteSkillStore:
         )
         return [item for item in (_from_evidence_row(row) for row in rows) if item is not None]
 
-    async def note_usage(self, skill_id: str, *, objective: str, plan_hash: str, at: float) -> bool:
-        key = _usage_key(objective, plan_hash)
+    async def skill_for_subject(
+        self, *, character_id: str, server_id: str, subject_key: str
+    ) -> ProceduralSkill | None:
+        row = await self._db.fetchone(
+            "SELECT payload FROM procedural_skills WHERE character_id = ? AND server_id = ?"
+            " AND subject_key = ? ORDER BY updated_at DESC, id DESC LIMIT 1",
+            (str(character_id), str(server_id), str(subject_key)),
+        )
+        return _from_skill_row(row)
+
+    async def bind_task(
+        self,
+        *,
+        task_id: str,
+        skill_id: str,
+        subject_key: str,
+        plan_version: int,
+        plan_hash: str,
+        at: float,
+        expires_at: float,
+    ) -> bool:
+        """Persist one task -> skill binding (task_id is UNIQUE; duplicate = no-op)."""
 
         def _run(conn: Any) -> bool:
             cursor = conn.execute(
-                "INSERT OR IGNORE INTO procedural_skill_usage"
-                " (skill_id, usage_key, objective, plan_hash, created_at, payload)"
-                " VALUES (?,?,?,?,?,?)",
+                "INSERT OR IGNORE INTO procedural_skill_bindings (binding_id, task_id, skill_id,"
+                " subject_key, plan_version, plan_hash, created_at, expires_at, consumed_at,"
+                " outcome, reason, payload) VALUES (?,?,?,?,?,?,?,?,0,'','',?)",
                 (
+                    _binding_id(str(task_id)),
+                    str(task_id),
                     str(skill_id),
-                    key,
-                    str(objective)[:200],
+                    str(subject_key),
+                    int(plan_version),
                     str(plan_hash),
                     float(at),
-                    _dump({"skill_id": str(skill_id), "objective": str(objective)[:200]}),
+                    float(expires_at),
+                    _dump(
+                        {
+                            "task_id": str(task_id),
+                            "skill_id": str(skill_id),
+                            "subject_key": str(subject_key),
+                        }
+                    ),
                 ),
             )
             return bool(cursor.rowcount)
 
         return bool(await self._db.run_in_transaction(_run))
 
-    async def usage_for(self, *, objective: str, plan_hash: str) -> str:
+    async def binding_for(self, task_id: str) -> dict[str, Any] | None:
         row = await self._db.fetchone(
-            "SELECT skill_id FROM procedural_skill_usage WHERE usage_key = ?",
-            (_usage_key(objective, plan_hash),),
+            "SELECT binding_id, task_id, skill_id, subject_key, plan_version, plan_hash,"
+            " created_at, expires_at, consumed_at, outcome FROM procedural_skill_bindings"
+            " WHERE task_id = ?",
+            (str(task_id),),
         )
-        return str((row or {}).get("skill_id") or "")
+        return dict(row) if row is not None else None
+
+    async def prune_bindings(self, *, now: float, keep_seconds: float = 86400.0) -> int:
+        """Housekeeping: drop bindings whose task TTL expired long ago (never affects live ones)."""
+
+        def _run(conn: Any) -> int:
+            cursor = conn.execute(
+                "DELETE FROM procedural_skill_bindings WHERE expires_at > 0 AND expires_at < ?",
+                (float(now) - float(keep_seconds),),
+            )
+            return int(cursor.rowcount or 0)
+
+        return int(await self._db.run_in_transaction(_run) or 0)
 
     # ------------------------------------------------------------ 审计（复用 behavior_events）
 

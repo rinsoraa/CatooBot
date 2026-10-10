@@ -287,3 +287,116 @@ procedural_skill_evidence                -- 学习账本（一次任务一行，
   如需真机复核，按任务书 §13 的低风险受控目标 + 操作者确认流程单独执行。
 * **已知缺陷（独立 follow-up，不属 7E）**：7D §10.4 dig 归因歧义 —— 本阶段只做**学习数据隔离**，
   未改执行路径（见 §7.1）。
+
+---
+
+## 12. 7E.1 正确性收口（2026-10-10，基线 `958143e`）
+
+7E 验收复核发现两个正确性缺口。本轮**只**修它们，不扩展技能种类、不动任何执行语义
+（§3 边界全部保持：工具 19、ActionRuntime 动作 0、TaskRuntime 状态 0、`allow_medium=false`、
+7D 的确认/批准/身份/取消/暂停/恢复/超时语义、技能只输出计划候选、CANDIDATE 不可复用、
+终态不复活、7D §10.4 dig 归因缺陷仍独立跟踪）。
+
+### 12.1 缺口 A：成功证据与技能计数不是一个原子操作
+
+**根因**：原学习顺序是「查重（读）→ await 后置条件观察 → `_upsert_positive` 改计数/晋升 →
+最后 `add_evidence` 落证据」。同一个 `TaskRecord` 的两个并发终态回调可以**都**通过那道读检查，
+在唯一索引拦住第二条证据之前**各自**把 `success_count` 加过一次 —— 只有一条独立证据的技能
+会错误晋升 `ACTIVE`；`ambiguous_count` 也走同一套"读-改-写"（`_bump_ambiguous`）。
+
+**修复（最小改动，不重写 7E）**：
+
+* 新增存储层原子操作 `SkillStore.claim_evidence(evidence, *, thresholds, new_skill=None,
+  attach_subject=False, feedback=None) -> ClaimOutcome`：
+  1. **先认领**：`INSERT OR IGNORE` 进证据表，唯一索引 `(subject_key, task_id, plan_version,
+     plan_hash)` 是**唯一**的门（行数为 0 ⇒ 重复回调，直接返回、一个计数都不动）；
+  2. 认领成功才解析目标技能（已存在 / 新建 / 按 `subject_key` 附着 / 复用反馈）；
+  3. **计数由证据行聚合派生**（`SELECT verdict, COUNT(*) ... GROUP BY verdict`）而不是增量累加 ——
+     并发认领天然收敛，不存在 lost update；
+  4. 状态由纯函数 `derive_skill_state(current, counts, thresholds, trigger)` 唯一决定
+     （终态无出口；CANDIDATE/STALE 达到阈值 → ACTIVE；反例达到阈值 → INVALIDATED，否则 STALE；
+     歧义/拒绝只记数）；同一事务里整行写回（列 + payload 同步）。
+  * SQLite 走 `Database.run_in_transaction`（单事务，跨进程有 SQLite 写锁 + 派生收敛兜底）；
+    内存实现是**无 await 的临界区**（其中每个被 await 的存储方法自身都不让出事件循环），
+    两种实现有等价性测试。
+  * 复用反馈在同一事务里**消费绑定**（`consumed_at`），所以第二次终态回调拿到的是
+    "绑定已消费 → duplicate"，不会再计一次。
+* 服务层的查重预检**保留但降级为快速路径**（只省一次观察），不再承担正确性。
+
+### 12.2 缺口 B：使用链在任务创建前登记，归因键不足以证明真实复用
+
+**根因**：原 `materialize()` 在计划候选阶段就写 `procedural_skill_usage(objective|plan_hash)`。
+任务没建成（`TaskBusy`/校验失败/过期/取消/回退）也会留下一条"活的"记录；而计划哈希**不含**
+observations、`TaskPlan.to_payload()` 也不序列化 observations，所以任何同目标 + 同计划内容的
+**普通任务**之后都可能被误认成"用过技能"，导致无关任务给技能加分 / 让技能转 STALE / 被错误
+INVALIDATE。
+
+**修复**：
+
+* **删掉派生键使用链表**（迁移 35 `DROP TABLE`,不留兜底），改为每任务唯一的**持久绑定**：
+  `procedural_skill_bindings`（`task_id` 唯一、`skill_id`、`subject_key`、`plan_version`、
+  `plan_hash`、`created_at`、`expires_at`、`consumed_at`、`outcome`）；
+* **只在任务真正建立之后写**：`SkillService.bind_task_for_plan(record, plan)` 由三条真实入口调用 ——
+  `TaskTurnHandler._create`（QQ USER 资源任务）、`AgentPlanService.approve`（LIFE 第二道门）、
+  `AgentPlanService.plan_follow_from_user`（USER 跟随）；绑定失败只降级（**宁可不反馈，也不猜**）；
+* **归因只按 `task_id`**：`on_task_finished` 先查绑定，查不到就走普通学习资格门 ——
+  目标文本与计划哈希**不再**参与归因；
+* **LIFE 路径的引用传递**：AgentPlan 的 `checks` 是真实持久列（observations 不是），
+  `SkillAwarePlanner` 把 `skill_id/skill_version/fingerprint` 写进 `skill_reuse` check 的 detail，
+  批准建任务时从**已持久化的 AgentPlan** 读回来绑定 —— 未批准/取消/过期/建任务失败的计划
+  不会留下任何有效绑定；
+* 绑定随任务 TTL 带 `expires_at`（作废/清理语义，`prune_bindings`）；`task_id` 唯一意味着
+  未来的任务**不可能**撞上旧绑定（旧设计误认的结构性根因被移除）。
+
+### 12.3 顺带修掉的一个真缺陷（同族，来自 12.1 的测试）
+
+已执行记录的 `step.effective_arguments` 会把 `{"from_step","path"}` **解析成字面量**
+（例如 `entity_id: 42`）。原归一化优先用它 → 同一方法的第二次学习指纹不同 → 会**另建一条技能**，
+并且把一次性动态 ID 写进技能正文（违反 §7.3/E6）。修复：归一化一律取**冻结模板**
+`step.arguments`（`_template_arguments`），引用保持引用形态、坐标照旧折叠成槽位。
+
+### 12.4 迁移 35
+
+* 新增 `procedural_skill_bindings`；
+* `procedural_skills` 增加 `subject_key` 列（+ `json_extract` 回填 + `(character_id, server_id,
+  subject_key)` 索引）；
+* 删除 `procedural_skill_usage`（34 的派生键使用链表）；
+* 升级兼容：`TestMigration35::test_upgrade_from_a_v34_database_applies_35` 把库退化成 v34
+  （删绑定表、删 `subject_key` 列、删迁移记录）后重连 —— 列/表被补回、`memories` 里的既有
+  业务数据不动、版本落到 35；最高版本冻结测试同步到 **35**。
+
+### 12.5 测试（新增 17 项，全部可失败）
+
+| 任务书要求 | 测试 |
+| --- | --- |
+| 同一 TaskRecord 并发回调（barrier 制造竞争窗口），内存 + 真 SQLite | `TestConcurrentEvidenceClaims::test_same_task_concurrent_callbacks_claim_once_in_memory` / `..._real_sqlite`：恰一条证据、`success_count == 1`、仍 `CANDIDATE` |
+| 两个不同 task 并发仍累计两条并晋升（无 lost update） | `..._accumulate_two_evidences` / `..._real_sqlite`：`success_count == 2`、`ACTIVE`、证据两条 |
+| 歧义/拒绝与正向互不覆盖、不重复累加 | `..._do_not_cross`（并发）+ `..._attaches_to_the_same_subject_sequentially`（顺序附着）+ `..._counts_once_real_sqlite` |
+| 阈值来自配置且参与事务内派生 | `..._thresholds_are_respected_from_the_store_transaction`（阈值 3 → 两条不晋升） |
+| 候选物化但任务没建成 → 之后同形普通任务不得回溯 | `TestTaskBindingAttribution::test_candidate_without_a_created_task_never_feeds_back`（`last_used_at == 0`） |
+| 重启后归因不丢、重复终态不重复反馈 | `..._binding_routes_the_terminal_event_after_restart`（真库重启 + 二次回调 duplicate） |
+| 同 plan_hash 的技能任务与普通任务并存只有绑定那条回流 | `..._only_the_bound_task_of_two_identical_plans_feeds_back` |
+| LIFE 路径（AgentPlan → 批准 → 建任务）绑定准确；未批准/建任务失败无绑定 | `..._life_path_transfers_the_reference_through_the_agent_plan` |
+| 无绑定任务绝不按文本猜来源 | `..._unknown_task_without_binding_is_never_guessed` + 源码级 `..._store_is_the_only_attribution_source` |
+| 两种 store 行为一致 | `TestStoreProtocolParity::test_in_memory_and_sqlite_agree` |
+| 既有顺序重复 / 重启重放 / 跨版本 / 终态不可复活 | 7E 的 `TestLearningLifecycle` / `TestPersistenceAcrossRestart` / `test_changed_method_creates_a_new_version_with_lineage` / `TestFeedbackLoop` 全部保留并通过 |
+
+### 12.6 门禁（本轮实际执行，串行）
+
+| 门禁 | 结果 |
+| --- | --- |
+| `ruff check .` / `ruff format --check .` | All checks passed / 630 files already formatted |
+| `mypy app` | Success: no issues found in 335 source files |
+| `pytest tests -q` | **3528 passed**（7E 基线 3511 → +17 项 7E.1 测试） |
+| WebUI typecheck / Vitest / build / 浏览器 E2E | 通过 / 528 / 通过 / 7 passed |
+| Minecraft runtime（Node 单测 + flying-squid E2E） | `ALL CHECKS PASSED`（全量 pytest 结束后单独跑） |
+| 迁移最高版本冻结 / v34→35 升级 / 重复迁移幂等 | `test_latest_migration_is_idempotent`（35）+ `TestMigration35` 三项 |
+| CI | 见 7E.1 最终报告（run/job 链接） |
+
+### 12.7 真实环境与限制（如实分级）
+
+* 本轮为**真实 TaskRuntime + 真实 SQLite + 真实迁移 35** 的闭环（含重启后归因）；
+* **真实 Java 服务器**：仍 `SKIPPED`（本阶段不新增世界语义，与 7E 同理由）；
+* 限制：绑定只在三条真实入口建立（新增入口必须同样调用 `bind_task_for_plan`，否则该任务
+  **不会**产生技能反馈 —— 保守方向，不会误归因）；`ambiguous` 证据在**并发**下若先于
+  技能创建落库，会以 `skill_id=""` 留在账本里（可审计、不影响计数），顺序场景才附着到技能。
