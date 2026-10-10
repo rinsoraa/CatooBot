@@ -42,6 +42,7 @@ from app.tasks.skill_learning import (
     POSITION_SLOT,
     WORLD_CHANGING_TOOLS,
     LearningInput,
+    classify_reuse,
     qualify,
 )
 from app.tasks.validation import collect_references, validate_plan
@@ -306,6 +307,29 @@ class SkillService:
             return await self._record_reuse(binding, record, outcome=outcome)
         return await self._learn(record, outcome=outcome)
 
+    async def _qualify_for_positive(self, record: Any, *, outcome: str = "") -> Any:
+        """跑一遍**既有**资格门（复用反馈与学习共用同一套规则，不另造标准）。"""
+
+        snapshot = self._tools_snapshot()
+        objective = str(getattr(record, "objective", "") or "")
+        verified, postconditions = await self._postconditions(record)
+        return qualify(
+            LearningInput(
+                record=record,
+                character_id=self.character_id,
+                server_id=self._server_id(),
+                tools_signature=snapshot.signature,
+                registered_tools=snapshot.registered,
+                risk_table=dict(snapshot.risks),
+                postconditions=postconditions,
+                task_effect_verified=bool(verified),
+                dig_expected_ms=self._expected_dig_ms(record),
+                dig_short_ratio=self.dig_short_ratio,
+                method_class=self._classify(objective),
+                objective=objective,
+            )
+        )
+
     async def _learn(self, record: Any, *, outcome: str) -> dict[str, Any]:
         snapshot = self._tools_snapshot()
         objective = str(getattr(record, "objective", "") or "")
@@ -349,7 +373,7 @@ class SkillService:
                 registered_tools=snapshot.registered,
                 risk_table=dict(snapshot.risks),
                 postconditions=postconditions,
-                task_effect_verified=task_effect_verified,
+                task_effect_verified=bool(task_effect_verified),
                 dig_expected_ms=dig_expected,
                 dig_short_ratio=self.dig_short_ratio,
                 method_class=method_class,
@@ -552,6 +576,12 @@ class SkillService:
         plan_hash = str(getattr(record, "plan_hash", "") or "")
         if not skill_id:
             return {"action": "skipped", "reason": "binding_without_skill", "task_id": task_id}
+        # §1.1：先判定这条任务**有没有资格**给技能反馈（未执行/用户取消/外部失败一律不计分，
+        # 但仍然幂等消费绑定并留原因码）；SUCCEEDED 也要过既有资格门，绝不只看顶层状态。
+        learning: Any = None
+        if outcome == TaskState.SUCCEEDED.value:
+            learning = await self._qualify_for_positive(record, outcome=outcome)
+        verdict_info = classify_reuse(record, learning=learning)
         evidence = SkillEvidence(
             evidence_id=f"{EVIDENCE_ID_PREFIX}-{task_id}-{plan_version}",
             skill_id=skill_id,
@@ -564,16 +594,9 @@ class SkillService:
                 for step in (getattr(record.plan, "steps", None) or [])
             ),
             outcome=outcome,
-            verdict=(
-                EvidenceVerdict.POSITIVE.value
-                if outcome == TaskState.SUCCEEDED.value
-                else EvidenceVerdict.COUNTEREXAMPLE.value
-            ),
-            reason_code=(
-                "reuse_succeeded"
-                if outcome == TaskState.SUCCEEDED.value
-                else f"reuse_{outcome.lower()}"
-            ),
+            verdict=verdict_info.evidence_verdict.value,
+            reason_code=verdict_info.reason_code,
+            detail=dict(verdict_info.detail),
             at=now,
         )
         claim = await self.store.claim_evidence(
@@ -589,12 +612,11 @@ class SkillService:
         skill = claim.skill
         if skill is None:
             return {"action": "feedback", "skill_id": skill_id, "verdict": "unknown", "status": ""}
-        verdict = "reuse_ok"
-        if skill.status == SkillStatus.INVALIDATED.value:
-            verdict = "invalidated"
-        elif skill.status == SkillStatus.STALE.value and outcome != TaskState.SUCCEEDED.value:
-            verdict = "stale"
-        elif outcome == TaskState.SUCCEEDED.value and skill.status == SkillStatus.ACTIVE.value:
+        verdict = verdict_info.label
+        if verdict_info.evidence_verdict is EvidenceVerdict.COUNTEREXAMPLE:
+            # 反例确实推进了状态：按结果给精确标签（stale / invalidated）
+            verdict = "invalidated" if skill.status == SkillStatus.INVALIDATED.value else "stale"
+        elif verdict_info.evidence_verdict is EvidenceVerdict.POSITIVE:
             verdict = "reuse_ok"
         await self.store.log_event(
             skill_id=skill_id,

@@ -1,5 +1,29 @@
 # Changelog
 
+## Minecraft Phase 7E.1.1 — Skill Feedback Eligibility & Evidence Projection Consistency
+
+* **问题 ①（未执行的任务被当成反例）**：技能绑定在任务进入 `PENDING_CONFIRMATION` 时就建立，
+  而 `_record_reuse()` 把除 `SUCCEEDED` 外**所有**终态都记成 `COUNTEREXAMPLE` —— 等确认时被取消、
+  没跑任何步骤就失败/过期、跑一半被用户取消、超时/离线，都会推高 `failure_count`，把好技能
+  无理由推到 STALE 甚至 INVALIDATED。修复：新增纯判定 `classify_reuse()`/`step_ran()`
+  （`app/tasks/skill_learning.py`）—— 先看**持久化事实**（有没有步骤真的执行过：`started_at` /
+  `action_id` / 状态），只有"跑了 + 运行时自己的后验校验失败（`failure=VERIFICATION` 且
+  `verification.checked=True, ok=False`）"才算方法反例；等确认被取消 / 未启动 / 用户主动中止 /
+  过期 / 外部不确定一律**不计分**（`REJECTED` + 稳定原因码），但仍**幂等消费绑定**，
+  重复终态事件第二次拿到 `duplicate`。`SUCCEEDED` 也必须过既有资格门（最终计划版本完成 +
+  步骤真实终态 + 后验可核验），不可核验时只留痕、不新增正向证据。
+* **问题 ②（证据列与 payload 不一致）**：`claim_evidence()` 只更新了 `skill_id` **列**，
+  JSON payload 仍是空的；而读取路径只读 payload → 重启后证据视图看不到归属。修复：同一事务里
+  **列 + payload 一起写**；新增**迁移 36** 按列回填历史 payload 的 `skill_id`
+  （`json_set` 只改这一个键、幂等、不动无归属证据、不删除/不重建任何行）。
+* **测试**：新增 **18** 项（§1.2 九项语义 + 外部不确定 + 不可核验成功、§2.1 六项投影一致 +
+  v35→v36 升级），`TestFeedbackLoop` 按新语义改为用可归因失败驱动"反例 → STALE → INVALIDATED"；
+  全量 **3546 passed**（3528 → +18）。
+* **边界**：19 工具、ActionRuntime 动作、TaskRuntime 状态、`allow_medium=false`、7D 的
+  确认/批准/身份/取消/暂停/恢复/超时语义一律未改；技能依旧只输出计划候选；CANDIDATE 不可复用、
+  终态不复活；7D §10.4 dig 归因缺陷仍独立跟踪。
+* 真实 Java 服务器门禁：`SKIPPED`（本阶段不新增执行语义）。
+
 ## Minecraft Phase 7E.1 — Skill Evidence Idempotency & Usage Attribution Closure
 
 * **缺口 A（证据计数不是原子操作）**：原顺序是「查重（读）→ await 后置条件 → 改计数/晋升 →

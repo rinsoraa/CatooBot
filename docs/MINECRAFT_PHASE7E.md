@@ -1,7 +1,10 @@
 # CatooBot Minecraft Phase 7E · Skill Learning & Procedural Memory（技能学习与程序性记忆）
 
-> 状态：**实施中**。本文件先落审计结论与最小设计（任务书 §8/§9），随后记录实现、
-> 数据模型、迁移理由、适用性算法、端到端切片、门禁与已知限制。
+> 状态：**代码 / 迁移 / 本地门禁 / CI 全部完成并经三轮正确性收口**（7E 本体 → 7E.1 并发与归因
+> → 7E.1.1 反馈资格与证据投影）。**真实 Java 服务器门禁未执行 = SKIPPED**（理由见 §10），
+> 不得据此文档宣称真机通过。
+> 本文件记录：审计结论与最小设计（§1–§2）、实现与规则（§3–§7）、验收矩阵与门禁（§8–§9）、
+> 真实环境分级与限制（§10）与两轮收口记录（§12 = 7E.1 并发与归因、§13 = 7E.1.1 反馈资格与证据投影）。
 >
 > 基线：`072edc0d8d7491b439dc8a8dec747d4e4dc9d78d`（Phase 7D.2.1）。
 > 阶段唯一目标（任务书 §6）：建立**最小但完整**的程序性技能生命周期 ——
@@ -402,3 +405,100 @@ INVALIDATE。
 * 限制：绑定只在三条真实入口建立（新增入口必须同样调用 `bind_task_for_plan`，否则该任务
   **不会**产生技能反馈 —— 保守方向，不会误归因）；`ambiguous` 证据在**并发**下若先于
   技能创建落库，会以 `skill_id=""` 留在账本里（可审计、不影响计数），顺序场景才附着到技能。
+
+---
+
+## 13. 7E.1.1 正确性收口（2026-10-10，基线 `c78ea64`）
+
+7E.1 复核又发现两处**窄范围**问题，本轮只修它们：不动技能种类、不动执行语义
+（工具 19、ActionRuntime 动作 0、TaskRuntime 状态 0、`allow_medium=false`、7D 的
+确认/批准/身份/取消/暂停/恢复/超时语义、技能只输出计划候选、CANDIDATE 不可复用、
+终态不复活、7D §10.4 dig 归因缺陷仍独立跟踪）。
+
+### 13.1 问题 ①：未真正执行的技能任务也会被当成反例
+
+**最小复现**（先写测试再修）：技能绑定在任务进入 `PENDING_CONFIRMATION` 时就建立了，而原
+`_record_reuse()` 把**除 `SUCCEEDED` 外的所有终态**一律记成 `COUNTEREXAMPLE` ——
+实测：等确认时被取消 / 没跑任何步骤就 `EXPIRED` / 没跑就 `FAILED` / 跑一半被用户取消 /
+超时与离线，都会把 `failure_count` 加上去（复现时 `failure_count` 分别变成 1..3），
+一条 `ACTIVE` 技能会被无理由推到 `STALE`，两次就到 `INVALIDATED`。
+
+**修复**（`app/tasks/skill_learning.py` 新增纯判定 `classify_reuse()` + `step_ran()`；
+`app/tasks/skill_service.py::_record_reuse()` 改用它）：
+
+| 任务形态（只看持久化事实） | 判定 | 证据 |
+| --- | --- | --- |
+| 状态字段读不出来 | 不计分 | `REJECTED` / `unknown_task_state` |
+| `SUCCEEDED` 且**过既有资格门**（最终计划版本完成 + 步骤真实终态 + 后验可核验） | 正向 | `POSITIVE` / `reuse_succeeded` |
+| `SUCCEEDED` 但资格门不过 | 不计分 | `REJECTED` / 资格门自己的原因码（如 `final_plan_not_completed`） |
+| 非成功终态 + **没有任何步骤执行过**（无 `started_at` / 无 `action_id` / 状态仍是 `PENDING`） | 不计分 | `REJECTED` / `skill_task_not_started` |
+| 执行过但失败**不可归因**（超时/离线/世界变化/授权/忙/卡住） | 不计分 | `REJECTED` / `unattributed_failure:<kind>` |
+| 执行过、被用户取消（即便已有步骤成功） | 不计分 | `REJECTED` / `user_or_external_abort` |
+| 执行过、`EXPIRED` | 不计分 | `REJECTED` / `task_expired_before_attribution` |
+| 执行过 + `FAILED` + 运行时**自己的后验校验失败**（`failure=VERIFICATION` 且 `verification.checked=True, ok=False`） | **反例** | `COUNTEREXAMPLE` / `reuse_verification_failed` |
+
+* 目前**唯一**被承认的"可归因执行失败"是运行时的后验校验失败（方法真的跑了、预期效果没达成）；
+  `ATTRIBUTABLE_FAILURES` 是显式封闭集合，扩大它必须有新的可审计执行证据，**绝不**从自由文本、
+  任务目标文字或模型自述推断（§1.1）。
+* 不合格的反馈**仍然幂等消费绑定**并在账本留原因码 —— 重复终态事件第二次拿到 `duplicate`，
+  不会稍后偷偷计一次分（同时不会改变任何计数与状态：`REJECTED` 不参与状态派生）。
+
+### 13.2 问题 ②：SQLite 证据行的 `skill_id` 列与 JSON payload 不一致
+
+**最小复现**：`claim_evidence()` 先把不含最终 `skill_id` 的 payload 插进去，随后只
+`UPDATE … SET skill_id = ?`（列）——`SELECT skill_id, payload` 可见列有归属、payload 里是
+空串；而 `_from_evidence_row()` / `recent_evidence()` 只读 payload，所以重启后证据视图里的
+`SkillEvidence.skill_id` 为空（重复认领分支也从旧 payload 读）。
+
+**修复**：同一事务里列与 payload **一起写**（`SET skill_id = ?, payload = ?`）；并新增
+**迁移 36** 按列回填历史 payload 的 `skill_id`（`json_set` 只改这一个键）：
+只修"列里有归属"的行、无归属的 `AMBIGUOUS/REJECTED` 保持空、已一致的行走 `WHERE` 过滤掉
+（幂等）、不删除/不重建任何证据行（时间 / verdict / reason / task_id 全部保留）。
+
+### 13.3 测试（新增 18 项，全部可失败）
+
+| 任务书要求 | 测试（`tests/test_skill_feedback.py`） |
+| --- | --- |
+| §1.2-1 等确认时取消不计反例 | `test_cancel_while_pending_confirmation_is_not_a_counterexample`（`failure_count == 0`、仍 ACTIVE、原因码 `skill_task_not_started`） |
+| §1.2-2 未启动就 EXPIRED | `test_expired_before_any_step_is_not_a_counterexample` |
+| §1.2-3 未启动就 FAILED | `test_failed_before_any_step_is_not_a_counterexample` |
+| §1.2-4 重复终态只消费一次绑定、不重复计数 | `test_repeated_terminal_event_consumes_the_binding_once`（第二/第三次 `duplicate`、账本只一行） |
+| §1.2-5 真正可归因的失败仍算反例 | `test_attributable_execution_failure_is_a_counterexample`（→ STALE）+ `test_second_attributable_failure_invalidates`（→ INVALIDATED 且不再被检索） |
+| §1.2-6 运行中用户取消不推断为方法失败 | `test_user_cancel_after_starting_is_not_inferred_as_method_failure` |
+| §1.2 外部不确定不惩罚 | `test_timeout_or_external_failure_is_not_attributed`（超时/离线/世界变化三种） |
+| §1.2-7 证据无法判定 → 保守 + 原因码 | `test_missing_step_evidence_is_indeterminate`（`unknown_task_state`）+ `test_success_without_verifiable_postcondition_adds_no_positive_evidence`（`SUCCEEDED` 也过资格门） |
+| §1.2-9 两类 store 对同一批记录结论一致 | `test_in_memory_and_sqlite_agree_on_the_same_records`（计数、状态、四条 verdict 全一致） |
+| §2.1-1 新证据列 == payload | `test_new_evidence_column_and_payload_agree` |
+| §2.1-2 重启后按 `skill_id` 读到的归属正确 | `test_restart_reads_the_same_attribution` |
+| §2.1-3 重复认领归属正确且计数不变 | `test_duplicate_claim_returns_consistent_attribution` |
+| §2.1-4 无归属证据仍为空 | `test_unattached_evidence_keeps_empty_skill_id` |
+| §2.1-5 v35 → v36 升级保留旧行/非技能数据、幂等、payload 一致 | `test_v35_to_v36_upgrade_repairs_payloads` |
+| §2.1-6 两类 store 公开读取契约一致 | `test_store_read_contract_parity` |
+
+原有 7E/7E.1 用例全部保留：`TestFeedbackLoop` 按新语义改为用**可归因失败**
+（`VERIFICATION` + 后验 `checked/ok`）驱动"反例 → STALE → INVALIDATED"，仍然覆盖该行为；
+`TestLearningLifecycle` / `TestPersistenceAcrossRestart` / `TestConcurrentEvidenceClaims` /
+`TestTaskBindingAttribution` / `TestStoreProtocolParity` 一字未改。
+
+### 13.4 门禁（本轮实际执行，串行）
+
+| 门禁 | 结果 |
+| --- | --- |
+| `ruff check .` / `ruff format --check .` | All checks passed / 631 files already formatted |
+| `mypy app` | Success: no issues found in 335 source files |
+| `pytest tests -q` | **3546 passed**（7E.1 基线 3528 → +18 项 7E.1.1 测试） |
+| WebUI typecheck / Vitest / build / 浏览器 E2E | 通过 / 528 / 通过 / 7 passed |
+| Minecraft runtime（Node 单测 + flying-squid E2E） | `ALL CHECKS PASSED`（全量 pytest 之后单独跑） |
+| 迁移最高版本冻结 / v34→最新升级 / v35→v36 升级 / 重复迁移幂等 | 版本冻结测试同步到 **36**；`TestMigration35`（升级到最新）；`test_v35_to_v36_upgrade_repairs_payloads` |
+| CI | 见 7E.1.1 最终报告（run/job 链接） |
+
+### 13.5 真实环境与限制（如实分级）
+
+* 本轮问题都是**纯逻辑 + 存储投影**问题：用真实 `TaskRecord`/`TaskStep` + 真实 SQLite（真实迁移 36）
+  闭环验证，不需要世界操作；
+* **真实 Java 服务器**：`SKIPPED`（本阶段不新增执行语义）；
+* 限制：`ATTRIBUTABLE_FAILURES` 目前只有"运行时后验校验失败"一种 —— 也就是说，
+  **执行中途的真实失败（例如工具报错）暂时不会推进反例**，只会留 `unattributed_failure:*` 原因码；
+  这是刻意的保守选择（宁可少惩罚，也不误伤已验证的方法），扩大集合需要新的可审计证据；
+* 绑定消费与不合格反馈：不合格反馈仍消费绑定，因此**同一任务不会在稍后被重新判定**（幂等）；
+  若将来放宽判定规则，历史不合格证据不会被追溯改写（账本保留原始 verdict/reason）。

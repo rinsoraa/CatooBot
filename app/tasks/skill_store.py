@@ -846,10 +846,12 @@ class SqliteSkillStore:
             stored_payload = payload
             updated_payload = ""
             if skill_id:
+                # 列与 JSON payload **同一事务一起写**（否则重启后读 payload 的投影会缺归属）
                 stored_payload = {**payload, "skill_id": skill_id}
                 conn.execute(
-                    "UPDATE procedural_skill_evidence SET skill_id = ? WHERE evidence_id = ?",
-                    (skill_id, evidence.evidence_id),
+                    "UPDATE procedural_skill_evidence SET skill_id = ?, payload = ?"
+                    " WHERE evidence_id = ?",
+                    (skill_id, _dump(stored_payload), evidence.evidence_id),
                 )
                 applied = _apply_derived_state_in_tx(
                     conn,

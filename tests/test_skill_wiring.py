@@ -275,16 +275,18 @@ class TestMigration35:
         } <= names
         assert "procedural_skill_usage" not in names, "派生键使用链已在 35 里删除"
         version = await database.fetchone("SELECT MAX(version) AS v FROM schema_migrations")
-        assert int((version or {}).get("v") or 0) >= 35
+        assert int((version or {}).get("v") or 0) == 36
         await database.close()
         # 再连一次（同一文件）：迁移必须幂等
         again = Database(DatabaseConfig(url=url))
         await again.connect()
         version = await again.fetchone("SELECT MAX(version) AS v FROM schema_migrations")
-        assert int((version or {}).get("v") or 0) >= 35
+        assert int((version or {}).get("v") or 0) == 36
         await again.close()
 
-    async def test_upgrade_from_a_v34_database_applies_35(self, tmp_path: Path) -> None:
+    async def test_upgrade_from_a_v34_database_applies_the_latest_migrations(
+        self, tmp_path: Path
+    ) -> None:
         """旧库升级兼容：v34 的库（含业务数据）连上来会补上 35，且改回缺失的列/表。"""
 
         url = f"sqlite:///{tmp_path / 'upgrade.db'}"
@@ -320,7 +322,7 @@ class TestMigration35:
         }
         assert "subject_key" in columns, "升级要补回 subject_key 列"
         version = await upgraded.fetchone("SELECT MAX(version) AS v FROM schema_migrations")
-        assert int((version or {}).get("v") or 0) == 35
+        assert int((version or {}).get("v") or 0) == 36
         kept = await upgraded.fetchall("SELECT COUNT(*) AS n FROM memories")
         assert int(kept[0]["n"]) == 1, "既有业务数据不受影响"
         await upgraded.close()

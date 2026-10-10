@@ -15,7 +15,7 @@ import pytest
 from app.config.settings import DatabaseConfig
 from app.database.database import Database
 from app.tasks.agent_planner import BoundedAgentPlanner
-from app.tasks.models import TaskState
+from app.tasks.models import TaskFailure, TaskState
 from app.tasks.skill import SkillStatus
 from app.tasks.skill_service import SkillService
 from app.tasks.skill_store import SqliteSkillStore
@@ -476,10 +476,24 @@ class TestFeedbackLoop:
         out = await promote(service)
         skill_id = out["second"]["skill_id"]
 
-        async def used_record(task_id: str, state: TaskState) -> Any:
-            """一条"由该技能物化、并且真的建立过"的任务（绑定是归因的唯一依据）。"""
+        async def used_record(
+            task_id: str,
+            state: TaskState,
+            *,
+            failure: str = "",
+            verification: dict[str, Any] | None = None,
+        ) -> Any:
+            """一条"由该技能物化、并且真的建立过"的任务（绑定是归因的唯一依据）。
 
-            record = resource_record(task_id=task_id, state=state, verification={})
+            反例只在"方法真的跑了 + 运行时后验校验失败"时成立（7E.1.1 §1.1）。
+            """
+
+            record = resource_record(
+                task_id=task_id,
+                state=state,
+                verification=verification if verification is not None else {},
+                failure=failure,
+            )
             skill = await service.store.get(skill_id)
             assert skill is not None
             assert await service.store.bind_task(
@@ -493,14 +507,34 @@ class TestFeedbackLoop:
             )
             return record
 
-        first = await service.on_task_finished(await used_record("task_use_1", TaskState.FAILED))
+        attributable = {
+            "checked": True,
+            "ok": False,
+            "inventory_delta": {DROP: 0},
+            "expected": {DROP: 1},
+            "message": "背包最终状态与预期不符",
+        }
+        first = await service.on_task_finished(
+            await used_record(
+                "task_use_1",
+                TaskState.FAILED,
+                failure=TaskFailure.VERIFICATION.value,
+                verification=attributable,
+            )
+        )
         assert first["action"] == "feedback" and first["verdict"] == "stale"
         skill = await service.store.get(skill_id)
         assert skill is not None and skill.status == "STALE" and skill.failure_count == 1
         assert await service.candidates_for("去挖一块橡木并捡回来") == [], "STALE 不再被复用"
 
+        # 第二条反例同样必须是"可归因的执行失败"（不是用户取消 / 外部失败）
         second = await service.on_task_finished(
-            await used_record("task_use_2", TaskState.CANCELLED)
+            await used_record(
+                "task_use_2",
+                TaskState.FAILED,
+                failure=TaskFailure.VERIFICATION.value,
+                verification=attributable,
+            )
         )
         assert second["verdict"] == "invalidated"
         skill = await service.store.get(skill_id)

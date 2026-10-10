@@ -1672,6 +1672,22 @@ CREATE INDEX IF NOT EXISTS idx_procedural_skills_subject
     ON procedural_skills(character_id, server_id, subject_key);
 """,
     ),
+    (
+        36,
+        "repair evidence payload skill_id (Phase 7E.1.1)",
+        """
+-- Phase 7E.1.1 §2：修 7E.1 的写入缺陷 —— claim_evidence 当年只更新了 skill_id **列**，
+-- 没有同步更新 JSON payload，于是重启后按 payload 读出来的证据看不到归属。
+-- 这里把历史 payload 按列回填（json_set 只改这一个键，其余字段原样保留）：
+--   * 只修「列里有归属」的行；列里就是空的行（无归属的 AMBIGUOUS/REJECTED）绝不动；
+--   * 已经一致的行走 WHERE 过滤掉 → 幂等（重复执行不产生变化）；
+--   * 不删除 / 不重建任何证据行，时间、verdict、reason、task_id 等全部保留。
+UPDATE procedural_skill_evidence
+   SET payload = json_set(payload, '$.skill_id', skill_id)
+ WHERE skill_id <> ''
+   AND COALESCE(json_extract(payload, '$.skill_id'), '') <> skill_id;
+""",
+    ),
 ]
 
 

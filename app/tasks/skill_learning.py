@@ -28,7 +28,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Any
 
-from app.tasks.models import StepState, TaskState
+from app.tasks.models import StepState, TaskFailure, TaskState
 from app.tasks.skill import (
     EvidenceVerdict,
     SkillPrecondition,
@@ -284,6 +284,124 @@ def success_criteria_of(record: Any) -> tuple[SkillSuccessCriteria, ...]:
     return tuple(criteria)
 
 
+#: 目前**唯一**被承认的"可归因执行失败"证据：运行时自己的后验校验失败
+#: （``_finish`` 用新鲜 SAFE 读复核预期效果 —— 方法真的跑了，但预期结果没达成）。
+#: 其它失败（超时 / 离线 / 世界变化 / 授权 / 忙 / 卡住 / 用户取消 / 确认过期）都可能来自
+#: 外部环境或用户决定，**不足以**证明方法本身失败（§1.1）。扩大这个集合必须有新的
+#: 可审计执行证据，绝不从自由文本或模型自述推断。
+ATTRIBUTABLE_FAILURES = frozenset({TaskFailure.VERIFICATION.value})
+
+#: 步骤"真的开始执行过"的判据（任一成立）：有开始时间 / 有动作 id / 状态不是 PENDING
+_STEP_RAN_STATES = frozenset(
+    {
+        StepState.RUNNING.value,
+        StepState.WAITING_ACTION.value,
+        StepState.WAITING_CONFIRMATION.value,
+        StepState.SUCCEEDED.value,
+        StepState.FAILED.value,
+        StepState.SKIPPED.value,
+        StepState.CANCELLED.value,
+    }
+)
+
+
+@dataclass(frozen=True)
+class ReuseVerdict:
+    """一条"绑定了技能的"任务给出的反馈判定（§1.1）。"""
+
+    #: 证据 verdict：POSITIVE / COUNTEREXAMPLE / REJECTED（后者 = 不计分，只留痕）
+    evidence_verdict: EvidenceVerdict
+    #: 稳定原因码（审计与只读视图用）
+    reason_code: str
+    #: 服务层给调用方的标签：reuse_ok / stale / invalidated / indeterminate
+    label: str
+    detail: dict[str, Any] = field(default_factory=dict)
+
+
+def step_ran(step: Any) -> bool:
+    """这一步是否**真的开始执行过**（只看持久化事实：时间戳 / action_id / 状态）。"""
+
+    if getattr(step, "started_at", None):
+        return True
+    if str(getattr(step, "action_id", "") or ""):
+        return True
+    state = getattr(getattr(step, "state", None), "value", getattr(step, "state", ""))
+    return str(state or "") in _STEP_RAN_STATES
+
+
+def any_step_ran(record: Any) -> bool:
+    return any(step_ran(step) for step in (getattr(record.plan, "steps", None) or []))
+
+
+def classify_reuse(record: Any, *, learning: Qualification | None = None) -> ReuseVerdict:
+    """决定"这条任务给技能什么反馈"（§1.1，**纯函数**，绝不从文本推断）。
+
+    * 状态读不出来 → 不计分（``unknown_task_state``）；
+    * ``SUCCEEDED`` → **仍要过既有资格门**（最终计划版本完成 + 步骤真实终态 + 后验可核验）：
+      合格才计正向，否则只留痕（``unverified_success`` / 资格门自己的原因码）；
+    * 非成功终态 + **没有任何步骤执行过** → 不计分（``skill_task_not_started``）；
+    * 执行过但失败**不可归因**（超时/离线/世界变化/授权/用户取消/确认过期/卡住…）→ 不计分；
+    * 只有"跑了 + 运行时后验校验失败"才是方法反例（``reuse_verification_failed``）。
+    """
+
+    state = task_state_enum(getattr(record, "state", None))
+    if state is None:
+        return ReuseVerdict(EvidenceVerdict.REJECTED, "unknown_task_state", "indeterminate")
+    if state is TaskState.SUCCEEDED:
+        if learning is not None and learning.ok:
+            return ReuseVerdict(EvidenceVerdict.POSITIVE, "reuse_succeeded", "reuse_ok")
+        reason = learning.reason_code if learning is not None else "unverified_success"
+        if reason == "QUALIFIED":  # 理论上不会发生；保守兜底
+            reason = "unverified_success"
+        return ReuseVerdict(EvidenceVerdict.REJECTED, reason, "indeterminate")
+    if not any_step_ran(record):
+        # 还在等确认就被取消 / 确认过期 / 没跑就失败 —— 与"方法失败"无关
+        return ReuseVerdict(
+            EvidenceVerdict.REJECTED,
+            "skill_task_not_started",
+            "indeterminate",
+            {"state": state.value},
+        )
+    if state is TaskState.FAILED:
+        verification = getattr(record, "verification", None) or {}
+        failure = str(getattr(record, "failure", "") or "")
+        if (
+            failure in ATTRIBUTABLE_FAILURES
+            and verification.get("checked") is True
+            and verification.get("ok") is False
+        ):
+            return ReuseVerdict(
+                EvidenceVerdict.COUNTEREXAMPLE,
+                "reuse_verification_failed",
+                "stale",
+                {"failure": failure, "state": state.value},
+            )
+        return ReuseVerdict(
+            EvidenceVerdict.REJECTED,
+            f"unattributed_failure:{failure or 'unknown'}",
+            "indeterminate",
+            {"state": state.value, "failure": failure},
+        )
+    if state is TaskState.CANCELLED:
+        # 用户主动中止 ≠ 方法失败（即便已有部分步骤成功）
+        return ReuseVerdict(
+            EvidenceVerdict.REJECTED,
+            "user_or_external_abort",
+            "indeterminate",
+            {"state": state.value},
+        )
+    if state is TaskState.EXPIRED:
+        return ReuseVerdict(
+            EvidenceVerdict.REJECTED,
+            "task_expired_before_attribution",
+            "indeterminate",
+            {"state": state.value},
+        )
+    return ReuseVerdict(
+        EvidenceVerdict.REJECTED, f"unattributed_terminal:{state.value}", "indeterminate"
+    )
+
+
 def qualify(inputs: LearningInput) -> Qualification:
     """学习资格门（§7.2）。纯函数：同样的输入永远给同样的结论与原因码。"""
 
@@ -401,15 +519,19 @@ def qualify(inputs: LearningInput) -> Qualification:
 
 
 __all__ = [
+    "ATTRIBUTABLE_FAILURES",
     "ENTITY_SLOT",
     "INVENTORY_VERIFIED_TOOLS",
     "STEP_POSTCONDITION_ONLY_TOOLS",
     "LearningInput",
     "POSITION_SLOT",
     "Qualification",
+    "ReuseVerdict",
     "WORLD_CHANGING_TOOLS",
+    "classify_reuse",
     "normalize_steps",
     "preconditions_of",
     "qualify",
+    "step_ran",
     "success_criteria_of",
 ]

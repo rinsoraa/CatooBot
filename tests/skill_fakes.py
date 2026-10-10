@@ -148,6 +148,10 @@ def resource_record(
     drop: str = DROP,
     position: dict[str, int] | None = None,
     objective: str = "去挖一块橡木并捡回来",
+    #: 7E.1.1：任务**一个步骤都没开始**（等确认就被取消 / 还没跑就失败/过期）
+    never_started: bool = False,
+    #: 运行时给出的失败分类（TaskFailure 的值；"" = 没有）
+    failure: str = "",
 ) -> TaskRecord:
     """一条**真实结构**的任务记录（默认：挖一块原木 → 捡回来 → 背包复核成功）。"""
 
@@ -195,6 +199,19 @@ def resource_record(
         record.record_plan(now=T0, summary="第 1 版", status=PlanStatus.PENDING_CONFIRMATION.value)
     if record.plan_history:
         record.plan_history[-1].status = plan_status
+    if failure:
+        record.failure = str(failure)
+    if never_started:
+        # 真实形态：还在等用户确认（或刚建完就没跑）→ 所有步骤 PENDING、没有时间戳/动作
+        for step in record.steps:
+            step.state = StepState.PENDING
+            step.action_id = ""
+            step.status = ""
+            step.result = {}
+            step.started_at = None
+            step.finished_at = None
+        record.current_step = 0
+        return record
     states = dict(step_states or {})
     for step in record.steps:
         step.state = states.get(step.step_id, StepState.SUCCEEDED)
