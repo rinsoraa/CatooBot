@@ -391,7 +391,9 @@ INVALIDATE。
 | WebUI typecheck / Vitest / build / 浏览器 E2E | 通过 / 528 / 通过 / 7 passed |
 | Minecraft runtime（Node 单测 + flying-squid E2E） | `ALL CHECKS PASSED`（全量 pytest 结束后单独跑） |
 | 迁移最高版本冻结 / v34→35 升级 / 重复迁移幂等 | `test_latest_migration_is_idempotent`（35）+ `TestMigration35` 三项 |
-| CI | 见 7E.1 最终报告（run/job 链接） |
+| CI | 见 7E.1 最终报告（run/job 链接）。**首轮** Python job 红在 Node E2E 的时序敏感断言
+（`[e2e] ASSERT FAILED: player distance`，follow 家族，与本轮 Python 改动无关且本地/历史 CI 都出现过），
+按既有纪律重跑该 job 通过 —— 如实记录，不用绿色替代语义正确性 |
 
 ### 12.7 真实环境与限制（如实分级）
 
