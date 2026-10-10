@@ -23,6 +23,7 @@ from app.tasks.agent_plan import PlanTarget
 from app.tasks.planner import (
     ObservationFailed,
     PlannedTask,
+    plan_exploration_task,
     plan_resource_task,
 )
 from app.tasks.turn import DROP_OVERRIDES, block_for
@@ -76,9 +77,24 @@ FOLLOW_KEYWORDS: tuple[str, ...] = (
 #: 与授权 TTL（60s）/ 任务 TTL（600s）是**三层不同的期限** —— 计划里如实展示这一层。
 FOLLOW_TIMEOUT_FALLBACK_SECONDS = 120.0
 
+#: Phase 7F.1：有界探索意图的确定性关键词（与 7A 的 EXPLORE_KEYWORDS 同词表 —— 复用，不另立）。
+#: 7A 的 EXPLORATION 意图由这些词从记忆里生成，所以同一份词表能把它的目标文本路由到探索模板。
+EXPLORE_KEYWORDS: tuple[str, ...] = (
+    "探索",
+    "去看看",
+    "远行",
+    "explore",
+    "探险",
+    "出去转转",
+    "转转",
+)
+
+#: 有界探索的默认上限（与 planner.EXPLORE_DEFAULT_DISTANCE 保持一致；这里只做展示）
+EXPLORE_DEFAULT_DISTANCE = 24.0
+
 
 def detect_shape(objective: str) -> str:
-    """确定性形状判定：follow / resource / unknown（绝不靠模型猜）。"""
+    """确定性形状判定：follow / resource / explore / unknown（绝不靠模型猜）。"""
     text = str(objective or "").strip()
     if not text:
         return "unknown"
@@ -86,6 +102,8 @@ def detect_shape(objective: str) -> str:
         return "follow"
     if block_for(text):
         return "resource"
+    if any(keyword.lower() in text.lower() for keyword in EXPLORE_KEYWORDS):
+        return "explore"
     return "unknown"
 
 
@@ -128,12 +146,14 @@ class BoundedAgentPlanner:
         target: PlanTarget | None = None,
         observe: ObserveFn | None = None,
     ) -> PlanningResult:
-        """按形状路由（follow / resource / unknown），产出六值结论之一。"""
+        """按形状路由（follow / resource / explore / unknown），产出六值结论之一。"""
         shape = detect_shape(objective)
         if shape == "follow":
             return self._plan_follow(objective, target or PlanTarget())
         if shape == "resource":
             return await self._plan_resource(objective, observe)
+        if shape == "explore":
+            return await self._plan_explore(objective, observe)
         return self._plan_unknown(objective)
 
     # ------------------------------------------------------------ follow（修订 2）
@@ -211,6 +231,72 @@ class BoundedAgentPlanner:
                     "确认授权 60s 只管派发新步骤；任务总时限 600s"
                 ),
             },
+        )
+
+    # ------------------------------------------------- explore（Phase 7F.1 有界自主探索）
+
+    async def _plan_explore(self, objective: str, observe: ObserveFn | None) -> PlanningResult:
+        """有界探索：只生成一个 SAFE 观察 + LOW 移动的**有限**计划，绝不在此执行世界动作。"""
+        checks: list[dict[str, Any]] = [
+            {"check": "shape", "ok": True, "detail": {"shape": "explore"}}
+        ]
+        if observe is None:
+            checks.append({"check": "observe", "ok": False, "detail": {}})
+            return PlanningResult(
+                outcome=PlanningOutcome.BLOCKED_BY_PRECONDITION,
+                reason="observe_unavailable",
+                checks=tuple(checks),
+            )
+        # 探索只用 SAFE 读 + LOW 移动；任一被关掉就如实说做不了（绝不偷偷放宽）
+        if not (self.allow_safe and self.allow_low):
+            checks.append(
+                {
+                    "check": "risk_flag",
+                    "ok": False,
+                    "detail": {"allow_safe": self.allow_safe, "allow_low": self.allow_low},
+                }
+            )
+            return PlanningResult(
+                outcome=PlanningOutcome.BLOCKED_BY_POLICY,
+                reason="explore_requires_safe_and_low",
+                checks=tuple(checks),
+            )
+        try:
+            planned = await plan_exploration_task(objective, observe=observe)
+        except ObservationFailed as exc:
+            checks.append({"check": "observe", "ok": False, "detail": {"error": str(exc)[:200]}})
+            return PlanningResult(
+                outcome=PlanningOutcome.BLOCKED_BY_PRECONDITION,
+                reason=str(exc)[:200],
+                checks=tuple(checks),
+            )
+        except Exception as exc:  # noqa: BLE001 - 规划失败绝不假装可执行
+            checks.append(
+                {"check": "plan", "ok": False, "detail": {"error": f"{type(exc).__name__}"}}
+            )
+            return PlanningResult(
+                outcome=PlanningOutcome.NEEDS_MORE_INFORMATION,
+                reason=f"planning_failed:{type(exc).__name__}",
+                checks=tuple(checks),
+            )
+        blocked = self._policy_blocked(planned)
+        if blocked is not None:
+            checks.append({"check": "risk_flags", "ok": False, "detail": {"reason": blocked}})
+            return PlanningResult(
+                outcome=PlanningOutcome.BLOCKED_BY_POLICY,
+                reason=blocked,
+                plan=planned,
+                risk_summary=_risk_summary_of(planned, self.risk_table),
+                checks=tuple(checks),
+            )
+        checks.append({"check": "plan", "ok": True, "detail": {"steps": len(planned.plan.steps)}})
+        return PlanningResult(
+            outcome=PlanningOutcome.READY_FOR_APPROVAL,
+            reason="explore_plan_ready",
+            plan=planned,
+            target=PlanTarget(status="VERIFIED", reason="no_player_target"),
+            risk_summary=_risk_summary_of(planned, self.risk_table),
+            checks=tuple(checks),
         )
 
     # ------------------------------------------------------------ resource（复用 5A 模板）

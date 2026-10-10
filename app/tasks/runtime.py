@@ -22,6 +22,7 @@ Confirmation → Service → ActionRuntime → Mineflayer。TaskRuntime **绝不
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
 from collections.abc import Awaitable, Callable, Mapping
@@ -74,6 +75,13 @@ log = logging.getLogger("CatooBot.Tasks")
 
 SAFE_RISKS = frozenset({"SAFE"})
 
+#: Phase 7F.1 §八十三：位置后置条件读的是**感知层**世界视图（near 层按固定间隔轮询一次，
+#: 默认约 1s）。刚到达时缓存可能还没追上真实位置，因此对同一份 SAFE 世界读做**有界重试**
+#: 等待收敛；到期仍在半径外就判失败（fail-closed）——既不放行"还没到"，也不因缓存延迟
+#: 错杀真实到达。
+POSITION_VERIFY_ATTEMPTS = 6
+POSITION_VERIFY_INTERVAL_SECONDS = 0.6
+
 
 @dataclass
 class TaskConfig:
@@ -85,6 +93,9 @@ class TaskConfig:
     max_replans: int = 2
     no_progress_limit: int = 3
     safe_retries: int = 2
+    #: 7F.1 §八十三：位置后置条件的**有界**等待预算（读感知层视图，容忍一个轮询周期）。
+    position_verify_attempts: int = POSITION_VERIFY_ATTEMPTS
+    position_verify_interval_seconds: float = POSITION_VERIFY_INTERVAL_SECONDS
     #: 5A.1 §十/§十一：一份计划授权的有效期（≠ 任务总时长）。生产上取
     #: ``minecraft.agent.confirmation.ttl_seconds``；测试/真机 expiry 场景用极短值。
     authorization_ttl_seconds: float = 60.0
@@ -1262,9 +1273,7 @@ class TaskRuntime:
         expected = record.plan.expected_final_state
         verification: dict[str, Any] = {"checked": False}
         if not expected.empty:
-            after = await self._inventory_snapshot()
-            before = record.result.get("started_inventory")
-            verification = self._verify_inventory(expected, before, after)
+            verification = await self._verify_final_state(record, expected)
             if not verification.get("ok"):
                 record.state = TaskState.FAILED
                 record.failure = TaskFailure.VERIFICATION.value
@@ -1282,6 +1291,130 @@ class TaskRuntime:
         await self._save(record, event=TASK_SUCCEEDED)
         await self._publish(TASK_SUCCEEDED, self._event_payload(record))
         return record
+
+    async def _verify_final_state(
+        self, record: TaskRecord, expected: ExpectedFinalState
+    ) -> dict[str, Any]:
+        """把全部后置条件（背包增量 + Phase 7F.1 有界探索的到达位置）合并成一份结论。
+
+        每一项都用**新鲜的 SAFE 读**判定，绝不信动作返回值；任何一项不满足 → 整份失败。
+        """
+        result: dict[str, Any] = {"checked": True}
+        ok = True
+        messages: list[str] = []
+        if expected.inventory_delta:
+            after = await self._inventory_snapshot()
+            before = record.result.get("started_inventory")
+            inventory = self._verify_inventory(expected, before, after)
+            result["inventory_delta"] = inventory.get("inventory_delta", {})
+            result["expected"] = inventory.get("expected", {})
+            if not inventory.get("ok"):
+                ok = False
+                messages.append(str(inventory.get("message") or "背包最终状态与预期不符"))
+        if expected.position_within:
+            position = await self._verify_position_within(expected.position_within)
+            result["position_within"] = position.get("position_within")
+            result["expected_position"] = position.get("expected_position")
+            if not position.get("ok"):
+                ok = False
+                messages.append(str(position.get("message") or "位置最终状态与预期不符"))
+        result["ok"] = ok
+        result["message"] = "" if ok else "；".join(messages)
+        return result
+
+    async def _verify_position_within(self, expected: Mapping[str, Any]) -> dict[str, Any]:
+        """有界探索的到达判定：重新读世界坐标，判断是否落在目标半径内（§八十三）。
+
+        读的是感知层世界视图——它由 near 层按固定间隔轮询真实世界得到，刚到达时可能滞后
+        最多一个轮询周期。因此这里对**同一份 SAFE 读**做**有界重试**等待感知收敛；到期仍在
+        半径外就判失败（fail-closed）：既不放行"还没到"，也不因缓存延迟错杀真实到达。
+        """
+        target = {
+            "x": float(expected["x"]),
+            "y": float(expected["y"]),
+            "z": float(expected["z"]),
+            "radius": float(expected.get("radius", 2.0)),
+        }
+        attempts = max(1, int(getattr(self.config, "position_verify_attempts", 1)))
+        interval = max(0.0, float(getattr(self.config, "position_verify_interval_seconds", 0.0)))
+        result: dict[str, Any] = {
+            "ok": False,
+            "position_within": None,
+            "expected_position": target,
+            "message": "读不到世界状态（离线/不可用），无法确认是否到达探索目标",
+        }
+        for attempt in range(attempts):
+            result = await self._read_position_once(target)
+            if result.get("ok") or attempt == attempts - 1:
+                break
+            # 只有"读到了坐标但还没进半径"才值得等感知层刷新；离线/无坐标是硬失败，不重试。
+            if result.get("position_within") is None:
+                break
+            await asyncio.sleep(interval)
+        return result
+
+    async def _read_position_once(self, target: Mapping[str, Any]) -> dict[str, Any]:
+        """读一次 SAFE 世界视图并判定是否落在目标半径内（单次快照，不做等待）。"""
+        world = await self._safe_read("minecraft_world", {})
+        view = world.result if (world.ok and isinstance(world.result, Mapping)) else {}
+        if not isinstance(view, Mapping) or view.get("online") is False:
+            return {
+                "ok": False,
+                "position_within": None,
+                "expected_position": target,
+                "message": "读不到世界状态（离线/不可用），无法确认是否到达探索目标",
+            }
+        position = self._self_position_of(view)
+        if position is None:
+            return {
+                "ok": False,
+                "position_within": None,
+                "expected_position": target,
+                "message": "世界视图里没有罐头自己的坐标，无法确认是否到达探索目标",
+            }
+        dx = position["x"] - target["x"]
+        dy = position["y"] - target["y"]
+        dz = position["z"] - target["z"]
+        distance = (dx * dx + dy * dy + dz * dz) ** 0.5
+        ok = distance <= target["radius"]
+        return {
+            "ok": ok,
+            "position_within": {
+                "x": round(position["x"], 2),
+                "y": round(position["y"], 2),
+                "z": round(position["z"], 2),
+                "distance": round(distance, 2),
+            },
+            "expected_position": target,
+            "message": ""
+            if ok
+            else (
+                f"最终位置与探索目标不符（距目标 {distance:.1f} 格，"
+                f"允许 {target['radius']:.1f} 格）"
+            ),
+        }
+
+    @staticmethod
+    def _self_position_of(view: Mapping[str, Any]) -> dict[str, float] | None:
+        """从世界视图里取罐头自己的坐标（扁平化结果 / service 原始语义视图两种形状都认）。"""
+        candidate: object
+        position = view.get("position")
+        if isinstance(position, Mapping):
+            candidate = position
+        else:
+            semantic = view.get("semantic")
+            self_state = semantic.get("self") if isinstance(semantic, Mapping) else None
+            candidate = self_state.get("position") if isinstance(self_state, Mapping) else None
+        if not isinstance(candidate, Mapping):
+            return None
+        try:
+            return {
+                "x": float(candidate["x"]),
+                "y": float(candidate["y"]),
+                "z": float(candidate["z"]),
+            }
+        except (KeyError, TypeError, ValueError):
+            return None
 
     def _verify_inventory(
         self,

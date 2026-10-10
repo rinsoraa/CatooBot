@@ -23,6 +23,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from app.tasks.models import (
+    DEFAULT_ARRIVE_RADIUS,
     ExpectedFinalState,
     TaskPlan,
     TaskStep,
@@ -301,6 +302,150 @@ async def plan_resource_task(
         objective=objective,
         steps=steps,
         expected_final_state=ExpectedFinalState(inventory_delta={drop: 1}),
+        observations=[item.to_payload() for item in observations],
+    )
+    return PlannedTask(objective=objective, plan=plan, observations=observations)
+
+
+# ---------------------------------------------------------------- exploration（Phase 7F.1）
+
+#: 有界探索的默认硬上限：目标点距离当前坐标不超过这个值（格）。
+#: 复用既有 move_to.max_distance 的思路，不新增一批配置旋钮。
+EXPLORE_DEFAULT_DISTANCE = 24.0
+
+#: 罗盘方向 → (dx, dz) 单位向量（Minecraft：-Z = north，+X = east）。
+_COMPASS_VECTORS: dict[str, tuple[int, int]] = {
+    "north": (0, -1),
+    "south": (0, 1),
+    "east": (1, 0),
+    "west": (-1, 0),
+}
+
+
+def _explore_target(
+    view: Mapping[str, Any], sx: float, sy: float, sz: float, max_distance: float
+) -> dict[str, float] | None:
+    """从**真实世界视图**里挑一个有界探索坐标：优先可达的兴趣点，其次最开阔的罗盘方向。
+
+    只读世界事实，不猜、不随机；坐标只在预算范围内取。
+    """
+    semantic = view.get("semantic")
+    # 1) 兴趣点：世界视图里最近、且在预算范围内的 POI 坐标
+    pois = semantic.get("points_of_interest") if isinstance(semantic, Mapping) else None
+    best: dict[str, float] | None = None
+    best_dist = float(max_distance) + 1.0
+    if isinstance(pois, list):
+        for item in pois:
+            if not isinstance(item, Mapping):
+                continue
+            pos = item.get("pos")
+            if not isinstance(pos, Mapping):
+                continue
+            try:
+                tx = float(pos["x"])
+                ty = float(pos["y"])
+                tz = float(pos["z"])
+            except (KeyError, TypeError, ValueError):
+                continue
+            dist = ((tx - sx) ** 2 + (tz - sz) ** 2) ** 0.5
+            # 太近（就在脚边）不算"探索"；太远超出有界预算也不算
+            if 4.0 <= dist <= float(max_distance) and dist < best_dist:
+                best, best_dist = {"x": tx, "y": ty, "z": tz}, dist
+    if best is not None:
+        return best
+
+    # 2) 兜底：从 terrain 聚合里挑**最开阔**的罗盘方向，向前走有界的一步
+    terrain = semantic.get("terrain") if isinstance(semantic, Mapping) else None
+    openness: dict[str, float] = {}
+    if isinstance(terrain, list):
+        for item in terrain:
+            if not isinstance(item, Mapping):
+                continue
+            direction = item.get("direction")
+            distance = item.get("distance")
+            if isinstance(direction, str) and isinstance(distance, (int, float)):
+                openness[direction] = max(openness.get(direction, 0.0), float(distance))
+    direction = ""
+    if openness:
+        direction = max(openness, key=lambda key: (openness[key], key))
+    if direction not in _COMPASS_VECTORS:
+        direction = "north"
+    step = max(4.0, min(float(max_distance), openness.get(direction, float(max_distance)) - 1.0))
+    dx, dz = _COMPASS_VECTORS[direction]
+    return {
+        "x": round(sx + dx * step, 1),
+        "y": sy,
+        "z": round(sz + dz * step, 1),
+    }
+
+
+async def plan_exploration_task(
+    objective: str,
+    *,
+    observe: ObserveFn,
+    max_distance: float = EXPLORE_DEFAULT_DISTANCE,
+    arrive_radius: float = DEFAULT_ARRIVE_RADIUS,
+) -> PlannedTask:
+    """确定性探索任务模板（Phase 7F.1 §四）：看世界 → 选有界目标 → 走过去 → 复核到达。
+
+    只有 SAFE 观察（minecraft_world）在**规划期**执行；move_to 只是写进计划，
+    等两道门（批准计划 + 确认执行）都过了才由 TaskRuntime 执行。到达与否由
+    **重新读到的世界坐标**判定，绝不由动作返回值自述。第一版只用 SAFE + LOW（MOVE），
+    不碰任何世界修改能力。
+    """
+    world_view = await _safe_observe(observe, "minecraft_world", {})
+    world_result = _result_of(world_view)
+    observations = [
+        Observation(
+            tool="minecraft_world",
+            arguments={},
+            result=world_result,
+            summary=getattr(world_view, "summary", ""),
+        )
+    ]
+    if world_result.get("online") is False or world_result.get("available") is False:
+        raise ObservationFailed("罐头现在不在线的世界里，没法出去探索")
+    self_position = _self_position(world_result)
+    try:
+        sx = float(self_position["x"])
+        sy = float(self_position["y"])
+        sz = float(self_position["z"])
+    except (KeyError, TypeError, ValueError):
+        raise ObservationFailed("世界视图里没有罐头自己的坐标，无法规划探索目标") from None
+
+    target = _explore_target(world_result, sx, sy, sz, float(max_distance))
+    if target is None:  # pragma: no cover - 兜底方向永远有值
+        raise ObservationFailed("世界视图里没有可用的探索方向或目标")
+
+    steps = [
+        TaskStep(
+            step_id="step_1",
+            tool="minecraft_move_to",
+            arguments={"x": int(target["x"]), "y": int(target["y"]), "z": int(target["z"])},
+            risk="LOW",
+        ),
+        TaskStep(
+            step_id="step_2",
+            tool="minecraft_look_at",
+            arguments={
+                "x": float(target["x"]),
+                "y": float(target["y"]) + 1.5,
+                "z": float(target["z"]),
+            },
+            risk="SAFE",
+        ),
+    ]
+    plan = TaskPlan(
+        objective=objective,
+        steps=steps,
+        expected_final_state=ExpectedFinalState(
+            position_within={
+                "x": float(target["x"]),
+                "y": float(target["y"]),
+                "z": float(target["z"]),
+                "radius": float(arrive_radius),
+            }
+        ),
         observations=[item.to_payload() for item in observations],
     )
     return PlannedTask(objective=objective, plan=plan, observations=observations)

@@ -1,5 +1,62 @@
 # Changelog
 
+## Minecraft Phase 7F.1 — Bounded Autonomous Exploration（有界自主探索）
+
+* **目标**：建立**最小完整**的自主游玩闭环 ——
+  真实角色状态 / 合格 LifeIntent → 有界探索提案 → 既有 AgentPlan 与能力、前置条件校验 →
+  既有批准和确认两道门 → 既有 TaskRuntime → 已注册的 SAFE 观察与 LOW 导航工具 →
+  真实 Minecraft 结果验证 → 可追溯经历。第一版**只读 + 移动**，绝不挖、放、攻击、合成、
+  开容器或做任何世界修改。
+* **探索模板（`app/tasks/planner.py::plan_exploration_task`）**：确定性地用既有 SAFE 观察
+  `minecraft_world` 读一次真实世界 → 从**真实可观察事实**里挑一个**有界**目标
+  （优先预算内且 >4 格的兴趣点 `points_of_interest`；否则取 `terrain` 聚合里**最开阔**的罗盘
+  方向，向前走一步），生成 `move_to`（LOW）+ `look_at`（SAFE）两步计划。默认硬上限
+  `EXPLORE_DEFAULT_DISTANCE = 24.0` 格（复用 `move_to` 的距离口径，**不新增配置旋钮**）；
+  规划期**只**执行 SAFE 观察，两个动作只写进计划，等两道门都过才由 TaskRuntime 执行。
+  世界离线 / 不可用 / 读不到自身坐标 → `ObservationFailed`，如实判"做不了"，绝不猜。
+* **形状路由（`app/tasks/agent_planner.py`）**：`detect_shape` 新增 `explore` 分支（`FOLLOW`
+  → `RESOURCE` → `EXPLORE` → `UNKNOWN` 的确定性优先级，**绝不靠模型猜**）；`_plan_explore`
+  在 `observe is None` 或 `allow_safe`/`allow_low` 任一为假时 fail-closed
+  （`observe_unavailable` / `explore_requires_safe_and_low`），否则产出
+  `READY_FOR_APPROVAL` + `risk_summary`。探索关键词复用 7A 的 `EXPLORE_KEYWORDS` 同词表。
+* **到达后置条件（`app/tasks/models.py` + `runtime.py`）**：`ExpectedFinalState` 新增
+  `position_within`（`x/y/z/radius`，缺省半径 `DEFAULT_ARRIVE_RADIUS = 2.0`），坏结构 →
+  `None`（fail-closed）。`_finish` 在结算成功前调 `_verify_final_state` → `_verify_position_within`：
+  **重新读一次** SAFE `minecraft_world`（不信任动作自述），由**真实世界坐标**判定是否落在半径内，
+  结果落 `record.verification`（`ok/position_within/expected_position`）。离线或读不到坐标 →
+  **硬失败**，绝不冒充到达。
+* **感知收敛的有界重试**：世界视图由感知层 near 层按固定间隔（默认约 1s）轮询真实世界得到，
+  刚到达时缓存可能滞后一个周期。`_verify_position_within` 因此对**同一份 SAFE 读**做**有界重试**
+  （`TaskConfig.position_verify_attempts = 6` × `position_verify_interval_seconds = 0.6`），
+  仅在"读到坐标但还没进半径"时重试；离线 / 无坐标是硬失败**不重试**。到期仍在半径外 →
+  判失败（fail-closed）——既不放行"还没到"，也不因缓存延迟错杀真实到达。
+* **工具路由修复**：`task_adapter._SERVICE_ROUTES` 补上 `minecraft_look_at → _look_at`
+  （真机暴露的缺口，原计划里 `look_at` 会因缺路由无法执行）。
+* **经历与记忆**：探索任务只有 `move_to` + `look_at`，不产生资源事实、不写世界、不重复记忆；
+  终态经既有 `_publish` / `MinecraftMemoryBridge.on_task_finished` 回流，与其它任务同一套，
+  **不另立第二套记忆系统**。第一版不写挖/放/容器类证据。
+* **安全边界（一字未松）**：`allow_medium=false`、**19** 个注册工具、`ACTION_RISK`、两道门
+  （批准计划 + 确认执行）、身份校验、`TaskAuthorization`/`TaskStepAuthorization`、
+  pause/resume/cancel/expire 与停止语义**全部不变**。LifeIntent / TaskProposal / AgentPlan
+  **不等于**真实执行；探索**没有**任何绕过 Policy、确认门或停止机制的路径。
+* **测试**：新增 `tests/test_agent_plan_explore.py`（13 项：路由、有界预算、observe/风险
+  fail-closed、未批准不可执行、批准只建 PENDING 不执行、每个探索步骤工具都有 service 路由、
+  `look_at` 路由真调用）+ `tests/test_task_runtime_explore.py`（6 项：真世界读确认到达、
+  未到判失败、**感知滞后→收敛→成功**、离线 fail-closed、不可达路径安全停止、取消停且不再产生新
+  动作）；`tests/agent_plan_fakes.py` 的 `observe_ok()` 补齐 `available/online` 与兴趣点。
+  全量 **`3608 passed`**。
+* **真实 Java 服务器门禁 —— PASS**（`scripts/explore_smoke_real.py`，Fabric 1.21.1，offline
+  `Catodayo`）：① `positive` 真实规划 → `READY_FOR_APPROVAL` → 执行 → 真世界坐标距目标
+  **1.70 格**落在 2.0 半径内 → `SUCCEEDED`、`verification.ok=True`、角色真实位移、无遗留移动；
+  ② `blocked` 目标不可达（正上方 +40 格，在 ≤64 距离门内但走不通）→ 真实
+  `path.not_found` → `PAUSED`（`ACTION_FAILED`）、**绝不 SUCCEEDED**、无持续移动；
+  ③ `cancel` 导航进行中（`WAITING_ACTION`）取消 → `CANCELLED` + 经 `minecraft_stop` 真停 +
+  不再产生新动作。
+* **范围**：**无新表、无新迁移**（最高仍 **36**）；19 工具 / `ACTION_RISK` / `allow_medium` /
+  确认·授权·取消·暂停·超时语义不变；未触碰 `.env` / 密钥 / Character Bible / 敏感配置。
+  残余限制：第一版探索是**确定性单段**（一个 `move_to` + 一个 `look_at`），不是无界 LLM 循环，
+  也不含多段路线或世界修改。
+
 ## Minecraft Phase 7D.3 — Attribution Assurance Semantics & Fail-Closed Consumers
 
 * **根因**：Phase 7D Follow-up 的 `strict_self_proof` 语义过宽 —— 它是

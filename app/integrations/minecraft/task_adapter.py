@@ -161,6 +161,10 @@ async def _dropped_items(service: Any, args: Mapping[str, Any]) -> dict[str, Any
     return await service.dropped_items()
 
 
+async def _look_at(service: Any, args: Mapping[str, Any]) -> dict[str, Any]:
+    return await service.look_at(args.get("x"), args.get("y"), args.get("z"))
+
+
 async def _move_to(service: Any, args: Mapping[str, Any]) -> dict[str, Any]:
     return await service.move_to(args.get("x"), args.get("y"), args.get("z"))
 
@@ -199,6 +203,7 @@ _SERVICE_ROUTES: dict[str, Callable[[Any, Mapping[str, Any]], Awaitable[dict[str
     "minecraft_find_blocks": _find_blocks,
     "minecraft_dig_capability": _dig_capability,
     "minecraft_dropped_items": _dropped_items,
+    "minecraft_look_at": _look_at,
     "minecraft_move_to": _move_to,
     "minecraft_follow_player": _follow_player,
     "minecraft_dig": _dig,

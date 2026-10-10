@@ -485,15 +485,49 @@ class PlanVersion:
         )
 
 
+#: Phase 7F.1：探索到达判定默认半径（格）。与 move_to 的 GoalNear 半径对齐，
+#: 后置条件用的是**重新读到的世界坐标**，不是动作返回值。
+DEFAULT_ARRIVE_RADIUS = 2.0
+
+
+def _position_within_of(payload: Mapping[str, Any] | None) -> dict[str, float] | None:
+    """从 payload 里读出探索后置条件 ``position_within``（读不出 → None，fail-closed）。"""
+    raw = (payload or {}).get("position_within") if isinstance(payload, Mapping) else None
+    if not isinstance(raw, Mapping):
+        return None
+    try:
+        return {
+            "x": float(raw["x"]),
+            "y": float(raw["y"]),
+            "z": float(raw["z"]),
+            "radius": float(raw.get("radius", DEFAULT_ARRIVE_RADIUS)),
+        }
+    except (KeyError, TypeError, ValueError):  # pragma: no cover - 计划校验会先拦掉
+        return None
+
+
 @dataclass
 class ExpectedFinalState:
     """Plan 定义的"最终应该看到什么"（§八十三）——用 SAFE 读重新验证，不看历史结果。"""
 
     #: 物品名（裸名）→ 至少增加多少
     inventory_delta: dict[str, int] = field(default_factory=dict)
+    #: Phase 7F.1：有界探索的后置条件 —— 用 SAFE 读（minecraft_world）确认
+    #: "罐头最终在 (x,y,z) 的 radius 格内"。不是靠动作返回值自述，是重新读世界。
+    position_within: dict[str, float] | None = None
 
     def to_payload(self) -> dict[str, Any]:
-        return {"inventory_delta": {k: v for k, v in sorted(self.inventory_delta.items())}}
+        payload: dict[str, Any] = {
+            "inventory_delta": {k: v for k, v in sorted(self.inventory_delta.items())}
+        }
+        if self.position_within:
+            payload["position_within"] = {
+                "x": float(self.position_within["x"]),
+                "y": float(self.position_within["y"]),
+                "z": float(self.position_within["z"]),
+                "radius": float(self.position_within.get("radius", DEFAULT_ARRIVE_RADIUS)),
+            }
+        return payload
 
     @classmethod
     def from_payload(cls, payload: Mapping[str, Any] | None) -> ExpectedFinalState:
@@ -505,11 +539,11 @@ class ExpectedFinalState:
                     delta[canonical_item_name(key)] = int(value)
                 except (TypeError, ValueError):  # pragma: no cover - 计划校验会先拦掉
                     continue
-        return cls(inventory_delta=delta)
+        return cls(inventory_delta=delta, position_within=_position_within_of(payload))
 
     @property
     def empty(self) -> bool:
-        return not self.inventory_delta
+        return not self.inventory_delta and self.position_within is None
 
 
 @dataclass

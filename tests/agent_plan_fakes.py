@@ -150,7 +150,23 @@ def observe_ok(**extra: Any) -> Any:
                 "R",
                 (),
                 {
-                    "result": {"semantic": {"self": {"position": {"x": -8, "y": 70, "z": 5}}}},
+                    "result": {
+                        "available": True,
+                        "online": True,
+                        "semantic": {
+                            "self": {"position": {"x": -8, "y": 70, "z": 5}},
+                            "points_of_interest": [
+                                {
+                                    "type": "minecraft:chest",
+                                    "distance": 16.0,
+                                    "pos": {"x": -8.0, "y": 70.0, "z": 21.0},
+                                }
+                            ],
+                            "terrain": [
+                                {"category": "grass", "direction": "south", "distance": 18.0}
+                            ],
+                        },
+                    },
                     "summary": "world",
                 },
             )()
