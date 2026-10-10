@@ -48,6 +48,37 @@
   假服务器不能替代这一项（它收到挖掘包就立刻破坏方块、没有第二个真实玩家，用它证明外部动画
   路径就是伪造结论）。
 
+### 第二轮（2026-10-10，服务器 `online-mode=false` 之后）：真机门禁 PASS + 两处真机逼出来的修正
+
+* **真机门禁（Fabric 1.21.1 @127.0.0.1:25565，探针 `test/probe_dig_attribution_real.js`）四个用例全 PASS**：
+  * **S 自己挖** → `BLOCK_REMOVED` + `SELF_CONFIRMED`（`dig_lifecycle_timing`，`ratio=1.000`，
+    `strict_self_proof=true`，服务器确认包比本地乐观更新晚 **45ms**）；
+  * **E 挖到一半被 `/setblock ... air`** → `AMBIGUOUS/block_removed_before_self_dig_completion`（`ratio=0.11`）—— 7D.2 的缺陷形状在真机上被正确拒绝；
+  * **X 第二个真实客户端抢占同一个方块** → `EXTERNAL_INDICATED/external_break_progress_observed`，证据里带对方用户名与 6 段破坏进度（另一客户端确实能收到 `block_break_animation`：协议诊断 12 包 / mineflayer 10 事件）；
+  * **P 非 op 客户端在 `spawn-protection` 内挖掘（服务器拒绝）** → `world_effect=BLOCK_REMAINS` + `AMBIGUOUS`，且服务器侧复核方块**仍在**（`stone`）。
+* **修正 A（监听器必须最后摘 + 等服务器确认）**：第一版在 `bot.dig()` resolve 时就摘监听，
+  于是永远等不到"服务器亲口说这个坐标变了"；而 mineflayer 的 `finishDigging()` 做的是**本地乐观更新**，
+  "本地读出来是 air"不是世界证据。现在 `wait()` 在判定前有一个**有界真证据窗口**
+  （`MC_DIG_CONFIRM_WAIT_MS` 默认 3s，并用 `digConfirmBudgetMs()` 扣掉动作自身 timeout 的余量，
+  绝不会因为等证据把一次成功挖掘逼成超时），摘监听放在最后（成功/失败/取消/超时/断开同一出口，幂等）。
+* **修正 B（服务器说"还是方块"= 没有发生移除）**：第一版把"收到该坐标的任何服务器包"当成移除确认，
+  真机立刻打脸 —— 服务器拒绝挖掘时会回一个 `type != 0` 的**纠正包**。现在区分
+  `serverSaysAir`（→ `BLOCK_REMOVED`，`strict_self_proof` 也要求它）与 `serverSaysPresent`
+  （→ `BLOCK_REMAINS`）；只有本地视图说没了、服务器什么都没说 → `UNKNOWN`
+  （原因码 `block_change_not_confirmed_by_server`）。这堵住了**"客户端自以为挖完了、服务器根本没让破坏生效"**
+  这一类此前的假成功。
+* **测试**：Node `dig_attribution.test.js` 62/62（新增"本地乐观更新"与"服务器纠正包"两条真机形状的回归），
+  flying-squid `e2e.js` 的断言按新规矩更新（假服务器不回自己的方块变化包 → 必须判 `UNKNOWN`，
+  实测 `AMBIGUOUS/block_change_not_confirmed_by_server`，**不允许**伪造成自证）；16 个 Node 单测文件全 OK。
+  Python 源码本轮未再改动（沿用同树 `pytest tests -q` **3585 passed**）。
+* **服务器侧改动（最小、可还原）**：只把两个测试账号（`Catodayo` / `CatodayoMate`）按**离线 UUID**
+  写进 `ops.json`（原文件备份 `ops.json.bak-p7df`）并重启过一次服务器（当时无玩家在线）；
+  玩法配置（`spawn-protection` 等）**未改**。
+* **结论仍为 `PARTIAL`**：真机门禁 A–D 全 PASS；保留 `PARTIAL` 是因为客户端协议里**没有**
+  "这个方块是我破坏的"回执 —— 理论上仍有一个极窄窗口（一次**迟于**我们完成时刻、且**不发动画**的
+  外部改动会与"自己挖完"无法区分）。payload 里 `confirm_basis` / `strict_self_proof` / `flags` 全部保留，
+  上层可随时收紧到"只认 `strict_self_proof`"。
+
 ## Minecraft Phase 7E.1.2 — Strict Step Execution Evidence Gate
 
 * **问题**：`step_ran()` 除了 `started_at` / `action_id`，还把状态本身当执行证据 —— 包含

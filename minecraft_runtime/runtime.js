@@ -53,6 +53,14 @@ const MOVE_TIMEOUT_MS = Number.parseInt(process.env.MC_MOVE_TIMEOUT_MS || '30000
 // Phase 4B：dig（第一个世界修改动作；单方块、MEDIUM、需要确认）
 const DIG_DEFAULT_TIMEOUT_MS = Number.parseInt(process.env.MC_DIG_TIMEOUT_MS || '30000', 10)
 const DIG_MAX_DISTANCE = Number.parseFloat(process.env.MC_DIG_MAX_DISTANCE || '5')
+//: Phase 7D Follow-up：挖掘结束后等"服务器方块变化包"的最长时间（真证据窗口，不是拖时间）。
+//: 真机取证：真实自挖的服务器确认会**晚于**客户端自己的本地乐观更新（服务器自己算进度），
+//: 实测在 1.5s 的窗口里有时还没到 → 放宽到 3s；而"服务器忽略了这次挖掘"（例如出生点保护）
+//: 则**永远**不会有包 → 一律按未确认处理。两者用同一把尺子区分。
+const DIG_SERVER_CONFIRM_WAIT_MS = Number.parseInt(process.env.MC_DIG_CONFIRM_WAIT_MS || '3000', 10)
+const DIG_SERVER_CONFIRM_POLL_MS = 25
+//: 等待时给动作自身的 timeout 留的余量（绝不让"等证据"把动作逼成超时）
+const DIG_SERVER_CONFIRM_TIMEOUT_MARGIN_MS = 750
 //: 每次调用读取：测量与 mineflayer 的 canDigBlock 同口径（眼睛 → 方块中心）
 function digTimeoutMs() {
   const raw = Number.parseInt(process.env.MC_DIG_TIMEOUT_MS || '', 10)
@@ -88,12 +96,51 @@ function resolveDigAttribution(collector, state, input) {
     return collector.resolve({
       worldEffect: input.worldEffect,
       blockAfter: input.blockAfter,
+      localViewOnly: input.localViewOnly === true,
       finishedAtMs: Date.now(),
     })
   } catch (error) {
     log('warn', 'dig attribution resolve failed', { error: error.message })
     return null
   }
+}
+
+/**
+ * 等**服务器自己的**方块变化包（至多 `DIG_SERVER_CONFIRM_WAIT_MS`，每 25ms 看一眼）。
+ *
+ * 为什么必须等（真机取证 2026-10-10）：mineflayer 的 `finishDigging()` 在预期时长处做的是
+ * **本地乐观更新**，所以"本地读出来是 air"并不代表服务器真的把方块去掉了 —— 非 op 客户端在
+ * 出生点保护范围内挖掘时，客户端自称挖完、本地视图变 air，而服务器侧方块一直没变。
+ * 真正可信的世界效果是服务器亲口说"这个坐标变了"。这里只是**等真证据**，不是拖时间：
+ * 正常挖掘里服务器包通常几毫秒就到（到得早就不等），到不了就按"未确认"如实回报。
+ * 它绝不改变动作的成功判据（成功判据仍然是本地复核），只影响**归因**。
+ */
+async function awaitDigServerConfirmation(collector, timeoutMs) {
+  if (!collector || typeof collector.serverConfirmed !== 'function') return false
+  if (collector.serverConfirmed()) return true
+  // 根本不在听（假 bot / 监听器已被摘掉）→ 等下去也不会发生什么，直接如实"未确认"
+  if (typeof collector.observing === 'function' && !collector.observing()) return false
+  const deadline = Date.now() + Math.max(0, timeoutMs)
+  while (Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, DIG_SERVER_CONFIRM_POLL_MS))
+    if (collector.serverConfirmed()) return true
+  }
+  return false
+}
+
+/**
+ * 本次 dig 还能安全等待多久（给动作自身 timeout 留余量）。
+ *
+ * 动作的 timeout 由 ActionRuntime 统一计时（从动作开始算），"等服务器确认"发生在这个
+ * 窗口的尾部 —— 绝不能因为等证据把一次**已经成功**的挖掘逼成 timeout。
+ * 拿不到动作开始时刻（例如测试里的手搓状态）→ 按满额上限等。
+ */
+function digConfirmBudgetMs(controller) {
+  const startedAt = controller && controller.record ? Number(controller.record.started_at) : NaN
+  if (!Number.isFinite(startedAt) || startedAt <= 0) return DIG_SERVER_CONFIRM_WAIT_MS
+  const elapsedMs = Date.now() - startedAt * 1000
+  const remaining = digTimeoutMs() - elapsedMs - DIG_SERVER_CONFIRM_TIMEOUT_MARGIN_MS
+  return Math.max(0, Math.min(DIG_SERVER_CONFIRM_WAIT_MS, remaining))
 }
 
 // Phase 4C：place（放置单个方块；MEDIUM，需要确认）+ inventory 只读切片
@@ -2177,63 +2224,86 @@ const ACTION_REGISTRY = {
           attributionCollector,
         }
       },
-      async wait(bot, params, token, state) {
-        // Phase 7D Follow-up：无论走成功、失败还是取消，出口都摘掉本次动作的监听器。
+      async wait(bot, params, token, state, controller) {
+        // Phase 7D Follow-up：监听器**最后**摘（成功/失败/取消/超时/断开都走同一个出口）。
+        // 绝不能一拿到 `bot.dig()` 的 resolve 就摘 —— 那时候服务器还没回话，而"服务器自己
+        // 说这个坐标变了"才是唯一可信的世界效果证据（真机踩过：本地乐观更新会骗人）。
         const collector = state && state.attributionCollector ? state.attributionCollector : null
         let payload = null
         try {
-          // forceLook=true：由 Mineflayer 负责朝向（Python 层绝不碰 yaw/pitch）
-          await bot.dig(state.block, true)
-        } catch (error) {
-          if (token && token.cancelled) throw new ActionCancelled(token.reason)
-          const message = String(error && error.message ? error.message : error)
-          if (/digging aborted|Digging aborted/i.test(message)) {
-            // §三十一：被中断（stop/disconnect/超时）由上面的 cancelled 分支处理；
-            // 这里是"没人叫停但挖掘被服务器打断" → 稳定失败码
-            throw new ActionError(
-              '挖掘被中断（方块可能已经消失或服务器拒绝）',
-              'block.dig_aborted',
-              500,
-            )
+          try {
+            // forceLook=true：由 Mineflayer 负责朝向（Python 层绝不碰 yaw/pitch）
+            await bot.dig(state.block, true)
+          } catch (error) {
+            if (token && token.cancelled) throw new ActionCancelled(token.reason)
+            const message = String(error && error.message ? error.message : error)
+            if (/digging aborted|Digging aborted/i.test(message)) {
+              // §三十一：被中断（stop/disconnect/超时）由上面的 cancelled 分支处理；
+              // 这里是"没人叫停但挖掘被服务器打断" → 稳定失败码
+              throw new ActionError(
+                '挖掘被中断（方块可能已经消失或服务器拒绝）',
+                'block.dig_aborted',
+                500,
+              )
+            }
+            throw new ActionError(`挖掘失败：${message}`, 'action.failed', 500)
           }
-          throw new ActionError(`挖掘失败：${message}`, 'action.failed', 500)
-        } finally {
-          // 证据只属于"刚才那次挖掘"：出口即摘，绝不跨动作、跨重连残留
-          if (collector) collector.detach()
-        }
-        // §二十二/§二十三：不信 Promise —— 重新读一次方块，确认真的没了
-        const after = bot.blockAt(state.position)
-        // 世界效果用**原始读数**（读不到 = 不知道），而"方块已不在"仍是既有的成功判据
-        const rawAfterName = after && after.name ? after.name : null
-        const afterName = rawAfterName === null ? 'air' : rawAfterName
-        if (after && after.name === state.blockName) {
+          // §二十二/§二十三：不信 Promise —— 重新读一次方块，确认真的没了
+          const after = bot.blockAt(state.position)
+          // 世界效果用**原始读数**（读不到 = 不知道），而"方块已不在"仍是既有的成功判据
+          const rawAfterName = after && after.name ? after.name : null
+          const afterName = rawAfterName === null ? 'air' : rawAfterName
+          // Phase 7D Follow-up：本地读数可能只是 mineflayer 的乐观更新 → 等**服务器自己的**
+          // 方块变化包（有界真证据窗口，且绝不吃掉动作自身的 timeout 预算）。
+          await awaitDigServerConfirmation(collector, digConfirmBudgetMs(controller))
+          const serverSaysAir = Boolean(collector && collector.serverSaysAir())
+          const serverSaysPresent = Boolean(collector && collector.serverSaysPresent())
+          const localViewOnly = Boolean(
+            collector &&
+              !serverSaysAir &&
+              !serverSaysPresent &&
+              rawAfterName !== null &&
+              rawAfterName !== state.blockName,
+          )
+          const worldEffect = worldEffectOf(state.blockName, rawAfterName, {
+            serverSaysAir,
+            serverSaysPresent,
+          })
+          if (after && after.name === state.blockName) {
+            payload = resolveDigAttribution(collector, state, {
+              worldEffect,
+              blockAfter: afterName,
+              localViewOnly,
+            })
+            throw new ActionError('方块仍在原位，未能确认破坏结果', 'block.break_unconfirmed', 500, {
+              ...(payload ? { attribution: payload } : {}),
+            })
+          }
           payload = resolveDigAttribution(collector, state, {
-            worldEffect: worldEffectOf(state.blockName, rawAfterName),
+            worldEffect,
             blockAfter: afterName,
+            localViewOnly,
           })
-          throw new ActionError('方块仍在原位，未能确认破坏结果', 'block.break_unconfirmed', 500, {
+          // Phase 4I §十九：动作结束后再读一次主手（**不做成功硬门** —— 硬门永远是
+          // block_after != block_before；工具数量变化只是事实记录，例如镐子挖坏了）
+          const heldAfter = bot.heldItem
+          return {
+            position: { x: params.x, y: params.y, z: params.z },
+            block_before: state.blockName,
+            block_after: afterName,
+            tool_expected: state.toolExpected === undefined ? null : state.toolExpected,
+            tool_actual: state.toolActual === undefined ? null : state.toolActual,
+            tool_actual_after:
+              heldAfter && heldAfter.name
+                ? { name: normalizeItemName(heldAfter.name), count: heldAfter.count }
+                : null,
+            // Phase 7D Follow-up：世界效果与执行归属**分开**回报（见 dig_attribution.js）
             ...(payload ? { attribution: payload } : {}),
-          })
-        }
-        payload = resolveDigAttribution(collector, state, {
-          worldEffect: worldEffectOf(state.blockName, rawAfterName),
-          blockAfter: afterName,
-        })
-        // Phase 4I §十九：动作结束后再读一次主手（**不做成功硬门** —— 硬门永远是
-        // block_after != block_before；工具数量变化只是事实记录，例如镐子挖坏了）
-        const heldAfter = bot.heldItem
-        return {
-          position: { x: params.x, y: params.y, z: params.z },
-          block_before: state.blockName,
-          block_after: afterName,
-          tool_expected: state.toolExpected === undefined ? null : state.toolExpected,
-          tool_actual: state.toolActual === undefined ? null : state.toolActual,
-          tool_actual_after:
-            heldAfter && heldAfter.name
-              ? { name: normalizeItemName(heldAfter.name), count: heldAfter.count }
-              : null,
-          // Phase 7D Follow-up：世界效果与执行归属**分开**回报（见 dig_attribution.js）
-          ...(payload ? { attribution: payload } : {}),
+          }
+        } finally {
+          // 证据只属于"刚才那次挖掘"：所有出口都在这里摘一次，绝不跨动作、跨重连残留；
+          // 摘掉之后的迟到事件一律忽略（cleanup 再摘一次也是幂等的）。
+          if (collector) collector.detach()
         }
       },
       cleanup(bot, controller) {

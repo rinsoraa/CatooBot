@@ -736,9 +736,26 @@ async function main() {
         const attributionA = doneA.result.attribution
         assert(Boolean(attributionA), 'Test A：结果带 dig_attribution（世界效果与执行归属分离）')
         assert(
-          attributionA.world_effect === 'BLOCK_REMOVED',
-          `Test A：world_effect = BLOCK_REMOVED（得到 ${attributionA && attributionA.world_effect}）`,
+          ['BLOCK_REMOVED', 'BLOCK_REMAINS', 'UNKNOWN'].includes(attributionA.world_effect),
+          `Test A：world_effect 取值合法（得到 ${attributionA && attributionA.world_effect}）`,
         )
+        assert(
+          attributionA.world_effect !== 'BLOCK_REMAINS',
+          'Test A：方块确实没了 → 不允许判成"还在原位"',
+        )
+        // flying-squid 不保证回"服务器自己的方块变化包"：没有它时 world_effect 必须是 UNKNOWN
+        // （本地乐观更新不算证据）——这正是 Phase 7D Follow-up 真机学到的那条规矩
+        if (!attributionA.flags || attributionA.flags.server_block_update_says_air !== true) {
+          assert(
+            attributionA.world_effect === 'UNKNOWN',
+            `Test A：没有服务器确认 → world_effect 必须是 UNKNOWN（得到 ${attributionA.world_effect}）`,
+          )
+        } else {
+          assert(
+            attributionA.world_effect === 'BLOCK_REMOVED',
+            'Test A：服务器说变成 air → BLOCK_REMOVED',
+          )
+        }
         assert(
           ['SELF_CONFIRMED', 'EXTERNAL_INDICATED', 'AMBIGUOUS'].includes(attributionA.attribution),
           `Test A：attribution 取值合法（得到 ${attributionA && attributionA.attribution}）`,

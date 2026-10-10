@@ -98,12 +98,24 @@ function ev(kind, elapsedMs, extra) {
 async function main() {
   console.log('[dig-attribution] 世界效果与世界效果的读法')
   {
-    assert(worldEffectOf('minecraft:stone', 'air') === WORLD_EFFECT.BLOCK_REMOVED, '变成 air → BLOCK_REMOVED')
     assert(
-      worldEffectOf('minecraft:stone', 'minecraft:dirt') === WORLD_EFFECT.BLOCK_REMOVED,
-      '换成别的方块 → BLOCK_REMOVED（原方块已经不在了）',
+      worldEffectOf('minecraft:stone', 'air', { serverSaysAir: true }) ===
+        WORLD_EFFECT.BLOCK_REMOVED,
+      '服务器说变 air 了 → BLOCK_REMOVED（唯一可信的移除）',
     )
-    assert(worldEffectOf('minecraft:stone', 'minecraft:stone') === WORLD_EFFECT.BLOCK_REMAINS, '还在原位 → BLOCK_REMAINS')
+    assert(
+      worldEffectOf('minecraft:stone', 'air') === WORLD_EFFECT.UNKNOWN,
+      '只有本地视图说没了 → UNKNOWN（真机踩过：乐观更新，绝不写成"世界变了"）',
+    )
+    assert(
+      worldEffectOf('minecraft:stone', 'air', { serverSaysPresent: true }) ===
+        WORLD_EFFECT.BLOCK_REMAINS,
+      '服务器回了纠正包（那个坐标还是非 air）→ BLOCK_REMAINS（真机踩过：出生点保护）',
+    )
+    assert(
+      worldEffectOf('minecraft:stone', 'minecraft:stone', {}) === WORLD_EFFECT.BLOCK_REMAINS,
+      '还在原位 → BLOCK_REMAINS',
+    )
     assert(worldEffectOf('minecraft:stone', null) === WORLD_EFFECT.UNKNOWN, '读不到 → UNKNOWN（绝不猜）')
     assert(worldEffectOf('minecraft:stone', '') === WORLD_EFFECT.UNKNOWN, '空字符串 → UNKNOWN')
   }
@@ -371,6 +383,20 @@ async function main() {
         bot.stopCalls += 1
       }
       bot.clearControlStates = () => {}
+      // 真实服务器的方块变化是**协议包**；假 bot 也要走同一条路（归因只认服务器确认）
+      const client = makeEmitter()
+      bot._client = client
+      const announceChanged = () => {
+        client.emit('packet', { location: { x: 3, y: 64, z: 3 }, type: 0 }, { name: 'packet_block_update' })
+        bot.emit('blockUpdate:(3, 64, 3)', null, { name: 'air', type: 0, position: new Vec3(3, 64, 3) })
+        bot.emit('diggingCompleted', { name: 'air', type: 0, position: new Vec3(3, 64, 3) })
+      }
+      // 真机 case P：服务器**拒绝**了这次挖掘，并回一个"这里还是方块"的纠正包（type != 0）
+      const announceRejected = () => {
+        client.emit('packet', { location: { x: 3, y: 64, z: 3 }, type: 1 }, { name: 'packet_block_update' })
+        bot.emit('blockUpdate:(3, 64, 3)', null, { name: 'air', type: 0, position: new Vec3(3, 64, 3) })
+        bot.emit('diggingCompleted', { name: 'air', type: 0, position: new Vec3(3, 64, 3) })
+      }
       bot.dig = async (block) => {
         bot.digCalls = (bot.digCalls || 0) + 1
         if (options.emitExternal) {
@@ -381,12 +407,16 @@ async function main() {
         }
         if (options.earlyRemoval) {
           // 挖到一半就被外面弄没了（Phase 7D §10.4 的形状）：立刻变 air
+          announceChanged()
+        } else if (options.serverRejects) {
+          announceRejected()
+        } else if (options.localOnlyChange) {
+          // 真机踩过的形状：只有本地乐观更新（服务器没有发任何方块变化包）
           bot.emit('blockUpdate:(3, 64, 3)', null, { name: 'air', type: 0, position: new Vec3(3, 64, 3) })
           bot.emit('diggingCompleted', { name: 'air', type: 0, position: new Vec3(3, 64, 3) })
         } else {
           await new Promise((resolve) => setTimeout(resolve, 100))
-          bot.emit('blockUpdate:(3, 64, 3)', null, { name: 'air', type: 0, position: new Vec3(3, 64, 3) })
-          bot.emit('diggingCompleted', { name: 'air', type: 0, position: new Vec3(3, 64, 3) })
+          announceChanged()
         }
         // 之后再读方块 = 空气
         bot.blockAt = () => ({ name: 'air', type: 0, position: new Vec3(3, 64, 3) })
@@ -443,6 +473,36 @@ async function main() {
       selfResult.attribution.attribution === ATTRIBUTION.SELF_CONFIRMED &&
         selfResult.attribution.confirm_basis === CONFIRM_BASIS.SELF_BREAK_PROGRESS,
       `自己的破坏进度 → SELF_CONFIRMED/self_break_progress（得到 ${selfResult.attribution.confirm_basis}）`,
+    )
+
+    // 真机形状（2026-10-10）：只有本地乐观更新、服务器没发任何方块变化包
+    // （非 op 客户端在出生点保护范围内挖掘就是这一支）→ 世界效果 UNKNOWN，绝不是自证
+    const localBot = makeDigBot({ localOnlyChange: true })
+    const localState = await def.start(localBot, params, { cancelled: false }, { record: { action_id: 'act_dig_6' } })
+    const localResult = await def.wait(localBot, params, { cancelled: false }, localState)
+    assert(
+      localResult.attribution.world_effect === WORLD_EFFECT.UNKNOWN,
+      `只有本地视图变了 → world_effect=UNKNOWN（得到 ${localResult.attribution.world_effect}）`,
+    )
+    assert(
+      localResult.attribution.attribution === ATTRIBUTION.AMBIGUOUS &&
+        localResult.attribution.reason_code === ATTRIBUTION_REASONS.LOCAL_VIEW_ONLY,
+      `→ AMBIGUOUS/${ATTRIBUTION_REASONS.LOCAL_VIEW_ONLY}（得到 ${localResult.attribution.reason_code}）`,
+    )
+    assert(localBot.listenerCount() === 0, '本地视图路径同样零泄漏')
+
+    // 真机 case P：服务器拒绝了这次挖掘（回了纠正包）→ 世界效果 BLOCK_REMAINS、绝不写成自证
+    const rejectedBot = makeDigBot({ serverRejects: true })
+    const rejectedState = await def.start(rejectedBot, params, { cancelled: false }, { record: { action_id: 'act_dig_7' } })
+    const rejectedResult = await def.wait(rejectedBot, params, { cancelled: false }, rejectedState)
+    assert(
+      rejectedResult.attribution.world_effect === WORLD_EFFECT.BLOCK_REMAINS,
+      `服务器纠正包 → world_effect=BLOCK_REMAINS（得到 ${rejectedResult.attribution.world_effect}）`,
+    )
+    assert(
+      rejectedResult.attribution.attribution === ATTRIBUTION.AMBIGUOUS &&
+        rejectedResult.attribution.flags.server_block_update_says_present === true,
+      `→ AMBIGUOUS 且记录"服务器说还在"（得到 ${rejectedResult.attribution.attribution}）`,
     )
 
     // cleanup（取消/超时）也要摘监听器，并且仍然 stopDigging

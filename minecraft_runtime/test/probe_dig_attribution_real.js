@@ -31,6 +31,7 @@
 const fs = require('fs')
 const http = require('http')
 const net = require('net')
+const os = require('os')
 const path = require('path')
 const { spawn } = require('child_process')
 
@@ -48,7 +49,8 @@ const TERMINAL_EVENTS = [
 ]
 //: 外部改世界要在"挖到一半"落地：石头徒手 ~7.5s，等 800ms 足够早
 const MID_DIG_DELAY_MS = Number.parseInt(process.env.PROBE_MID_DIG_DELAY_MS || '800', 10)
-const SLOW_BLOCK = process.env.PROBE_SLOW_BLOCK || 'minecraft:stone'
+//: 注意：dig 的 `expected_block` 与世界里读出来的方块名都是**裸名**（`stone`，没有命名空间前缀）
+const SLOW_BLOCK = process.env.PROBE_SLOW_BLOCK || 'stone'
 
 const results = {}
 
@@ -175,7 +177,19 @@ async function main() {
     childExit = { code, signal }
     console.log(`[probe] runtime 子进程退出 code=${code} signal=${signal}`)
   })
-  child.stdout.on('data', (chunk) => process.stdout.write(`[runtime] ${chunk}`))
+  // 子进程日志留一个环形缓冲：出问题时把尾巴打出来，绝不"静默超时"
+  const runtimeLog = []
+  child.stdout.on('data', (chunk) => {
+    const text = String(chunk)
+    for (const line of text.split('\n')) {
+      if (line.trim()) runtimeLog.push(line)
+    }
+    while (runtimeLog.length > 60) runtimeLog.shift()
+  })
+  const dumpRuntimeLog = (label) => {
+    console.log(`[probe] --- runtime 日志尾巴（${label}）---`)
+    for (const line of runtimeLog.slice(-25)) console.log(`[probe]   ${line}`)
+  }
 
   const status = async () => (await request(runtimePort, 'GET', '/minecraft/status')).body
   const say = async (message) => request(runtimePort, 'POST', '/minecraft/chat', { message })
@@ -203,11 +217,46 @@ async function main() {
   }
 
   let mate = null
+  let nonOpChild = null
+  let nonOpRuntimePort = null
   const placed = []
-  const probe = async (label, spot, block) => {
+  const bare = (name) => String(name || '').replace(/^minecraft:/, '')
+  const readBlock = async (x, y, z) => {
+    const snap = await request(runtimePort, 'GET', '/minecraft/world/snapshot?layers=near')
+    const columns =
+      (snap.body && snap.body.blocks && snap.body.blocks.near && snap.body.blocks.near.columns) || []
+    const hit = columns.find((col) => col.pos && col.pos.x === x && col.pos.y === y && col.pos.z === z)
+    return hit ? bare(hit.name) : 'air'
+  }
+  /** 放夹具并**读回来确认**（放不上就不挖，避免把环境问题算成归因结论）。 */
+  const placeFixture = async (label, spot, block) => {
     await say(`/setblock ${spot.x} ${spot.y} ${spot.z} ${block}`)
     placed.push(spot)
-    await sleep(400)
+    const ok = await waitForValue(
+      async () => ((await readBlock(spot.x, spot.y, spot.z)) === bare(block) ? true : null),
+      `${label} 夹具就位`,
+      10000,
+    )
+    if (!ok) dumpRuntimeLog(`${label} 夹具没放上`)
+    return ok
+  }
+  /** 发起一次 dig 并等终态：打印 POST 回执与终态载荷（成功和失败都要打印）。 */
+  const digAndWait = async (label, spot, block, timeoutMs) => {
+    const post = await request(runtimePort, 'POST', '/minecraft/dig', {
+      ...spot,
+      expected_block: block,
+    })
+    console.log(`[probe] ${label} dig POST status=${post.status} body=${JSON.stringify(post.body)}`)
+    if (post.status !== 200 || !post.body || !post.body.action_id) {
+      dumpRuntimeLog(`${label} dig 没起来`)
+      return null
+    }
+    const done = await waitForValue(() => terminal(post.body.action_id), `${label} 终态`, timeoutMs)
+    if (!done) {
+      dumpRuntimeLog(`${label} 等不到终态`)
+      return { action_id: post.body.action_id, event: 'NO_TERMINAL' }
+    }
+    return done
   }
 
   try {
@@ -228,72 +277,209 @@ async function main() {
 
     // ---------------- Case S：自己挖（期望 SELF_CONFIRMED）
     const sSpot = { x: base.x + 1, y: base.y, z: base.z }
-    await probe('S', sSpot, SLOW_BLOCK)
-    const digS = await request(runtimePort, 'POST', '/minecraft/dig', {
-      ...sSpot,
-      expected_block: SLOW_BLOCK,
-    })
-    const doneS = await waitForValue(() => terminal(digS.body.action_id), 'S 终态', 60000)
-    results.self_dig = doneS
-      ? { event: doneS.event, result: doneS.result || doneS.detail || null }
-      : null
-    console.log('[probe] S 自己挖 →', JSON.stringify(results.self_dig))
+    if (await placeFixture('S', sSpot, SLOW_BLOCK)) {
+      const doneS = await digAndWait('S', sSpot, SLOW_BLOCK, 60000)
+      results.self_dig = doneS ? { event: doneS.event, result: doneS.result || null, detail: doneS.detail || null, error: doneS.error || null, code: doneS.code || null } : null
+      console.log('[probe] S 自己挖 →', JSON.stringify(results.self_dig))
+    } else {
+      results.self_dig = 'FIXTURE_FAILED'
+    }
 
     // ---------------- Case E：挖到一半被外部改掉（期望**不是** SELF_CONFIRMED）
     const eSpot = { x: base.x - 1, y: base.y, z: base.z }
-    await probe('E', eSpot, SLOW_BLOCK)
-    const digE = await request(runtimePort, 'POST', '/minecraft/dig', {
-      ...eSpot,
-      expected_block: SLOW_BLOCK,
-    })
-    await sleep(MID_DIG_DELAY_MS)
-    await say(`/setblock ${eSpot.x} ${eSpot.y} ${eSpot.z} air`)
-    const doneE = await waitForValue(() => terminal(digE.body.action_id), 'E 终态', 60000)
-    results.external_mid_dig = doneE
-      ? { event: doneE.event, result: doneE.result || doneE.detail || null }
-      : null
-    console.log('[probe] E 中途被外部改掉 →', JSON.stringify(results.external_mid_dig))
+    if (await placeFixture('E', eSpot, SLOW_BLOCK)) {
+      const post = await request(runtimePort, 'POST', '/minecraft/dig', {
+        ...eSpot,
+        expected_block: SLOW_BLOCK,
+      })
+      console.log(`[probe] E dig POST status=${post.status} body=${JSON.stringify(post.body)}`)
+      if (post.status === 200 && post.body && post.body.action_id) {
+        await sleep(MID_DIG_DELAY_MS)
+        await say(`/setblock ${eSpot.x} ${eSpot.y} ${eSpot.z} air`)
+        const doneE = await waitForValue(() => terminal(post.body.action_id), 'E 终态', 60000)
+        if (!doneE) dumpRuntimeLog('E 等不到终态')
+        results.external_mid_dig = doneE
+          ? { event: doneE.event, result: doneE.result || null, detail: doneE.detail || null, error: doneE.error || null, code: doneE.code || null }
+          : null
+      } else {
+        dumpRuntimeLog('E dig 没起来')
+      }
+      console.log('[probe] E 中途被外部改掉 →', JSON.stringify(results.external_mid_dig))
+    } else {
+      results.external_mid_dig = 'FIXTURE_FAILED'
+    }
 
     // ---------------- Case X：另一个真实客户端挖同一个方块（期望 EXTERNAL/AMBIGUOUS）
     const xSpot = { x: base.x, y: base.y, z: base.z + 1 }
-    await probe('X', xSpot, SLOW_BLOCK)
-    mate = mineflayer.createBot({
-      host: HOST,
-      port: PORT,
-      username: `${botName}Mate`.slice(0, 16),
-      auth: 'offline',
-      version: process.env.PROBE_MC_VERSION || undefined,
-    })
-    const mateSpawned = await waitForValue(
-      () => (mate && mate.entity ? true : null),
-      '第二个客户端上线',
-      60000,
-    )
-    if (!mateSpawned) {
-      results.two_clients = 'MATE_FAILED'
-      console.log('[probe] X 第二个客户端没上来 → SKIPPED')
-    } else {
-      await say(`/tp ${mate.username} ${base.x} ${base.y + 1} ${base.z + 2}`)
-      await sleep(1200)
-      const digX = await request(runtimePort, 'POST', '/minecraft/dig', {
-        ...xSpot,
-        expected_block: SLOW_BLOCK,
+    if (await placeFixture('X', xSpot, SLOW_BLOCK)) {
+      mate = mineflayer.createBot({
+        host: HOST,
+        port: PORT,
+        username: `${botName}Mate`.slice(0, 16),
+        auth: 'offline',
+        version: process.env.PROBE_MC_VERSION || undefined,
       })
-      await sleep(1200)
-      const mateBlock = mate.blockAt(new Vec3(xSpot.x, xSpot.y, xSpot.z))
-      let mateDigError = null
-      if (mateBlock) {
-        mate.dig(mateBlock).catch((error) => {
-          mateDigError = String(error && error.message ? error.message : error)
-        })
+      const mateSpawned = await waitForValue(
+        () => (mate && mate.entity ? true : null),
+        '第二个客户端上线',
+        60000,
+      )
+      if (!mateSpawned) {
+        results.two_clients = 'MATE_FAILED'
+        console.log('[probe] X 第二个客户端没上来 → SKIPPED')
       } else {
-        mateDigError = 'mate 看不到那个方块'
+        await say(`/tp ${mate.username} ${base.x} ${base.y + 1} ${base.z + 2}`)
+        await sleep(1500)
+        // **让第二个客户端先挖**：目标方块的移除必须来自它（而不是我们），
+        // 我们的 dig 才可能"挖到一半被外部弄没"（这才是要验证的归因场景）。
+        const mateBlock = mate.blockAt(new Vec3(xSpot.x, xSpot.y, xSpot.z))
+        let mateDigError = null
+        if (mateBlock && bare(mateBlock.name) === bare(SLOW_BLOCK)) {
+          mate.dig(mateBlock).catch((error) => {
+            mateDigError = String(error && error.message ? error.message : error)
+          })
+          console.log('[probe] X 第二个客户端先开始挖同一个方块')
+        } else {
+          mateDigError = `mate 看到的方块是 ${mateBlock ? mateBlock.name : 'null'}`
+          console.log('[probe] X', mateDigError)
+        }
+        // 我们的客户端晚 2.5s 才开始：它的完成时刻明显晚于对方的移除时刻
+        await sleep(2500)
+        const post = await request(runtimePort, 'POST', '/minecraft/dig', {
+          ...xSpot,
+          expected_block: SLOW_BLOCK,
+        })
+        console.log(`[probe] X dig POST status=${post.status} body=${JSON.stringify(post.body)}`)
+        if (post.status === 200 && post.body && post.body.action_id) {
+          const doneX = await waitForValue(() => terminal(post.body.action_id), 'X 终态', 90000)
+          if (!doneX) dumpRuntimeLog('X 等不到终态')
+          results.two_clients = doneX
+            ? {
+                event: doneX.event,
+                result: doneX.result || null,
+                detail: doneX.detail || null,
+                error: doneX.error || null,
+                code: doneX.code || null,
+                mate_dig_error: mateDigError,
+              }
+            : { mate_dig_error: mateDigError }
+        } else {
+          dumpRuntimeLog('X dig 没起来')
+        }
+        console.log('[probe] X 双客户端 →', JSON.stringify(results.two_clients))
       }
-      const doneX = await waitForValue(() => terminal(digX.body.action_id), 'X 终态', 90000)
-      results.two_clients = doneX
-        ? { event: doneX.event, result: doneX.result || doneX.detail || null, mate_dig_error: mateDigError }
-        : { mate_dig_error: mateDigError }
-      console.log('[probe] X 双客户端 →', JSON.stringify(results.two_clients))
+    } else {
+      results.two_clients = 'FIXTURE_FAILED'
+    }
+
+    // ---------------- Case P：只有本地乐观更新、服务器从没确认（真机新发现）
+    // 机制：非 op 客户端在 `spawn-protection` 范围内挖掘 → 服务器根本不处理这次破坏，
+    // 但 mineflayer 的 `finishDigging()` 仍会做本地乐观更新并 resolve。
+    // 期望：`world_effect = UNKNOWN`（不是"世界变了"）→ 归属 AMBIGUOUS，绝不写成自证。
+    try {
+      const nonOpAuth = path.join(os.tmpdir(), `mc-nonop-${Date.now()}.json`)
+      fs.writeFileSync(
+        nonOpAuth,
+        JSON.stringify({ mode: 'offline', username: 'ProbeNonOp', email: '', password: '' }),
+      )
+      nonOpRuntimePort = await freePort()
+      const nonOpEvents = []
+      const nonOpReceiver = http.createServer((req, res) => {
+        let raw = ''
+        req.on('data', (chunk) => (raw += chunk))
+        req.on('end', () => {
+          try {
+            nonOpEvents.push(JSON.parse(raw))
+          } catch {
+            /* ignore */
+          }
+          res.writeHead(200).end('{"ok":true}')
+        })
+      })
+      const nonOpCallbackPort = await freePort()
+      await new Promise((resolve) => nonOpReceiver.listen(nonOpCallbackPort, '127.0.0.1', resolve))
+      nonOpChild = spawn(process.execPath, [path.join(RUNTIME_DIR, 'runtime.js')], {
+        env: {
+          ...process.env,
+          MC_RUNTIME_PORT: String(nonOpRuntimePort),
+          MC_CALLBACK_URL: `http://127.0.0.1:${nonOpCallbackPort}/events`,
+          MC_CALLBACK_TOKEN: 'probe-token',
+          MC_AUTH_FILE: nonOpAuth,
+          MC_CONNECT_TIMEOUT: '90',
+        },
+        stdio: ['ignore', 'pipe', 'ignore'],
+      })
+      nonOpChild.stdout.on('data', () => {})
+      const nonOpStatus = async () =>
+        (await request(nonOpRuntimePort, 'GET', '/minecraft/status')).body
+      const readyNonOp = await waitForValue(
+        async () => {
+          try {
+            return (await request(nonOpRuntimePort, 'GET', '/minecraft/health')).status === 200
+              ? true
+              : null
+          } catch {
+            return null
+          }
+        },
+        '非 op runtime 就绪',
+        30000,
+      )
+      if (readyNonOp) {
+        await request(nonOpRuntimePort, 'POST', '/minecraft/connect', { host: HOST, port: PORT })
+        const nonOpOnline = await waitForValue(
+          async () => ((await nonOpStatus()).status === 'ONLINE' ? await nonOpStatus() : null),
+          '非 op 客户端上线',
+          90000,
+        )
+        if (nonOpOnline) {
+          // 夹具放在**主机器人**旁边（主机器人是 op，且在出生点附近 → 目标必定落在保护范围内），
+          // 再把非 op 客户端 /tp 过去挖它：非 op 在保护范围内挖掘会被服务器忽略（真机实测）。
+          const pSpot = { x: base.x + 3, y: base.y, z: base.z }
+          await say(`/setblock ${pSpot.x} ${pSpot.y} ${pSpot.z} stone`)
+          placed.push(pSpot)
+          const fixtureOk = await waitForValue(
+            async () => ((await readBlock(pSpot.x, pSpot.y, pSpot.z)) === 'stone' ? true : null),
+            'P 夹具就位',
+            10000,
+          )
+          if (fixtureOk) {
+            await say(`/tp ProbeNonOp ${pSpot.x - 1} ${pSpot.y + 1} ${pSpot.z}`)
+            await sleep(1500)
+            const post = await request(nonOpRuntimePort, 'POST', '/minecraft/dig', {
+              ...pSpot,
+              expected_block: 'stone',
+            })
+            console.log(`[probe] P dig POST status=${post.status} body=${JSON.stringify(post.body)}`)
+            if (post.status === 200 && post.body && post.body.action_id) {
+              const doneP = await waitForValue(
+                () =>
+                  nonOpEvents.find(
+                    (e) => TERMINAL_EVENTS.includes(e.event) && e.action_id === post.body.action_id,
+                  ),
+                'P 终态',
+                60000,
+              )
+              results.local_view_only = doneP
+                ? { event: doneP.event, result: doneP.result || null, error: doneP.error || null, code: doneP.code || null }
+                : null
+              // 服务器侧的真相：夹具应该**还在**（保护生效 → 世界没变）
+              const stillThere = await readBlock(pSpot.x, pSpot.y, pSpot.z)
+              if (results.local_view_only) results.local_view_only.server_side_block = stillThere
+              console.log('[probe] P 只有本地视图 →', JSON.stringify(results.local_view_only))
+            }
+          } else {
+            results.local_view_only = 'FIXTURE_FAILED'
+          }
+        } else {
+          results.local_view_only = 'OFFLINE'
+        }
+      } else {
+        results.local_view_only = 'RUNTIME_FAILED'
+      }
+    } catch (error) {
+      results.local_view_only = `ERROR:${String(error && error.message).slice(0, 80)}`
+      console.log('[probe] P 出错（如实记录）→', results.local_view_only)
     }
   } finally {
     // 还原世界（临时方块清成 air），安静退出
@@ -311,6 +497,14 @@ async function main() {
         /* ignore */
       }
     }
+    if (nonOpChild) {
+      try {
+        await request(nonOpRuntimePort, 'POST', '/minecraft/disconnect', {})
+      } catch {
+        /* ignore */
+      }
+      nonOpChild.kill()
+    }
     try {
       await request(runtimePort, 'POST', '/minecraft/disconnect', {})
     } catch {
@@ -322,16 +516,25 @@ async function main() {
   }
 
   // ---------------- 结论（只打印事实 + 与预期的对照，不代替人工判断）
-  const attributionOf = (entry) =>
-    entry && entry.result && entry.result.attribution ? entry.result.attribution : null
+  const attributionOf = (entry) => {
+    if (!entry || typeof entry !== 'object') return null
+    const payload = entry.result || entry.detail || null
+    return payload && payload.attribution ? payload.attribution : null
+  }
   const self = attributionOf(results.self_dig)
   const external = attributionOf(results.external_mid_dig)
   const two = attributionOf(results.two_clients)
+  const localOnly = attributionOf(results.local_view_only)
   const checks = [
     ['S 自己挖：world_effect = BLOCK_REMOVED', Boolean(self) && self.world_effect === 'BLOCK_REMOVED'],
     ['S 自己挖：attribution = SELF_CONFIRMED', Boolean(self) && self.attribution === 'SELF_CONFIRMED'],
     ['E 中途被外部改掉：不是 SELF_CONFIRMED', Boolean(external) && external.attribution !== 'SELF_CONFIRMED'],
     ['X 双客户端：不是 SELF_CONFIRMED', Boolean(two) && two.attribution !== 'SELF_CONFIRMED'],
+    [
+      'P 服务器拒绝了这次挖掘：world_effect 不是 BLOCK_REMOVED（也不可能是自证）',
+      Boolean(localOnly) && localOnly.world_effect !== 'BLOCK_REMOVED',
+    ],
+    ['P 只有本地乐观更新：不是 SELF_CONFIRMED', Boolean(localOnly) && localOnly.attribution !== 'SELF_CONFIRMED'],
   ]
   console.log('\n[probe] ===== 结果 =====')
   for (const [label, ok] of checks) console.log(`[probe] ${ok ? '✓' : '✗'} ${label}`)
@@ -353,6 +556,12 @@ async function main() {
             reason: external.reason_code,
             ratio: external.removal && external.removal.ratio,
             flags: external.flags,
+          },
+          local_view_only: localOnly && {
+            attribution: localOnly.attribution,
+            world_effect: localOnly.world_effect,
+            reason: localOnly.reason_code,
+            flags: localOnly.flags,
           },
           two_clients: two && {
             attribution: two.attribution,

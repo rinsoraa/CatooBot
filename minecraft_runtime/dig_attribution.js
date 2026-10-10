@@ -98,6 +98,8 @@ const ATTRIBUTION_REASONS = Object.freeze({
   NO_SELF_COMPLETION: 'no_self_dig_completion_observed',
   EXPECTED_TIME_UNKNOWN: 'expected_dig_time_unknown',
   NO_TARGET_CHANGE: 'no_block_change_observed_at_target',
+  //: 真机取证：只有本地乐观视图说方块没了，服务器没有确认过（例如出生点保护挡住了非 op 的挖掘）
+  LOCAL_VIEW_ONLY: 'block_change_not_confirmed_by_server',
 })
 
 /** 证据种类（`evidence[].kind`）。 */
@@ -169,14 +171,32 @@ function entityNameOf(entity) {
 }
 
 /**
- * 由**真实读到的**方块名推出世界效果。`blockAfter === null`（读不到）→ UNKNOWN。
+ * 由**真实读到的**方块名 + **服务器亲口说了什么**推出世界效果。
  *
- * 刻意不用"动作返回 ok"来推：方块名是否还在原位才是事实。
+ * 真机取证（2026-10-10，Fabric 1.21.1）发现两件事，都必须照实处理：
+ *
+ *  1. mineflayer 的 `finishDigging()` 会在预期时长处做**本地乐观更新**
+ *     （``bot._updateBlockState(pos, 0)``），所以"本地读出来是 air"并不等于服务器真的移除了
+ *     那个方块 —— 实测反例：非 op 客户端在出生点保护范围内挖掘，客户端自称挖完、本地视图变 air，
+ *     而服务器侧方块一直没变（另一个 op 客户端读到的仍是 stone）。
+ *  2. 服务器会为**它拒绝的挖掘**回一个"这里还是那个方块"的纠正包（``type != 0``，即
+ *     ``to_air: false``）—— 那是"没有发生移除"的**正面证据**，绝不能当成"变了"。
+ *
+ * 于是规则是：
+ *
+ *   * 服务器说该坐标变成 air（``to_air: true``）→ ``BLOCK_REMOVED``（唯一可信的移除）；
+ *   * 服务器说该坐标还是非 air（``to_air: false``）→ ``BLOCK_REMAINS``（纠正包 = 没移除）；
+ *   * 只有本地视图说没了、服务器什么都没说 → ``UNKNOWN``（**不知道**，绝不写成"世界变了"）；
+ *   * 本地读数与原方块一致 → ``BLOCK_REMAINS``；读不到 → ``UNKNOWN``。
  */
-function worldEffectOf(blockBefore, blockAfter) {
+function worldEffectOf(blockBefore, blockAfter, options) {
+  const serverSaysAir = Boolean(options && options.serverSaysAir)
+  const serverSaysPresent = Boolean(options && options.serverSaysPresent)
+  if (serverSaysAir) return WORLD_EFFECT.BLOCK_REMOVED
+  if (serverSaysPresent) return WORLD_EFFECT.BLOCK_REMAINS
   if (typeof blockAfter !== 'string' || !blockAfter) return WORLD_EFFECT.UNKNOWN
   if (String(blockBefore) === blockAfter) return WORLD_EFFECT.BLOCK_REMAINS
-  return WORLD_EFFECT.BLOCK_REMOVED
+  return WORLD_EFFECT.UNKNOWN
 }
 
 // ------------------------------------------------------------------ 采集器
@@ -225,6 +245,30 @@ function createDigAttribution(options) {
       elapsed_ms: at - collector.action_started_at_ms,
       ...(extra || {}),
     })
+  }
+
+  /** 服务器是否对该坐标说过话（`block_update`/`block_change` 包，不管说的是什么）。 */
+  collector.serverConfirmed = function serverConfirmed() {
+    return collector.evidence.some((item) => item.kind === EVIDENCE_KINDS.SERVER_BLOCK_UPDATE)
+  }
+
+  /** 服务器亲口说该坐标变成了 air（唯一可信的"移除发生过"）。 */
+  collector.serverSaysAir = function serverSaysAir() {
+    return collector.evidence.some(
+      (item) => item.kind === EVIDENCE_KINDS.SERVER_BLOCK_UPDATE && item.to_air === true,
+    )
+  }
+
+  /** 服务器亲口说该坐标还是非 air（纠正包 = 它没让这次破坏生效）。 */
+  collector.serverSaysPresent = function serverSaysPresent() {
+    return collector.evidence.some(
+      (item) => item.kind === EVIDENCE_KINDS.SERVER_BLOCK_UPDATE && item.to_air !== true,
+    )
+  }
+
+  /** 现在真的在听吗（挂了监听器）。假 bot / 已摘除 → false：等"服务器确认"没有意义。 */
+  collector.observing = function observing() {
+    return collector.attached && !collector.detached && collector._listeners.length > 0
   }
 
   /** 记一条证据（内部使用；测试可以直接喂合成时间线）。条数有上限，超出即丢弃。 */
@@ -341,6 +385,7 @@ function createDigAttribution(options) {
     const first = (kind) => evidence.find((item) => item.kind === kind) || null
     const removal = first(EVIDENCE_KINDS.BLOCK_BECAME_AIR) || first(EVIDENCE_KINDS.SERVER_BLOCK_UPDATE)
     const serverUpdate = first(EVIDENCE_KINDS.SERVER_BLOCK_UPDATE)
+    const serverUpdateSaysAir = Boolean(serverUpdate && serverUpdate.to_air === true)
     const selfProgress = first(EVIDENCE_KINDS.SELF_BREAK_PROGRESS)
     const completed = first(EVIDENCE_KINDS.SELF_DIG_COMPLETED)
     const aborted = first(EVIDENCE_KINDS.SELF_DIG_ABORTED)
@@ -370,7 +415,11 @@ function createDigAttribution(options) {
     if (worldEffect === WORLD_EFFECT.BLOCK_REMAINS) {
       reason = ATTRIBUTION_REASONS.BLOCK_REMAINS
     } else if (worldEffect === WORLD_EFFECT.UNKNOWN) {
-      reason = ATTRIBUTION_REASONS.WORLD_EFFECT_UNKNOWN
+      // 本地视图说方块变了、但服务器没确认过 → 如实说明（真机踩过：出生点保护）
+      reason =
+        details.localViewOnly === true
+          ? ATTRIBUTION_REASONS.LOCAL_VIEW_ONLY
+          : ATTRIBUTION_REASONS.WORLD_EFFECT_UNKNOWN
     } else if (conflict) {
       // 别人在挖同一个坐标，而我们自己的挖掘也在预期时刻走完了（或有自己的破坏进度）
       // → 证据冲突，绝不站队
@@ -413,7 +462,7 @@ function createDigAttribution(options) {
       reason_code: reason,
       strict_self_proof:
         verdict === ATTRIBUTION.SELF_CONFIRMED &&
-        (basis === CONFIRM_BASIS.SELF_BREAK_PROGRESS || Boolean(serverUpdate)),
+        (basis === CONFIRM_BASIS.SELF_BREAK_PROGRESS || serverUpdateSaysAir),
       expected_dig_ms: expected,
       action_window: {
         started_at_ms: collector.action_started_at_ms,
@@ -435,7 +484,12 @@ function createDigAttribution(options) {
         self_dig_completed: Boolean(completed),
         self_dig_aborted: Boolean(aborted),
         server_block_update_observed: Boolean(serverUpdate),
+        server_block_update_says_air: serverUpdateSaysAir,
+        server_block_update_says_present: Boolean(serverUpdate && serverUpdate.to_air !== true),
         conflict,
+        //: 本地视图（可能是乐观更新）读到的方块名 + "只有本地视图"标记（审计用）
+        local_block_after: details.blockAfter === undefined ? null : details.blockAfter,
+        local_view_only: details.localViewOnly === true,
         block_after: details.blockAfter === undefined ? null : details.blockAfter,
       },
       evidence,
