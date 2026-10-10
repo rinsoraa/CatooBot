@@ -502,3 +502,90 @@ INVALIDATE。
   这是刻意的保守选择（宁可少惩罚，也不误伤已验证的方法），扩大集合需要新的可审计证据；
 * 绑定消费与不合格反馈：不合格反馈仍消费绑定，因此**同一任务不会在稍后被重新判定**（幂等）；
   若将来放宽判定规则，历史不合格证据不会被追溯改写（账本保留原始 verdict/reason）。
+
+---
+
+## 14. 7E.1.2 执行证据严格收口（2026-10-10，基线 `4e7449c`）
+
+极窄边界收口：只收紧 `app/tasks/skill_learning.py::step_ran()` / `any_step_ran()` 的
+"这一步**真的开始执行过**"判定，不动其它任何语义（§4 边界逐条保持：19 工具、ActionRuntime 动作 0、
+TaskRuntime 状态 0、`allow_medium=false`、确认/批准/身份/取消/暂停/恢复/超时语义、
+技能只输出计划候选、`CANDIDATE` 不可复用、终态不复活、7D §10.4 dig 归因缺陷仍独立跟踪）。
+
+### 14.1 根因（先复核源码写入顺序）
+
+原实现把 `started_at`（truthiness）、非空 `action_id`，**以及**这些状态本身都当成执行证据：
+`RUNNING` / `WAITING_ACTION` / `WAITING_CONFIRMATION` / `SUCCEEDED` / `FAILED` / `SKIPPED` /
+`CANCELLED`。沿 `TaskRuntime._run_step` / `_settle` / `on_action_event` 核对真实写入点后确认：
+
+| 事实 | 源码出处 | 是否执行证据 |
+| --- | --- | --- |
+| `step.state = RUNNING` 与 `step.started_at = clock()` 在**调用工具之前一行**同时写 | `runtime.py:579-580` | **是**（最强：开始执行的那一刻） |
+| `step.finished_at = clock()` 在调用循环结束后写 | `runtime.py:608` | **是**（调用已发生） |
+| `status` / `result` / `action_id` / `WAITING_ACTION` / `SUCCEEDED` 只在拿到调用结果后写 | `runtime.py:613-634`、`:1076-1087` | **是**（调用之后的事实） |
+| `FAILED` 还有**调用前**分支：引用解析失败 / 参数校验失败，以及恢复、取消、过期路径 | `runtime.py:515`、`:525`、`:775`、`:928`、`:1188`、`:1229` | **否**（单有状态不能证明调用过） |
+| `CANCELLED`（取消/生命周期分支） | `runtime.py:1087`、`:1229` | **否** |
+| `SKIPPED` / `WAITING_CONFIRMATION` | **整个 runtime 从不写入**（只在 `models.py` 的终态集合与进度统计里出现） | **否**（只可能来自外部/历史数据） |
+
+**最小复现**（先写测试后修，修复前 11 项失败）：后验失败条件齐全
+（`FAILED` + `failure=VERIFICATION` + `verification.checked=True, ok=False`）但把每步的执行痕迹清空、
+只留下 `PENDING` / `SKIPPED` / `WAITING_CONFIRMATION` / `FAILED` / `CANCELLED` 状态之一时，
+旧实现仍然判**反例**（技能被推到 `STALE`、`failure_count` 加一）—— 状态被当成了执行证明。
+
+### 14.2 收口后的判定（白名单 + 出处）
+
+`step_ran(step)` 现在只认以下**源码可证明**的持久化事实（任一成立即算跑过）：
+
+1. `started_at is not None` —— 该字段用 `None` 表示"没设置"（`models.py` 默认值），
+   所以 **`0` 也是存在的时间戳**，必须用 `is not None` 判定，不能被 falsy 漏掉；
+2. `finished_at is not None`；
+3. 非空 `action_id`（派发了异步动作）；
+4. 非空 `status`（工具返回的状态）；
+5. 非空 `result`（工具返回的结果）；
+6. 状态 ∈ `{RUNNING, WAITING_ACTION, SUCCEEDED}`（写入顺序见上表）。
+
+刻意**不含** `FAILED` / `CANCELLED` / `SKIPPED` / `WAITING_CONFIRMATION` / `PENDING`。
+歧义、缺失或不一致的 checkpoint 一律 **fail-closed**：不产生 `COUNTEREXAMPLE`、
+不改变计数与状态、留稳定原因码（`skill_task_not_started` 等）。
+方法反例的闭合条件保持不变且全部满足才允许：任务终态 `FAILED` + `failure == TaskFailure.VERIFICATION`
++ 运行时后验 `checked is True` 且 `ok is False` + **确实存在步骤执行证据**。
+`CANCELLED` / `EXPIRED` / `TIMEOUT` / `OFFLINE` / `WORLD_CHANGED` / `AUTHORIZATION` / `BUSY` /
+`STALLED` 的保守不计分政策一字未改（7E.1.1 §13.1 的表格继续有效）。
+
+### 14.3 测试（新增 15 项，先失败后通过）
+
+| 任务书 §3 要求 | 测试（`tests/test_skill_feedback.py::TestStrictStepExecutionEvidence`） |
+| --- | --- |
+| 后验失败齐全但所有步骤 `PENDING` → REJECTED、不得 STALE | `test_state_alone_is_not_execution_proof[all PENDING]` |
+| 仅有 `SKIPPED`（无时间戳/动作 id）→ REJECTED | `…[one SKIPPED]` |
+| 仅有 `WAITING_CONFIRMATION` → REJECTED | `…[one WAITING_CONFIRMATION]` |
+| 仅有调用前分支的 `FAILED` → REJECTED | `…[one FAILED (pre-call branch)]` |
+| 仅有 `CANCELLED` → REJECTED | `…[one CANCELLED]` |
+| `started_at = 0` 必须被识别为"存在" | `test_zero_started_at_counts_as_started`（纯函数 + 服务级各一） |
+| 正向控制：源码证明过的痕迹仍产生反例（`STALE → INVALIDATED` 行为保留） | `test_source_proven_evidence_still_counts[action_id/finished_at/status/result/RUNNING/SUCCEEDED/WAITING_ACTION]` |
+| 服务级：不合格反馈幂等消费、留原因码、计数与状态零变化 | `test_disqualified_feedback_is_consumed_once_without_scoring`（真库：`duplicate` on 第二次、`consumed_at > 0`、`(2, 0, 0)` 计数不变、仍 ACTIVE） |
+| 两类 store 语义一致 | `test_parity_for_disqualified_feedback`（内存 + 真 SQLite） |
+
+不可达组合也照样按"不可信"判定：`SKIPPED` / `WAITING_CONFIRMATION` 在正常运行时不会出现在步骤上
+（源码依据见 §14.1），但测试仍然覆盖它们 —— 不能因为"正常情况下不会发生"跳过判定审查。
+原有 7E / 7E.1 / 7E.1.1 测试全部保留、未放宽任何断言；本轮**没有新增迁移**（仍为 36）。
+
+### 14.4 门禁与交付（本轮实际执行，串行）
+
+| 门禁 | 结果 |
+| --- | --- |
+| `ruff check .` / `ruff format --check .` | All checks passed / 631 files already formatted |
+| `mypy app` | Success: no issues found in 335 source files |
+| `pytest tests -q` | **3561 passed**（7E.1.1 基线 3546 → +15 项 7E.1.2 测试） |
+| WebUI typecheck / Vitest / build / 浏览器 E2E | 通过 / 528 passed / 通过 / 7 passed |
+| Minecraft runtime（Node 单测 + flying-squid E2E） | `ALL CHECKS PASSED`（全量 pytest 之后单独跑） |
+| 范围核对 | 迁移最高版本仍 **36**（无新迁移）；`ACTION_RISK` 仍 **19** 个工具；`allow_medium` 默认 **False**；镜像变更仅 `app/tasks/skill_learning.py` + `tests/test_skill_feedback.py`；`config/` 与敏感文件未触碰 |
+| CI | 见 7E.1.2 最终报告（run/job 链接，含 attempt 1 结果） |
+
+### 14.5 真实环境与限制
+
+* 本阶段是**纯判定收紧**：用真实 `TaskRecord`/`TaskStep`（按源码写入顺序构造）+ 真实 SQLite 闭环；
+* **真实 Java 服务器**：`SKIPPED`（不新增执行语义，无需世界操作）；
+* 限制：白名单仍然只覆盖"runtime 会写出来的事实" —— 若将来 runtime 引入新的执行证据字段，
+  必须同步更新这里的白名单（并在注释里补出处），否则新的执行痕迹会被 fail-closed 忽略
+  （保守方向：少计反例，不会误伤技能）。

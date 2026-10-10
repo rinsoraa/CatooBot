@@ -14,6 +14,8 @@ import json
 from pathlib import Path
 from typing import Any
 
+import pytest
+
 from app.config.settings import DatabaseConfig
 from app.database.database import Database
 from app.tasks.models import PlanStatus, StepState, TaskFailure, TaskState
@@ -317,6 +319,217 @@ class TestFeedbackEligibility:
                     for item in await service.store.recent_evidence(10, skill_id=skill_id)
                 )
                 assert verdicts == ["COUNTEREXAMPLE", "POSITIVE", "POSITIVE", "REJECTED"]
+        finally:
+            await database.close()
+
+
+# ================================================================ 执行证据的严格判定
+
+
+VERIFICATION_FAIL = {
+    "checked": True,
+    "ok": False,
+    "inventory_delta": {DROP: 0},
+    "expected": {DROP: 1},
+    "message": "背包最终状态与预期不符",
+}
+
+
+def verification_failure(task_id: str, **kwargs: Any) -> Any:
+    """一条 "FAILED + 运行时后验校验失败" 的任务（步骤执行痕迹由调用方控制）。"""
+
+    return resource_record(
+        task_id=task_id,
+        state=TaskState.FAILED,
+        failure=TaskFailure.VERIFICATION.value,
+        verification=VERIFICATION_FAIL,
+        **kwargs,
+    )
+
+
+def strip_execution_traces(record: Any, *, states: dict[str, Any] | None = None) -> Any:
+    """清掉所有"确实执行过"的痕迹（时间戳 / 动作 id / 调用状态 / 结果），可指定步骤状态。
+
+    这样每一条用例都只保留**状态本身**，用于验证"状态 != 执行证明"。
+    """
+
+    wanted = dict(states or {})
+    for step in record.steps:
+        step.started_at = None
+        step.finished_at = None
+        step.action_id = ""
+        step.status = ""
+        step.result = {}
+        step.summary = ""
+        # 默认把所有步骤压成 PENDING（"仅剩状态本身"），用例可以指定少数步骤的状态
+        step.state = wanted.get(step.step_id, StepState.PENDING)
+    return record
+
+
+class TestStrictStepExecutionEvidence:
+    """§1/§2：只有**源码可证明**的持久化事实才算"这一步真的开始执行"。
+
+    TaskRuntime 的写入不变量（`app/tasks/runtime.py`）：
+
+    * ``_run_step`` 在**调用工具之前一行**同时写 ``step.state = RUNNING`` 与
+      ``step.started_at = clock()``（runtime.py:579-580）；调用循环结束后写
+      ``finished_at``（runtime.py:608）；
+    * ``_settle`` 只在拿到调用结果之后写 ``status`` / ``result`` / ``action_id`` /
+      ``SUCCEEDED`` / ``WAITING_ACTION``（:613-634）；``on_action_event`` 同理（:1076-1087）；
+    * ``FAILED`` **还有两处调用前分支**（引用解析失败 :515、参数校验失败 :525）以及恢复/取消
+      路径（:775/:928/:1188/:1229）→ 单有 ``FAILED`` / ``CANCELLED`` 不能证明跑过；
+    * ``SKIPPED`` / ``WAITING_CONFIRMATION`` 在整个 runtime 里**从不被写入**
+      （只在 models.py 的终态集合与进度统计里出现）→ 它们更不能当执行证明。
+      这些组合在正常运行时不可达；即使不可达也照样按"不可信"判定（fail-closed）。
+    """
+
+    @pytest.mark.parametrize(
+        "label,states",
+        [
+            ("all PENDING", {}),
+            ("one SKIPPED", {"step_3": StepState.SKIPPED}),
+            ("one WAITING_CONFIRMATION", {"step_3": StepState.WAITING_CONFIRMATION}),
+            ("one FAILED (pre-call branch)", {"step_3": StepState.FAILED}),
+            ("one CANCELLED", {"step_3": StepState.CANCELLED}),
+        ],
+    )
+    async def test_state_alone_is_not_execution_proof(
+        self, label: str, states: dict[str, Any]
+    ) -> None:
+        """后验失败条件齐全，但没有任何执行痕迹 → 绝不判反例。"""
+
+        service = make_service(observe=FakeObserve())
+        out = await promote(service)
+        skill_id = out["second"]["skill_id"]
+        record = strip_execution_traces(
+            await bound(service, skill_id, f"task_no_trace_{abs(hash(label)) % 1000}", **{}),
+            states=states,
+        )
+        # 让这条记录带上"后验失败"的全部条件（步骤状态与痕迹已按用例清空）
+        record.state = TaskState.FAILED
+        record.failure = TaskFailure.VERIFICATION.value
+        record.verification = dict(VERIFICATION_FAIL)
+        outcome = await service.on_task_finished(record)
+        assert outcome["action"] == "feedback", label
+        assert outcome["verdict"] == "indeterminate", label
+        skill = await service.store.get(skill_id)
+        assert skill is not None
+        assert skill.failure_count == 0, f"{label}: 状态不是执行证明"
+        assert skill.status == SkillStatus.ACTIVE.value, label
+        rows = await service.store.recent_evidence(3, skill_id=skill_id)
+        assert str(rows[0].verdict) == EvidenceVerdict.REJECTED.value, label
+        assert rows[0].reason_code == "skill_task_not_started", label
+
+    async def test_zero_started_at_counts_as_started(self) -> None:
+        """``started_at = 0`` 是**存在**的时间戳（该字段用 None 表示未设置），不能被 falsy 漏掉。"""
+
+        from app.tasks.skill_learning import step_ran
+
+        record = verification_failure("task_zero_stamp")
+        strip_execution_traces(record)
+        record.steps[2].started_at = 0  # 仓库时钟语义：0 是"设过的值"，未设置是 None
+        assert step_ran(record.steps[2]) is True
+
+        service = make_service(observe=FakeObserve())
+        out = await promote(service)
+        skill_id = out["second"]["skill_id"]
+        record = strip_execution_traces(await bound(service, skill_id, "task_zero_stamp"))
+        record.state = TaskState.FAILED
+        record.failure = TaskFailure.VERIFICATION.value
+        record.verification = dict(VERIFICATION_FAIL)
+        record.steps[2].started_at = 0
+        outcome = await service.on_task_finished(record)
+        assert outcome["verdict"] == "stale", "有执行证据 → 反例成立"
+        skill = await service.store.get(skill_id)
+        assert skill is not None and skill.failure_count == 1
+
+    @pytest.mark.parametrize(
+        "label,evidence",
+        [
+            ("action_id only", {"action_id": "act_1"}),
+            ("finished_at only", {"finished_at": 1.0}),
+            ("status only", {"status": "SUCCEEDED"}),
+            ("result only", {"result": {"ok": True}}),
+            ("state RUNNING only", {"state": StepState.RUNNING}),
+            ("state SUCCEEDED only", {"state": StepState.SUCCEEDED}),
+            ("state WAITING_ACTION only", {"state": StepState.WAITING_ACTION}),
+        ],
+    )
+    async def test_source_proven_evidence_still_counts(
+        self, label: str, evidence: dict[str, Any]
+    ) -> None:
+        """正向控制：被源码证明过的执行痕迹 + 同一套后验失败条件 → 仍是反例。"""
+
+        from app.tasks.skill_learning import step_ran
+
+        service = make_service(observe=FakeObserve())
+        out = await promote(service)
+        skill_id = out["second"]["skill_id"]
+        record = strip_execution_traces(
+            await bound(service, skill_id, f"task_evidence_{label[:6]}")
+        )
+        for key, value in evidence.items():
+            setattr(record.steps[3], key, value)
+        assert step_ran(record.steps[3]) is True, label
+        record.state = TaskState.FAILED
+        record.failure = TaskFailure.VERIFICATION.value
+        record.verification = dict(VERIFICATION_FAIL)
+        outcome = await service.on_task_finished(record)
+        assert outcome["verdict"] == "stale", label
+        skill = await service.store.get(skill_id)
+        assert skill is not None and skill.failure_count == 1, label
+
+    async def test_disqualified_feedback_is_consumed_once_without_scoring(
+        self, tmp_path: Path
+    ) -> None:
+        """服务级回归：不合格反馈仍然幂等消费绑定、保留原因码，但计数/状态零变化。"""
+
+        service, database = await make_sqlite_service(tmp_path, observe=FakeObserve())
+        try:
+            out = await promote(service)
+            skill_id = out["second"]["skill_id"]
+            record = strip_execution_traces(
+                await bound(service, skill_id, "task_disqualified"),
+                states={"step_3": StepState.SKIPPED},
+            )
+            record.state = TaskState.FAILED
+            record.failure = TaskFailure.VERIFICATION.value
+            record.verification = dict(VERIFICATION_FAIL)
+            first = await service.on_task_finished(record)
+            second = await service.on_task_finished(record)
+            assert first["action"] == "feedback" and first["verdict"] == "indeterminate"
+            assert second["action"] == "duplicate", "绑定只消费一次，重复终态不再计分"
+            binding = await service.store.binding_for("task_disqualified")
+            assert binding is not None and float(binding["consumed_at"]) > 0
+            skill = await service.store.get(skill_id)
+            assert skill is not None
+            assert (skill.success_count, skill.failure_count, skill.ambiguous_count) == (2, 0, 0)
+            assert skill.status == SkillStatus.ACTIVE.value
+            rows = await service.store.recent_evidence(3, skill_id=skill_id)
+            assert len([item for item in rows if item.task_id == "task_disqualified"]) == 1
+            assert rows[0].reason_code == "skill_task_not_started"
+        finally:
+            await database.close()
+
+    async def test_parity_for_disqualified_feedback(self, tmp_path: Path) -> None:
+        sqlite_service, database = await make_sqlite_service(tmp_path, observe=FakeObserve())
+        memory_service = make_service(store=InMemorySkillStore(), observe=FakeObserve())
+        try:
+            for service in (memory_service, sqlite_service):
+                out = await promote(service)
+                skill_id = out["second"]["skill_id"]
+                record = strip_execution_traces(
+                    await bound(service, skill_id, "task_parity"),
+                    states={"step_5": StepState.CANCELLED},
+                )
+                record.state = TaskState.FAILED
+                record.failure = TaskFailure.VERIFICATION.value
+                record.verification = dict(VERIFICATION_FAIL)
+                outcome = await service.on_task_finished(record)
+                skill = await service.store.get(skill_id)
+                assert outcome["verdict"] == "indeterminate"
+                assert skill is not None
+                assert (skill.failure_count, skill.status) == (0, SkillStatus.ACTIVE.value)
         finally:
             await database.close()
 

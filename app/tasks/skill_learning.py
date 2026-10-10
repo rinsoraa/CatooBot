@@ -291,18 +291,31 @@ def success_criteria_of(record: Any) -> tuple[SkillSuccessCriteria, ...]:
 #: 可审计执行证据，绝不从自由文本或模型自述推断。
 ATTRIBUTABLE_FAILURES = frozenset({TaskFailure.VERIFICATION.value})
 
-#: 步骤"真的开始执行过"的判据（任一成立）：有开始时间 / 有动作 id / 状态不是 PENDING
+#: 只有被**源码写入顺序**证明"这一步真的开始执行"的状态才在白名单里（TaskRuntime）：
+#:   * ``RUNNING`` —— 与 ``step.started_at`` 在**调用工具之前一行同时写**
+#:     （`app/tasks/runtime.py:579-580`，紧接着才是 ``_invoke_step``）；
+#:   * ``WAITING_ACTION`` / ``SUCCEEDED`` —— ``_settle`` 只在拿到调用结果之后才写
+#:     （runtime.py:613 / :625），``on_action_event`` 同理（runtime.py:1076-1087）。
+#:
+#: 刻意**不含**：
+#:   * ``FAILED`` / ``CANCELLED`` —— runtime 里还有**调用前**的分支会写它们：
+#:     runtime.py:515（引用解析失败）、:525（参数校验失败）以及 :775 / :928 / :1188 / :1229
+#:     的恢复 / 取消 / 过期路径 —— 单有状态不能证明工具被调用过；
+#:   * ``PENDING``（显然）、``SKIPPED`` 与 ``WAITING_CONFIRMATION``（**整个 runtime 里从不写入**，
+#:     只在 models.py 的终态集合与进度统计里出现）—— 这类记录只可能来自外部/历史数据。
+#: 任何歧义/缺失/不一致的 checkpoint 一律 fail-closed：不计分、留稳定原因码。
 _STEP_RAN_STATES = frozenset(
     {
         StepState.RUNNING.value,
         StepState.WAITING_ACTION.value,
-        StepState.WAITING_CONFIRMATION.value,
         StepState.SUCCEEDED.value,
-        StepState.FAILED.value,
-        StepState.SKIPPED.value,
-        StepState.CANCELLED.value,
     }
 )
+
+#: 调用已经发生过的**字段级**证据（写入点见 `_run_step` / `_settle` / `on_action_event`）：
+#: ``finished_at`` = 调用循环跑完；``action_id`` = 派发了异步动作；
+#: ``status`` = 工具返回的状态；``result`` = 工具返回的结果。它们都只在调用之后被写。
+_STEP_EVIDENCE_FIELDS = ("finished_at", "action_id", "status", "result")
 
 
 @dataclass(frozen=True)
@@ -319,12 +332,25 @@ class ReuseVerdict:
 
 
 def step_ran(step: Any) -> bool:
-    """这一步是否**真的开始执行过**（只看持久化事实：时间戳 / action_id / 状态）。"""
+    """这一步是否**真的开始执行过**（§2：只有源码可证明的持久化事实才算）。
 
-    if getattr(step, "started_at", None):
+    * ``started_at`` 必须用 ``is not None`` 判定 —— 该字段用 ``None`` 表示"没设置"
+      （`models.py` 的默认值），所以 ``0`` 也是**存在**的时间戳，不能被 falsy 漏掉；
+    * 其余字段级证据（``finished_at`` / ``action_id`` / ``status`` / ``result``）只在调用之后写入；
+    * 状态白名单见 ``_STEP_RAN_STATES``（含运行时写入顺序的出处）；
+    * 全部不成立 → 判定为"没有执行证据"（调用方 fail-closed，绝不计反例）。
+    """
+
+    if getattr(step, "started_at", None) is not None:
         return True
-    if str(getattr(step, "action_id", "") or ""):
-        return True
+    for field_name in _STEP_EVIDENCE_FIELDS:
+        value = getattr(step, field_name, None)
+        if field_name == "finished_at":
+            if value is not None:
+                return True
+            continue
+        if value:
+            return True
     state = getattr(getattr(step, "state", None), "value", getattr(step, "state", ""))
     return str(state or "") in _STEP_RAN_STATES
 

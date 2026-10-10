@@ -1,5 +1,30 @@
 # Changelog
 
+## Minecraft Phase 7E.1.2 — Strict Step Execution Evidence Gate
+
+* **问题**：`step_ran()` 除了 `started_at` / `action_id`，还把状态本身当执行证据 —— 包含
+  `WAITING_CONFIRMATION`、`SKIPPED`、`FAILED`、`CANCELLED`。但按 `TaskRuntime` 的真实写入顺序：
+  `SKIPPED`/`WAITING_CONFIRMATION` **从不被写入**（只在 `models.py` 的终态集合与进度统计里出现），
+  而 `FAILED` 还有**调用前**的分支会写它（引用解析失败 `runtime.py:515`、参数校验失败 `:525`）
+  以及恢复/取消路径（`:775/:928/:1188/:1229`）—— 于是"后验失败条件齐全但任务其实没跑过"
+  也会被判成方法反例，把技能无理由推到 STALE。
+* **修复**：`step_ran()` 只认源码可证明的事实 —— `started_at is not None`（注意该字段用 `None`
+  表示未设置，**`0` 是存在的时间戳**，不能靠 falsy 判定）、`finished_at is not None`、
+  非空 `action_id` / `status` / `result`、状态 ∈ `{RUNNING, WAITING_ACTION, SUCCEEDED}`
+  （`RUNNING` 与 `started_at` 在**调用工具前一行**同时写：`runtime.py:579-580`；其余在拿到调用结果
+  之后写：`:613-634`、`:1076-1087`）。白名单与出处写进代码注释。歧义/缺失/不一致的 checkpoint
+  一律 fail-closed：不计分、留稳定原因码（`skill_task_not_started` 等）。
+  方法反例的闭合条件不变（`FAILED` + `VERIFICATION` + 后验 `checked=True, ok=False` + **确证有步骤跑过**），
+  `CANCELLED`/`EXPIRED`/`TIMEOUT`/`OFFLINE`/`WORLD_CHANGED`/`AUTHORIZATION`/`BUSY`/`STALLED`
+  的保守不计分政策一字未改。
+* **测试**：新增 **15** 项（表驱动：五种"只有状态"的组合必须 REJECTED、`started_at=0` 必须被识别、
+  七种源码证明过的痕迹仍是反例、服务级幂等消费且计数/状态零变化、InMemory 与 SQLite 一致）；
+  先失败（11 项红）后通过；全量 **3561 passed**（3546 → +15）。原有 7E/7E.1/7E.1.1 测试
+  全部保留，无断言放宽。
+* **范围**：无新迁移（仍 36）、无新工具/动作/状态、`allow_medium=false` 不变、不触碰确认/批准/
+  身份/取消/暂停/恢复/超时语义与 `minecraft_runtime/runtime.js`；镜像变更仅两个文件。
+* 真实 Java 服务器门禁：`SKIPPED`（纯判定收紧，无需世界操作）。
+
 ## Minecraft Phase 7E.1.1 — Skill Feedback Eligibility & Evidence Projection Consistency
 
 * **问题 ①（未执行的任务被当成反例）**：技能绑定在任务进入 `PENDING_CONFIRMATION` 时就建立，
