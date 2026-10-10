@@ -308,6 +308,9 @@ _create: block_for(text) 认方块 → plan_resource_task()（确定性模板）
 2. **dig 的"他人移除"语义**（见上，第二轮）：`start()` 前置检查能给出清晰的
    `block.not_found`；但若动画已在运行，`wait()` 的复核只验"方块不再是原来的方块"，
    会把外部移除当成自己挖完。这属于 4B 既有语义，本阶段不扩大改动，只留档。
+   **→ 已于「Phase 7D Follow-up」收口**（根因＝mineflayer 只看目标坐标变 air；修复＝世界效果
+   与执行归属拆成两条独立结论，见 [MINECRAFT_PHASE7D_FOLLOWUP.md](MINECRAFT_PHASE7D_FOLLOWUP.md)）。
+   上面这段历史结论原文保留、一字未改。
 3. **夹具的 `oak_log` 是自然方块**（不是 op 放上去的）：规划器只挑"当前够得着"的候选
    （`_reachable_height`），因此门禁选中的是 11.4 格外那棵树的底层原木。
    门禁结束后操作者已把 `(-993,80,646)` 复原为 `oak_log`、把 `(-985,80,638)`

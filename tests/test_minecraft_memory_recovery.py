@@ -22,13 +22,14 @@ from app.core.bot import Bot
 from app.core.event_bus import EventBus
 from app.integrations.minecraft.events import MinecraftBridgeEvent
 from app.memory.minecraft.model import FactSource, MinecraftMemoryKind
-from app.tasks.models import TaskStep
+from app.tasks.models import StepState, TaskStep
 from tests.minecraft_memory_fakes import (
     UUID_KONGLING,
     UUID_OTHER,
     FakeMinecraftService,
     build_bridge,
 )
+from tests.skill_fakes import DIG_ATTRIBUTION_PRESETS, DIG_ATTRIBUTION_SELF
 
 
 def wire_bot(
@@ -531,13 +532,45 @@ def dig_step(
     y: int | None = 64,
     z: int | None = 100,
     block: str = "minecraft:oak_log",
+    state: StepState = StepState.SUCCEEDED,
+    attribution: dict[str, Any] | str | None = None,
+    action_id: str = "act_dig_1",
 ) -> Any:
-    """一个真实的 dig 步骤（`effective_arguments` 就是执行时真正用的参数）。"""
+    """一个真实的 dig 步骤（`effective_arguments` 就是执行时真正用的参数）。
+
+    Phase 7D Follow-up：真实的挖掘步骤是**终态 SUCCEEDED**，而且 `result` 里带本地运行时的
+    归因载荷（世界效果 + 执行归属）—— 那是"她亲手挖过"的唯一可靠依据，所以夹具也带上。
+    ``attribution`` 可以给预设名（``DIG_ATTRIBUTION_PRESETS``，``"missing"`` = 完全没有归因）、
+    直接给载荷，或 ``None``（= 默认的自证载荷）。
+    """
     arguments: dict[str, Any] = {"expected_block": block}
     for axis, value in (("x", x), ("y", y), ("z", z)):
         if value is not None:
             arguments[axis] = value
-    return TaskStep(step_id=step_id, tool="minecraft_dig", arguments=arguments, risk="MEDIUM")
+    step = TaskStep(
+        step_id=step_id,
+        tool="minecraft_dig",
+        arguments=arguments,
+        risk="MEDIUM",
+        state=state,
+        action_id=action_id,
+        status="SUCCEEDED",
+    )
+    if attribution is None:
+        payload: dict[str, Any] | None = dict(DIG_ATTRIBUTION_SELF)
+    elif isinstance(attribution, str):
+        preset = DIG_ATTRIBUTION_PRESETS.get(attribution)
+        payload = dict(preset) if preset else None
+    else:
+        payload = dict(attribution)
+    step.result = {
+        "position": {axis: arguments.get(axis) for axis in ("x", "y", "z")},
+        "block_before": block,
+        "block_after": "air",
+    }
+    if payload:
+        step.result["attribution"] = payload
+    return step
 
 
 def task_record(*, state: str = "SUCCEEDED", steps: list[Any] | None = None) -> Any:

@@ -9,21 +9,27 @@
 ``not_terminal`` → ``unknown_state`` → ``not_succeeded:<state>`` → ``final_plan_not_completed``
 → ``no_steps`` → ``unsupported_step:<tool>`` → ``risk_mismatch:<tool>``
 → ``step_not_run:<step>:<state>`` → ``world_change_unverified:<step>``
-→ ``ambiguous_world_change:<step>`` → ``no_postcondition`` → 全部通过 = QUALIFIED。
+→ ``dig_attribution_unproven:<step>`` → ``ambiguous_world_change:<step>``
+→ ``no_postcondition`` → 全部通过 = QUALIFIED。
 
-**7D §10.4 dig 歧义的隔离策略（只隔离，不修 7D）**：
+**7D §10.4 dig 歧义（Phase 7D Follow-up 已收口）**：挖掘的"世界发生了变化"与"是罐头亲手挖的"
+是两件事，本地运行时把两者分开回报（`minecraft_runtime/dig_attribution.js` 的契约：
+``world_effect`` ∈ BLOCK_REMOVED/BLOCK_REMAINS/UNKNOWN，``attribution`` ∈
+SELF_CONFIRMED/EXTERNAL_INDICATED/AMBIGUOUS，随动作终态事件进 ``TaskStep.result``）：
 
-* 主力规则：**改动世界的步骤必须有独立后置条件**（运行时自己的新鲜 SAFE 校验，或学习期
-  的新鲜 SAFE 复核）。没有 → ``world_change_unverified``，记 ``AMBIGUOUS`` 证据、不计正向。
-* 附加信号：计划期 ``dig_capability`` 给出过预期挖掘时长、而实测步骤时长不到它的一半
-  → 方块很可能在罐头挖到之前就已经被别人移除 → ``ambiguous_world_change``（``AMBIGUOUS``）。
-* **已知残余窗口（不假装解决）**：若另一名玩家"真的把方块挖掉"（产生掉落物）恰好与罐头的
-  挖掘重叠，现有 ``step.result`` 里没有归因字段，无法区分；本阶段不改 7D 执行路径，
-  该窗口作为 7D 后续结果完整性缺陷单独跟踪。
+* **归属门（主）**：``minecraft_dig`` 步骤必须有 ``world_effect == BLOCK_REMOVED`` 且
+  ``attribution == SELF_CONFIRMED``；缺失/外部/歧义 → ``dig_attribution_unproven:<step_id>``
+  （``AMBIGUOUS`` 证据，只隔离、不计正向也不计反例）。
+* **后置条件（仍是效果证据）**：运行时自己的新鲜 SAFE 复核（方块确实不在了）或
+  ``inventory_delta`` —— 它们只能证明"世界/背包变了"，**不证明是谁弄掉的**，因此不再单独
+  充当挖掘的正向依据。
+* **附加信号（降级为辅助）**：计划期 ``dig_capability`` 的预期挖掘时长仍保留为时序旁证，
+  只用来拦住"实测时长明显短于预期"的样本，绝不单独作为归因证明。
 """
 
 from __future__ import annotations
 
+import json
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Any
@@ -75,6 +81,98 @@ _POSITION_KEYS = ("x", "y", "z")
 #: 槽位名：既有引用（``from_step``）之外的动态参数都落在这里
 POSITION_SLOT = "target_position"
 ENTITY_SLOT = "target_entity"
+
+# ---------------------------------------------------------------- 挖掘归因（7D Follow-up）
+
+#: 会改动世界的挖掘工具（归因门只对它有额外要求）
+DIG_TOOL = "minecraft_dig"
+#: 世界效果：目标坐标上原来的方块已经不在了
+WORLD_EFFECT_BLOCK_REMOVED = "BLOCK_REMOVED"
+#: 执行归属：现有证据表明是罐头亲手挖的（本地运行时同名字段，契约见 dig_attribution.js）
+ATTRIBUTION_SELF_CONFIRMED = "SELF_CONFIRMED"
+#: 执行归属：有正面证据表明**别人**在挖同一个坐标
+ATTRIBUTION_EXTERNAL_INDICATED = "EXTERNAL_INDICATED"
+#: 执行归属：证据不足以归因
+ATTRIBUTION_AMBIGUOUS = "AMBIGUOUS"
+
+
+def dig_attribution(step: Any) -> dict[str, Any] | None:
+    """读一步挖掘的**归因结论**（`TaskStep.result["attribution"]`，契约见 dig_attribution.js）。
+
+    只读两种公认结构（``dict`` 或 JSON 文本）；缺字段、类型不对、解析失败一律返回 ``None``
+    —— 调用方按"无法归因"处理（fail-closed），**绝不**从方块名、背包变化、目标文本或
+    模型输出里倒推归属。
+    """
+
+    result = getattr(step, "result", None)
+    if isinstance(result, str):
+        try:
+            result = json.loads(result)
+        except (TypeError, ValueError):
+            return None
+    if not isinstance(result, Mapping):
+        return None
+    payload = result.get("attribution")
+    if isinstance(payload, str):
+        try:
+            payload = json.loads(payload)
+        except (TypeError, ValueError):
+            return None
+    if not isinstance(payload, Mapping):
+        return None
+    world_effect = str(payload.get("world_effect") or "")
+    verdict = str(payload.get("attribution") or "")
+    if not world_effect or not verdict:
+        return None
+    return {
+        "world_effect": world_effect,
+        "attribution": verdict,
+        "reason_code": str(payload.get("reason_code") or ""),
+        "confirm_basis": str(payload.get("confirm_basis") or ""),
+        "action_id": str(payload.get("action_id") or ""),
+        "strict_self_proof": bool(payload.get("strict_self_proof")),
+    }
+
+
+def _dig_attribution_verdict(step: Any) -> tuple[str, dict[str, Any]]:
+    """``(子原因, detail)``：子原因为 ``""`` 表示"归属证明通过"（自证 + 世界效果确认）。"""
+
+    payload = dig_attribution(step)
+    if payload is None:
+        return "missing", {}
+    detail = {
+        "world_effect": payload["world_effect"],
+        "attribution": payload["attribution"],
+        "reason_code": payload["reason_code"],
+        "confirm_basis": payload["confirm_basis"],
+        "action_id": payload["action_id"],
+        "strict_self_proof": payload["strict_self_proof"],
+    }
+    step_action = str(getattr(step, "action_id", "") or "")
+    if step_action and payload["action_id"] and step_action != payload["action_id"]:
+        # 归因载荷必须属于**这一步**：串了/过期了/张冠李戴 → 一律无法归因
+        return "action_id_mismatch", {**detail, "step_action_id": step_action}
+    if payload["world_effect"] != WORLD_EFFECT_BLOCK_REMOVED:
+        return "world_effect_not_removed", detail
+    if payload["attribution"] != ATTRIBUTION_SELF_CONFIRMED:
+        return payload["reason_code"] or payload["attribution"].lower(), detail
+    return "", detail
+
+
+def dig_attribution_reason(step: Any) -> tuple[str, dict[str, Any]]:
+    """给拒绝/歧义留痕用的紧凑理由（``(子原因, detail)``；缺归因时子原因 = ``missing``）。"""
+
+    return _dig_attribution_verdict(step)
+
+
+def self_dig_confirmed(step: Any) -> bool:
+    """这一步是不是"罐头亲手挖掉、且世界效果已确认"（两个条件必须同时成立）。
+
+    ``block_absent`` / ``inventory_delta`` 这类**效果证据**不参与判定 —— 它们只证明
+    "世界/背包变了"，不证明是谁弄掉的。
+    """
+
+    return _dig_attribution_verdict(step)[0] == ""
 
 
 @dataclass(frozen=True)
@@ -471,7 +569,18 @@ def qualify(inputs: LearningInput) -> Qualification:
         step_id = str(getattr(step, "step_id", "") or "")
         if tool not in WORLD_CHANGING_TOOLS:
             continue
-        # 时长信号：方块可能在挖到之前就没了
+        # 归属门（Phase 7D Follow-up §四）：挖掘的"方块没了"只证明世界变了，
+        # 必须是**罐头亲手挖的**才算正向；缺失/别人的/说不清 → AMBIGUOUS，只隔离不计分。
+        if tool == DIG_TOOL and not self_dig_confirmed(step):
+            sub_reason, attribution_detail = dig_attribution_reason(step)
+            return Qualification(
+                ok=False,
+                reason_code=f"dig_attribution_unproven:{step_id}",
+                verdict=EvidenceVerdict.AMBIGUOUS,
+                method_class=method_class,
+                detail={"step_id": step_id, "reason": sub_reason, **attribution_detail},
+            )
+        # 时长信号（辅助，已降级）：方块可能在挖到之前就没了
         expected_ms = inputs.dig_expected_ms.get(step_id)
         duration = _step_duration_ms(step)
         if (
@@ -546,18 +655,26 @@ def qualify(inputs: LearningInput) -> Qualification:
 
 __all__ = [
     "ATTRIBUTABLE_FAILURES",
+    "ATTRIBUTION_AMBIGUOUS",
+    "ATTRIBUTION_EXTERNAL_INDICATED",
+    "ATTRIBUTION_SELF_CONFIRMED",
+    "DIG_TOOL",
     "ENTITY_SLOT",
     "INVENTORY_VERIFIED_TOOLS",
-    "STEP_POSTCONDITION_ONLY_TOOLS",
-    "LearningInput",
     "POSITION_SLOT",
+    "STEP_POSTCONDITION_ONLY_TOOLS",
+    "WORLD_CHANGING_TOOLS",
+    "WORLD_EFFECT_BLOCK_REMOVED",
+    "LearningInput",
     "Qualification",
     "ReuseVerdict",
-    "WORLD_CHANGING_TOOLS",
     "classify_reuse",
+    "dig_attribution",
+    "dig_attribution_reason",
     "normalize_steps",
     "preconditions_of",
     "qualify",
+    "self_dig_confirmed",
     "step_ran",
     "success_criteria_of",
 ]

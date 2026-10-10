@@ -732,6 +732,37 @@ async function main() {
         )
         console.log('[e2e] dig ✓ block_before=dirt → block_after=' + doneA.result.block_after + '（感知层同步消失）')
 
+        // Phase 7D Follow-up：结果里必须带"世界效果 + 执行归属"两个**独立**结论
+        const attributionA = doneA.result.attribution
+        assert(Boolean(attributionA), 'Test A：结果带 dig_attribution（世界效果与执行归属分离）')
+        assert(
+          attributionA.world_effect === 'BLOCK_REMOVED',
+          `Test A：world_effect = BLOCK_REMOVED（得到 ${attributionA && attributionA.world_effect}）`,
+        )
+        assert(
+          ['SELF_CONFIRMED', 'EXTERNAL_INDICATED', 'AMBIGUOUS'].includes(attributionA.attribution),
+          `Test A：attribution 取值合法（得到 ${attributionA && attributionA.attribution}）`,
+        )
+        assert(
+          attributionA.attribution !== 'EXTERNAL_INDICATED',
+          'Test A：这台假服务器上只有罐头一个玩家 → 绝不允许判成外部破坏',
+        )
+        assert(
+          attributionA.action_id === digA.body.action_id,
+          `Test A：归因绑定本次 action_id（得到 ${attributionA && attributionA.action_id}）`,
+        )
+        assert(
+          attributionA.target &&
+            attributionA.target.x === aPos.x &&
+            attributionA.target.y === aPos.y &&
+            attributionA.target.z === aPos.z,
+          `Test A：归因绑定目标坐标（得到 ${JSON.stringify(attributionA && attributionA.target)}）`,
+        )
+        console.log(
+          `[e2e] dig ✓ 归因 ${attributionA.attribution}/${attributionA.reason_code}` +
+            '（flying-squid 挖方块是瞬时的 → 允许 AMBIGUOUS，绝不伪造成自证）',
+        )
+
         // ---- Test B：方块与 expected_block 不一致 → block.changed（带 expected/actual） ----
         const bPos = { x: Math.round(origin.x) - 1, y: Math.round(origin.y), z: Math.round(origin.z) }
         setBlock(bPos.x, bPos.y, bPos.z, 'dirt')

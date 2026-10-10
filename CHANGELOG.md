@@ -1,5 +1,53 @@
 # Changelog
 
+## Minecraft Phase 7D Follow-up — Minecraft Dig Attribution（挖掘结果归因根因修复）
+
+* **根因**：mineflayer **4.39.0** 的 `digging.js` 用「目标坐标变成 air」判定挖掘结束
+  （`onBlockUpdate` → `diggingCompleted`，没有时间校验也没有归属校验），于是**任何**来源
+  （别的玩家、`/setblock`、服务器插件）让那个坐标变成 air 都会让 `bot.dig()` 正常 resolve；
+  7D 的 `wait()` 复核只验"方块不再是原来的方块" → 外部移除被当成自己挖完（7D §10.4 第 2 条）。
+* **修复（Node）**：新增 `minecraft_runtime/dig_attribution.js`——把结论拆成两条**互不推出**的轴：
+  `world_effect`（BLOCK_REMOVED / BLOCK_REMAINS / UNKNOWN）与
+  `attribution`（SELF_CONFIRMED / EXTERNAL_INDICATED / AMBIGUOUS，**刻意没有**过强的
+  `EXTERNAL_CONFIRMED`）。证据按 `action_id` + 目标坐标 + 时间窗**作用域化**采集：
+  `blockUpdate:<坐标>`、`diggingCompleted/Aborted`、带实体身份的
+  `blockBreakProgressObserved/End`、以及 `bot._client` 的 `block_update/block_change` **服务器真包**
+  （与本地乐观更新分开记）；`resolveAttribution()` 是纯函数，自证只有两种依据
+  （`self_break_progress` 正面进度 / `dig_lifecycle_timing` 时序推断，且要求变化发生在
+  我们自己发出完成包之后 `ratio >= 0.85`、无外部信号）；证据冲突（别人在挖 + 我们也按时挖完）
+  判 `AMBIGUOUS`；监听器在 `wait()` 出口与 `cleanup()` 双保险摘除（取消/超时/断开/退出全覆盖，
+  幂等、零泄漏、迟到事件忽略、条数上限 12）。`runtime.js` 的 dig 只**增加** `attribution` 字段，
+  原有结果字段与成功判据、风险/授权/确认/超时/独占语义一字未改（不缩短等待、不加睡眠）。
+* **修复（Python）**：`skill_learning.py` 新增纯读取器 `dig_attribution()` /
+  `dig_attribution_reason()` / `self_dig_confirmed()`（只认 `step.result["attribution"]`，
+  缺字段/坏结构/`action_id` 串了 → fail-closed）；资格门要求 `minecraft_dig` 正向样本
+  **同时**满足 `world_effect == BLOCK_REMOVED` 与 `attribution == SELF_CONFIRMED`，
+  否则 `dig_attribution_unproven:<step_id>`（`AMBIGUOUS` 证据：不计正向也不计反例）；
+  `block_absent` / `inventory_delta` 明确降级为**效果证据**，不再单独为挖掘背书；
+  旧的"时长不到预期一半"信号保留但降级为辅助。`memory_bridge.py` 的 `_remember_task_target()`
+  改为**逐挖掘步骤**判定，只有「步骤 SUCCEEDED」+「世界效果确认」+「归属自证」三条齐备才写
+  `TASK_RESULT` 的 "她亲手挖过" 资源事实（任务经验照写）。
+* **测试**：Node 新增 `test/dig_attribution.test.js`（判定矩阵 13 行 + 坐标过滤 + 零泄漏 +
+  接线，56 项；接线先失败后通过 —— 实现之前结果里根本没有 `attribution`）并接进 `npm test`；
+  flying-squid `e2e.js` 增加归因断言（结构 + 取值合法 + **绝不允许**在单玩家假服务器上判成外部；
+  实测输出 `AMBIGUOUS/expected_dig_time_unknown`，如实反映假服务器算不出 `digTime`）；
+  Python 新增 `tests/test_dig_attribution.py`（24 项）并把 `tests/skill_fakes.py` /
+  `tests/test_minecraft_memory_recovery.py` 的夹具升级为**带真实归因**的挖掘步骤
+  （升级前 6 项既有技能测试会红 —— 这正是"归因门真的在拦"的证据）；全量 **3585 passed**
+  （3561 → +24）。
+* **范围**：**无新表、无新迁移**（最高仍 **36**）、无新工具（19）/新动作/新 TaskRuntime 状态、
+  `allow_medium=false` 不变、不触碰 Policy/风险/确认/授权语义、`config/`、`.env`、
+  `config/overrides.yaml` 与 Character Bible 未触碰。
+* **结论 `PARTIAL`**：无证据误归因已消除（方块消失只证明世界变了；说不清一律 `AMBIGUOUS`
+  且留稳定原因码）；严格自挖确认仍受客户端协议能力限制（没有"这个方块是我破坏的"回执，
+  只能靠"自己的完成时刻"这个因果分界推断，payload 用 `confirm_basis` / `strict_self_proof`
+  如实标注）。**真实 Java 服务器门禁 `SKIPPED`**：`127.0.0.1:25565` 是 `online-mode=true`，
+  本机 offline 认证一登录即被踢（`multiplayer.disconnect.unverified_username`）；
+  为此专门写了取证探针 `minecraft_runtime/test/probe_dig_attribution_real.js`
+  （自己挖 / 挖到一半被外部改掉 / 第二个真实客户端挖同一方块），实跑按设计报"连接失败，跳过"。
+  假服务器不能替代这一项（它收到挖掘包就立刻破坏方块、没有第二个真实玩家，用它证明外部动画
+  路径就是伪造结论）。
+
 ## Minecraft Phase 7E.1.2 — Strict Step Execution Evidence Gate
 
 * **问题**：`step_ran()` 除了 `started_at` / `action_id`，还把状态本身当执行证据 —— 包含

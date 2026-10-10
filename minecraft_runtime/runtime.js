@@ -31,6 +31,7 @@ const Vec3 = require('vec3').Vec3 ?? require('vec3')
 const pathfinder = require('mineflayer-pathfinder')
 const { Movements, goals } = pathfinder
 const { createActionRuntime, ActionError } = require('./action_runtime')
+const { createDigAttribution, worldEffectOf } = require('./dig_attribution')
 
 // --------------------------------------------------------------- configuration
 
@@ -61,6 +62,38 @@ function digTimeoutMs() {
 function digMaxDistance() {
   const raw = Number.parseFloat(process.env.MC_DIG_MAX_DISTANCE || '')
   return Number.isFinite(raw) && raw > 0 ? raw : DIG_MAX_DISTANCE
+}
+
+/**
+ * Phase 7D Follow-up：**在动作开始那一刻**问 mineflayer「挖这个方块预期要多久」
+ * （`bot.digTime` 就是 `bot.dig()` 内部给完成包定时的同一个函数，所以两者同口径）。
+ * 拿不到（没有该函数 / 算不出来 / Infinity）→ null，归因层会如实判"没有时序证据"。
+ * 这里**只读**，不改任何东西，也绝不为此等待。
+ */
+function expectedDigMsOf(bot, block) {
+  if (!bot || typeof bot.digTime !== 'function') return null
+  try {
+    const value = bot.digTime(block)
+    if (Number.isFinite(value) && value > 0) return Math.round(value)
+  } catch (error) {
+    log('warn', 'dig attribution digTime failed', { error: error.message })
+  }
+  return null
+}
+
+/** 归因判定是纯函数，但绝不让它的任何意外把动作结果弄丢：异常 → null（如实"没有归因结论"）。 */
+function resolveDigAttribution(collector, state, input) {
+  if (!collector) return null
+  try {
+    return collector.resolve({
+      worldEffect: input.worldEffect,
+      blockAfter: input.blockAfter,
+      finishedAtMs: Date.now(),
+    })
+  } catch (error) {
+    log('warn', 'dig attribution resolve failed', { error: error.message })
+    return null
+  }
 }
 
 // Phase 4C：place（放置单个方块；MEDIUM，需要确认）+ inventory 只读切片
@@ -2046,7 +2079,7 @@ const ACTION_REGISTRY = {
           expected_tool: rawTool.trim(),
         }
       },
-      async start(bot, params) {
+      async start(bot, params, token, controller) {
         // §十三-§十七：真正的执行前校验（同步反馈）——确认是授权，不代替校验。
         // 在线门由 ActionRuntime.execute 统一把守（未在线根本到不了这里）。
         if (bot === null || bot.entity === null) {
@@ -2120,6 +2153,20 @@ const ACTION_REGISTRY = {
           // 挖不动（工具不对/被保护）：不换工具、不找角度、不走近——如实失败
           throw new ActionError('当前状态下挖不动这个方块', 'block.not_diggable', 400)
         }
+        // Phase 7D Follow-up：从这一刻起**只监听本次动作**的证据（同一 action_id / 同一坐标 /
+        // 同一时间窗），并且在我们自己发出完成包之前不会误认任何变化（见 dig_attribution.js）。
+        const attributionCollector = createDigAttribution({
+          actionId: controller && controller.record ? controller.record.action_id : '',
+          position,
+          blockName: block.name,
+          expectedDigMs: expectedDigMsOf(bot, block),
+          startedAtMs: Date.now(),
+          sessionId: state.sessionId,
+          dimension: bot.game ? bot.game.dimension : null,
+          selfEntityId: bot.entity && bot.entity.id !== undefined ? bot.entity.id : null,
+        })
+        attributionCollector.attach(bot)
+        if (controller) controller.digAttribution = attributionCollector
         return {
           block,
           position,
@@ -2127,9 +2174,13 @@ const ACTION_REGISTRY = {
           // Phase 4I：执行前那一刻的工具身份（expected 是用户的要求，actual 是实际主手）
           toolExpected,
           toolActual,
+          attributionCollector,
         }
       },
       async wait(bot, params, token, state) {
+        // Phase 7D Follow-up：无论走成功、失败还是取消，出口都摘掉本次动作的监听器。
+        const collector = state && state.attributionCollector ? state.attributionCollector : null
+        let payload = null
         try {
           // forceLook=true：由 Mineflayer 负责朝向（Python 层绝不碰 yaw/pitch）
           await bot.dig(state.block, true)
@@ -2146,13 +2197,28 @@ const ACTION_REGISTRY = {
             )
           }
           throw new ActionError(`挖掘失败：${message}`, 'action.failed', 500)
+        } finally {
+          // 证据只属于"刚才那次挖掘"：出口即摘，绝不跨动作、跨重连残留
+          if (collector) collector.detach()
         }
         // §二十二/§二十三：不信 Promise —— 重新读一次方块，确认真的没了
         const after = bot.blockAt(state.position)
-        const afterName = after ? after.name : 'air'
+        // 世界效果用**原始读数**（读不到 = 不知道），而"方块已不在"仍是既有的成功判据
+        const rawAfterName = after && after.name ? after.name : null
+        const afterName = rawAfterName === null ? 'air' : rawAfterName
         if (after && after.name === state.blockName) {
-          throw new ActionError('方块仍在原位，未能确认破坏结果', 'block.break_unconfirmed', 500)
+          payload = resolveDigAttribution(collector, state, {
+            worldEffect: worldEffectOf(state.blockName, rawAfterName),
+            blockAfter: afterName,
+          })
+          throw new ActionError('方块仍在原位，未能确认破坏结果', 'block.break_unconfirmed', 500, {
+            ...(payload ? { attribution: payload } : {}),
+          })
         }
+        payload = resolveDigAttribution(collector, state, {
+          worldEffect: worldEffectOf(state.blockName, rawAfterName),
+          blockAfter: afterName,
+        })
         // Phase 4I §十九：动作结束后再读一次主手（**不做成功硬门** —— 硬门永远是
         // block_after != block_before；工具数量变化只是事实记录，例如镐子挖坏了）
         const heldAfter = bot.heldItem
@@ -2166,9 +2232,19 @@ const ACTION_REGISTRY = {
             heldAfter && heldAfter.name
               ? { name: normalizeItemName(heldAfter.name), count: heldAfter.count }
               : null,
+          // Phase 7D Follow-up：世界效果与执行归属**分开**回报（见 dig_attribution.js）
+          ...(payload ? { attribution: payload } : {}),
         }
       },
-      cleanup(bot) {
+      cleanup(bot, controller) {
+        // Phase 7D Follow-up：取消/超时/断开/退出时同样摘掉归因监听器（幂等，至多一次）
+        if (controller && controller.digAttribution) {
+          try {
+            controller.digAttribution.detach()
+          } catch (error) {
+            log('warn', 'dig cleanup detach attribution failed', { error: error.message })
+          }
+        }
         // §二十：取消/超时/断开/退出都必须真的停止挖掘（至多一次，由 ActionRuntime 保证）
         if (bot && typeof bot.stopDigging === 'function') {
           try {

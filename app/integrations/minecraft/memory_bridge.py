@@ -43,6 +43,8 @@ from app.memory.minecraft import (
     MinecraftMemoryStore,
     MinecraftMemoryWriter,
 )
+from app.tasks.models import StepState
+from app.tasks.skill_learning import DIG_TOOL, self_dig_confirmed
 
 #: 复核距离：这么近才敢说"世界说它不在了"（远了只能 unknown，绝不误判 §二十）
 VERIFY_NEAR_BLOCKS = 4.5
@@ -61,6 +63,12 @@ def _unwrap(payload: Any) -> dict[str, Any]:
         return {}
     inner = payload.get("result")
     return dict(inner) if isinstance(inner, Mapping) else dict(payload)
+
+
+def _step_state(step: Any) -> str:
+    """步骤状态（枚举或字符串；读不到就是空串 → 一律按"没成功"处理）。"""
+    raw = getattr(getattr(step, "state", None), "value", getattr(step, "state", ""))
+    return str(raw or "")
 
 
 @dataclass
@@ -312,17 +320,28 @@ class MinecraftMemoryBridge:
             await self._remember_task_target(server_id, record)
 
     async def _remember_task_target(self, server_id: str, record: Any) -> None:
-        """任务成功时，把她**亲手处理过的那一格**记成一条世界事实（§三十：重要的世界事实）。
+        """任务成功时，把她**亲手挖掉的**那些格子记成世界事实（§三十：重要的世界事实）。
 
-        只写第一条带完整坐标的 ``minecraft_dig`` 步骤，来源是 ``TASK_RESULT``
-        （"她亲手挖到过"，不是"她亲眼看见"）。世界随后变了也没关系：这条事实带坐标，
-        对账与检索都会用**当前世界**去复核它，该失效就失效（§二十二/§二十七）。
+        Phase 7D Follow-up：**逐挖掘步骤独立判定**，只有同时满足三条才写
+        （其余一律不写、也不降级成别的事实）：
+
+          1. 这一步真的执行成功（``SUCCEEDED``）；
+          2. 世界效果确认（``world_effect == BLOCK_REMOVED``）；
+          3. 执行归属是**罐头自己**（``attribution == SELF_CONFIRMED``）。
+
+        判定只用本地运行时随动作终态回报的归因（`dig_attribution.js` 契约），来源是
+        ``TASK_RESULT``（"她亲手挖到过"，不是"她亲眼看见"）。世界随后变了也没关系：
+        这条事实带坐标，对账与检索都会用**当前世界**去复核它，该失效就失效（§二十二/§二十七）。
 
         这样"刚才那棵树在哪里"才有可复核的素材 —— 否则任务只留下一条 TASK 事实，
         而 TASK 事实本来就是"做过什么"，不是"世界里有什么"。
         """
         for step in getattr(record, "steps", None) or []:
-            if str(getattr(step, "tool", "") or "") != "minecraft_dig":
+            if str(getattr(step, "tool", "") or "") != DIG_TOOL:
+                continue
+            if _step_state(step) != StepState.SUCCEEDED.value:
+                continue
+            if not self_dig_confirmed(step):
                 continue
             arguments = getattr(step, "effective_arguments", None) or {}
             if not isinstance(arguments, Mapping):
@@ -337,7 +356,6 @@ class MinecraftMemoryBridge:
                 position=position,
                 source=FactSource.TASK_RESULT,
             )
-            return
 
     @staticmethod
     def _task_position(record: Any) -> dict[str, Any]:

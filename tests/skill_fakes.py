@@ -28,6 +28,49 @@ DROP = "oak_log"
 POSITION = {"x": -993, "y": 81, "z": 646}
 DIG_MS = 600
 
+#: Phase 7D Follow-up：挖掘归因夹具（与 ``minecraft_runtime/dig_attribution.js`` 的载荷同形）。
+#: 真实的 ``minecraft_dig`` 步骤结果里就有这一份（随动作终态事件回报），
+#: 所以夹具必须有能力表达"自证 / 外部 / 歧义 / 缺字段 / 方块还在"五种真实形态。
+DIG_ATTRIBUTION_SELF: dict[str, Any] = {
+    "kind": "dig_attribution",
+    "schema": 1,
+    "action_id": "act_dig_1",
+    "target": dict(POSITION),
+    "dimension": "minecraft:overworld",
+    "world_effect": "BLOCK_REMOVED",
+    "attribution": "SELF_CONFIRMED",
+    "confirm_basis": "dig_lifecycle_timing",
+    "reason_code": "self_dig_completed_at_expected_time",
+    "strict_self_proof": True,
+}
+DIG_ATTRIBUTION_PRESETS: dict[str, dict[str, Any] | None] = {
+    "self": DIG_ATTRIBUTION_SELF,
+    "external": {
+        **DIG_ATTRIBUTION_SELF,
+        "attribution": "EXTERNAL_INDICATED",
+        "confirm_basis": "external_break_progress",
+        "reason_code": "external_break_progress_observed",
+        "strict_self_proof": False,
+    },
+    "conflict": {
+        **DIG_ATTRIBUTION_SELF,
+        "attribution": "AMBIGUOUS",
+        "confirm_basis": "none",
+        "reason_code": "conflicting_evidence",
+        "strict_self_proof": False,
+    },
+    "ambiguous": {
+        **DIG_ATTRIBUTION_SELF,
+        "attribution": "AMBIGUOUS",
+        "confirm_basis": "none",
+        "reason_code": "block_removed_before_self_dig_completion",
+        "strict_self_proof": False,
+    },
+    "remains": {**DIG_ATTRIBUTION_SELF, "world_effect": "BLOCK_REMAINS"},
+    "unknown_effect": {**DIG_ATTRIBUTION_SELF, "world_effect": "UNKNOWN"},
+    "missing": None,
+}
+
 
 def resource_plan(
     *,
@@ -152,6 +195,8 @@ def resource_record(
     never_started: bool = False,
     #: 运行时给出的失败分类（TaskFailure 的值；"" = 没有）
     failure: str = "",
+    #: Phase 7D Follow-up：挖掘归因形态（预设名见 DIG_ATTRIBUTION_PRESETS，或直接给载荷）
+    dig_attribution: dict[str, Any] | str | None = "self",
 ) -> TaskRecord:
     """一条**真实结构**的任务记录（默认：挖一块原木 → 捡回来 → 背包复核成功）。"""
 
@@ -229,6 +274,13 @@ def resource_record(
                 "block_before": block,
                 "block_after": "air",
             }
+            payload = (
+                DIG_ATTRIBUTION_PRESETS.get(dig_attribution, DIG_ATTRIBUTION_SELF)
+                if isinstance(dig_attribution, str)
+                else dig_attribution
+            )
+            if payload:
+                step.result["attribution"] = dict(payload)
     if dig_elapsed_ms is not None:
         for step in record.steps:
             if step.tool == "minecraft_dig":
@@ -490,6 +542,18 @@ def build_task_runtime() -> Any:
             items = [] if inventory_reads["n"] == 1 else [{"name": DROP, "count": 1}]
             return TaskInvocation(
                 ok=True, status="SUCCEEDED", result={"items": items, "held_item": None}
+            )
+        if tool == "minecraft_dig":
+            # Phase 7D Follow-up：真实 dig 的结果里带世界效果 + 执行归属（这里同形投影）
+            return TaskInvocation(
+                ok=True,
+                status="SUCCEEDED",
+                result={
+                    "position": {axis: arguments.get(axis) for axis in ("x", "y", "z")},
+                    "block_before": str(arguments.get("expected_block") or BLOCK),
+                    "block_after": "air",
+                    "attribution": {**DIG_ATTRIBUTION_SELF, "action_id": ""},
+                },
             )
         return TaskInvocation(ok=True, status="SUCCEEDED", result={})
 
