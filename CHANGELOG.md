@@ -71,6 +71,7 @@
   flying-squid `e2e.js` 的断言按新规矩更新（假服务器不回自己的方块变化包 → 必须判 `UNKNOWN`，
   实测 `AMBIGUOUS/block_change_not_confirmed_by_server`，**不允许**伪造成自证）；16 个 Node 单测文件全 OK。
   Python 源码本轮未再改动（沿用同树 `pytest tests -q` **3585 passed**）。
+* **测试基建**：flying-squid `e2e.js` 的夹具放置改成"等待期间重发 `/setblock`"（命令偶发不生效，CI 负载下两次卡在 `dirt 已放置`；断言未放宽，仍然要求方块真的出现）。
 * **服务器侧改动（最小、可还原）**：只把两个测试账号（`Catodayo` / `CatodayoMate`）按**离线 UUID**
   写进 `ops.json`（原文件备份 `ops.json.bak-p7df`）并重启过一次服务器（当时无玩家在线）；
   玩法配置（`spawn-protection` 等）**未改**。

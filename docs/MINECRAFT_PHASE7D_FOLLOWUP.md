@@ -150,7 +150,7 @@ function onBlockUpdate (oldBlock, newBlock) {
 | `pytest tests -q` | **3585 passed**（本轮 Python 源码未再改动，故沿用同树的这次全量结果） |
 | WebUI typecheck / Vitest / build / 浏览器 E2E | 通过 / 528 passed / 通过 / 7 passed |
 | Minecraft runtime Node 单测（16 个文件，含 `dig_attribution.test.js`） | **全部 OK**（`dig_attribution` 62/62） |
-| flying-squid E2E | `ALL CHECKS PASSED`；归因实测 `AMBIGUOUS/block_change_not_confirmed_by_server`（假服务器不回"自己的方块变化包" → 如实判未确认，**没有**伪造成自证） |
+| flying-squid E2E | `ALL CHECKS PASSED`；归因实测 `AMBIGUOUS/block_change_not_confirmed_by_server`（假服务器不回"自己的方块变化包" → 如实判未确认，**没有**伪造成自证）。**另外修了测试基建的一处脆弱**：假服务器上 `/setblock` 夹具偶发不生效（CI 负载下更明显，本轮 CI 两次都卡在 `dirt 已放置`），现在夹具放置助手会在等待期间**重发命令**直到方块真的出现（仍然是"必须真的出现"才算过，断言一条没放宽） |
 | 范围核对 | 迁移最高版本 **36**（无新增）；`ACTION_RISK` 19 个工具；无新动作/新状态；`config/`、`.env`、`config/overrides.yaml` 未触碰 |
 
 ## 7. 真实 Java 服务器门禁 —— **PASS**（第二轮；第一轮为 SKIPPED，理由见 §7.3）

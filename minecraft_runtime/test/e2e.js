@@ -689,14 +689,30 @@ async function main() {
           )
           return hit ? hit.name : 'air'
         }
+        // 夹具放置助手：flying-squid 上 /setblock 偶发不生效（CI 负载下尤其明显），
+        // 这里在**等待期间重发命令**直到方块真的出现（仍然是"必须真的出现"才算过，
+        // 只是不再因为一次命令丢失就把整轮门禁判红 —— 这是测试基建的健壮性，不是放宽断言）。
+        const placeBlock = async (x, y, z, id, label, timeoutMs = 20000) => {
+          const deadline = Date.now() + timeoutMs
+          let lastSent = 0
+          while (Date.now() < deadline) {
+            if ((await blockAt(x, y, z)) === id) return true
+            if (Date.now() - lastSent > 1500) {
+              setBlock(x, y, z, id)
+              lastSent = Date.now()
+            }
+            await new Promise((resolve) => setTimeout(resolve, 250))
+          }
+          console.log(`[e2e] 夹具放置超时：${label}`)
+          return false
+        }
         const origin = (await request(runtimePort, 'GET', '/minecraft/status')).body.position
         const digEvents = (action) =>
           events.filter((e) => e.action === action && e.event.startsWith('minecraft.action.'))
 
         // ---- Test A：挖掉一个指定的方块（dirt 徒手 ~0.8s） ----
         const aPos = { x: Math.round(origin.x) + 1, y: Math.round(origin.y), z: Math.round(origin.z) }
-        setBlock(aPos.x, aPos.y, aPos.z, 'dirt')
-        await waitFor(async () => (await blockAt(aPos.x, aPos.y, aPos.z)) === 'dirt', 'dirt 已放置', 8000)
+        assert(await placeBlock(aPos.x, aPos.y, aPos.z, 'dirt', 'dirt 已放置(A)'), 'Test A：夹具 dirt 已放置')
 
         const digA = await request(runtimePort, 'POST', '/minecraft/dig', {
           x: aPos.x,
@@ -782,8 +798,7 @@ async function main() {
 
         // ---- Test B：方块与 expected_block 不一致 → block.changed（带 expected/actual） ----
         const bPos = { x: Math.round(origin.x) - 1, y: Math.round(origin.y), z: Math.round(origin.z) }
-        setBlock(bPos.x, bPos.y, bPos.z, 'dirt')
-        await waitFor(async () => (await blockAt(bPos.x, bPos.y, bPos.z)) === 'dirt', 'dirt 已放置(B)', 8000)
+        assert(await placeBlock(bPos.x, bPos.y, bPos.z, 'dirt', 'dirt 已放置(B)'), 'Test B：夹具 dirt 已放置')
         const digB = await request(runtimePort, 'POST', '/minecraft/dig', {
           x: bPos.x,
           y: bPos.y,
