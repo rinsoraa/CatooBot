@@ -204,4 +204,5 @@ function onBlockUpdate (oldBlock, newBlock) {
 | --- | --- |
 | 工作区 | `E:\WorkSpace ZCode\CatooBot`（改前基线 `73bfae5`） |
 | 第一轮镜像（真机门禁前） | 代码 `eb139e1`（16 文件）+ 标签 `1af16ea` + 文档 `fa8478b`、`65e24f1` |
-| 第二轮镜像（真机门禁后：Node 修正 A/B + e2e 断言 + 本文件） | 见本轮最终报告（紧随其后的镜像提交与 CI run） |
+| 第二轮镜像（真机门禁 + 修正 A/B + e2e 断言 + 本文件） | 代码 **`7be2831`**（8 文件：`dig_attribution.js`、`runtime.js`、`test/dig_attribution.test.js`、`test/e2e.js`、`test/probe_dig_attribution_real.js`、本文件、`CHANGELOG.md`、`docs/README.md`） |
+| 第二轮 CI | run `38063595076` **attempt 1 双 job 全部 success**（`lint · format · types · tests` + `webui · typecheck · tests · build`） |
