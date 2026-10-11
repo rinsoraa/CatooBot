@@ -1203,6 +1203,10 @@ class MinecraftConfig(BaseModel):
     #: 外部自管 runtime 时的回调地址与共享密钥（auto_start=true 时自动生成，留空）
     external_callback_url: str = ""
     external_callback_token: str = ""
+    #: Phase 7F.5：外部托管桥接时的**正向**调用凭据（Python → Node）。
+    #: 为空表示由 CatooBot 自动拉起时每进程生成，并经 MC_BRIDGE_TOKEN 注入 Node。
+    #: 它**绝不**写入仓库 / 日志 / 错误响应 / 事件内容 / WebUI。
+    external_bridge_token: str = ""
     # ---- 世界感知（Phase 2，只读「眼睛」）
     #: 进入世界后持续获取 Raw World Snapshot 并构建语义模型
     perception_enabled: bool = True

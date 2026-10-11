@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Callable
 from typing import Any
 
 import aiohttp
@@ -42,10 +43,18 @@ class MinecraftRuntimeError(Exception):
 class MinecraftRuntimeClient:
     """一个 runtime 进程对应一个客户端实例；会话懒创建、可关闭。"""
 
-    def __init__(self, base_url: str, timeout: float = 15.0) -> None:
+    def __init__(
+        self,
+        base_url: str,
+        timeout: float = 15.0,
+        token_getter: Callable[[], str] | None = None,
+    ) -> None:
         self._base = base_url.rstrip("/")
         self._timeout = aiohttp.ClientTimeout(total=timeout)
         self._session: aiohttp.ClientSession | None = None
+        #: Phase 7F.5：**正向**调用凭据（惰性读取：token 可能在客户端创建之后才生成）。
+        #: 凭据本身绝不进日志、错误消息或事件。
+        self._token_getter = token_getter
 
     async def close(self) -> None:
         if self._session is not None and not self._session.closed:
@@ -247,9 +256,18 @@ class MinecraftRuntimeClient:
         return self._session
 
     async def _request(self, method: str, path: str, *, body: dict[str, Any] | None = None) -> Any:
+        headers: dict[str, str] = {}
+        token = ""
+        if self._token_getter is not None:
+            try:
+                token = str(self._token_getter() or "")
+            except Exception:  # noqa: BLE001 - 拿不到凭据也不能变成「匿名调用」
+                token = ""
+        if token:
+            headers["Authorization"] = f"Bearer {token}"
         try:
             async with self._session_or_create().request(
-                method, f"{self._base}{path}", json=body
+                method, f"{self._base}{path}", json=body, headers=headers
             ) as response:
                 text = await response.text()
                 try:

@@ -122,6 +122,10 @@ function portOpen(host, port, timeoutMs = 3000) {
   })
 }
 
+// Phase 7F.5：桥接动作 API 需要调用凭据 —— 本脚本自己启动 runtime，所以由它注入。
+// 这不是匿名旁路：runtime 未配置凭据时会直接拒绝启动。
+const BRIDGE_TOKEN = 'local-diagnostic-token'
+
 function request(port, method, urlPath, body) {
   return new Promise((resolve, reject) => {
     const payload = body === undefined ? null : JSON.stringify(body)
@@ -133,6 +137,8 @@ function request(port, method, urlPath, body) {
         path: urlPath,
         headers: {
           'Content-Type': 'application/json',
+          // Phase 7F.5：所有路由都需要调用凭据（本脚本自己注入）。
+          Authorization: `Bearer ${BRIDGE_TOKEN}`,
           ...(payload ? { 'Content-Length': Buffer.byteLength(payload) } : {}),
         },
       },
@@ -217,6 +223,7 @@ async function main() {
       MC_RUNTIME_PORT: String(runtimePort),
       MC_CALLBACK_URL: `http://127.0.0.1:${callbackPort}/events`,
       MC_CALLBACK_TOKEN: 'smoke-token',
+      MC_BRIDGE_TOKEN: BRIDGE_TOKEN,
       MC_AUTH_FILE: authFile,
       MC_CONNECT_TIMEOUT: '60',
     },

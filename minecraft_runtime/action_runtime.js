@@ -90,7 +90,17 @@ class ActionCancelled extends Error {
   }
 }
 
-function createActionRuntime({ registry, getBot, isOnline, emit, log, now = () => Date.now() }) {
+function createActionRuntime({
+  registry,
+  getBot,
+  isOnline,
+  emit,
+  log,
+  now = () => Date.now(),
+  // Phase 7F.5：本进程的运行时实例标识（由 runtime.js 在启动时生成）。
+  // 只用于「这条动作/事件属于哪个实例」的关联唯一性，**不是**幂等键。
+  instanceId = 'unknown',
+}) {
   const active = new Map() // action_id -> controller {record, token, def}
   let foregroundId = null // 当前占用前台（exclusive）的动作 id
   let last = null // 最近一次结束的动作视图
@@ -189,6 +199,7 @@ function createActionRuntime({ registry, getBot, isOnline, emit, log, now = () =
     return {
       action: record.action,
       action_id: record.action_id,
+      runtime_instance: record.runtime_instance,
       status: record.status,
       started_at: record.started_at,
       finished_at: record.finished_at,
@@ -223,6 +234,7 @@ function createActionRuntime({ registry, getBot, isOnline, emit, log, now = () =
     emit(TERMINAL_EVENTS[status], {
       action: record.action,
       action_id: record.action_id,
+      runtime_instance: record.runtime_instance,
       status,
       started_at: record.started_at,
       finished_at: record.finished_at,
@@ -261,6 +273,7 @@ function createActionRuntime({ registry, getBot, isOnline, emit, log, now = () =
     const record = {
       action: name,
       action_id: nextActionId(),
+      runtime_instance: instanceId,
       status: STATES.QUEUED,
       started_at: null,
       finished_at: null,
@@ -278,6 +291,7 @@ function createActionRuntime({ registry, getBot, isOnline, emit, log, now = () =
     emit('minecraft.action.started', {
       action: name,
       action_id: record.action_id,
+      runtime_instance: record.runtime_instance,
       status: STATES.RUNNING,
       started_at: record.started_at,
       finished_at: null,

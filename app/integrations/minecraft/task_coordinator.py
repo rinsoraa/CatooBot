@@ -83,6 +83,8 @@ class MinecraftTaskCoordinator:
                 result=data.get("result") if isinstance(data.get("result"), dict) else {},
                 error=str(data.get("error") or ""),
                 code=str(data.get("code") or ""),
+                # Phase 7F.5：事件必须说明是**哪个 Runtime 实例**发出的。
+                runtime_instance=str(data.get("runtime_instance") or ""),
             )
         except Exception:  # noqa: BLE001 - 事件回调里绝不炸
             if self._log is not None:

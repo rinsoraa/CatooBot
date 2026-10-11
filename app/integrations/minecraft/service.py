@@ -998,8 +998,18 @@ class MinecraftService:
         self.bot = bot
         self.config = config
         self._clock = clock
+        # Phase 7F.5：**正向**调用凭据（Python → Node）。每进程生成、经进程环境注入 Node；
+        # 它只做「调用者身份」校验，**绝不**替代 TaskAuthorization / TaskStepAuthorization /
+        # 用户确认门，也不是幂等键。
+        self.bridge_token: str | None = config.external_bridge_token or None
+        #: 当前 Runtime 实例标识（只来自**成功的**身份响应，绝不从失败里推断）。
+        self._runtime_instance: str = ""
+        #: 实例变化回调（由 Bot 装配到 TaskRuntime.on_runtime_instance_changed）。
+        self.on_runtime_instance_changed: Any = None
         self._client = MinecraftRuntimeClient(
-            f"http://127.0.0.1:{config.runtime_port}", timeout=config.request_timeout_seconds
+            f"http://127.0.0.1:{config.runtime_port}",
+            timeout=config.request_timeout_seconds,
+            token_getter=lambda: self.bridge_token or "",
         )
         self._process: _RuntimeProcess | None = None
         self._listeners: list[Listener] = []
@@ -1182,6 +1192,8 @@ class MinecraftService:
         env["MC_FOLLOW_MAX_CHASE_DISTANCE"] = str(
             self.config.action.follow_player.max_chase_distance
         )
+        # Phase 7F.5：**正向**凭据随进程环境注入 —— Node 侧在所有路由之前强制校验它。
+        env["MC_BRIDGE_TOKEN"] = self.bridge_token or ""
         if self.callback_url:
             env["MC_CALLBACK_URL"] = self.callback_url
             env["MC_CALLBACK_TOKEN"] = self.callback_token or ""
@@ -1199,6 +1211,7 @@ class MinecraftService:
             )
         if not self.callback_token:
             self.callback_token = secrets.token_urlsafe(24)
+        self._ensure_bridge_token()
         process = _RuntimeProcess(runtime_dir, self.config.node_executable, self._runtime_env())
         try:
             await process.start()
@@ -1215,7 +1228,8 @@ class MinecraftService:
                     f"Minecraft runtime 进程启动后立即退出（见日志）\n{tail}"
                 )
             try:
-                await self._client.health()
+                payload = await self._client.health()
+                self._note_runtime_instance(payload)
                 self._runtime_down = False
                 log.info("[Minecraft] runtime 进程就绪 (pid=%s)", process.pid)
                 return
@@ -1242,6 +1256,52 @@ class MinecraftService:
         self._restart_count += 1
         log.warning("[Minecraft] runtime 不可达，尝试重启（第 %d 次）", self._restart_count)
         await self._start_runtime()
+
+    def _ensure_bridge_token(self) -> str:
+        """确保本进程有一份**正向**调用凭据（Phase 7F.5 §六）。
+
+        每进程生成一次、之后保持不变（重启 Python ⇒ 换新凭据；重启 Node ⇒ 由 Python
+        重新注入）。凭据本身绝不写日志、绝不进错误响应或事件。
+        """
+        if not self.bridge_token:
+            self.bridge_token = secrets.token_urlsafe(32)
+        return self.bridge_token
+
+    # ------------------------------------------------- Phase 7F.5：运行时身份
+
+    def runtime_instance(self) -> str:
+        """当前 Runtime 实例标识（Phase 7F.5）。
+
+        只来自**成功的**身份响应；从没见过就返回空串（此时关联仍按 action_id 工作）。
+        """
+        return self._runtime_instance
+
+    def _note_runtime_instance(self, payload: Any) -> None:
+        """记录成功身份响应里的实例标识，并在**真的换了**时通知任务层对账。
+
+        两条纪律（§五.1）：
+
+        * 只有**成功**的身份响应才更新/判定实例 —— 单次请求失败或单次健康检查失败
+          不足以推断 Runtime 已经重启；
+        * 首次见到实例只记录、不通知（还没有任何旧实例的动作需要分类）。
+        """
+        if not isinstance(payload, dict):
+            return
+        instance = str(payload.get("runtime_instance") or "")
+        if not instance:
+            return
+        previous = self._runtime_instance
+        self._runtime_instance = instance
+        callback = self.on_runtime_instance_changed
+        if not previous or previous == instance or callback is None:
+            return
+        log.warning("[Minecraft] runtime 实例已更换：%s -> %s", previous, instance)
+        try:
+            result = callback(instance)
+            if asyncio.iscoroutine(result):
+                asyncio.create_task(result)
+        except Exception:  # noqa: BLE001 - 对账通知失败不该影响服务本身
+            log.exception("[Minecraft] runtime instance change notification failed")
 
     # -------------------------------------------------------------- bridge API
 

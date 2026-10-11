@@ -265,7 +265,16 @@ _HOT_EXCEPT = ("memory.semantic.", "logging.watch", "logging.watchdog_")
 _RESTART_NOTE = "保存后需要重启 CatooBot 才会生效"
 
 _SENSITIVE_LEAVES = frozenset(
-    {"access_token", "password", "token", "secret", "api_key", "webhook_secret"}
+    {
+        "access_token",
+        "password",
+        "token",
+        "secret",
+        "api_key",
+        "webhook_secret",
+        # Phase 7F.5：桥接**正向**调用凭据 —— WebUI 只能看到"是否已配置"，绝不返回其值。
+        "external_bridge_token",
+    }
 )
 
 #: 常见叶子名 → 中文标签
@@ -518,6 +527,7 @@ _LABELS = {
     "max_runtime_restarts": "最多重启次数",
     "external_callback_url": "回调地址",
     "external_callback_token": "回调令牌",
+    "external_bridge_token": "桥接调用令牌",
     "world_change_block_threshold": "世界变化阻塞阈值",
     "max_distance": "最大距离（格）",
     "max_chase_distance": "最大追逐距离（格）",
@@ -845,6 +855,10 @@ _NOTES: dict[str, str] = {
     "minecraft.max_runtime_restarts": "桥接最多自动重启几次",
     "minecraft.external_callback_url": "桥接回调地址（Bearer 校验）",
     "minecraft.external_callback_token": "桥接回调令牌（敏感）",
+    "minecraft.external_bridge_token": (
+        "Python → Node 的调用凭据（留空则由 CatooBot 每进程自动生成并注入 Node）；"
+        "只有外部托管桥接时才需要手填"
+    ),
     "minecraft.world_event_cooldown_seconds": "同类世界事件的冷却",
     "minecraft.world_change_block_threshold": "世界变化多大算「被打断」",
     "minecraft.agent.confirmation.ttl_seconds": "一次确认的有效秒数（到点自动失效）",

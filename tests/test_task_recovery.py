@@ -738,6 +738,13 @@ async def test_one_broken_task_does_not_stop_the_others() -> None:
         async def list_recent(self, limit: int = 20) -> list[Any]:
             return await self._store.list_recent(limit)
 
+        # Phase 7F.5：恢复改用完整性查询（不再是"最近 N 条"）
+        async def list_pending(self, limit: int | None = None) -> list[Any]:
+            return await self._store.list_pending(limit)
+
+        async def find_pending_by_action(self, action_id: str) -> list[Any]:
+            return await self._store.find_pending_by_action(action_id)
+
         async def load(self, task_id: str) -> Any:
             if task_id == broken.task_id:
                 raise RuntimeError("bad row")

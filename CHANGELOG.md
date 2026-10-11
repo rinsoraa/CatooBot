@@ -1,5 +1,30 @@
 # Changelog
 
+## Minecraft Phase 7F.5 — Runtime Lifecycle Reconciliation & Bridge Trust Boundary（运行时生命周期对账与桥接信任边界）
+
+* **目标**：加固 Python TaskRuntime ↔ Node Minecraft Runtime 之间的**信任边界、动作关联与运行时生命周期恢复**。
+  **不新增任何游玩能力**，也不推翻 7F.4 的持久化派发意图 / 代次 / 歧义 fail-closed 机制。
+* **运行时实例身份**：Node 在进程启动时生成 `rt_<时间>_<随机>`，写进 `health`、`status` **以及每一条
+  `minecraft.action.*` 事件**；Python 在既有健康探测里记录当前实例，并在接受动作时把它固化到
+  `TaskStep.dispatch_runtime_instance`（**只解决关联唯一性，不是幂等键**）。
+* **完整未决动作查询**：新增可从持久化记录重建的 `store.list_pending()`（按真实 `state` 列取**全部**非终态，
+  默认不限条数）与 `store.find_pending_by_action()`（返回**所有**匹配）。`on_action_event()` 与启动恢复都改用它，
+  **彻底摆脱「最近 50 条任务」**；零新表、零迁移。
+* **事件关联加固**：0 匹配 → 未知事件什么都不改；**≥2 匹配 → 一律歧义**（绝不再取第一个匹配项猜归属）；
+  1 匹配 → 再校验实例，**旧实例迟到事件不得结算新实例的动作**；重复终态事件只被接受一次且关联持久化清理。
+* **生命周期对账**：只有**成功的身份响应**才更新实例（单次请求/健康检查失败**不足以**推断重启）；一旦真的换人，
+  旧实例的未决动作一律进入 `AMBIGUOUS` + **清授权** + `replan_required` + 人工核对，并保存
+  原因/实例/`action_id`/`dispatch_key`/代次/时间戳 —— **绝不因为新 Runtime 可用就重新派发**。
+* **桥接 API 鉴权**：Python 每进程生成凭据并经 `MC_BRIDGE_TOKEN` 注入；Node 在**所有路由之前**强制校验，
+  **未配置凭据则拒绝启动**（实测 exit 1）—— 不留匿名旁路；缺失/错误凭据 → `401 auth.invalid` 且不触发任何动作。
+  凭据不进 Git/日志/错误响应/事件/任务 payload/WebUI（注册表标记为**敏感项**，值永不返回）。
+  桥接 token **不是** TaskAuthorization / TaskStepAuthorization / 用户确认门的替代品。
+* **测试**：新增 `tests/test_runtime_lifecycle_reconciliation.py`（**14 项**，覆盖任务书 §七.1 的 10 个场景）与
+  `tests/test_bridge_auth_boundary.py`（**9 项**，真实 HTTP 服务器 + 真实客户端）；`minecraft_runtime` E2E 新增
+  **真实请求入口**的鉴权段（缺失/错误 → 401、有效 → 200、控制端点同样受保护、鉴权失败无副作用、凭据不回显不落日志）。
+* **边界**：19 工具 / `ACTION_RISK` / `allow_medium=false` / 两道门 / Policy / LifeIntent·Proposal·AgentPlan 语义 /
+  多段 ≤3 段与 24 格预算 / `explore_legs=1` 默认值 **全部未改**；未引入无界重试；**无新表、无新迁移**（最高仍 36）。
+
 ## Minecraft Phase 7F.4 — Action Dispatch & Recovery Safety（派发与恢复安全）
 
 * **目标**：修掉"外部 runtime 已经接受动作、但本地还没持久化 `action_id`"造成的恢复歧义。

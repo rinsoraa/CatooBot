@@ -26,6 +26,7 @@
 const http = require('http')
 const path = require('path')
 const fs = require('fs')
+const crypto = require('crypto')
 const mineflayer = require('mineflayer')
 const Vec3 = require('vec3').Vec3 ?? require('vec3')
 const pathfinder = require('mineflayer-pathfinder')
@@ -42,6 +43,13 @@ const CALLBACK_TOKEN = process.env.MC_CALLBACK_TOKEN || ''
 const AUTH_FILE = process.env.MC_AUTH_FILE || path.join(__dirname, 'auth.json')
 const CONNECT_TIMEOUT_S = Number.parseFloat(process.env.MC_CONNECT_TIMEOUT || '75')
 const BRIDGE_TOKEN = process.env.MC_BRIDGE_TOKEN || ''
+
+// Phase 7F.5：**运行时实例标识** —— 进程启动时生成一次，本进程生命周期内稳定。
+// 它只解决「这条事件/这个动作属于哪个实例」的**关联唯一性**：
+//   * 跨实例绝不复用（重启必然换新值）；
+//   * 因此 action_id 里的进程内计数器从头开始也不会让新动作被算到旧任务头上；
+//   * 它**不是**幂等键，也**不**提供任何服务端去重/查询保证。
+const RUNTIME_INSTANCE = `rt_${Date.now().toString(36)}_${crypto.randomBytes(4).toString('hex')}`
 
 const CHAT_MAX_CHARS = 256
 
@@ -3613,6 +3621,8 @@ const actionRuntime = createActionRuntime({
   isOnline: () => state.phase === 'ONLINE' && state.bot !== null,
   emit: (event, data) => pushEvent(event, data),
   log: (message) => log('info', message),
+  // Phase 7F.5：动作与事件都盖上本进程的实例标识。
+  instanceId: RUNTIME_INSTANCE,
 })
 
 // ------------------------------------------------------------------- bot wiring
@@ -3873,6 +3883,8 @@ function statusPayload() {
   const action = actionRuntime.snapshot()
   return {
     runtime_version: RUNTIME_VERSION,
+    // Phase 7F.5：实例标识（Python 用它做生命周期对账，不是幂等键）。
+    runtime_instance: RUNTIME_INSTANCE,
     status: state.phase,
     session_id: state.sessionId,
     host: state.host,
@@ -3967,7 +3979,12 @@ async function handleRequest(request, response) {
       }
     }
     if (request.method === 'GET' && path === '/minecraft/health') {
-      jsonResponse(response, 200, { ok: true, uptime_seconds: Math.round((Date.now() - state.startedAt) / 1000) })
+      jsonResponse(response, 200, {
+        ok: true,
+        uptime_seconds: Math.round((Date.now() - state.startedAt) / 1000),
+        // Phase 7F.5：成功的身份响应才带实例 —— Python 只据此判定实例是否换人。
+        runtime_instance: RUNTIME_INSTANCE,
+      })
       return
     }
     if (request.method === 'GET' && path === '/minecraft/status') {
@@ -4373,6 +4390,13 @@ module.exports = {
 }
 
 if (require.main === module) {
+  // Phase 7F.5 §六：**未配置凭据就拒绝启动** —— 不留「匿名可用」的旁路。
+  // 只监听 127.0.0.1 并不等于调用者已经被鉴权；凭据由 Python 每进程生成并经
+  // MC_BRIDGE_TOKEN 注入（外部托管时用配置值）。这里绝不打印凭据内容。
+  if (!BRIDGE_TOKEN) {
+    log('error', 'MC_BRIDGE_TOKEN 未配置：拒绝启动（桥接动作 API 不允许匿名调用）')
+    process.exit(1)
+  }
   server.listen(PORT, '127.0.0.1', () => {
     log('info', 'minecraft runtime listening', {
       port: PORT,

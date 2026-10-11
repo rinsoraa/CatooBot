@@ -324,6 +324,8 @@ async def build_minecraft_task_runtime(
             dict(schema), dict(arguments)
         ),
         world_facts=_world_facts,
+        # Phase 7F.5：派发时固化「这次动作归哪个 Runtime 实例」（只解决关联唯一性）。
+        runtime_instance_of=lambda: service.runtime_instance(),
         label_of=default_step_label,
         logger=logger,
     )

@@ -412,6 +412,10 @@ class TaskStep:
     dispatch_key: str = ""
     #: 派发意图落盘时刻（审计用）。
     dispatch_at: float = 0.0
+    #: Phase 7F.5：**接受这次动作的 Runtime 实例**（进程生命周期内稳定）。
+    #: 它只解决"这条事件属于哪个实例"的关联唯一性，**不是**幂等键、
+    #: 也不提供任何服务端去重保证。旧记录（7F.5 之前）为空串 = 未知。
+    dispatch_runtime_instance: str = ""
 
     @property
     def dispatch_unresolved(self) -> bool:
@@ -471,6 +475,7 @@ class TaskStep:
             "dispatch_generation": self.dispatch_generation,
             "dispatch_key": self.dispatch_key,
             "dispatch_at": self.dispatch_at,
+            "dispatch_runtime_instance": self.dispatch_runtime_instance,
         }
 
     @classmethod
@@ -508,6 +513,7 @@ class TaskStep:
             dispatch_generation=int(payload.get("dispatch_generation") or 0),
             dispatch_key=str(payload.get("dispatch_key") or ""),
             dispatch_at=float(payload.get("dispatch_at") or 0.0),
+            dispatch_runtime_instance=str(payload.get("dispatch_runtime_instance") or ""),
         )
 
 

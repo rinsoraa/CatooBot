@@ -31,6 +31,10 @@ class TaskStore(Protocol):
 
     async def list_recent(self, limit: int = 20) -> list[TaskRecord]: ...
 
+    async def list_pending(self, limit: int | None = None) -> list[TaskRecord]: ...
+
+    async def find_pending_by_action(self, action_id: str) -> list[TaskRecord]: ...
+
     async def checkpoints(self, task_id: str, limit: int = 50) -> list[dict[str, Any]]: ...
 
 
@@ -77,6 +81,28 @@ class InMemoryTaskStore:
     async def list_recent(self, limit: int = 20) -> list[TaskRecord]:
         records = sorted(self._records.values(), key=lambda item: item.updated_at, reverse=True)
         return [_copy(item) for item in records[:limit]]
+
+    async def list_pending(self, limit: int | None = None) -> list[TaskRecord]:
+        """**所有**非终态任务（Phase 7F.5 §四）—— 不是"最近 N 条"。"""
+        records = sorted(
+            (item for item in self._records.values() if not item.state.terminal),
+            key=lambda item: item.updated_at,
+            reverse=True,
+        )
+        if limit is not None:
+            records = records[: int(limit)]
+        return [_copy(item) for item in records]
+
+    async def find_pending_by_action(self, action_id: str) -> list[TaskRecord]:
+        """按 action_id 找出**所有**仍在等它的未决任务（多匹配 = 歧义）。"""
+        wanted = str(action_id or "")
+        if not wanted:
+            return []
+        return [
+            item
+            for item in await self.list_pending()
+            if str(item.pending_action_id or "") == wanted
+        ]
 
     async def checkpoints(self, task_id: str, limit: int = 50) -> list[dict[str, Any]]:
         rows = [row for row in self._log if row["task_id"] == task_id]
@@ -162,6 +188,34 @@ class SqliteTaskStore:
             "SELECT payload FROM agent_task_runs ORDER BY updated_at DESC LIMIT ?", (int(limit),)
         )
         return [TaskRecord.from_payload(json.loads(row["payload"])) for row in rows]
+
+    async def list_pending(self, limit: int | None = None) -> list[TaskRecord]:
+        """**所有**非终态任务（Phase 7F.5 §四）：未决动作索引必须能从持久化记录重建。
+
+        用**真实的 state 列**过滤成完整集合（不是"最近 N 条"），再在 Python 侧解析
+        payload —— 因此不依赖内存索引、不需要 json_extract、更不需要新表或迁移。
+        """
+        sql = (
+            "SELECT payload FROM agent_task_runs WHERE state NOT IN (?, ?, ?, ?)"
+            " ORDER BY updated_at DESC"
+        )
+        params: list[Any] = [item.value for item in terminal_states()]
+        if limit is not None:
+            sql += " LIMIT ?"
+            params.append(int(limit))
+        rows = await self._db.fetchall(sql, tuple(params))
+        return [TaskRecord.from_payload(json.loads(row["payload"])) for row in rows]
+
+    async def find_pending_by_action(self, action_id: str) -> list[TaskRecord]:
+        """按 action_id 找出**所有**仍在等它的未决任务（多匹配 = 歧义，绝不取第一个）。"""
+        wanted = str(action_id or "")
+        if not wanted:
+            return []
+        return [
+            record
+            for record in await self.list_pending()
+            if str(record.pending_action_id or "") == wanted
+        ]
 
     async def checkpoints(self, task_id: str, limit: int = 50) -> list[dict[str, Any]]:
         rows = await self._db.fetchall(

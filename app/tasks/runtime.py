@@ -119,6 +119,9 @@ class TaskInvocation:
     #: Phase 7F.4：**没有拿到 runtime 的答复**（传输异常/超时）—— 外部可能已经接受了
     #: 这次请求。这种失败绝不能被当成"动作没执行"，也不能被普通 ``resume()`` 重发。
     ambiguous: bool = False
+    #: Phase 7F.5：**接受这次动作的 Runtime 实例**（由桥接随事件/状态给出）。
+    #: 只用于关联唯一性，不是幂等键。
+    runtime_instance: str = ""
 
     @property
     def detached(self) -> bool:
@@ -252,6 +255,7 @@ class TaskRuntime:
             Callable[[Mapping[str, Any], Mapping[str, Any]], list[str]] | None
         ) = None,
         world_facts: Callable[[], Awaitable[dict[str, Any]]] | None = None,
+        runtime_instance_of: Callable[[], str] | None = None,
         label_of: Callable[[TaskStep], str] | None = None,
         logger: Any = None,
     ) -> None:
@@ -266,8 +270,23 @@ class TaskRuntime:
         self._schema_of = schema_of or (lambda _tool: None)
         self._validate_arguments = validate_arguments
         self._world_facts = world_facts
+        self._runtime_instance_of = runtime_instance_of
         self._label_of = label_of
         self._log = logger
+
+    def runtime_instance(self) -> str:
+        """当前 Runtime 实例标识（Phase 7F.5）。拿不到就返回空串。
+
+        空串**不会**让关联失效：事件匹配仍然按 action_id 工作，只是少一层实例校验
+        （旧记录/外部托管桥接就是这种情况）。
+        """
+        provider = self._runtime_instance_of
+        if provider is None:
+            return ""
+        try:
+            return str(provider() or "")
+        except Exception:  # noqa: BLE001 - 拿不到实例不该影响派发
+            return ""
 
     # ------------------------------------------------------------ 步骤授权
 
@@ -642,6 +661,9 @@ class TaskRuntime:
             )
             step.dispatch_state = DispatchState.INTENT.value
             step.dispatch_at = self._clock()
+            # 记下**派发时**的运行时实例（来自最近一次成功的身份响应）—— 它让
+            # "这次派发后来归谁" 可判定，而不是只能猜。
+            step.dispatch_runtime_instance = self.runtime_instance()
             await self._save(record, event=TASK_STEP_STARTED, step_id=step.step_id)
             invocation = await self._invoke_step(record, step, grant)
             if invocation.ok:
@@ -665,6 +687,10 @@ class TaskRuntime:
             step.state = StepState.WAITING_ACTION
             # Phase 7F.4：外部**已接受**，action_id 已知 -> ACCEPTED（等真实终态）。
             step.dispatch_state = DispatchState.ACCEPTED.value
+            # 接受它的实例是**权威**关联（比派发时的期望更准）。
+            step.dispatch_runtime_instance = (
+                invocation.runtime_instance or step.dispatch_runtime_instance
+            )
             step.action_id = invocation.action_id
             step.status = invocation.status
             step.summary = invocation.summary or step.summary
@@ -780,7 +806,7 @@ class TaskRuntime:
         await self._save(record, event=TASK_PAUSED, step_id=step.step_id)
 
     async def _pause_ambiguous_dispatch(
-        self, record: TaskRecord, step: TaskStep, *, message: str
+        self, record: TaskRecord, step: TaskStep, *, message: str, reason: str = ""
     ) -> None:
         """派发结果**未知** -> 受控暂停 + 人工介入（Phase 7F.4）。
 
@@ -817,6 +843,12 @@ class TaskRuntime:
                 "dispatch_key": step.dispatch_key,
                 "dispatch_generation": step.dispatch_generation,
                 "step_id": step.step_id,
+                # Phase 7F.5 §五.2：歧义必须留下可人工核对的全套证据。
+                "dispatch_reason": str(reason or "ambiguous_dispatch"),
+                "runtime_instance": step.dispatch_runtime_instance,
+                "action_id": step.action_id or record.pending_action_id,
+                "pending_action_id": record.pending_action_id,
+                "at": self._clock(),
             },
             "message": message[:400],
         }
@@ -1157,15 +1189,17 @@ class TaskRuntime:
         )
         return record
 
-    async def recover_persisted_tasks(self, *, limit: int = 50) -> list[TaskRecord]:
+    async def recover_persisted_tasks(self, *, limit: int | None = None) -> list[TaskRecord]:
         """启动时扫描持久化的非终态任务并逐个安全恢复（§十三）。
 
         **逐条隔离**：某一条任务的数据让恢复炸了，也绝不影响其它任务，更不能让
         "启动恢复"这件事把整个任务能力带下去（真机上踩过：一条"等确认"的任务
         触发了非法转移，结果 Bot 启动时把 task runtime 整块关掉了）。
         """
+        # Phase 7F.5 §四：**完整**的非终态集合（不是"最近 N 条"）——
+        # 早于窗口的未决任务同样会被恢复，而不是等 TTL 过期。
         recovered: list[TaskRecord] = []
-        for record in await self._store.list_recent(int(limit)):
+        for record in await self._store.list_pending(limit):
             if record.state.terminal:
                 continue
             try:
@@ -1199,6 +1233,46 @@ class TaskRuntime:
 
     # ------------------------------------------------------------ action 事件
 
+    async def on_runtime_instance_changed(self, runtime_instance: str) -> list[TaskRecord]:
+        """Runtime 实例换了 → 把所有**属于旧实例**的未决动作按 fail-closed 处理（Phase 7F.5 §五）。
+
+        **只在真正拿到新实例身份时调用**（来自一次成功的身份响应）：单次请求失败、单次健康检查
+        失败都**不足以**推断实例已换人，也绝不据此结算或重发任何动作。
+
+        我们没有按键查询能力，所以旧实例动作的真实状态一律**无法确认** → 进入明确歧义 + 人工核对；
+        **绝不**因为「新 Runtime 已经可用」就重新派发旧动作（§五.2 明确禁止）。
+        """
+        current = str(runtime_instance or "")
+        if not current:
+            return []
+        affected: list[TaskRecord] = []
+        for record in await self._store.list_pending():
+            stale = next(
+                (
+                    item
+                    for item in record.steps
+                    if item.dispatch_state
+                    in {DispatchState.INTENT.value, DispatchState.ACCEPTED.value}
+                    and str(item.dispatch_runtime_instance or "")
+                    and str(item.dispatch_runtime_instance) != current
+                ),
+                None,
+            )
+            if stale is None:
+                continue
+            await self._pause_ambiguous_dispatch(
+                record,
+                stale,
+                message=(
+                    f"Runtime 实例已更换（这次动作记录的是 {stale.dispatch_runtime_instance}，"
+                    f"当前是 {current}）：旧动作的真实状态无法查询，"
+                    "为不重复世界动作已安全停下，请人工核对。"
+                ),
+                reason="runtime_instance_changed",
+            )
+            affected.append(record)
+        return affected
+
     async def on_action_event(
         self,
         *,
@@ -1208,20 +1282,59 @@ class TaskRuntime:
         result: Mapping[str, Any] | None = None,
         error: str = "",
         code: str = "",
+        runtime_instance: str = "",
     ) -> TaskRecord | None:
-        """异步动作的终态 → 恢复对应 Task 的对应 step（严格绑 action_id，§二十四/§二十五）。"""
+        """异步动作的终态 → 恢复对应 Task 的对应 step（绑 action_id **与** Runtime 实例）。
+
+        Phase 7F.5 §四：匹配改为**完整的未决动作查询**（可从持久化记录重建，不受「最近 50 条」
+        限制），并且：
+
+        * 一个 action_id 命中**多条**记录 → 按**歧义**处理（绝不取第一个匹配项）；
+        * 事件来自**另一个** Runtime 实例 → 不结算（旧实例迟到事件不得结算新实例的动作）；
+        * 匹配不到 → 未知事件，什么都不改（任务状态、授权、派发代次一律不动）。
+        """
         if not action_id:
             return None
-        records = await self._store.list_recent(50)
-        target = next(
-            (item for item in records if item.pending_action_id == str(action_id)),
-            None,
-        )
-        if target is None:
+        matches = await self._store.find_pending_by_action(str(action_id))
+        if not matches:
             return None
+        if len(matches) > 1:
+            # 多条记录都关联同一个 action_id：**没有**可靠办法判断终态属于谁 → 一律歧义。
+            for item in matches:
+                step = item.step(item.pending_step_id) if item.pending_step_id else None
+                if step is None:
+                    continue
+                await self._pause_ambiguous_dispatch(
+                    item,
+                    step,
+                    message=(
+                        f"同一个 action_id（{action_id}）关联了多条任务记录："
+                        "无法判断这次终态属于谁，已全部安全停下，请人工核对。"
+                    ),
+                    reason="action_id_ambiguous",
+                )
+            return None
+        target = matches[0]
         step = target.step(target.pending_step_id) if target.pending_step_id else None
         if step is None:
             return None
+        recorded = str(step.dispatch_runtime_instance or "")
+        incoming = str(runtime_instance or "")
+        if recorded and incoming and recorded != incoming:
+            await self._pause_ambiguous_dispatch(
+                target,
+                step,
+                message=(
+                    f"收到来自旧 Runtime 实例的事件（事件实例 {incoming}，"
+                    f"本任务记录的是 {recorded}）：无法确认当前动作的真实状态，"
+                    "已安全停下，请人工核对。"
+                ),
+                reason="stale_runtime_instance_event",
+            )
+            return None
+        if incoming and not recorded:
+            # 旧记录没有实例信息（7F.5 之前）→ 采纳事件给出的实例（仍然只用于关联审计）。
+            step.dispatch_runtime_instance = incoming
         terminal = str(event).rsplit(".", 1)[-1]
         step.finished_at = self._clock()
         step.status = status or terminal.upper()

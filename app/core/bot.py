@@ -866,6 +866,9 @@ class Bot:
                     publish=self._publish_task_event,
                     logger=self.log,
                 )
+                # Phase 7F.5 §五：Runtime 实例换了（成功的身份响应证明）→ 主动对账旧实例的
+                # 未决动作：无查询能力 ⇒ 一律进入明确歧义 + 人工核对，绝不重新派发。
+                self.minecraft.on_runtime_instance_changed = self.tasks.on_runtime_instance_changed
                 self.task_coordinator = MinecraftTaskCoordinator(self.tasks, self.minecraft)
                 self.task_coordinator.start()
                 # 观察与执行走同一条既有工具通道（TaskRuntime 绝不认识 Mineflayer）

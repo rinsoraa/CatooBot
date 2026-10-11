@@ -24,6 +24,9 @@ const RUNTIME = path.join(__dirname, '..', 'runtime.js')
 const USERNAME = 'GuanTou'
 const OBSERVER_NAME = 'Tester'
 const CYCLES = 3
+// Phase 7F.5：桥接动作 API 的调用凭据。harness 自己启动 runtime，所以它是凭据的
+// 注入方 —— **不是**匿名旁路：缺失/错误凭据的请求必须被拒。
+const BRIDGE_TOKEN = 'e2e-bridge-token'
 
 // ------------------------------------------------------------------ helpers
 
@@ -43,7 +46,8 @@ function freePort() {
   })
 }
 
-function request(port, method, urlPath, body, token) {
+// token 默认使用**桥接凭据**（所有路由都需要它）；测试要验证拒绝路径时显式传 null / 错值。
+function request(port, method, urlPath, body, token = BRIDGE_TOKEN) {
   return new Promise((resolve, reject) => {
     const payload = body === undefined ? null : JSON.stringify(body)
     const request = http.request(
@@ -187,6 +191,8 @@ async function main() {
       MC_RUNTIME_PORT: String(runtimePort),
       MC_CALLBACK_URL: `http://127.0.0.1:${callbackPort}/events`,
       MC_CALLBACK_TOKEN: 'e2e-token',
+      // Phase 7F.5：正向凭据（未配置时 runtime 会拒绝启动）。
+      MC_BRIDGE_TOKEN: BRIDGE_TOKEN,
       MC_AUTH_FILE: authFile,
       MC_CONNECT_TIMEOUT: '30',
       MC_MOVE_TIMEOUT_MS: '2500', // Test C 依赖：可达的 40+ 格约需 9s → 确定性超时（4H.1 起）
@@ -2178,6 +2184,38 @@ async function main() {
     const finalStatus = await request(runtimePort, 'GET', '/minecraft/status')
     assert(finalStatus.body.status === 'DISCONNECTED' || finalStatus.body.status === 'ERROR', 'final state settled')
     console.log(`[e2e] events: ${events.map((e) => e.event).join(', ')}`)
+
+
+    // ------------------------------------------------------------ Phase 7F.5：桥接鉴权边界
+    // 全部走**真实 HTTP 入口**（真实 spawn 的 runtime + 真实请求），不是断言某个局部函数。
+    const noCred = await request(runtimePort, 'GET', '/minecraft/status', undefined, null)
+    assert(noCred.status === 401, `missing credential -> 401, got ${noCred.status}`)
+    assert(noCred.body?.error?.code === 'auth.invalid', 'missing credential reports auth.invalid')
+    const wrongCred = await request(runtimePort, 'GET', '/minecraft/status', undefined, 'not-the-token')
+    assert(wrongCred.status === 401, `wrong credential -> 401, got ${wrongCred.status}`)
+    assert((await request(runtimePort, 'GET', '/minecraft/health', undefined, null)).status === 401, 'health requires credential')
+    assert((await request(runtimePort, 'POST', '/minecraft/stop', {}, null)).status === 401, 'stop (control endpoint) requires credential')
+    assert((await request(runtimePort, 'POST', '/minecraft/disconnect', {}, null)).status === 401, 'disconnect requires credential')
+    assert((await request(runtimePort, 'POST', '/minecraft/move_to', { x: 0, y: 0, z: 0 }, null)).status === 401, 'action endpoint requires credential')
+    const okCred = await request(runtimePort, 'GET', '/minecraft/status')
+    assert(okCred.status === 200, `valid credential allowed, got ${okCred.status}`)
+    // 鉴权失败不得触发动作：没有在途动作。
+    const afterDenied = await request(runtimePort, 'GET', '/minecraft/status')
+    assert(afterDenied.body.action?.active_count === 0, `denied requests started no action, active=${afterDenied.body.action?.active_count}`)
+    // 凭据绝不回显、也绝不进日志。
+    assert(!JSON.stringify(noCred.body).includes(BRIDGE_TOKEN), 'token not echoed in 401 body')
+    assert(!JSON.stringify(wrongCred.body).includes(BRIDGE_TOKEN), 'token not echoed in wrong-credential body')
+    assert(!runtimeLog.join('').includes(BRIDGE_TOKEN), 'token never appears in runtime logs')
+    // 运行时实例标识：成功的身份响应才带，且同一进程内稳定。
+    const h1 = await request(runtimePort, 'GET', '/minecraft/health')
+    const h2 = await request(runtimePort, 'GET', '/minecraft/health')
+    assert(typeof h1.body.runtime_instance === 'string' && h1.body.runtime_instance.startsWith('rt_'), `health carries runtime_instance, got ${h1.body.runtime_instance}`)
+    assert(h1.body.runtime_instance === h2.body.runtime_instance, 'runtime_instance stable within one process')
+    assert(okCred.body.runtime_instance === h1.body.runtime_instance, 'status carries the same runtime_instance as health')
+    const actionEvents = events.filter((e) => String(e.event || '').startsWith('minecraft.action.'))
+    assert(actionEvents.length > 0, 'action events were delivered during the run')
+    assert(actionEvents.every((e) => e.runtime_instance === h1.body.runtime_instance), 'every action event carries this process runtime_instance')
+    console.log('[e2e] bridge auth boundary + runtime instance ✓ (missing/wrong -> 401, valid -> 200, no bypass, no token leak)')
 
     // 干净退出。Windows 的 SIGTERM 是无条件终止（Node 不派发该信号），
     // 只在 POSIX 上能验证优雅退出路径；bot 此刻已 DISCONNECTED，无僵尸问题。
