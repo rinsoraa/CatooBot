@@ -5,6 +5,9 @@
 未批准不执行 / 进入既有 ActivityPlanner / InMemory↔SQLite 一致。
 
 真执行与后置条件验证在 ``tests/test_task_runtime_explore.py``，这里只测"结果怎么回流"。
+
+Phase 7F.2.2.1 追加：``_finite_axis()`` 的**数值转换溢出**（超出 ``float`` 值域的巨大整数
+抛 ``OverflowError``）必须 fail-closed 返回 ``None``，绝不向上传播异常，也绝不冒充世界坐标。
 """
 
 from __future__ import annotations
@@ -21,6 +24,7 @@ from app.tasks.agent_plan import PlanStatus
 from app.tasks.exploration import (
     ExplorationOutcome,
     _clean_position,
+    _finite_axis,
     arrival_fact,
     exploration_facts,
     exploration_outcome,
@@ -469,6 +473,97 @@ class TestCoordinateDomainHardening:
         bridge, database, _manager, _service = await build_bridge(tmp_path)
         record = explore_record(steps=[world_step(pois=[_poi(116, 100)])])
         record.verification["position_within"]["z"] = float("nan")
+        for _ in range(3):
+            await bridge.on_task_finished(record)
+        events = await bridge.store.facts(
+            server_id=bridge.server_id(), kinds=[MinecraftMemoryKind.EVENT]
+        )
+        locations = await bridge.store.facts(
+            server_id=bridge.server_id(), kinds=[MinecraftMemoryKind.LOCATION]
+        )
+        assert events == []
+        assert locations == []
+        await database.close()
+
+
+class TestNumericConversionOverflowHardening:
+    """Phase 7F.2.2.1：超出 ``float`` 值域的巨大整数必须 fail-closed，绝不炸穿转换。
+
+    ``float(10 ** 400)`` 抛 ``OverflowError``。坐标转换必须把它当成**无效世界坐标**
+    （返回 ``None``），而不是让异常向上传播；合法有限坐标、终态矛盾与幂等语义不变。
+    """
+
+    # -------------------------------------------------- 单元：_finite_axis
+
+    @pytest.mark.parametrize("huge", [10**400, -(10**400), 10**309, -(10**309)])
+    def test_finite_axis_does_not_raise_on_overflow(self, huge) -> None:
+        # 断言**具体返回值**：仅"异常没有向外传播"不足以证明 fail-closed（§二.1）
+        assert _finite_axis(huge) is None
+
+    @pytest.mark.parametrize("good", [0, 116, -116, 63.5, "116", "-100.25"])
+    def test_finite_axis_still_accepts_finite_values(self, good) -> None:
+        assert _finite_axis(good) == float(good)
+
+    @pytest.mark.parametrize("bad", [float("nan"), float("inf"), float("-inf"), True])
+    def test_finite_axis_existing_rejections_unchanged(self, bad) -> None:
+        # 保留既有拒绝行为：溢出加固不得放宽 bool / 非有限值（§一.4）
+        assert _finite_axis(bad) is None
+
+    # -------------------------------------------------- 单元：_clean_position
+
+    @pytest.mark.parametrize("axis", ["x", "y", "z"])
+    @pytest.mark.parametrize("huge", [10**400, -(10**400), 10**309])
+    def test_clean_position_rejects_overflow_axis(self, axis, huge) -> None:
+        assert _clean_position({**TARGET, axis: huge}) is None
+
+    def test_clean_position_rejects_overflow_axis_in_observation(self) -> None:
+        # 真实观察路径：poi 坐标溢出 → 该兴趣点被跳过，不产生任何事实
+        record = explore_record(steps=[world_step(pois=[_poi(10**400, 100)])])
+        assert exploration_facts(record, server_id="mc-1") == ()
+
+    # -------------------------------------------------- 单元：verified_arrival
+
+    @pytest.mark.parametrize("axis", ["x", "y", "z"])
+    @pytest.mark.parametrize("huge", [10**400, -(10**400), 10**309])
+    def test_verified_arrival_rejects_overflow_axis(self, axis, huge) -> None:
+        record = explore_record()
+        record.verification["position_within"][axis] = huge
+        assert verified_arrival(record) is None
+        result = exploration_outcome(record)
+        assert result.arrived is False
+        assert result.arrival == {}
+        # SUCCEEDED 但到达证据不可用 → 绝不确认为真实到达
+        assert result.outcome is ExplorationOutcome.CANCELLED_OR_INTERRUPTED
+
+    # -------------------------------------------------- 记忆层：溢出坐标不落正向事实
+
+    async def _publish(self, tmp_path, record):
+        bridge, database, _manager, _service = await build_bridge(tmp_path)
+        await bridge.on_task_finished(record)
+        facts = await bridge.store.all_facts(server_id=bridge.server_id())
+        return database, facts
+
+    @pytest.mark.parametrize("huge", [10**400, -(10**400), 10**309])
+    async def test_overflow_axis_writes_no_positive_memory(self, tmp_path, huge) -> None:
+        record = explore_record(steps=[world_step(pois=[_poi(116, 100)])])
+        record.verification["position_within"]["x"] = huge
+        database, facts = await self._publish(tmp_path, record)
+        kinds = [fact.kind for fact in facts]
+        assert MinecraftMemoryKind.EVENT not in kinds
+        assert MinecraftMemoryKind.LOCATION not in kinds
+        assert all(fact.extra.get("actionable") is not True for fact in facts)
+        assert kinds == [MinecraftMemoryKind.TASK]
+        assert facts[0].extra.get("exploration_outcome") == (
+            ExplorationOutcome.CANCELLED_OR_INTERRUPTED.value
+        )
+        assert exploration_facts(record, server_id="mc-1") == ()
+        assert arrival_fact(record, server_id="mc-1") is None
+        await database.close()
+
+    async def test_repeated_overflow_publish_is_stable(self, tmp_path) -> None:
+        bridge, database, _manager, _service = await build_bridge(tmp_path)
+        record = explore_record(steps=[world_step(pois=[_poi(116, 100)])])
+        record.verification["position_within"]["z"] = 10**400
         for _ in range(3):
             await bridge.on_task_finished(record)
         events = await bridge.store.facts(

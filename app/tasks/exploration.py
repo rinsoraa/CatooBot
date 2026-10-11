@@ -99,17 +99,21 @@ def is_exploration_task(record: Any) -> bool:
 
 
 def _finite_axis(value: Any) -> float | None:
-    """单个坐标轴：拒绝 ``bool``、不可转换值与非有限实数（``NaN`` / ``±Infinity``）。
+    """单个坐标轴：拒绝 ``bool``、不可转换值、转换溢出与非有限实数
+    （``NaN`` / ``±Infinity``）。
 
     ``True`` / ``False`` 是 Python 的 ``int`` 子类，绝不能被当成 ``1`` / ``0``；
     ``float("nan")`` / ``float("inf")`` 转换成功但**不是**有效世界坐标，一律拒绝。
+    超出 ``float`` 值域的巨大整数（``float(10 ** 400)``）会抛 ``OverflowError``，
+    同样**不是**有效世界坐标：这里一并 fail-closed 返回 ``None``，绝不向上传播异常
+    （Phase 7F.2.2.1 数值转换溢出加固）。
     """
 
     if isinstance(value, bool) or not isinstance(value, (int, float, str)):
         return None
     try:
         number = float(value)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         return None
     return number if math.isfinite(number) else None
 

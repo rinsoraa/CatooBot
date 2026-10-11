@@ -1,5 +1,28 @@
 # Changelog
 
+## Minecraft Phase 7F.2.2.1 — Numeric Conversion Overflow Hardening（数值转换溢出加固）
+
+* **目标**：在 7F.2.2 已把坐标收紧到**有限实数域**之后，补齐最后一个未覆盖的转换缺口 ——
+  **整数 → 浮点转换溢出**。**核心不变量**：坐标转换要么给出**有限浮点数**，要么 fail-closed 返回 `None`；
+  `OverflowError` **绝不允许**向上传播到 `verified_arrival()` 及其调用链。小型防御性补丁，非新增探索能力。
+* **审计发现**：`app/tasks/exploration.py` 的 `_finite_axis()` 捕获 `(TypeError, ValueError)`，
+  但 CPython 对超出 `float` 值域的巨大整数抛的是 **`OverflowError`**（`float(10 ** 400)` →
+  `int too large to convert to float`），因此 `_clean_position({... "x": 10 ** 400})` 会**直接炸穿**，
+  而不是按契约 false-closed 返回 `None`：任何把不可信数值喂进坐标投影的路径都能以异常替代判定。
+* **最小修复**：`_finite_axis()` 的 `except` 扩为 `(TypeError, ValueError, OverflowError)`，
+  统一返回 `None`；保留 `math.isfinite()` 把关，保留对 `bool` / 错误类型 / 非有限值的既有拒绝行为；
+  **不新增**任意世界坐标绝对上限，**不改**合法负坐标、小数与有限数字字符串的兼容性；
+  `verified_arrival()` 与任何下游调用链**一字未改**（`_finite_axis` 仍是其唯一坐标判定入口）。
+* **回归测试（`tests/test_exploration_feedback.py`）**：新增 `TestNumericConversionOverflowHardening`（**37 项**，含参数化）——
+  单元层断言 `_finite_axis` / `_clean_position` 对 `10**400` / `-(10**400)` / `10**309` 在 x/y/z 各轴**返回 `None`**
+  （不只是"异常没冒出来"），并回归确认既有 `bool` / `NaN` / `±Infinity` 拒绝与合法有限值兼容性未放宽；
+  单元层确认溢出坐标使 `verified_arrival()` 返回 `None`、`arrived=False`、`arrival={}`、
+  outcome 落 `CANCELLED_OR_INTERRUPTED`；**记忆层**验证 `SUCCEEDED` + `checked/ok=True` 但实际坐标溢出时
+  **真实存储**只留 `TASK`、无 `EVENT`/`LOCATION`、无 actionable，观察期 POI 坐标溢出则不产生任何新事实，重复发布稳定。
+* **测试**：全量 **`3734 passed`**（基线 3697 + 37）。ruff / format（643 files）/ mypy（336 files）/
+  WebUI typecheck + Vitest（75 files / 528）+ build + Playwright E2E（7）/ `minecraft_runtime npm test` 全绿；
+  迁移演练 v36→v36 **幂等**、83 表、`integrity ok`、`lost_rows {}`。
+
 ## Minecraft Phase 7F.2.2 — Coordinate Domain Hardening（探索坐标域加固）
 
 * **目标**：在 7F.2.1 已统一终态到达判定之后，收紧探索坐标的**数值有效性**。
