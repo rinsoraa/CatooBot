@@ -267,6 +267,19 @@ route = {"start": {x,y,z}, "budget": float, "legs": [
 > 真实门禁会真实写 live DB：本轮 `life_intents` 99 → **104**、`activity_episodes` 191 → **199**；
 > 事后核验 `integrity ok`、最高迁移仍 **36**、仍 **83** 张业务表。
 
+### 6.3 CI（GitHub Actions）
+
+* commit `7f9acc0eeee696f5b1876150ab02c87c00ed9023`，run **#169 / attempt 1** → **conclusion = success**；
+* `lint · format · types · tests` → **success**：CI 上 `ruff check .` = All checks passed、
+  `ruff format --check .` = 632 files already formatted（CI 只看到镜像内的文件）、
+  `mypy app` = Success（336 source files）、
+  `pytest tests -q` = **3757 passed, 3 skipped in 227.41s**（与本地 3760 精确对账：3 条为既有平台
+  条件性 skip，本阶段新增 26 项**无一被跳过**）、WebUI Browser E2E = **7 passed (16.3s)**、
+  `minecraft_runtime` 全部套件 = ALL CHECKS PASSED（其中 6 条**既有** SKIP：假服务器不支持
+  `/summon` / `/give`，与本阶段无关）；
+* `webui · typecheck · tests · build` → **success**；
+* 本轮**没有出现**上一阶段那个 `minecraft_runtime` follow_player 偶发 flake：**attempt 1 即全绿**，无需重跑；
+* 发布前已审计镜像 diff：恰好 12 个文件（9 改 3 新），密钥扫描干净，`scripts/` **未进入发布**。
 ## 7. 安全边界对比
 
 | 项 | 状态 |
