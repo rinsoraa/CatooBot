@@ -199,7 +199,15 @@
 
 ### 6.1 CI（GitHub Actions）
 
-见下方 §6.1 补记（首次 push 后填入 run 编号与两个 job 的结论）。
+* commit `7c8548c714a839747de166235d67809b4c8f4e44`，run **#171 / attempt 1 → conclusion = success**；
+* `lint · format · types · tests` → **success**：CI 上 `ruff check .` = All checks passed、
+  `ruff format --check .` = 634 files already formatted（CI 只看到镜像内文件）、
+  `mypy app` = Success（336 source files）、
+  `pytest tests -q` = **3776 passed, 3 skipped in 244.61s**（与本地 3779 精确对账：3 条为既有平台
+  条件性 skip，本阶段新增 19 项**无一被跳过**）、WebUI Browser E2E = **7 passed (16.7s)**、
+  `minecraft_runtime` 全部套件 = ALL CHECKS PASSED（既有 SKIP 见 §7.2）；
+* `webui · typecheck · tests · build` → **success**；
+* 本轮**没有出现** follow_player 偶发 flake：**attempt 1 即全绿**，无需重跑。
 
 ### 6.2 数据库
 
