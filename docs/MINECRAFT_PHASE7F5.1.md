@@ -180,6 +180,26 @@
    `connection.status` 与 `pathfinder.moving`/`action.status`）；`coordinator.stop()` 未 await。
    每次都是脚本 bug，修好后重跑；**没有放宽任何断言**。
 
+## §4.4 CI 与发布
+
+* 提交：`3ba395ec1367878eef152c551a9105116a0fdf84`（`Phase 7F.5.1: runtime identity observation & correlation guard (fail-closed on unverifiable identity)`），
+  推送到 `origin/main` 后 `HEAD == origin/main`，工作树干净，258 commits。
+* CI：**run id 38164830085 / attempt 1**（`https://github.com/rinsoraa/CatooBot/actions/runs/38164830085`），
+  两个 job **均 success**、**无失败步骤**、**无需重跑**：
+  * `lint · format · types · tests` → success（其中 pytest **3822 passed, 3 skipped in 317.85s**，
+    即本地 3825 − 3 条**既有平台条件性** skip；**新增 23 项无一被跳过**；Browser E2E 7 passed (21.5s)）；
+  * `webui · typecheck · tests · build` → success。
+* 实际 SKIPPED 列表（全部是**既有**、与本阶段无关的假服务器限制）：
+  `[e2e] equip / inventory_move STOP`、`container STOP`、`craft 成功路径`、`craft STOP`、
+  `3×3 craft 成功路径`、`dropped_items / pickup 成功路径`。
+* 发布镜像审计：改动正好 10 个文件；`scripts/` **未发布**（真机门禁与诊断脚本只存在于本地）；
+  `config/config.yaml` 虽在镜像目录里存在但被 `.gitignore:17` 忽略、**未被 tracked**；
+  新增/改动文件密钥扫描**零命中**；源目录 vs 镜像**内容哈希差异 = 0**
+  （app 336 / plugins 7 / tests 236 / docs 162 / .github 1 / webui 355 / minecraft_runtime 26 个文件逐一比对）。
+  * 镜像 `webui/dist` 的 mtime 因本轮重建而复新（内容与已提交 bundle **逐字节一致**），
+    故 `robocopy` 的时间戳视图会报差异 —— 以**内容哈希**为准。
+* 无新表、无新迁移（最高仍 36）。
+
 ## §5 安全边界
 
 - 不新增 Minecraft 工具（仍 19 个）、不改 `ACTION_RISK`、`allow_medium=false` 不变；
