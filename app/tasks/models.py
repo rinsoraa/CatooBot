@@ -416,6 +416,13 @@ class TaskStep:
     #: 它只解决"这条事件属于哪个实例"的关联唯一性，**不是**幂等键、
     #: 也不提供任何服务端去重保证。旧记录（7F.5 之前）为空串 = 未知。
     dispatch_runtime_instance: str = ""
+    #: Phase 7F.5.1 §四：这一代次是**带身份追踪的新格式**（旧持久化记录里没有这个键）。
+    #: 它把"新派发但拿不到实例"与"7F.5 之前的旧记录"区分开：前者必须 fail-closed，
+    #: 后者只走明确界定的兼容路径。借现有 payload 序列化承载，**不引入数据库迁移**。
+    dispatch_identity_tracked: bool = False
+    #: Phase 7F.5.1 §四：这次关联**走过旧格式回退路径**（记录里没有实例、只能按 action_id
+    #: 兼容结算）。纯粹是审计标记 —— 人工核对时能看出"这一条为什么没有实例校验"。
+    dispatch_legacy_fallback: bool = False
 
     @property
     def dispatch_unresolved(self) -> bool:
@@ -476,6 +483,8 @@ class TaskStep:
             "dispatch_key": self.dispatch_key,
             "dispatch_at": self.dispatch_at,
             "dispatch_runtime_instance": self.dispatch_runtime_instance,
+            "dispatch_identity_tracked": self.dispatch_identity_tracked,
+            "dispatch_legacy_fallback": self.dispatch_legacy_fallback,
         }
 
     @classmethod
@@ -514,6 +523,8 @@ class TaskStep:
             dispatch_key=str(payload.get("dispatch_key") or ""),
             dispatch_at=float(payload.get("dispatch_at") or 0.0),
             dispatch_runtime_instance=str(payload.get("dispatch_runtime_instance") or ""),
+            dispatch_identity_tracked=bool(payload.get("dispatch_identity_tracked", False)),
+            dispatch_legacy_fallback=bool(payload.get("dispatch_legacy_fallback", False)),
         )
 
 

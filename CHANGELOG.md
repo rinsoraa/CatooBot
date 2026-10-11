@@ -1,5 +1,39 @@
 # Changelog
 
+## Minecraft Phase 7F.5.1 — Runtime Identity Observation & Correlation Guard（运行时身份观测与关联守卫）
+
+* **目标**：7F.5 的**定向修正** —— 让运行时实例身份真正贯穿调用链，并在身份不可信时 fail-closed。**不新增任何游玩能力**。
+* **身份观测贯穿所有成功响应**：`_note_runtime_instance()` 原先只在 `_start_runtime()` 的启动就绪检查里被调用；
+  现在 `_ensure_runtime()` 的每次健康探测、`status()` 与 `_poll_loop()` 的**成功响应**都按同一协议处理身份字段
+  （只有成功且含有效身份的响应才更新；超时 / 连接失败 / **401** / 无效响应 / 缺字段**一律不更新**）。
+  于是**外部托管的 Runtime（`auto_start_runtime=false`）在 Python 不重启的情况下换实例也能被主动观测到**，
+  不必再等旧动作 TTL 过期。新增 `probe_runtime_instance()`：失败如实抛给调用方，
+  把「Runtime 不可达」（按既有传输层语义）与「可达但不报告身份」（必须 fail-closed）分开。
+* **派发前必须有可信身份**：`_resolve_dispatch_identity()` 在**落盘派发意图之前**确定实例；
+  Runtime 可达却不报告身份 → **fail-closed 暂停**（`runtime_instance_unavailable`），
+  **绝不**在「只按 action_id 关联」的前提下把外部动作发出去；这一步记录过旧实例而当前已换人 →
+  同样 fail-closed（`runtime_instance_changed_before_dispatch`）。
+* **真正服务这次请求的实例**：适配器在调用**前后**各读一次实例并回传（由 `_settle` 落盘为权威关联）；
+  调用期间换人且动作已经外发 → 整条调用按**歧义**返回（`runtime.instance_changed`），真实 `action_id` 留在证据里。
+* **发出外部动作之前的最后复核**：`_dispatch_precheck()` 从 store 重新 load，用**持久化真相**判断
+  （任务终态 / 步骤已非 `INTENT` / 代次不符 / 非 SAFE 步骤的授权被清 / 实例不符 → **一律不发**）。
+  **刻意不用锁**：对账里的 `stop` 自己会走 `_ensure_runtime()` → 又一次身份探测，加锁会在同一条链上重入死锁；
+  排序保证靠**持久化状态比较 + 发动作前复核**。
+* **事件关联严格矩阵**：记录有实例而事件**缺**实例 → **不得结算**（`missing_runtime_instance_event`）；
+  新格式记录无实例 / 事件无实例 → 一律歧义；**旧格式行**仍按明确界定的兼容路径结算，
+  并**持久化 `dispatch_legacy_fallback` 标记**（用现有 payload 序列化承载，**无数据库迁移**）。
+* **测试**：新增 `tests/test_runtime_identity_observation.py`（**10 项**，真实本地 HTTP 服务 + 真实
+  `MinecraftRuntimeClient` + 真实 `MinecraftService` 请求路径，含 `auto_start_runtime=false`、
+  暂时失败后恢复不误判、401 / 无效响应 / 缺字段都不伪造身份、回调里等 `stop` 与再次探测**不死锁**）与
+  `tests/test_event_correlation_matrix.py`（**13 项**，关联矩阵 + 派发身份守卫）；
+  新增真机门禁 `scripts/runtime_restart_identity_smoke_real.py`（**本地专用，不进 GitHub 发布**）：
+  真实世界动作进入未决 → 停掉 Node 进程（**Python 不退出**）→ **外部**重新拉起 → 通过**真实健康检查路径**
+  发现新实例 → 旧动作歧义暂停且证据完整 → **不重新派发** → 第二个新任务不越过自己的确认门（**20/20 PASS**）。
+* **边界**：19 工具 / `ACTION_RISK` / `allow_medium=false` / 两道确认门 / Policy / AgentBridge / Action Runtime /
+  LifeIntent·TaskProposal·AgentPlan 语义 / 多段 ≤3 段与共享 24 格 / `explore_legs=1` **全部未改**；
+  未引入无界重试；**仍不宣称 exactly-once**（实例 ID 只解决**关联唯一性**，不是幂等键）；
+  **无新表、无新迁移**（最高仍 36）。
+
 ## Minecraft Phase 7F.5 — Runtime Lifecycle Reconciliation & Bridge Trust Boundary（运行时生命周期对账与桥接信任边界）
 
 * **目标**：加固 Python TaskRuntime ↔ Node Minecraft Runtime 之间的**信任边界、动作关联与运行时生命周期恢复**。

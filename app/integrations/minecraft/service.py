@@ -1241,7 +1241,12 @@ class MinecraftService:
 
     async def _ensure_runtime(self) -> None:
         try:
-            await self._client.health()
+            # Phase 7F.5.1 §二：**每一次成功的健康探测同时是身份探测**。以前这里只调
+            # health() 而不处理身份字段，于是「外部托管的 Runtime（auto_start_runtime=false）
+            # 在 Python 不重启的情况下换了实例」这件事永远观测不到，只能等旧动作 TTL 过期。
+            # 注意：失败、超时、401、无效响应绝不更新身份（_note_runtime_instance 内部保证）。
+            payload = await self._client.health()
+            self._note_runtime_instance(payload)
             self._runtime_down = False
             return
         except MinecraftRuntimeError:
@@ -1256,6 +1261,18 @@ class MinecraftService:
         self._restart_count += 1
         log.warning("[Minecraft] runtime 不可达，尝试重启（第 %d 次）", self._restart_count)
         await self._start_runtime()
+
+    async def probe_runtime_instance(self) -> str:
+        """主动做一次身份探测（Phase 7F.5.1 §三.1）：成功响应 -> 返回当前实例标识。
+
+        与 _ensure_runtime 的唯一区别是**失败语义**：这里把失败如实抛给调用方，
+        让「Runtime 不可达」（按既有传输层语义处理）与「Runtime 可达但不报告身份」
+        （必须在**真正发出外部动作之前** fail-closed）能被分开判定。
+        """
+        payload = await self._client.health()
+        self._note_runtime_instance(payload)
+        self._runtime_down = False
+        return self.runtime_instance()
 
     def _ensure_bridge_token(self) -> str:
         """确保本进程有一份**正向**调用凭据（Phase 7F.5 §六）。
@@ -2102,6 +2119,8 @@ class MinecraftService:
         """合并 runtime 实况与本地镜像；runtime 不可达时返回降级快照。"""
         try:
             live = await self._client.status()
+            # Phase 7F.5.1 §二：显式状态查询的成功响应同样按统一协议处理身份字段。
+            self._note_runtime_instance(live)
             self._runtime_down = False
             self._mirror = {key: value for key, value in live.items() if key != "ok"}
         except MinecraftRuntimeError:
@@ -2264,6 +2283,9 @@ class MinecraftService:
                 return
             try:
                 live = await self._client.status()
+                # Phase 7F.5.1 §二：周期轮询的成功响应也是身份响应 —— 外部托管 Runtime
+                # 换实例时，这里是**主动**发现变化的正常路径（不必等用户操作或 TTL）。
+                self._note_runtime_instance(live)
             except Exception:  # noqa: BLE001 - 轮询永不抛出
                 failures += 1
                 if failures == 1:

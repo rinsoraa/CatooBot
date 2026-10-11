@@ -256,6 +256,7 @@ class TaskRuntime:
         ) = None,
         world_facts: Callable[[], Awaitable[dict[str, Any]]] | None = None,
         runtime_instance_of: Callable[[], str] | None = None,
+        identity_probe: Callable[[], Awaitable[str]] | None = None,
         label_of: Callable[[TaskStep], str] | None = None,
         logger: Any = None,
     ) -> None:
@@ -271,14 +272,16 @@ class TaskRuntime:
         self._validate_arguments = validate_arguments
         self._world_facts = world_facts
         self._runtime_instance_of = runtime_instance_of
+        self._identity_probe = identity_probe
         self._label_of = label_of
         self._log = logger
 
     def runtime_instance(self) -> str:
         """当前 Runtime 实例标识（Phase 7F.5）。拿不到就返回空串。
 
-        空串**不会**让关联失效：事件匹配仍然按 action_id 工作，只是少一层实例校验
-        （旧记录/外部托管桥接就是这种情况）。
+        空串只出现在两种情况：**没装配身份提供者**（纯单测替身，见 _resolve_dispatch_identity）
+        或者 Runtime 还没给过一次成功的身份响应。装配了提供者的生产运行期里，
+        派发**之前**会主动探测，拿不到就 fail-closed，绝不"默默降级成只按 action_id 关联"。
         """
         provider = self._runtime_instance_of
         if provider is None:
@@ -287,6 +290,89 @@ class TaskRuntime:
             return str(provider() or "")
         except Exception:  # noqa: BLE001 - 拿不到实例不该影响派发
             return ""
+
+    async def _resolve_dispatch_identity(self, record: TaskRecord, step: TaskStep) -> str | None:
+        """派发**之前**确定「这次动作归哪个 Runtime 实例」（Phase 7F.5.1 §三.1/§四）。
+
+        返回值有三种含义：
+
+        * 实例字符串 —— 可信身份，直接写进这一代次的派发意图；
+        * 空串 —— 没装配身份提供者（纯单测替身，沿用旧行为），或者探测失败
+          （Runtime 不可达：按既有传输层语义处理，这里不另立政策）；
+        * None —— 已经按安全策略处理过了（fail-closed 暂停），**绝不能再派发**。
+
+        「Runtime 可达但不报告身份」必须在这里拦住：不能把新任务默默降级成只按
+        action_id 关联 —— 那样的事件事后无法可靠验证来源（§四）。
+        """
+        if self._runtime_instance_of is None:
+            return ""
+        current = self.runtime_instance()
+        if not current and self._identity_probe is not None:
+            try:
+                current = str(await self._identity_probe() or "")
+            except Exception:  # noqa: BLE001 - 不可达：交给传输层按既有语义报告
+                return ""
+            if not current:
+                await self._pause_ambiguous_dispatch(
+                    record,
+                    step,
+                    message=(
+                        "Runtime 可达但没有报告实例身份，无法在只按 action_id 关联的前提下"
+                        f"安全派发 {step.tool}。已安全停下，请人工核对。"
+                    ),
+                    reason="runtime_instance_unavailable",
+                )
+                return None
+        expected = str(step.dispatch_runtime_instance or "")
+        if expected and current and expected != current:
+            await self._pause_ambiguous_dispatch(
+                record,
+                step,
+                message=(
+                    f"派发前发现 Runtime 实例已更换（这一步记录的是 {expected}，"
+                    f"当前是 {current}）：为不把动作发给错误的实例，已安全停下，请人工核对。"
+                ),
+                reason="runtime_instance_changed_before_dispatch",
+            )
+            return None
+        return current
+
+    async def _dispatch_precheck(self, record: TaskRecord, step: TaskStep, *, risk: str) -> bool:
+        """外部动作发出**之前**的最后一道复核（Phase 7F.5.1 §三.4）。
+
+        实例变化/取消/重规划的对账直接改**持久化记录**，而编排层手里的 record 可能还是
+        旧快照。所以这里从 store 重新 load，用持久化真相判断这一步是否仍然被允许派发：
+        任何一项对不上就**不派发**（返回 False），既不猜、也不重新派发 —— 该做的对账
+        已经由对账方做完了。
+        """
+        fresh = await self._require(record.task_id)
+        if fresh.state.terminal:
+            return False
+        fresh_step = fresh.step(step.step_id)
+        if fresh_step is None:
+            return False
+        if fresh_step.dispatch_state != DispatchState.INTENT.value:
+            # 已经被对账判成歧义（AMBIGUOUS），或者状态已被推进。
+            return False
+        if fresh_step.dispatch_generation != step.dispatch_generation:
+            return False
+        if risk not in SAFE_RISKS and fresh.authorization is None:
+            # 授权已被对账清掉：这一步不能再动世界。
+            return False
+        current = self.runtime_instance()
+        recorded = str(fresh_step.dispatch_runtime_instance or "")
+        if recorded and current and recorded != current:
+            await self._pause_ambiguous_dispatch(
+                fresh,
+                fresh_step,
+                message=(
+                    f"派发前发现 Runtime 实例已更换（记录的是 {recorded}，当前是 {current}）："
+                    "为不把动作发给错误的实例，已安全停下，请人工核对。"
+                ),
+                reason="runtime_instance_changed_before_dispatch",
+            )
+            return False
+        return True
 
     # ------------------------------------------------------------ 步骤授权
 
@@ -655,6 +741,11 @@ class TaskRuntime:
             step.action_id = ""
             step.status = ""
             step.result = {}
+            # Phase 7F.5.1 §三.1：**先把可信身份定下来，再落盘派发意图**。Runtime 可达却
+            # 报不出实例时，这里已经 fail-closed（返回 None），绝不带着未知归属发动作。
+            identity = await self._resolve_dispatch_identity(record, step)
+            if identity is None:
+                return "stop"
             step.dispatch_generation += 1
             step.dispatch_key = dispatch_key_of(
                 record.task_id, record.plan_hash, step.step_id, step.dispatch_generation
@@ -662,9 +753,18 @@ class TaskRuntime:
             step.dispatch_state = DispatchState.INTENT.value
             step.dispatch_at = self._clock()
             # 记下**派发时**的运行时实例（来自最近一次成功的身份响应）—— 它让
-            # "这次派发后来归谁" 可判定，而不是只能猜。
-            step.dispatch_runtime_instance = self.runtime_instance()
+            # "这次派发后来归谁" 可判定，而不是只能猜。dispatch_identity_tracked 则把
+            # 「带身份追踪的新格式」与 7F.5.1 之前的旧持久化记录区分开（§四）。
+            step.dispatch_runtime_instance = identity or self.runtime_instance()
+            # 只有**装配了身份提供者**的运行期才算「处于身份追踪之下」（生产装配一定有）；
+            # 纯单测替身（没装 provider）沿用旧行为，不假装自己有身份能力。
+            step.dispatch_identity_tracked = self._runtime_instance_of is not None
             await self._save(record, event=TASK_STEP_STARTED, step_id=step.step_id)
+            # Phase 7F.5.1 §三.4：落盘之后、**真正发出外部动作之前**用持久化真相复核一次。
+            # 实例变化时的对账可能刚刚把这一步判成歧义并清掉授权，而内存里的 record 还是
+            # 旧快照 —— 只看内存对象就会把「已被安全停下的动作」继续发出去。
+            if not await self._dispatch_precheck(record, step, risk=risk):
+                return "stop"
             invocation = await self._invoke_step(record, step, grant)
             if invocation.ok:
                 break
@@ -684,13 +784,27 @@ class TaskRuntime:
 
     async def _settle(self, record: TaskRecord, step: TaskStep, invocation: TaskInvocation) -> str:
         if invocation.detached:
+            # Phase 7F.5.1 §四：动作**已经跑到外部**了，必须有可信实例身份才能进入
+            # 「等动作」。Runtime 可达却没有实例（或调用期间换了人）时，这条动作的终态
+            # 事件事后无法可靠验证来源 —— 不能默默降级成只按 action_id 关联，直接 fail-closed。
+            accepted = str(invocation.runtime_instance or step.dispatch_runtime_instance or "")
+            if not accepted and self._runtime_instance_of is not None:
+                await self._pause_ambiguous_dispatch(
+                    record,
+                    step,
+                    message=(
+                        f"{step.tool} 已经发到外部，但没有可用的 Runtime 实例身份："
+                        "事后无法可靠验证这条动作的终态来自谁，已安全停下，请人工核对。"
+                    ),
+                    reason="runtime_instance_unavailable",
+                )
+                return "stop"
             step.state = StepState.WAITING_ACTION
             # Phase 7F.4：外部**已接受**，action_id 已知 -> ACCEPTED（等真实终态）。
             step.dispatch_state = DispatchState.ACCEPTED.value
+            step.dispatch_identity_tracked = self._runtime_instance_of is not None
             # 接受它的实例是**权威**关联（比派发时的期望更准）。
-            step.dispatch_runtime_instance = (
-                invocation.runtime_instance or step.dispatch_runtime_instance
-            )
+            step.dispatch_runtime_instance = accepted
             step.action_id = invocation.action_id
             step.status = invocation.status
             step.summary = invocation.summary or step.summary
@@ -705,6 +819,11 @@ class TaskRuntime:
             step.state = StepState.SUCCEEDED
             # 同步完成 = 外部终态已知 -> SETTLED。
             step.dispatch_state = DispatchState.SETTLED.value
+            step.dispatch_identity_tracked = self._runtime_instance_of is not None
+            # 同步完成的动作终态已经由这次调用给定，实例只作审计关联。
+            step.dispatch_runtime_instance = (
+                invocation.runtime_instance or step.dispatch_runtime_instance
+            )
             step.status = invocation.status or "SUCCEEDED"
             step.result = dict(invocation.result)
             step.summary = invocation.summary or step.summary
@@ -716,12 +835,16 @@ class TaskRuntime:
             # Phase 7F.4：**响应丢失** —— 外部 runtime 可能已经接受了这次请求。
             # 绝不记成普通动作失败（那会让 resume() 把它当成"失败过、可以重试"再发一次），
             # 而是 fail-closed：受控暂停 + 清授权 + 要求人工核对。
+            # Phase 7F.5.1：调用期间实例更换（runtime.instance_changed）也走这条路 ——
+            # 请求可能确实送到了，所以它同样是「结果未知」，同样不许重发。
+            cause = f"（原因：{invocation.error}）" if invocation.error else ""
             await self._pause_ambiguous_dispatch(
                 record,
                 step,
                 message=(
                     f"调用 {step.tool} 没有拿到 runtime 的答复：无法确认它是否已接受这次动作"
                     f"（关联键 {step.dispatch_key or '-'}）。为安全起见不重新派发，请人工核对。"
+                    f"{cause}"
                 ),
             )
             return "stop"
@@ -1286,12 +1409,18 @@ class TaskRuntime:
     ) -> TaskRecord | None:
         """异步动作的终态 → 恢复对应 Task 的对应 step（绑 action_id **与** Runtime 实例）。
 
-        Phase 7F.5 §四：匹配改为**完整的未决动作查询**（可从持久化记录重建，不受「最近 50 条」
-        限制），并且：
+        Phase 7F.5 §四 + 7F.5.1 §四：匹配是**完整的未决动作查询**（可从持久化记录重建，
+        不受「最近 50 条」限制），并且按下面的矩阵严格判定（不结算一律返回 None）：
 
-        * 一个 action_id 命中**多条**记录 → 按**歧义**处理（绝不取第一个匹配项）；
-        * 事件来自**另一个** Runtime 实例 → 不结算（旧实例迟到事件不得结算新实例的动作）；
+        * 一个 action_id 命中**多条**记录 → 全部按**歧义**处理（绝不取第一个匹配项）；
+        * 记录有实例、事件实例**相同** → 正常结算；
+        * 记录有实例、事件实例**不同** → 不结算（旧实例迟到事件不得结算新实例的动作）；
+        * 记录有实例、事件**缺实例** → 不结算：事件来源无法可靠验证（7F.5.1 的修正）；
+        * 记录**没有**实例（7F.5.1 之前的旧持久化行）→ 明确界定的兼容路径：按 action_id
+          兼容结算，并持久化 dispatch_legacy_fallback 标记，人工核对时能看出走过的回退路径；
         * 匹配不到 → 未知事件，什么都不改（任务状态、授权、派发代次一律不动）。
+
+        注意：实例标识只解决**关联唯一性**，不是幂等键、也不提供 exactly-once 保证。
         """
         if not action_id:
             return None
@@ -1320,7 +1449,43 @@ class TaskRuntime:
             return None
         recorded = str(step.dispatch_runtime_instance or "")
         incoming = str(runtime_instance or "")
-        if recorded and incoming and recorded != incoming:
+        if not step.dispatch_identity_tracked:
+            # ── 旧格式回退路径（Phase 7F.5.1 §四，明确界定）─────────────────────
+            # 这一行是 7F.5.1 之前写下的：它没有身份追踪，唯一可用的关联就是 action_id。
+            # 兼容行为到此为止：采纳事件给出的实例（如果有）供审计，并**持久化标记**
+            # 这是旧格式回退路径，人工核对时能看出"这一条为什么没有实例校验"。
+            step.dispatch_legacy_fallback = True
+            if incoming:
+                # 事件带身份、记录没带 -> 采纳它并升级成"已追踪"，供后续审计。
+                step.dispatch_runtime_instance = incoming
+                step.dispatch_identity_tracked = True
+        elif not incoming:
+            # 记录要求实例、事件却不带实例 -> 来源无法可靠验证 -> **不得**结算。
+            await self._pause_ambiguous_dispatch(
+                target,
+                step,
+                message=(
+                    "收到不带 Runtime 实例标识的动作事件：无法验证它是否来自本任务记录的"
+                    f"实例（记录的是 {recorded or '-'}），不得据此结算，已安全停下，请人工核对。"
+                ),
+                reason=(
+                    "missing_runtime_instance_event" if recorded else "runtime_instance_missing"
+                ),
+            )
+            return None
+        elif not recorded:
+            # 新格式记录却没有实例：这次派发本身就无法归属 -> 同样不得据此结算。
+            await self._pause_ambiguous_dispatch(
+                target,
+                step,
+                message=(
+                    f"收到实例为 {incoming} 的动作事件，但本任务这一步没有记录实例身份："
+                    "无法确认这次终态属于谁，不得据此结算，已安全停下，请人工核对。"
+                ),
+                reason="runtime_instance_unattributed_event",
+            )
+            return None
+        elif recorded != incoming:
             await self._pause_ambiguous_dispatch(
                 target,
                 step,
@@ -1332,9 +1497,6 @@ class TaskRuntime:
                 reason="stale_runtime_instance_event",
             )
             return None
-        if incoming and not recorded:
-            # 旧记录没有实例信息（7F.5 之前）→ 采纳事件给出的实例（仍然只用于关联审计）。
-            step.dispatch_runtime_instance = incoming
         terminal = str(event).rsplit(".", 1)[-1]
         step.finished_at = self._clock()
         step.status = status or terminal.upper()

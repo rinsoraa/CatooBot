@@ -89,11 +89,33 @@ class MinecraftPlanConfirmation:
             self._store.cancel(confirmation_id)
 
 
+#: Phase 7F.5.1 §三.1：这次调用的**前后**读到的实例不同 —— 说明调用期间 Runtime 换了人，
+#: 于是「这个动作被谁接受、算不算数」无法确认。它不是传输层错误码（请求可能确实送到了），
+#: 所以单独一个码，交回 TaskRuntime 走既有的 fail-closed 歧义路径。
+RUNTIME_INSTANCE_SWAPPED = "runtime.instance_changed"
+
+
 class MinecraftTaskInvoker:
     """按步骤调用已有工具（经 Agent Bridge），并把结果转成 TaskInvocation。"""
 
-    def __init__(self, bridge: MinecraftAgentBridge) -> None:
+    def __init__(
+        self,
+        bridge: MinecraftAgentBridge,
+        *,
+        runtime_instance_of: Callable[[], str] | None = None,
+    ) -> None:
         self._bridge = bridge
+        self._runtime_instance_of = runtime_instance_of
+
+    def runtime_instance(self) -> str:
+        """当前 Runtime 实例（Phase 7F.5.1）：读不到就返回空串，绝不抛。"""
+        provider = self._runtime_instance_of
+        if provider is None:
+            return ""
+        try:
+            return str(provider() or "")
+        except Exception:  # noqa: BLE001 - 身份读不到不该让派发崩
+            return ""
 
     async def __call__(
         self,
@@ -106,23 +128,53 @@ class MinecraftTaskInvoker:
         risk: str = "",
         authorization: Any = None,
     ) -> TaskInvocation:
+        # Phase 7F.5.1 §三.1：调用**前后**各读一次实例 —— 调用期间 Service 的
+        # _ensure_runtime() 会做一次成功的身份探测，所以调用后的读数是「真正服务这次
+        # 请求的那个实例」；调用前那次则用来发现「调用过程中换了人」。
+        before = self.runtime_instance()
         if tool == "minecraft_stop" or not task_id:
             # 控制面调用（取消/过期时停动作）与 SAFE 读取：走正常的 SAFE 通道
             result = await self._bridge.invoke_developer(
                 tool, dict(arguments), _service_call(tool, dict(arguments))
             )
-            return _to_invocation(tool, result)
-        result = await self._bridge.invoke_task_step(
-            tool,
-            dict(arguments),
-            task_id=task_id,
-            step_id=step_id,
-            plan_hash=plan_hash,
-            risk=risk,
-            authorization=authorization,
-            call=_service_call(tool, dict(arguments)),
-        )
-        return _to_invocation(tool, result)
+        else:
+            result = await self._bridge.invoke_task_step(
+                tool,
+                dict(arguments),
+                task_id=task_id,
+                step_id=step_id,
+                plan_hash=plan_hash,
+                risk=risk,
+                authorization=authorization,
+                call=_service_call(tool, dict(arguments)),
+            )
+        after = self.runtime_instance()
+        invocation = _to_invocation(tool, result)
+        if before and after and before != after and invocation.detached:
+            # 调用期间实例换了人，而且这个动作**已经跑到外部去了**（detached）：
+            # 它被哪个实例接受、还会不会有终态事件，都无法确认 -> 按歧义 fail-closed。
+            # 不带 action_id 向上走，确保 _settle 走歧义分支而不是「等动作」分支；
+            # 真实的 action_id 留在 detail 里供人工核对。
+            return TaskInvocation(
+                ok=False,
+                ambiguous=True,
+                code=RUNTIME_INSTANCE_SWAPPED,
+                error=(
+                    f"调用 {tool} 期间 Runtime 实例已更换（{before} -> {after}）："
+                    "无法确认这次动作是否已被接受，也不会重新派发"
+                ),
+                detail={
+                    **dict(invocation.detail or {}),
+                    "action_id": invocation.action_id,
+                    "instance_before": before,
+                    "instance_after": after,
+                },
+                runtime_instance=after,
+            )
+        # 同步完成的动作不受影响（终态已知，不需要实例来关联）；只有 detached 的动作
+        # 需要实例来做事件关联。
+        invocation.runtime_instance = after or before
+        return invocation
 
 
 def _service_call(
@@ -311,9 +363,13 @@ async def build_minecraft_task_runtime(
         except Exception:  # noqa: BLE001
             return {}
 
+    # Phase 7F.5.1：身份能力**按能力探测**接入 —— 完全没实现身份 API 的替身（单测里的
+    # FakeService）不该被当成"有身份追踪"，否则会假装自己在做实例校验（那才是静默降级）。
+    instance_of = getattr(service, "runtime_instance", None)
+    identity_probe = getattr(service, "probe_runtime_instance", None)
     runtime = TaskRuntime(
         store=task_store,
-        invoke=MinecraftTaskInvoker(bridge),
+        invoke=MinecraftTaskInvoker(bridge, runtime_instance_of=instance_of),
         confirmations=MinecraftPlanConfirmation(bridge.confirmations),
         config=_task_config(config),
         publish=publish,
@@ -325,7 +381,10 @@ async def build_minecraft_task_runtime(
         ),
         world_facts=_world_facts,
         # Phase 7F.5：派发时固化「这次动作归哪个 Runtime 实例」（只解决关联唯一性）。
-        runtime_instance_of=lambda: service.runtime_instance(),
+        runtime_instance_of=instance_of,
+        # Phase 7F.5.1 §三.1/§四：派发**之前**主动做一次身份探测 —— 拿不到可信身份就
+        # 不能在只按 action_id 关联的前提下把外部动作发出去（fail-closed）。
+        identity_probe=identity_probe,
         label_of=default_step_label,
         logger=logger,
     )
