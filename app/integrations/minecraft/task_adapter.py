@@ -213,8 +213,18 @@ _SERVICE_ROUTES: dict[str, Callable[[Any, Mapping[str, Any]], Awaitable[dict[str
 }
 
 
+#: Phase 7F.4：**传输层**失败的 code —— 请求可能已经送达外部 runtime，只是答复丢了。
+#: 这类失败绝不能被当成"动作没有执行"，否则一次 resume() 就会把同一个动作再发一次。
+#: 注意**不包含** runtime.error / minecraft.* ：那些是 runtime 给出的**明确答复**（终态已知）。
+AMBIGUOUS_TRANSPORT_CODES = frozenset({"runtime.unreachable", "runtime.bad_response"})
+
+
 def _to_invocation(tool: str, result: Any) -> TaskInvocation:
-    """ToolResult → TaskInvocation（编排层只认识后者）。"""
+    """ToolResult → TaskInvocation（编排层只认识后者）。
+
+    Phase 7F.4：工具层保证**不抛异常**（agent.py 的"工具层永不抛给模型"），所以
+    "请求发出去了但没拿到可用答复"只能在这里按 code 判定 —— 这是判别歧义的正确位置。
+    """
     if result is None:  # pragma: no cover - 防御
         return TaskInvocation(ok=False, error=f"{tool} 没有返回结果", code="task.internal")
     data: dict[str, Any] = dict(getattr(result, "data", None) or {})
@@ -229,6 +239,8 @@ def _to_invocation(tool: str, result: Any) -> TaskInvocation:
             error=str(getattr(result, "error", "") or code),
             code=code,
             detail=data,
+            # 传输层失败 -> 无法确认外部是否接受 -> 交给 fail-closed 歧义分支处理。
+            ambiguous=code in AMBIGUOUS_TRANSPORT_CODES,
         )
     # 有的服务方法把语义结果包在 result 里（例如 find_blocks / inventory）
     payload = data.get("result") if isinstance(data.get("result"), Mapping) else None

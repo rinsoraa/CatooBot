@@ -146,6 +146,26 @@ _TERMINAL_STEP_STATES = frozenset(
 )
 
 
+class DispatchState(str, Enum):  # noqa: UP042 - 与 TaskState 一致（面向 JSON）
+    """一次步骤派发的**外部**可见状态（Phase 7F.4）。
+
+    必须区分这四种状态，绝不把"不知道"当成"没执行"：
+
+    * ``INTENT``：派发意图**已持久化**，但还不能证明外部 runtime 是否接受；
+    * ``ACCEPTED``：外部已接受，``action_id`` 已知，正在等真实终态；
+    * ``AMBIGUOUS``：外部是否接受**存在歧义**（响应丢失 / 恢复时仍不确定）
+      → 安全停止 + 人工介入，绝不猜测、绝不重新派发；
+    * ``SETTLED``：外部终态已知（成功/失败/取消/超时都算），可以安全继续。
+
+    空串（``""``）= 这一步从未派发过。
+    """
+
+    INTENT = "INTENT"
+    ACCEPTED = "ACCEPTED"
+    AMBIGUOUS = "AMBIGUOUS"
+    SETTLED = "SETTLED"
+
+
 class TaskFailure(str, Enum):  # noqa: UP042 - 与 TaskState 一致（面向 JSON）
     """失败分类（§三十三）——UI / 模型需要知道"到底是哪种失败"。"""
 
@@ -162,6 +182,8 @@ class TaskFailure(str, Enum):  # noqa: UP042 - 与 TaskState 一致（面向 JSO
     STALLED = "STALLED"
     RUNTIME_RESTART = "RUNTIME_RESTART"
     VERIFICATION = "VERIFICATION"
+    #: Phase 7F.4：外部动作是否**已被接受**存在歧义 —— fail-closed，需人工介入。
+    DISPATCH_AMBIGUOUS = "DISPATCH_AMBIGUOUS"
 
 
 class PlanStatus(str, Enum):  # noqa: UP042 - 与 TaskState 一致（面向 JSON）
@@ -330,6 +352,30 @@ class ArgumentReference:
         )
 
 
+def dispatch_key_of(task_id: str, plan_hash: str, step_id: str, generation: int) -> str:
+    """一次**逻辑派发**的稳定关联键（Phase 7F.4）。
+
+    由 ``task_id`` + 冻结 ``plan_hash`` + ``step_id`` + **持久化代次**共同决定：
+
+    * 同代次的重复观察 / 重放 -> **同一个键**（可被识别为同一次派发）；
+    * 用户显式发起的新一次执行尝试 -> 代次 +1 -> **新键**（可审计，绝不掩盖重复派发）；
+    * 进程重启**不会**产生新键 —— 代次来自持久化记录，不来自内存计数器。
+
+    当前 Minecraft runtime **不支持**客户端自带的幂等键（调用方无法按键去重或查询），
+    因此这个键在本阶段的作用是**审计与人工核对的可追溯标识**，不是服务端去重保证；
+    真正的安全来自"派发前落盘 + 歧义时 fail-closed"（见 app/tasks/runtime.py）。
+    """
+    return "dsp_" + digest(
+        {
+            "task_id": str(task_id),
+            "plan_hash": str(plan_hash),
+            "step_id": str(step_id),
+            "generation": int(generation),
+        },
+        length=20,
+    )
+
+
 @dataclass
 class TaskStep:
     """一步：准备调用的**已有**工具 + 参数（可能是模板，含引用）。"""
@@ -356,6 +402,24 @@ class TaskStep:
     message: str = ""
     #: §三十六：本阶段不做补偿动作（代码结构预留，绝不假装有 rollback）
     compensatable: bool = False
+    #: Phase 7F.4：派发的**持久化关联信息** —— 必须在产生外部副作用**之前**落盘。
+    #: 取值见 :class:``DispatchState``（空串 = 从未派发）。有它就等于"崩溃后知道
+    #: 这一次派发可能已经发生"，没有它就只能靠猜（而那正是要修掉的歧义）。
+    dispatch_state: str = ""
+    #: 派发代次（0 = 从未派发）。每次**显式**执行尝试 +1；重启**不会**自动 +1。
+    dispatch_generation: int = 0
+    #: 这一代次的稳定关联键（:func:``dispatch_key_of``），用于审计与人工核对。
+    dispatch_key: str = ""
+    #: 派发意图落盘时刻（审计用）。
+    dispatch_at: float = 0.0
+
+    @property
+    def dispatch_unresolved(self) -> bool:
+        """这一步的派发结果**未知** —— 绝不允许据此重新派发。"""
+        return self.dispatch_state in {
+            DispatchState.INTENT.value,
+            DispatchState.AMBIGUOUS.value,
+        }
 
     @property
     def effective_arguments(self) -> dict[str, Any]:
@@ -403,6 +467,10 @@ class TaskStep:
             "error": self.error,
             "message": self.message,
             "compensatable": self.compensatable,
+            "dispatch_state": self.dispatch_state,
+            "dispatch_generation": self.dispatch_generation,
+            "dispatch_key": self.dispatch_key,
+            "dispatch_at": self.dispatch_at,
         }
 
     @classmethod
@@ -436,6 +504,10 @@ class TaskStep:
             error=str(payload.get("error") or ""),
             message=str(payload.get("message") or ""),
             compensatable=bool(payload.get("compensatable", False)),
+            dispatch_state=str(payload.get("dispatch_state") or ""),
+            dispatch_generation=int(payload.get("dispatch_generation") or 0),
+            dispatch_key=str(payload.get("dispatch_key") or ""),
+            dispatch_at=float(payload.get("dispatch_at") or 0.0),
         )
 
 

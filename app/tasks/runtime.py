@@ -48,6 +48,7 @@ from app.tasks.models import (
     TASK_STEP_SUCCEEDED,
     TASK_STEP_WAITING,
     TASK_SUCCEEDED,
+    DispatchState,
     ExpectedFinalState,
     PlanStatus,
     ReconcileOutcome,
@@ -61,6 +62,7 @@ from app.tasks.models import (
     TaskStep,
     arguments_hash,
     canonical_item_name,
+    dispatch_key_of,
     finite_number,
     new_task_id,
 )
@@ -114,6 +116,9 @@ class TaskInvocation:
     error: str = ""
     code: str = ""
     detail: dict[str, Any] = field(default_factory=dict)
+    #: Phase 7F.4：**没有拿到 runtime 的答复**（传输异常/超时）—— 外部可能已经接受了
+    #: 这次请求。这种失败绝不能被当成"动作没执行"，也不能被普通 ``resume()`` 重发。
+    ambiguous: bool = False
 
     @property
     def detached(self) -> bool:
@@ -513,6 +518,19 @@ class TaskRuntime:
             # 若不在这里补验证，下一段就会在**没有上一段到达证据**的情况下开始走。
             if not await self._ensure_legs_verified(record, before_step=step):
                 return record
+            if step.dispatch_unresolved:
+                # Phase 7F.4：这一步的**派发结果未知**（已落盘意图但无法确认外部是否接受）
+                # -> 绝不重新派发（fail-closed）。这是最后一道防线：即使有人绕过
+                # recover()/resume() 的守卫直接 drive()，也不可能把同一个动作再发一次。
+                await self._pause_ambiguous_dispatch(
+                    record,
+                    step,
+                    message=(
+                        "这一步的外部动作结果未知（可能已经执行），已安全停下；"
+                        f"请人工核对关联键 {step.dispatch_key or '-'} 后再决定，绝不自动重发"
+                    ),
+                )
+                return record
             if record.state is not TaskState.RUNNING:
                 await self._enter(record, TaskState.RUNNING)
             outcome = await self._run_step(record, step)
@@ -609,6 +627,22 @@ class TaskRuntime:
         while attempt < attempts_allowed:
             attempt += 1
             step.attempts = attempt
+            # Phase 7F.4：**先把派发意图落盘，再调用工具**。外部副作用一旦真的发生，
+            # 崩溃之后至少能知道"这一次派发可能已经发生"；否则持久化记录里那一步还是
+            # PENDING、action_id 为空，恢复时就会把它当成"没执行"而重新派发（旧缺口）。
+            # 代次 +1 且来自持久化记录，所以重启**不会**凭空产生一个新的键。
+            # 新一次尝试 = 全新关联：清掉上一次的 action 关联与结果，避免审计里出现
+            # "这一次派发"却带着"上一次的 action_id"（真实 action_id 关联必须是真关联）。
+            step.action_id = ""
+            step.status = ""
+            step.result = {}
+            step.dispatch_generation += 1
+            step.dispatch_key = dispatch_key_of(
+                record.task_id, record.plan_hash, step.step_id, step.dispatch_generation
+            )
+            step.dispatch_state = DispatchState.INTENT.value
+            step.dispatch_at = self._clock()
+            await self._save(record, event=TASK_STEP_STARTED, step_id=step.step_id)
             invocation = await self._invoke_step(record, step, grant)
             if invocation.ok:
                 break
@@ -629,6 +663,8 @@ class TaskRuntime:
     async def _settle(self, record: TaskRecord, step: TaskStep, invocation: TaskInvocation) -> str:
         if invocation.detached:
             step.state = StepState.WAITING_ACTION
+            # Phase 7F.4：外部**已接受**，action_id 已知 -> ACCEPTED（等真实终态）。
+            step.dispatch_state = DispatchState.ACCEPTED.value
             step.action_id = invocation.action_id
             step.status = invocation.status
             step.summary = invocation.summary or step.summary
@@ -641,6 +677,8 @@ class TaskRuntime:
 
         if invocation.ok:
             step.state = StepState.SUCCEEDED
+            # 同步完成 = 外部终态已知 -> SETTLED。
+            step.dispatch_state = DispatchState.SETTLED.value
             step.status = invocation.status or "SUCCEEDED"
             step.result = dict(invocation.result)
             step.summary = invocation.summary or step.summary
@@ -648,7 +686,22 @@ class TaskRuntime:
             await self._save(record, event=TASK_STEP_SUCCEEDED, step_id=step.step_id)
             return "continue"
 
+        if invocation.ambiguous:
+            # Phase 7F.4：**响应丢失** —— 外部 runtime 可能已经接受了这次请求。
+            # 绝不记成普通动作失败（那会让 resume() 把它当成"失败过、可以重试"再发一次），
+            # 而是 fail-closed：受控暂停 + 清授权 + 要求人工核对。
+            await self._pause_ambiguous_dispatch(
+                record,
+                step,
+                message=(
+                    f"调用 {step.tool} 没有拿到 runtime 的答复：无法确认它是否已接受这次动作"
+                    f"（关联键 {step.dispatch_key or '-'}）。为安全起见不重新派发，请人工核对。"
+                ),
+            )
+            return "stop"
         step.state = StepState.FAILED
+        # 拿到了 runtime 的明确答复（失败原因来自它）-> 外部终态已知 -> SETTLED。
+        step.dispatch_state = DispatchState.SETTLED.value
         step.status = invocation.status or "FAILED"
         step.error = invocation.error
         failure = classify_failure(invocation.code, event=invocation.status)
@@ -686,8 +739,13 @@ class TaskRuntime:
         except Exception as exc:  # noqa: BLE001 - 编排层绝不把异常抛给调用方
             if self._log is not None:
                 self._log.exception("[Task] step invocation crashed tool=%s", step.tool)
+            # 没拿到答复 = **可能已经被接受** -> 标成歧义，交给 fail-closed 分支处理。
+            # 这里绝不猜"没执行"：猜错就是重复的世界动作。
             return TaskInvocation(
-                ok=False, error=f"调用 {step.tool} 失败：{exc}", code="task.internal"
+                ok=False,
+                error=f"调用 {step.tool} 失败：{exc}",
+                code="task.internal",
+                ambiguous=True,
             )
 
     def _retryable(self, invocation: TaskInvocation) -> bool:
@@ -719,6 +777,55 @@ class TaskRuntime:
         record.failure = failure.value
         record.failed_step = step.step_id
         record.message = step.message[:400]
+        await self._save(record, event=TASK_PAUSED, step_id=step.step_id)
+
+    async def _pause_ambiguous_dispatch(
+        self, record: TaskRecord, step: TaskStep, *, message: str
+    ) -> None:
+        """派发结果**未知** -> 受控暂停 + 人工介入（Phase 7F.4）。
+
+        绝不做两件事：猜「它没执行」、或者重新派发同一个动作。做法是：
+
+        * 这一步标成 FAILED，失败分类是 DISPATCH_AMBIGUOUS（**不是**普通动作失败，
+          所以不会被当成「失败过、可以重试」）；
+        * 派发状态标成 AMBIGUOUS（resume() 与 drive() 都会因此拒绝重发）；
+        * **清掉授权**并置 replan_required：想再动世界就必须有新计划 + 新确认 ——
+          这正是「受控暂停 + 人工介入」，而不是让一次 resume 把动作再发一遍；
+        * 写进 record.recovery，这样重复恢复扫描不会覆盖掉这个分类（幂等）。
+
+        注意：这**不是** exactly-once。外部动作有没有真的发生，本阶段无法证明；
+        能保证的只是**不会因为恢复而再发一次**。
+        """
+        step.state = StepState.FAILED
+        step.dispatch_state = DispatchState.AMBIGUOUS.value
+        step.failure = TaskFailure.DISPATCH_AMBIGUOUS.value
+        step.message = message[:400]
+        record.authorization = None
+        record.replan_required = True
+        record.replan_reason = TaskFailure.DISPATCH_AMBIGUOUS.value
+        record.state = TaskState.PAUSED
+        record.failure = TaskFailure.DISPATCH_AMBIGUOUS.value
+        record.failed_step = step.step_id
+        record.message = message[:400]
+        record.pending_action_id = ""
+        record.pending_step_id = ""
+        record.recovery = {
+            "reason": TaskFailure.DISPATCH_AMBIGUOUS.value,
+            "outcome": ReconcileOutcome.UNKNOWN.value,
+            "at": self._clock(),
+            "detail": {
+                "dispatch_key": step.dispatch_key,
+                "dispatch_generation": step.dispatch_generation,
+                "step_id": step.step_id,
+            },
+            "message": message[:400],
+        }
+        # 受控暂停要**真的停下来**：外部动作可能还在跑（这正是「无法确认」的含义），
+        # 所以用既有的 SAFE 控制面尽力停掉它。停不掉也不改变这里的 fail-closed 结论，
+        # 更不会因此重新派发任何动作（_stop_action 自己吞异常、不改任务终态）。
+        await self._stop_action()
+        await self._publish(TASK_STEP_FAILED, self._event_payload(record, step))
+        await self._publish(TASK_PAUSED, self._event_payload(record, step))
         await self._save(record, event=TASK_PAUSED, step_id=step.step_id)
 
     # ------------------------------------------- Phase 5A.1：重规划 / 到期 / 恢复
@@ -951,6 +1058,31 @@ class TaskRuntime:
                 record.authorization = None
                 record.replan_required = True
                 record.replan_reason = ReplanReason.RUNTIME_RESTART.value
+        # Phase 7F.4：**没有 pending_action_id，但某一步的派发意图已经落盘** —— 说明崩溃
+        # 发生在"runtime 可能已接受请求"与"写回 action_id"之间。旧实现只看 pending_*，
+        # 于是把这种情况当成"什么都没发生过"：授权仍然有效、replan_required 仍是 False，
+        # 一次 resume() 就能把同一个动作再发一遍。这里改成 fail-closed。
+        unresolved_step = next((item for item in record.steps if item.dispatch_unresolved), None)
+        if unresolved_step is not None and not (
+            record.recovery and record.state in {TaskState.PAUSED, TaskState.REPLANNING}
+        ):
+            await self._pause_ambiguous_dispatch(
+                record,
+                unresolved_step,
+                message=(
+                    "进程在上一次动作派发期间退出：无法确认外部 runtime 是否已经接受了这次动作"
+                    f"（关联键 {unresolved_step.dispatch_key or '-'}）。"
+                    "为了不重复世界动作，这里不重新派发 —— 请人工核对后再决定。"
+                ),
+            )
+            await self._publish(TASK_RECOVERED, self._event_payload(record, unresolved_step))
+            await self._save(
+                record,
+                event=TASK_RECOVERED,
+                step_id=unresolved_step.step_id,
+                detail="recovery reason=dispatch_ambiguous",
+            )
+            return record
         if (
             not pending
             and record.recovery
@@ -1093,6 +1225,9 @@ class TaskRuntime:
         terminal = str(event).rsplit(".", 1)[-1]
         step.finished_at = self._clock()
         step.status = status or terminal.upper()
+        # Phase 7F.4：外部终态已由事件确认 -> 派发状态收敛为 SETTLED（审计一致性）。
+        # 不设这一句，这一步会永远停在 ACCEPTED，人工核对时看不出它其实已经结束了。
+        step.dispatch_state = DispatchState.SETTLED.value
         step.result = dict(result or {})
         target.pending_action_id = ""
         target.pending_step_id = ""
@@ -1192,6 +1327,17 @@ class TaskRuntime:
             raise TaskAuthorizationError(
                 "任务需要重新规划（旧动作已失效或世界已变化），请先确认新计划",
                 code="task.replan_required",
+            )
+        # Phase 7F.4：外部派发结果**未知**的步骤绝不能靠 resume() 重发。
+        # 语义上必须区分两件事：
+        #   * "崩溃后恢复同一次未决派发" -> 拒绝（下面这条，fail-closed）；
+        #   * "原动作已经明确终止、用户显式恢复该步骤" -> 仍走既有语义（dispatch_state
+        #     已是 SETTLED / ACCEPTED，不会被这条拦住）。
+        unresolved = [item for item in record.steps if item.dispatch_unresolved]
+        if unresolved:
+            raise TaskAuthorizationError(
+                "上一次动作派发的结果未知（外部可能已经执行），必须先由人核对，这里不会重新派发",
+                code="task.dispatch_unresolved",
             )
         # 5A.1 §十七/§十九：比"授权还新不新"更要紧的是"那一步的世界动作还算不算数"。
         # 先判旧动作（只有真的没有在等事件时才算旧），再判授权。
@@ -1782,6 +1928,10 @@ class TaskRuntime:
                         "risk": item.risk,
                         "state": item.state.value,
                         "label": (self._label_of or (lambda s: s.tool))(item),
+                        # Phase 7F.4：派发状态对外可见（人工核对歧义时要知道关联键）
+                        "dispatch_state": item.dispatch_state,
+                        "dispatch_generation": item.dispatch_generation,
+                        "dispatch_key": item.dispatch_key,
                     }
                     for item in record.plan.steps
                 ],

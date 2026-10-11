@@ -1,5 +1,36 @@
 # Changelog
 
+## Minecraft Phase 7F.4 — Action Dispatch & Recovery Safety（派发与恢复安全）
+
+* **目标**：修掉"外部 runtime 已经接受动作、但本地还没持久化 `action_id`"造成的恢复歧义。
+  **不新增 Minecraft 能力、不扩大权限** —— 这是恢复可靠性阶段。
+* **缺口（改动前，两处独立）**：① 派发是"先调用、后落盘"（`_run_step` 把步骤标 RUNNING 只写内存、
+  `TASK_STEP_STARTED` 只 publish 不 save，然后才调用外部工具），而 `recover()` 判断"曾经派发过"的
+  唯一依据是 `pending_action_id/pending_step_id` —— 崩溃在 `_settle` 落盘之前时它既不置 `replan_required`
+  也不清授权，`resume()` 的三个守卫全部不成立 → **会重新派发同一个动作**；② 传输层失败
+  （`runtime.unreachable` / `runtime.bad_response`）被工具层转成**普通失败结果**，于是 `resume()` 同样能重发。
+* **修复**：
+  * **派发前落盘意图**：每次真实派发尝试之前先写 `dispatch_state=INTENT` + 代次 + 关联键并 `_save`。
+    因此"磁盘上没有意图"就**证明**外部没被调用（可安全重试），而"有意图但没有 action_id"
+    **无法区分**"没发出"与"发出了没答复" → 一律 fail-closed；
+  * **四态派发状态机**（`DispatchState`）：`INTENT` / `ACCEPTED` / `AMBIGUOUS` / `SETTLED`。歧义时 →
+    **受控暂停 + 清授权 + 置 `replan_required` + 尽力用既有 SAFE 控制面真停**，并把关联键写进消息供人工核对；
+  * **三重守卫**：`recover()`（未决派发一律 fail-closed，分类写进 `record.recovery` 保证幂等）、
+    `resume()`（拒绝未决派发，区分"崩溃后恢复同一次派发"与"动作明确终止后用户显式恢复"）、
+    `drive()`（最后一道防线，直接驱动也不能重发）；
+  * **稳定关联键 + 持久化代次**：`dispatch_key_of(task_id, plan_hash, step_id, generation)`；同代次同键、
+    新代次新键、**重启不改键**；新一次派发会清掉上一次的 action 关联，保证审计里的 `action_id` 是真关联。
+* **能力限制（如实记录）**：Minecraft runtime **不支持**客户端幂等键、**不支持**按键查询、`action_id` 是
+  进程内计数器、注册表纯内存且重启即丢、无任何去重/重放保护。因此本阶段采用 **fail-closed 歧义处理**，
+  并**明确不宣称 exactly-once**：能保证的只是"绝不因为恢复而再派发一次"。
+* **测试**：新增 `tests/test_action_dispatch_safety.py` **19 项**故障注入，覆盖任务书要求的 10 个崩溃时点；
+  断言的是**外部世界动作真实启动次数**、`action_id`/关联键/代次、**从 store 读回的持久化状态**与最终世界
+  动作数（不是只看函数返回值或终态枚举）。全量 `pytest tests -q` **3779 passed**（基线 3760 + 19）。
+* **真实 Java 门禁**：单段 positive/blocked/cancel、Phase 7F.2 反馈回归、多段正向/途中失败/**取消**
+  （新增段落）全部 PASS；多段实测用满 23.8/24 格预算、逐段真坐标证据 3/3 verified。
+* **边界**：19 工具 / `ACTION_RISK` / `allow_medium=false` / 两道确认门 / 多段 ≤3 段与 24 格预算 /
+  `explore_legs=1` 默认值 **全部未改**；未引入无界重试；**无新表、无新迁移**（最高仍 36）。
+
 ## Minecraft Phase 7F.3 — Bounded Multi-leg Exploration（有界多段探索）
 
 * **目标**：在 7F.1 单段探索之上实现第一个**有界多段**闭环 —— 沿一条预先冻结、长度有上限的路线
