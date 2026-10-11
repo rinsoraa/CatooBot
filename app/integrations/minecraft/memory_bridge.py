@@ -43,6 +43,13 @@ from app.memory.minecraft import (
     MinecraftMemoryStore,
     MinecraftMemoryWriter,
 )
+from app.tasks.exploration import (
+    ExplorationResult,
+    arrival_fact,
+    exploration_facts,
+    exploration_outcome,
+    is_exploration_task,
+)
 from app.tasks.models import StepState
 from app.tasks.skill_learning import DIG_TOOL, self_dig_confirmed
 
@@ -294,10 +301,14 @@ class MinecraftMemoryBridge:
             )
 
     async def on_task_finished(self, record: Any) -> None:
-        """TaskRuntime 收尾 → 一条任务经验（§三十一/§三十二）。"""
+        """TaskRuntime 收尾 → 一条任务经验（§三十一/§三十二）。
+
+        Phase 7F.2：有界探索的终态**先**投影成结构化结果（真实到达复核 + 可信新事实），
+        再写任务经验；否则重放时经验会先于事实落库，来源对不上。
+        """
         server_id = self.server_id()
         state = str(getattr(getattr(record, "state", None), "value", "") or "")
-        if not server_id or state not in {"SUCCEEDED", "FAILED", "EXPIRED"}:
+        if not server_id or state not in {"SUCCEEDED", "FAILED", "EXPIRED", "CANCELLED"}:
             return
         gained: dict[str, Any] = {}
         verification = getattr(record, "verification", None) or {}
@@ -305,6 +316,11 @@ class MinecraftMemoryBridge:
             verification.get("inventory_delta"), Mapping
         ):
             gained = {str(k): v for k, v in verification["inventory_delta"].items()}
+        # Phase 7F.2：只有带 position_within 后置条件的有界探索才走结构化投影；
+        # 其它任务保持原样（绝不把"过来"这类移动任务当成探索）。
+        exploration: ExplorationResult | None = None
+        if is_exploration_task(record):
+            exploration = await self._project_exploration(server_id, record)
         await self.writer.task_finished(
             server_id=server_id,
             objective=str(getattr(record, "objective", "") or ""),
@@ -315,9 +331,37 @@ class MinecraftMemoryBridge:
             position=self._task_position(record),
             gained=gained,
             reason=str(getattr(record, "message", "") or "")[:60],
+            title=exploration.title if exploration is not None else "",
+            extra=(
+                {"exploration_outcome": exploration.outcome.value}
+                if exploration is not None
+                else None
+            ),
         )
         if state == "SUCCEEDED":
             await self._remember_task_target(server_id, record)
+
+    async def _project_exploration(self, server_id: str, record: Any) -> ExplorationResult:
+        """把探索终态投影成结构化结果，并把**有证据**的经历/新事实写回记忆。
+
+        幂等：``store.remember`` 按 ``dedupe_key`` 强化同一条，不新增重复行 ——
+        重复终态事件、事件重放、进程重启都不会造成重复事实或重复意图。
+
+        写入顺序：
+          1. 到达经历（EVENT，``actionable=False``）——普通到达只是"去过"，不引导
+             "继续探索"；
+          2. 执行期 SAFE 观察到的新兴趣点（LOCATION，``actionable=True``）——只有
+             到达经运行时独立复核、且观察来自本任务成功的 SAFE 步骤才会产生。
+
+        没有到达复核 / 没有可确认观察 → 只投影结果，绝不编造新事实。
+        """
+        new_facts = exploration_facts(record, server_id=server_id)
+        arrival = arrival_fact(record, server_id=server_id)
+        if arrival is not None:
+            await self.store.remember(arrival)
+        for fact in new_facts:
+            await self.store.remember(fact)
+        return exploration_outcome(record, new_facts=new_facts)
 
     async def _remember_task_target(self, server_id: str, record: Any) -> None:
         """任务成功时，把她**亲手挖掉的**那些格子记成世界事实（§三十：重要的世界事实）。

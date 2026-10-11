@@ -44,8 +44,9 @@ class TestExplorePlanning:
         assert result.plan is not None
         steps = result.plan.plan.steps
         tools = [step.tool for step in steps]
-        # 第一版只用 SAFE + LOW：观察型移动 + 抬头看一眼，没有任何世界修改
-        assert tools == ["minecraft_move_to", "minecraft_look_at"]
+        # 第一版只用 SAFE + LOW：观察型移动 + 抬头看一眼 + 到达后一次 SAFE 观察，
+        # 没有任何世界修改（Phase 7F.2 的 step_3 minecraft_world）。
+        assert tools == ["minecraft_move_to", "minecraft_look_at", "minecraft_world"]
         assert all(step.risk in {"SAFE", "LOW"} for step in steps)
         assert not any(step.risk in {"MEDIUM", "HIGH", "DESTRUCTIVE"} for step in steps)
         expected = result.plan.plan.expected_final_state
@@ -132,7 +133,11 @@ class TestExploreGates:
             plan_id=plan.plan_id, user_id="10001", session_id="private:10001"
         )
         assert out["action"] == "approved"
-        assert rig.runtime.created[-1]["steps"] == ["minecraft_move_to", "minecraft_look_at"]
+        assert rig.runtime.created[-1]["steps"] == [
+            "minecraft_move_to",
+            "minecraft_look_at",
+            "minecraft_world",
+        ]
         # 第二道门：任务停在 PENDING_CONFIRMATION，没有真正执行
         assert str(out["record"].state.value) == "PENDING_CONFIRMATION"
 
@@ -150,7 +155,7 @@ class TestExploreServiceRoutes:
     def test_every_explore_step_tool_has_a_service_route(self) -> None:
         from app.integrations.minecraft.task_adapter import _SERVICE_ROUTES
 
-        for tool in ("minecraft_move_to", "minecraft_look_at"):
+        for tool in ("minecraft_move_to", "minecraft_look_at", "minecraft_world"):
             assert tool in _SERVICE_ROUTES, f"{tool} 没有服务路由，真实执行会失败"
 
     def test_look_at_route_calls_service_look_at(self) -> None:

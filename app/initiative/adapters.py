@@ -32,26 +32,48 @@ from app.initiative.candidates import (
 RECENT_ACTIVITY_LIMIT = 6
 #: 记忆只读这么几条（bounded；§六十三 不许全量扫描）
 MEMORY_SCAN_LIMIT = 5
+#: Phase 7F.2：显式再取几个"关注域"（有界）——探索回流写在 minecraft scope，通用窗口会挤掉它
+MEMORY_SCOPE_FANOUT = 2
+#: 每个关注域最多取几条（仍然 bounded）
+MEMORY_SCOPE_LIMIT = 2
 #: 群里最多看几个话题
 SOCIAL_GROUP_LIMIT = 3
 
 
-def _memory_domain(item: Any, scope: str) -> str:
-    """记忆的域：先看 provenance 里的 ``domain``，再退回作用域后缀（``:minecraft``）。"""
+def _memory_provenance(item: Any) -> dict[str, Any]:
+    """记忆的结构化 provenance（JSON 文本或 dict 都接受；坏数据 → 空 dict，绝不猜）。"""
     raw = getattr(item, "provenance", None)
     if isinstance(raw, str) and raw:
         try:
             payload = json.loads(raw)
-            if isinstance(payload, dict):
-                domain = str(payload.get("domain") or "")
-                if domain:
-                    return domain
         except (TypeError, ValueError):
-            pass
-    elif isinstance(raw, dict):
-        domain = str(raw.get("domain") or "")
-        if domain:
-            return domain
+            return {}
+        return dict(payload) if isinstance(payload, dict) else {}
+    if isinstance(raw, dict):
+        return dict(raw)
+    return {}
+
+
+def _memory_evidence(item: Any) -> tuple[bool, str]:
+    """Phase 7F.2：探索结果的结构化标记（``(actionable, exploration_outcome)``）。
+
+    只读桥写回时 ``provenance`` 里的标记 —— 这是"这条记忆来自一次经过验证的探索结果"的
+    结构化证据，比正文关键词可靠。缺字段一律 ``(False, "")``。
+    """
+    payload = _memory_provenance(item)
+    if not payload:
+        return False, ""
+    actionable = payload.get("actionable") is True
+    outcome = str(payload.get("exploration_outcome") or "")
+    return actionable, outcome
+
+
+def _memory_domain(item: Any, scope: str) -> str:
+    """记忆的域：先看 provenance 里的 ``domain``，再退回作用域后缀（``:minecraft``）。"""
+    payload = _memory_provenance(item)
+    domain = str(payload.get("domain") or "")
+    if domain:
+        return domain
     tail = str(scope or "").rsplit(":", 1)[-1].strip().lower()
     return tail if tail in {"minecraft", "mc"} else ""
 
@@ -74,6 +96,7 @@ class InitiativeContextAdapter:
         state_provider: Any = None,
         task_states_provider: Any = None,
         routine_table: Any = None,
+        minecraft_memory_scopes: tuple[str, ...] = (),
         logger: Any = None,
     ) -> None:
         self.character_id = str(character_id or "")
@@ -88,6 +111,10 @@ class InitiativeContextAdapter:
         self.state_provider = state_provider
         self.task_states_provider = task_states_provider
         self.routine_table = dict(routine_table or {})
+        #: 关注域 scope（例如 ``character:<角色>:minecraft``）：只读、bounded，绝不能为空
+        self.minecraft_memory_scopes = tuple(
+            str(scope) for scope in minecraft_memory_scopes if str(scope or "").strip()
+        )
         self._log = logger
 
     # ------------------------------------------------------------ 主入口
@@ -261,21 +288,40 @@ class InitiativeContextAdapter:
         ★真机教训：``MemoryManager.list_memories`` 是 **async**（返回协程），
         所以这里必须走 async-aware 的读取器 —— 用同步版本会拿到一个协程对象。
         """
-        rows = await self._call(self.memory, "list_memories", limit=MEMORY_SCAN_LIMIT)
+        # Phase 7F.2：先取关注域（探索回流写的 minecraft scope），再补通用窗口 ——
+        # 保证经过验证的探索经历总能在候选生成里被"看见"（仍然只是候选，绝不跳过门禁）。
+        rows: list[Any] = []
+        for scope in self.minecraft_memory_scopes[:MEMORY_SCOPE_FANOUT]:
+            scoped = await self._call(
+                self.memory, "list_memories", scope_key=scope, limit=MEMORY_SCOPE_LIMIT
+            )
+            rows.extend(list(scoped or ()))
+        general = await self._call(self.memory, "list_memories", limit=MEMORY_SCAN_LIMIT)
+        rows.extend(list(general or ()))
         out: list[MemorySignal] = []
-        for item in list(rows or ())[:MAX_MEMORY_SIGNALS]:
+        seen: set[str] = set()
+        for item in rows:
             text = str(getattr(item, "content", "") or getattr(item, "display_text", "") or "")
             if not text:
                 continue
+            identity = str(getattr(item, "id", "") or text)
+            if identity in seen:
+                continue
+            seen.add(identity)
             scope = str(getattr(item, "scope_key", "") or "")
+            actionable, exploration_outcome = _memory_evidence(item)
             out.append(
                 MemorySignal(
                     text=text,
                     domain=_memory_domain(item, scope),
                     scope=scope,
                     importance=float(getattr(item, "importance", 0.5) or 0.5),
+                    actionable=actionable,
+                    exploration_outcome=exploration_outcome,
                 )
             )
+            if len(out) >= MAX_MEMORY_SIGNALS:
+                break
         return tuple(out)
 
     async def _social_topics(self) -> tuple[str, ...]:

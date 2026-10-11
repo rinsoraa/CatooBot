@@ -79,6 +79,7 @@ _PROVENANCE_RESERVED = frozenset(
         "plan_version",
         "initiator",
         "outcome",
+        "title",
     }
 )
 
@@ -339,6 +340,7 @@ class MinecraftMemoryStore:
                 plan_version=int(provenance.get("plan_version") or 0),
                 initiator=str(provenance.get("initiator") or ""),
                 outcome=str(provenance.get("outcome") or ""),
+                title=str(provenance.get("title") or ""),
                 observation_count=int(provenance.get("observation_count") or 1),
                 # 域内附加标记（untrusted_directive / grants_permission / temporary …）
                 # 是**语义的一部分**，重新读回来时必须一起还原（否则降级/不可信标记会丢）

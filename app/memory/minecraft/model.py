@@ -182,6 +182,8 @@ class MinecraftMemoryFact:
     plan_version: int = 0
     initiator: str = ""
     outcome: str = ""
+    #: Phase 7F.2：这条事实对应的探索任务标题（来源可追溯；空 = 普通任务/观察）
+    title: str = ""
     observation_count: int = 1
     extra: dict[str, Any] = field(default_factory=dict)
 
@@ -255,6 +257,8 @@ class MinecraftMemoryFact:
             payload["plan_version"] = int(self.plan_version or 0)
             payload["initiator"] = self.initiator
             payload["outcome"] = self.outcome
+        if self.title:
+            payload["title"] = self.title
         if self.directive:
             # §四十一/§四十二：明确标成"不可信语境"，永远不能被当成指令
             payload["untrusted_directive"] = True
@@ -291,6 +295,7 @@ class MinecraftMemoryFact:
             "plan_version": self.plan_version,
             "initiator": self.initiator,
             "outcome": self.outcome,
+            "title": self.title,
             "observation_count": self.observation_count,
             "extra": dict(self.extra),
         }
@@ -316,6 +321,7 @@ class MinecraftMemoryFact:
             plan_version=int(payload.get("plan_version") or 0),
             initiator=str(payload.get("initiator") or ""),
             outcome=str(payload.get("outcome") or ""),
+            title=str(payload.get("title") or ""),
             observation_count=int(payload.get("observation_count") or 1),
             extra=dict(payload.get("extra") or {}),
         )

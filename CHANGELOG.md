@@ -1,5 +1,54 @@
 # Changelog
 
+## Minecraft Phase 7F.2 — Exploration Continuity & LifeIntent Feedback（探索连续性与生活意图反馈）
+
+* **目标**：把 Phase 7F.1 的**真实探索结果**接成**可信、可追溯、fail-closed** 的反馈闭环 ——
+  真实终态 → 结构化探索结果投影 → 真实记忆桥回流（经历 + **有证据**的新事实）→
+  既有 InitiativeGate / 候选生成 → LifeIntent → TaskProposal → AgentPlan → 两道门（批准 / 确认）。
+  没有独立验证过的事实，**绝不**生成"继续探索"意图；批准前不建任何 Task，批准后也只停在**第二道确认门**。
+  **反馈链绝不自行获得执行权限。**
+* **结构化探索结果（`app/tasks/exploration.py`）**：`ExplorationOutcome`（`ARRIVED_VERIFIED` /
+  `ARRIVED_NO_NEW_FACT` / `NEW_FACTS_VERIFIED` / `BLOCKED` / `CANCELLED_OR_INTERRUPTED`）+ 纯函数
+  `exploration_outcome(record, new_facts=...)`：**只有** `SUCCEEDED` 且 `verification.{checked,ok,position_within}`
+  三者齐备才算"已确认到达"；缺失 → `CANCELLED_OR_INTERRUPTED`（**绝不**把动作返回成功 / 计划批准 /
+  任务建立当成到达）。`is_exploration_task` 按**结构**判定（`expected_final_state.position_within` 存在），
+  `MAX_NEW_FACTS = 5` 对新事实封顶；到达事实与有证据的新事实分别带 `extra.actionable=False/True`。
+* **记忆桥探索投影（`app/integrations/minecraft/memory_bridge.py`）**：`on_task_finished` 新增
+  `_project_exploration` —— 到达写一条 `EVENT` 经历（`actionable=False`，只是"她走到过这里"），
+  每条**有证据的新事实**写一条 `LOCATION` 事实（`actionable=True` + `exploration_outcome`），
+  复用现有 store 去重（同一终态重复发布不重复写）。**不新增第二套记忆系统。**
+* **候选消费（`app/initiative/candidates.py`）**：`MemorySignal` 增加 `actionable` / `exploration_outcome`；
+  `_memory_intents` 的确定性优先级 = **actionable 探索事实**（→ 探索形状 `MINECRAFT_INTEREST`，
+  语义键 `explore_fact`、标签含 `exploration_feedback`）→ explore 形状记忆 → 关键词 `EXPLORATION`。
+  `actionable=False` 的到达经历被明确跳过（普通到达不反复生成"继续探索"意图）。冷却 / 频率上限 /
+  指纹去重 / 恢复静默期等既有抑制规则一字未改，`InitiativeGate` 不可绕过。
+* **候选上下文作用域（`app/initiative/adapters.py`）**：`MEMORY_SCOPE_FANOUT = 2` / `MEMORY_SCOPE_LIMIT = 2`，
+  `_memories` 改为**作用域优先**，新增 `_memory_provenance` / `_memory_evidence` / `_memory_domain`：
+  只有带真实来源、时间、服务器范围与依据的记忆，才可作为意图证据。
+* **探索计划模板（`app/tasks/planner.py`）**：`plan_exploration_task` 第三步定为 `minecraft_world`（SAFE），
+  计划 = `['minecraft_move_to', 'minecraft_look_at', 'minecraft_world']`（仍是只读 + 移动，**不挖 / 放 /
+  攻击 / 合成 / 开容器**）。
+* **接线（`app/core/bot.py`）**：把 Minecraft 记忆作用域 `minecraft_memory_scopes=(mc_scope,)` 传入
+  Initiative 上下文适配器，让探索记忆真正参与候选生成（仅作用域透传，**无新执行入口**）。
+* **安全边界（一字未松）**：`allow_medium=false`、19 工具、`ACTION_RISK`、两道门、身份校验、
+  `TaskAuthorization` / `TaskStepAuthorization`、pause/resume/cancel/expire **全部不变**；
+  反馈链没有绕过 Policy、确认门或停止机制的任何路径。
+* **测试**：新增 `tests/test_exploration_feedback.py`（约 30 项，覆盖任务书 §五 1–10：到达无新事实不重复意图 /
+  有证据新事实入管线 / 不可达无正向事实 / 取消超时无虚假成功 / 缺失离线陈旧矛盾不晋升 / 重复终态与重放幂等 /
+  LifeIntent→Proposal→Plan 可追溯 / 未批准未确认不执行 / 新候选进入生活规划且旧虚拟活动规则不变 /
+  InMemory 与 SQLite 一致）。全量 **`3638 passed`**（基线 3608 + 30）。
+* **门禁**：ruff / format / mypy（336 files）/ 全量 pytest 全绿；WebUI typecheck + Vitest（528）+ build +
+  Playwright E2E（7）全绿；`minecraft_runtime npm test` 全绿；迁移演练 v36→v36 **幂等**、无新表、`lost_rows {}`。
+* **真实 Java 服务器门禁 —— PASS**（`scripts/feedback_smoke_real.py`，Fabric 1.21.1，offline `Catodayo`）：
+  一次真机探索 → `SUCCEEDED` + `verification.ok=True` → 真记忆桥写入 3 条（1 条 actionable `LOCATION`
+  新事实 + 1 条 `EVENT` 到达 + 1 条 `TASK`）→ `NEW_FACTS_VERIFIED` → 真候选生成 1 条带
+  `exploration_feedback` 的 `MINECRAFT_INTEREST` → 真 `TaskProposal`（`created`，来源 LIFE）→ 真
+  `AgentPlan`（`READY_FOR_APPROVAL`，规划阶段 active 未变）→ 批准后停在 **`PENDING_CONFIRMATION`**
+  且角色**零真实动作**。（同轮 `explore_smoke_real.py --sections all` 回归 positive / blocked 安全 PAUSED /
+  cancel 真停，全 PASS。）
+* **范围**：**无新表、无新迁移**（最高仍 **36**）；19 工具 / `ACTION_RISK` / `allow_medium` /
+  确认·授权·取消·暂停·超时语义不变；未触碰 `.env` / 密钥 / Character Bible / 敏感配置。
+  残余限制：探索仍是**确定性单段**闭环，不含多段 / 无界路线或世界修改；新事实质量受感知层事实质量约束。
 ## Minecraft Phase 7F.1 — Bounded Autonomous Exploration（有界自主探索）
 
 * **目标**：建立**最小完整**的自主游玩闭环 ——

@@ -74,11 +74,14 @@ class MinecraftMemoryWriter:
         position: Any = None,
         gained: dict[str, Any] | None = None,
         reason: str = "",
+        title: str = "",
+        extra: dict[str, Any] | None = None,
     ) -> MinecraftMemoryFact | None:
         """任务收尾 → 一条经验（只留语义摘要，绝不留审计细节）。"""
         clean_objective = str(objective or "").strip()[:80]
         if not server_id or not clean_objective:
             return None
+        clean_title = str(title or "").strip()[:80]
         state = str(outcome or "").upper()
         verb = TASK_OUTCOME_TEXT.get(state, "做过")
         place = _place(position)
@@ -102,10 +105,12 @@ class MinecraftMemoryWriter:
                 plan_version=int(plan_version or 0),
                 initiator=str(initiator or ""),
                 outcome=state,
+                title=clean_title,
                 world_revision=str(self._world_revision()),
+                extra=dict(extra or {}),
             )
             return await self._store.remember(fact)
-        if state in {"FAILED", "EXPIRED"}:
+        if state in {"FAILED", "EXPIRED", "CANCELLED"}:
             # §三十二：失败也能记，但**谨慎** —— 只当"当时的情况"，不当"永远如此"
             detail = str(reason or "").strip()[:60]
             content = (
@@ -124,8 +129,13 @@ class MinecraftMemoryWriter:
                 plan_version=int(plan_version or 0),
                 initiator=str(initiator or ""),
                 outcome=state,
+                title=clean_title,
                 fresh=Freshness.STALE,
-                extra={"temporary": True, "temporal_scope": "short_term"},
+                extra={
+                    "temporary": True,
+                    "temporal_scope": "short_term",
+                    **dict(extra or {}),
+                },
             )
             return await self._store.remember(fact)
         return None

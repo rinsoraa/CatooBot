@@ -348,12 +348,25 @@ class TestWriter:
         assert fact.extra.get("temporary") is True
         await database.close()
 
-    async def test_cancelled_task_is_not_written(self, tmp_path) -> None:
+    async def test_cancelled_task_records_a_stale_temporary_fact(self, tmp_path) -> None:
+        """Phase 7F.2 §4.5：取消/中断也要保留**真实**结果，但只能作为"当时的情况"。
+
+        既不伪装成成功，也不写正向的探索事实；写的是 STALE + temporary 的失败类经历。
+        """
         bridge, database, _manager, _service = await build_bridge(tmp_path)
         await bridge.writer.task_finished(
-            server_id=bridge.server_id(), objective="随便挖点什么", outcome="CANCELLED"
+            server_id=bridge.server_id(),
+            objective="随便挖点什么",
+            outcome="CANCELLED",
+            task_id="task_cancel_1",
         )
-        assert await bridge.store.facts(server_id=bridge.server_id()) == []
+        facts = await bridge.store.facts(server_id=bridge.server_id())
+        assert len(facts) == 1
+        fact = facts[0]
+        assert fact.outcome == "CANCELLED"
+        assert fact.fresh is Freshness.STALE
+        assert fact.extra.get("temporary") is True
+        assert "未必一直如此" in fact.content
         await database.close()
 
     async def test_relationship_is_a_fact_not_a_permission(self, tmp_path) -> None:

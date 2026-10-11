@@ -386,12 +386,17 @@ async def plan_exploration_task(
     max_distance: float = EXPLORE_DEFAULT_DISTANCE,
     arrive_radius: float = DEFAULT_ARRIVE_RADIUS,
 ) -> PlannedTask:
-    """确定性探索任务模板（Phase 7F.1 §四）：看世界 → 选有界目标 → 走过去 → 复核到达。
+    """确定性探索任务模板（Phase 7F.1 §四 / 7F.2）。
+
+    看世界 → 选有界目标 → 走过去 → 复核到达 → 再观察。
 
     只有 SAFE 观察（minecraft_world）在**规划期**执行；move_to 只是写进计划，
     等两道门（批准计划 + 确认执行）都过了才由 TaskRuntime 执行。到达与否由
     **重新读到的世界坐标**判定，绝不由动作返回值自述。第一版只用 SAFE + LOW（MOVE），
     不碰任何世界修改能力。
+
+    Phase 7F.2：到达后再跑一步 SAFE ``minecraft_world``（step_3），为记忆回流提供
+    **执行期**的真实新事实来源；没有这一步，任务只剩"我移动过"，谈不上可确认的新观察。
     """
     world_view = await _safe_observe(observe, "minecraft_world", {})
     world_result = _result_of(world_view)
@@ -432,6 +437,14 @@ async def plan_exploration_task(
                 "y": float(target["y"]) + 1.5,
                 "z": float(target["z"]),
             },
+            risk="SAFE",
+        ),
+        # Phase 7F.2：到达后做**一次**有界 SAFE 观察，让探索有真实结果可回流
+        # （只读 minecraft_world；没有它就永远只有"我移动过"，没有可确认的新事实）。
+        TaskStep(
+            step_id="step_3",
+            tool="minecraft_world",
+            arguments={},
             risk="SAFE",
         ),
     ]

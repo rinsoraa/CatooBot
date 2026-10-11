@@ -108,6 +108,11 @@ class MemorySignal:
     domain: str = ""
     scope: str = ""
     importance: float = 0.5
+    #: 结构化证据（Phase 7F.2）：这条记忆是不是一次性探索经历 / 一个可操作探索事实。
+    #: 缺省 False —— 只有桥写回、带结构化标记的探索结果才会置位，绝不靠关键词猜。
+    actionable: bool = False
+    #: 探索结果的终态（如 ``NEW_FACTS_VERIFIED``）；空串 = 不是探索结果记忆。
+    exploration_outcome: str = ""
 
 
 @dataclass(frozen=True)
@@ -343,15 +348,116 @@ def _goal_intents(context: InitiativeContext) -> Iterable[LifeIntent]:
     return out
 
 
+def _memory_text(memory: object) -> str:
+    """一条记忆的正文（MemorySignal 用 ``text``；裸字符串/对象用 ``content`` 兜底）。"""
+    value = getattr(memory, "text", None)
+    if value is None:
+        value = getattr(memory, "content", memory)
+    return str(value or "")
+
+
+def _exploration_fact(memory: object) -> bool:
+    """这条记忆是不是一个**有证据、可继续探索**的探索事实。
+
+    Phase 7F.2：只有桥写回、带结构化 ``actionable=True`` 的探索结果才置位 —— 普通任务经验、
+    普通到达事件（``actionable=False``）绝不会反复生成"继续探索"意图（§4.3）。
+    裸字符串/缺字段一律 False，绝不靠关键词把普通记忆升格成可执行事实。
+    """
+    return bool(getattr(memory, "actionable", False))
+
+
+def _has_explore_keyword(text: str) -> bool:
+    lowered = str(text or "").lower()
+    return any(keyword.lower() in lowered for keyword in EXPLORE_KEYWORDS)
+
+
+def _arrival_memory(memory: object) -> bool:
+    """这条记忆是不是一次**普通到达经历**（``actionable`` 显式为 False）。
+
+    结构化证据表明它是"到过了"而不是"新发现"，所以即便正文里有探索关键词，也不该被
+    关键词兜底升格成"继续探索"意图（§4.3）。缺省字段的普通记忆不受影响。
+    """
+    return getattr(memory, "actionable", None) is False
+
+
+def _explore_memory_intent(
+    context: InitiativeContext, text: str, *, semantic_key: str, origin: str
+) -> LifeIntent:
+    """把一次**经过验证的探索经历**投影成一条探索形状的意图。
+
+    类型仍是 ``MINECRAFT_INTEREST``（既有活动桥把它软映射到虚拟 ``building``），但标题/描述
+    带"再看看/探索"的确定性措辞，于是 ``TaskProposal → AgentPlan`` 能被 7F.1 的探索模板识别
+    （``detect_shape`` = explore）。它**只是想法** —— 仍要过 InitiativeGate 与两道授权门。
+    """
+    return _intent(
+        context,
+        intent_type=LifeIntentType.MINECRAFT_INTEREST,
+        source=InitiativeSource.MEMORY,
+        title="有点想回 Minecraft 再去看看",
+        description=f"上次探索时发现了一些新地方，想去探索看看：{_label(text, 50)}",
+        semantic_key=semantic_key,
+        origin=origin,
+        priority=_priority(0.3, relevance=0.3),
+        confidence=0.45,
+        related_memory=_label(text, 60),
+        tags=("memory", "virtual_interest", "exploration_feedback"),
+    )
+
+
 def _memory_intents(context: InitiativeContext) -> Iterable[LifeIntent]:
-    """§十七：Memory 只是**支持性上下文**（``Memory ≠ permission``）。"""
-    out: list[LifeIntent] = []
-    for memory in context.memories[:MAX_MEMORY_SIGNALS]:
-        text = str(getattr(memory, "text", memory) or "")
+    """§十七：Memory 只是**支持性上下文**（``Memory ≠ permission``）。
+
+    优先级（确定性，只取第一个命中）：
+
+    1. **可操作的探索事实**（桥写回、``actionable=True``）→ 探索形状的 Minecraft 兴趣；
+    2. 文本里明确带探索关键词的记忆 → EXPLORATION（无活动映射 = 不进入虚拟活动桥）；
+    3. 其它 Minecraft 记忆 → 普通 MINECRAFT_INTEREST。
+
+    这样一次经过验证的探索结果能真正流到 ``LifeIntent → TaskProposal → AgentPlan``，而普通
+    到达经历不会反复触发；顺序与类型都稳定可复现。
+    """
+    memories = context.memories[:MAX_MEMORY_SIGNALS]
+    for memory in memories:
+        text = _memory_text(memory)
+        domain = str(getattr(memory, "domain", "") or "")
+        if not _exploration_fact(memory):
+            continue
+        if not context.minecraft_related(text, domain=domain):
+            continue
+        return (
+            _explore_memory_intent(
+                context,
+                text,
+                semantic_key="explore_fact",
+                origin=f"memory:{(domain or 'minecraft')}:explore_fact",
+            ),
+        )
+    for memory in memories:
+        text = _memory_text(memory)
+        if _arrival_memory(memory):
+            continue
+        if _has_explore_keyword(text):
+            return (
+                _intent(
+                    context,
+                    intent_type=LifeIntentType.EXPLORATION,
+                    source=InitiativeSource.MEMORY,
+                    title="有点想去外面转转",
+                    description=f"想起：{_label(text, 50)}",
+                    semantic_key="explore_memory",
+                    origin="memory:explore",
+                    priority=_priority(0.28, relevance=0.25),
+                    confidence=0.4,
+                    related_memory=_label(text, 60),
+                    tags=("memory",),
+                ),
+            )
+    for memory in memories:
+        text = _memory_text(memory)
         domain = str(getattr(memory, "domain", "") or "")
         if not context.minecraft_related(text, domain=domain):
             continue
-        out.append(
+        return (
             _intent(
                 context,
                 intent_type=LifeIntentType.MINECRAFT_INTEREST,
@@ -364,30 +470,9 @@ def _memory_intents(context: InitiativeContext) -> Iterable[LifeIntent]:
                 confidence=0.45,
                 related_memory=_label(text, 60),
                 tags=("memory", "virtual_interest"),
-            )
+            ),
         )
-        break
-    if not out:
-        for memory in context.memories[:MAX_MEMORY_SIGNALS]:
-            text = str(getattr(memory, "text", memory) or "")
-            if any(keyword in text.lower() for keyword in EXPLORE_KEYWORDS):
-                out.append(
-                    _intent(
-                        context,
-                        intent_type=LifeIntentType.EXPLORATION,
-                        source=InitiativeSource.MEMORY,
-                        title="有点想去外面转转",
-                        description=f"想起：{_label(text, 50)}",
-                        semantic_key="explore_memory",
-                        origin="memory:explore",
-                        priority=_priority(0.28, relevance=0.25),
-                        confidence=0.4,
-                        related_memory=_label(text, 60),
-                        tags=("memory",),
-                    )
-                )
-                break
-    return out
+    return ()
 
 
 def _social_intents(context: InitiativeContext) -> Iterable[LifeIntent]:

@@ -1152,6 +1152,10 @@ class Bot:
         character_id = self._activity_character_id()
         sandbox = getattr(self, "sandbox", None)
         planner = getattr(getattr(self, "activity", None), "planner", None)
+        # Phase 7F.2：把 minecraft 记忆域 scope 交给 context 适配器（只读、bounded）。
+        # 探索回流的可信事实写在这个 scope，通用记忆窗口可能被日常记忆挤掉。
+        mc_bridge = getattr(self, "minecraft_memory", None)
+        mc_scope = str(getattr(getattr(mc_bridge, "store", None), "scope_key", "") or "")
         adapter = InitiativeContextAdapter(
             character_id=character_id,
             activity=getattr(self, "activity", None),
@@ -1165,6 +1169,7 @@ class Bot:
             state_provider=self._activity_state,
             task_states_provider=self._active_task_states,
             routine_table=getattr(planner, "routine_table", None),
+            minecraft_memory_scopes=(mc_scope,) if mc_scope else (),
             logger=self.log,
         )
         service = LifeIntentService(

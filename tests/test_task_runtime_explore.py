@@ -45,6 +45,8 @@ def explore_plan(*, x: int = 108, y: int = 64, z: int = 208, radius: float = 2.0
                 arguments={"x": float(x), "y": float(y) + 1.5, "z": float(z)},
                 risk="SAFE",
             ),
+            # Phase 7F.2：到达后再做一次 SAFE 观察（执行期新事实来源）。
+            TaskStep(step_id="step_3", tool="minecraft_world", arguments={}, risk="SAFE"),
         ],
         expected_final_state=ExpectedFinalState(
             position_within={"x": float(x), "y": float(y), "z": float(z), "radius": radius}
