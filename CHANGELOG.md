@@ -1,5 +1,31 @@
 # Changelog
 
+## Minecraft Phase 7F.2.1 — Terminal-State Invariant Hardening（探索投影终态不变量加固）
+
+* **目标**：在不改变 Phase 7F.2 正常业务行为的前提下，补牢探索结果投影的**终态约束**。
+  **核心不变量**：只有最终状态严格为 `SUCCEEDED`，且运行时独立验证证据完整
+  （`verification.checked is True`、`verification.ok is True`、`position_within` 带**实际到达坐标** x/y/z），
+  才允许探索投影写入正向 `EVENT` 到达经历或 `LOCATION` 新事实。`FAILED` / `CANCELLED` / `EXPIRED` /
+  状态未知 / 状态与证据互相矛盾的记录一律 **fail-closed**。小型防御性修复，非新增探索能力。
+* **审计发现（三处弱判定）**：`app/tasks/exploration.py` 的 `_arrived()`、`exploration_outcome()` 内联判定、
+  `arrival_fact()` 各自为政，**都不检查 `record.state`** —— 矛盾记录（如 `CANCELLED` + `checked/ok=True` +
+  成功 `world` 步）可被当成到达，进而写出 actionable `LOCATION` 新事实与 `EVENT` 到达经历。
+* **最小修复**：新增**唯一**的严格判定 `verified_arrival(record)`（`SUCCEEDED` + `verification` 映射 +
+  `checked`/`ok` 严格为 `True` + `position_within` 含实际 x/y/z），并让 `_arrived` / `_arrival_payload` /
+  `exploration_outcome` / `arrival_fact` **全部收敛**到它，删除 `arrival_fact()` 里的弱重复检查；
+  `_clean_position` 上移，`verified_arrival` 加入 `__all__`。结果分类语义（`NEW_FACTS_VERIFIED` /
+  `ARRIVED_NO_NEW_FACT` / `BLOCKED` / `CANCELLED_OR_INTERRUPTED`）一字未改。
+* **回归测试（`tests/test_exploration_feedback.py`）**：新增 `TestTerminalStateInvariant`（6 项）——
+  `CANCELLED` / `FAILED` / `EXPIRED` + 矛盾成功字段（各验证**真实记忆存储**只留 `TASK`、无 `EVENT`/`LOCATION`）/
+  `SUCCEEDED` 但缺实际到达坐标 / 正常完整验证仍写正向记忆 / 重复发布幂等。
+* **测试**：全量 **`3644 passed`**（基线 3638 + 6）。ruff / format / mypy（336 files）/ WebUI typecheck +
+  Vitest（528）+ build + Playwright E2E（7）/ `minecraft_runtime npm test` 全绿；迁移演练 v36→v36 **幂等**、
+  83 表、`integrity ok`、`lost_rows {}`。
+* **真实 Java 服务器门禁 —— PASS**（`scripts/feedback_smoke_real.py` + `scripts/explore_smoke_real.py
+  --sections all`，Fabric 1.21.1，offline `Catodayo`）：正常成功路径与 LifeIntent 反馈链通过；
+  positive（距目标 1.11 格 `SUCCEEDED`）/ blocked（安全 `PAUSED`）/ cancel（真停且不再产生动作）全部通过。
+* **安全边界（一字未松）**：19 工具 / `ACTION_RISK` / `allow_medium=false` / 两道门 / 授权 / 取消暂停超时语义
+  全部不变；**无新表、无新迁移**（最高仍 **36**）；未触碰 `.env` / 密钥 / Character Bible / 敏感配置。
 ## Minecraft Phase 7F.2 — Exploration Continuity & LifeIntent Feedback（探索连续性与生活意图反馈）
 
 * **目标**：把 Phase 7F.1 的**真实探索结果**接成**可信、可追溯、fail-closed** 的反馈闭环 ——

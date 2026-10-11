@@ -97,19 +97,9 @@ def is_exploration_task(record: Any) -> bool:
     return bool(_expected_position(record))
 
 
-def _arrived(record: Any) -> bool:
-    """运行时是否**独立复核**了到达（``verification.position_within`` 且 ok）。"""
-
-    verification = getattr(record, "verification", None) or {}
-    return bool(
-        isinstance(verification, Mapping)
-        and verification.get("checked") is True
-        and verification.get("ok") is True
-        and isinstance(verification.get("position_within"), Mapping)
-    )
-
-
 def _clean_position(value: Any) -> dict[str, float] | None:
+    """把一个位置映射规范成 ``{x, y, z}`` 浮点；缺任何一维或不可解析 → ``None``。"""
+
     if not isinstance(value, Mapping):
         return None
     try:
@@ -118,14 +108,41 @@ def _clean_position(value: Any) -> dict[str, float] | None:
         return None
 
 
-def _arrival_payload(record: Any) -> dict[str, Any]:
-    """从运行时验证结果里取出**实际到达坐标**（不是计划里的目标）。"""
+def verified_arrival(record: Any) -> dict[str, float] | None:
+    """**唯一**的已验证到达判定（fail-closed）；通过则返回**实际到达坐标** x/y/z。
 
-    verification = getattr(record, "verification", None) or {}
+    只有同时满足以下全部条件才算"已由运行时独立复核的到达"：
+
+    * ``record.state`` 规范化后**严格**等于 ``SUCCEEDED``；
+    * ``record.verification`` 是可读取的映射，且 ``checked is True``、``ok is True``；
+    * ``verification.position_within`` 是含**实际到达坐标** x/y/z 的有效映射
+      —— 绝不用计划里的目标坐标冒充实际到达。
+
+    缺失 / 类型异常 / 字段冲突 / 状态与证据互相矛盾 → ``None``。所有会把探索结果
+    提升为正向记忆（到达经历 / 新事实）的路径都必须经过这里，**不允许任何调用点
+    自行做更弱的判定**（Phase 7F.2.1 终态不变量）。
+    """
+
+    if _state_of(record) != "SUCCEEDED":
+        return None
+    verification = getattr(record, "verification", None)
     if not isinstance(verification, Mapping):
-        return {}
-    payload = verification.get("position_within")
-    return dict(payload) if isinstance(payload, Mapping) else {}
+        return None
+    if verification.get("checked") is not True or verification.get("ok") is not True:
+        return None
+    return _clean_position(verification.get("position_within"))
+
+
+def _arrived(record: Any) -> bool:
+    """运行时是否**独立复核**了到达（严格判定见 :func:`verified_arrival`）。"""
+
+    return verified_arrival(record) is not None
+
+
+def _arrival_payload(record: Any) -> dict[str, Any]:
+    """从运行时验证结果里取出**实际到达坐标**（不是计划里的目标；未验证 → 空）。"""
+
+    return dict(verified_arrival(record) or {})
 
 
 def _world_observation(record: Any) -> dict[str, Any] | None:
@@ -218,13 +235,9 @@ def exploration_outcome(record: Any, *, new_facts: Sequence[Any] = ()) -> Explor
     task_id = str(getattr(record, "task_id", "") or "")
     objective = " ".join(str(getattr(record, "objective", "") or "").split())[:200]
     state = _state_of(record)
-    verification = getattr(record, "verification", None) or {}
-    arrived = bool(
-        isinstance(verification, Mapping)
-        and verification.get("checked") is True
-        and verification.get("ok") is True
-        and isinstance(verification.get("position_within"), Mapping)
-    )
+    # Phase 7F.2.1：到达判定统一走 verified_arrival —— 只有 SUCCEEDED 且验证完整
+    # 才算是真实到达；状态与证据矛盾时 arrived=False（fail-closed）。
+    arrived = verified_arrival(record) is not None
     arrival = _arrival_payload(record)
     message = " ".join(str(getattr(record, "message", "") or "").split())[:160]
     facts = tuple(new_facts)
@@ -268,14 +281,9 @@ def arrival_fact(record: Any, *, server_id: str) -> MinecraftMemoryFact | None:
 
     if not server_id:
         return None
-    verification = getattr(record, "verification", None) or {}
-    if not (
-        isinstance(verification, Mapping)
-        and verification.get("checked") is True
-        and verification.get("ok") is True
-    ):
-        return None
-    position = _clean_position(verification.get("position_within"))
+    # Phase 7F.2.1：到达经历必须过**共享的严格判定**（终态 SUCCEEDED + 完整验证 +
+    # 实际到达坐标），不允许比 verified_arrival 更弱的重复检查。
+    position = verified_arrival(record)
     if position is None:
         return None
     task_id = str(getattr(record, "task_id", "") or "")
@@ -316,4 +324,5 @@ __all__ = [
     "exploration_facts",
     "exploration_outcome",
     "is_exploration_task",
+    "verified_arrival",
 ]

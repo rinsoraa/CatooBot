@@ -250,6 +250,118 @@ class TestCancelled:
         await database.close()
 
 
+# ---------------------------------------------------------------- 4b. 终态不变量（Phase 7F.2.1）
+
+
+class TestTerminalStateInvariant:
+    """Phase 7F.2.1：正向记忆只能在 SUCCEEDED + 完整运行时验证时落库。
+
+    终态非 SUCCEEDED 却带成功验证字段的矛盾记录必须 fail-closed：
+    既不写 EVENT 到达经历，也不写 actionable LOCATION 新事实；只保留允许的任务经历。
+    """
+
+    async def _publish(self, tmp_path, record):
+        bridge, database, _manager, _service = await build_bridge(tmp_path)
+        await bridge.on_task_finished(record)
+        facts = await bridge.store.all_facts(server_id=bridge.server_id())
+        return database, facts
+
+    @staticmethod
+    def _assert_only_task_experience(facts) -> None:
+        kinds = [fact.kind for fact in facts]
+        assert MinecraftMemoryKind.EVENT not in kinds
+        assert MinecraftMemoryKind.LOCATION not in kinds
+        assert all(fact.extra.get("actionable") is not True for fact in facts)
+        assert kinds == [MinecraftMemoryKind.TASK]
+
+    async def test_cancelled_with_contradictory_success_verification(self, tmp_path) -> None:
+        # CANCELLED 却带 checked/ok=True + 成功 world 步：矛盾的"成功证据"必须被拒绝
+        record = explore_record(
+            state=TaskState.CANCELLED,
+            checked=True,
+            ok=True,
+            steps=[world_step(pois=[_poi(116, 100)])],
+        )
+        database, facts = await self._publish(tmp_path, record)
+        self._assert_only_task_experience(facts)
+        assert facts[0].extra.get("exploration_outcome") == (
+            ExplorationOutcome.CANCELLED_OR_INTERRUPTED.value
+        )
+        # 纯投影同样 fail-closed
+        assert exploration_outcome(record).arrived is False
+        assert exploration_facts(record, server_id="mc-1") == ()
+        assert arrival_fact(record, server_id="mc-1") is None
+        await database.close()
+
+    async def test_failed_with_contradictory_success_verification(self, tmp_path) -> None:
+        record = explore_record(
+            state=TaskState.FAILED,
+            checked=True,
+            ok=True,
+            steps=[world_step(pois=[_poi(116, 100)])],
+        )
+        database, facts = await self._publish(tmp_path, record)
+        self._assert_only_task_experience(facts)
+        assert facts[0].extra.get("exploration_outcome") == ExplorationOutcome.BLOCKED.value
+        assert exploration_outcome(record).arrived is False
+        assert exploration_facts(record, server_id="mc-1") == ()
+        assert arrival_fact(record, server_id="mc-1") is None
+        await database.close()
+
+    async def test_expired_with_contradictory_success_verification(self, tmp_path) -> None:
+        record = explore_record(
+            state=TaskState.EXPIRED,
+            checked=True,
+            ok=True,
+            steps=[world_step(pois=[_poi(116, 100)])],
+        )
+        database, facts = await self._publish(tmp_path, record)
+        self._assert_only_task_experience(facts)
+        assert facts[0].extra.get("exploration_outcome") == (
+            ExplorationOutcome.CANCELLED_OR_INTERRUPTED.value
+        )
+        assert exploration_outcome(record).arrived is False
+        await database.close()
+
+    async def test_succeeded_without_actual_arrival_coords(self, tmp_path) -> None:
+        # 抹掉实际到达坐标：只剩计划目标 + checked/ok，不足以证明"真的到了"
+        record = explore_record(steps=[world_step(pois=[_poi(116, 100)])])
+        record.verification["position_within"] = {}
+        database, facts = await self._publish(tmp_path, record)
+        self._assert_only_task_experience(facts)
+        assert exploration_outcome(record).outcome is (ExplorationOutcome.CANCELLED_OR_INTERRUPTED)
+        assert exploration_facts(record, server_id="mc-1") == ()
+        assert arrival_fact(record, server_id="mc-1") is None
+        await database.close()
+
+    async def test_succeeded_with_full_verification_writes_positive_memory(self, tmp_path) -> None:
+        record = explore_record(steps=[world_step(pois=[_poi(116, 100)])])
+        database, facts = await self._publish(tmp_path, record)
+        kinds = [fact.kind for fact in facts]
+        assert MinecraftMemoryKind.EVENT in kinds
+        assert MinecraftMemoryKind.LOCATION in kinds
+        location = [f for f in facts if f.kind is MinecraftMemoryKind.LOCATION]
+        assert location[0].extra.get("actionable") is True
+        result = exploration_outcome(record, new_facts=exploration_facts(record, server_id="mc-1"))
+        assert result.outcome is ExplorationOutcome.NEW_FACTS_VERIFIED
+        await database.close()
+
+    async def test_repeated_publish_stays_idempotent(self, tmp_path) -> None:
+        bridge, database, _manager, _service = await build_bridge(tmp_path)
+        record = explore_record(steps=[world_step(pois=[_poi(116, 100)])])
+        for _ in range(3):
+            await bridge.on_task_finished(record)
+        events = await bridge.store.facts(
+            server_id=bridge.server_id(), kinds=[MinecraftMemoryKind.EVENT]
+        )
+        locations = await bridge.store.facts(
+            server_id=bridge.server_id(), kinds=[MinecraftMemoryKind.LOCATION]
+        )
+        assert len(events) == 1
+        assert len(locations) == 1
+        await database.close()
+
+
 # ---------------------------------------------------------------- 5. 缺证据 / 离线 / 矛盾
 
 
