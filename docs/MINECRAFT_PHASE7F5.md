@@ -319,6 +319,26 @@ LifeIntent → `TaskProposal`（created，来源 LIFE，`intent_id` 一致）→
 **`[e2e] bridge auth boundary + runtime instance ✓ (missing/wrong -> 401, valid -> 200, no bypass, no token leak)`**
 —— 鉴权边界在 CI 的真实 spawn + 真实 HTTP 下也通过了。
 
+
+### 9.1.1 同一族 flake 的第二次实例（补记文档提交）
+
+补记 CI 结果的**纯文档提交**（`cc6df91de62f730580ddbdd784a79694e32732e7`，只改 `docs/MINECRAFT_PHASE7F5.md`）
+在 attempt 1 也失败了，但失败点**不是**本阶段任何代码路径：
+
+```
+[e2e] FAILED: Error: timeout waiting for: runtime 看见 Ghost
+```
+
+同一运行里 `[pickup-test]`、`[dig-capability-test] 43/43`、`[find-blocks-test] 41/41` 等全部通过 ——
+与 §9.1 记录的 `runtime 看见 Followee` 属于**同一族**（follow 段落里等待"运行时看得见某个实体"的检查，
+机器繁忙时实体包/区块加载滞后就会超窗；`minecraft_runtime/test/e2e.js:110` 早有此注释）。
+
+处置同样如实：不改断言、不放宽阈值，触发 `rerun-failed-jobs` → **attempt 2 两个 job 均 success**。
+
+**统计（本阶段三次 CI 运行）**：代码提交 attempt 1 失败（`看见 Followee`）→ attempt 2 成功；
+文档提交 attempt 1 失败（`看见 Ghost`）→ attempt 2 成功。两次失败都在 follow 段、都与本阶段改动无关，
+但**如实记录**，不掩盖。
+
 ### 9.2 数据库
 
 * **无新表、无新迁移**（最高仍 36）；演练 `version [36,36]`、`tables [83,83]`、`integrity [ok,ok]`、`lost_rows {}`、
