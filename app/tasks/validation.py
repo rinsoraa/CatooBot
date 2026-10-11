@@ -17,10 +17,14 @@ from collections.abc import Callable, Mapping, Sequence
 from typing import Any
 
 from app.tasks.models import (
+    MAX_EXPLORE_LEGS,
+    MAX_EXPLORE_ROUTE_DISTANCE,
+    MIN_LEG_SEPARATION,
     ArgumentReference,
     TaskPlan,
     TaskStep,
     canonical_arguments,
+    finite_number,
 )
 
 #: 计划里明确**禁止**的名字（复合工具/黑盒）：Phase 5A 不允许出现
@@ -29,6 +33,133 @@ FORBIDDEN_TOOL_PARTS = ("gather", "collect", "auto_mine", "mining_loop", "task_"
 #: 第一期的硬上限（§七十）
 MAX_STEPS = 16
 MAX_ACTION_STEPS = 8
+
+#: Phase 7F.3：有界多段路线里移动段用的工具名（第一版只允许 LOW 的 move_to）。
+MOVE_TOOL = "minecraft_move_to"
+
+#: Phase 7F.3：路点距离的数值容差（规划期会把坐标四舍五入到 0.1 格）。
+_LEG_DISTANCE_TOLERANCE = 0.35
+
+
+def _leg_target_of(leg: Mapping[str, Any]) -> dict[str, float] | None:
+    """从一个路点条目里读出**有限**目标坐标（读不出 → None，fail-closed）。"""
+    raw = leg.get("position_within")
+    if not isinstance(raw, Mapping):
+        return None
+    target: dict[str, float] = {}
+    for axis in ("x", "y", "z"):
+        number = finite_number(raw.get(axis))
+        if number is None:
+            return None
+        target[axis] = number
+    radius = finite_number(raw.get("radius"))
+    if radius is None or radius <= 0:
+        return None
+    target["radius"] = radius
+    return target
+
+
+def _planar_distance(a: Mapping[str, float], b: Mapping[str, float]) -> float:
+    """水平距离（与探索目标选择、门禁脚本同口径：只看 x/z）。"""
+    dx = float(a["x"]) - float(b["x"])
+    dz = float(a["z"]) - float(b["z"])
+    return (dx * dx + dz * dz) ** 0.5
+
+
+def _route_problems(plan: TaskPlan) -> list[str]:
+    """有界多段路线（Phase 7F.3）的确定性校验：段数 / 路点 / 顺序 / 去重 / 总距离。
+
+    路线是**冻结计划**的一部分，所以这里校验的就是用户到底批准了什么：
+    段数超上限、路点非法或重复、路点顺序与步骤顺序不符、总距离超预算 ——
+    一律**拒绝整份计划**。绝不在这里静默裁剪：缩短只能发生在**规划期**
+    （那时还没有任何授权）。也绝不把路线结构损坏当成没有路线
+    （那等于把 fail-closed 变成 fail-open，见 ExpectedFinalState.route_invalid）。
+    """
+    expected = plan.expected_final_state
+    if expected.route_invalid:
+        reason = str((expected.route or {}).get("reason") or "结构不合法")
+        return [f"路线不合法：{reason}"]
+    legs = expected.legs()
+    if not legs:
+        return []
+
+    problems: list[str] = []
+    if len(legs) > MAX_EXPLORE_LEGS:
+        problems.append(f"路线段数 {len(legs)} 超过上限 {MAX_EXPLORE_LEGS}")
+
+    route = expected.route or {}
+    budget = finite_number(route.get("budget"))
+    if budget is None or budget <= 0:
+        problems.append("路线缺少合法的距离预算")
+        budget = None
+    elif budget > MAX_EXPLORE_ROUTE_DISTANCE + _LEG_DISTANCE_TOLERANCE:
+        problems.append(f"路线距离预算 {budget:.1f} 超过上限 {MAX_EXPLORE_ROUTE_DISTANCE:.1f}")
+        budget = None
+
+    start_raw = route.get("start")
+    start: dict[str, float] | None = None
+    if isinstance(start_raw, Mapping):
+        candidate: dict[str, float] = {}
+        for axis in ("x", "y", "z"):
+            number = finite_number(start_raw.get(axis))
+            if number is None:
+                candidate = {}
+                break
+            candidate[axis] = number
+        start = candidate or None
+    if start is None:
+        problems.append("路线缺少合法的规划起点坐标")
+
+    step_positions = {step.step_id: index for index, step in enumerate(plan.steps, start=1)}
+    chosen: list[dict[str, float]] = []
+    total = 0.0
+    previous_position = 0
+    previous_target: dict[str, float] | None = start
+    for leg in legs:
+        index = int(leg.get("index") or 0)
+        step_id = str(leg.get("step_id") or "")
+        position = step_positions.get(step_id)
+        if position is None:
+            problems.append(f"路线第 {index} 段指向不存在的步骤（{step_id or '-'}）")
+            continue
+        if position <= previous_position:
+            problems.append(f"路线第 {index} 段的步骤顺序不对（{step_id} 不在上一段之后）")
+        previous_position = position
+        step = plan.step(step_id)
+        if step is None or step.tool != MOVE_TOOL:
+            tool = step.tool if step is not None else "-"
+            problems.append(f"路线第 {index} 段不是移动步（{step_id} → {tool}）")
+        target = _leg_target_of(leg)
+        if target is None:
+            problems.append(f"路线第 {index} 段的目标坐标或半径不合法")
+            continue
+        for other in chosen:
+            if _planar_distance(target, other) < MIN_LEG_SEPARATION:
+                problems.append(f"路线第 {index} 段与前面的路点重复（间距过小）")
+                break
+        chosen.append(target)
+        if previous_target is not None:
+            actual = _planar_distance(previous_target, target)
+            total += actual
+            declared = finite_number(leg.get("distance"))
+            if declared is None or abs(declared - actual) > _LEG_DISTANCE_TOLERANCE:
+                problems.append(
+                    f"路线第 {index} 段的距离与坐标不一致（声明 {leg.get('distance')!r}，"
+                    f"实际 {actual:.1f}）"
+                )
+        previous_target = target
+
+    if start is not None and budget is not None and total > budget + _LEG_DISTANCE_TOLERANCE:
+        problems.append(f"路线总距离 {total:.1f} 超过预算 {budget:.1f}")
+
+    final = expected.position_within
+    if (
+        final is not None
+        and chosen
+        and _planar_distance(chosen[-1], final) > _LEG_DISTANCE_TOLERANCE
+    ):
+        problems.append("路线最后一段与期望终态位置不一致")
+    return problems
 
 
 def validate_plan(
@@ -103,6 +234,7 @@ def validate_plan(
             if not missing_reference:
                 for issue in validate_arguments(schema, checkable):
                     problems.append(f"{prefix}: 参数不合 schema（{issue}）")
+    problems.extend(_route_problems(plan))
     return problems
 
 

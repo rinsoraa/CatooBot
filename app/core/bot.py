@@ -1284,6 +1284,9 @@ class Bot:
             allow_low=bool(getattr(tools_config, "allow_low", True)),
             allow_medium=bool(getattr(tools_config, "allow_medium", False)),
             follow_timeout_seconds=follow_timeout,
+            # Phase 7F.3：有界多段探索的段数。默认 1（= Phase 7F.1/7F.2 的单段语义，
+            # 逐字节不变）；配置里给了 minecraft.agent.tools.explore_legs 才走多段。
+            explore_legs=int(getattr(tools_config, "explore_legs", 1) or 1),
         )
         # observe 复用与 TaskTurnHandler 同一条既有工具通道（绝不直连 mineflayer）
         from app.integrations.minecraft.task_adapter import MinecraftTaskInvoker

@@ -24,10 +24,14 @@ from typing import Any
 
 from app.tasks.models import (
     DEFAULT_ARRIVE_RADIUS,
+    MAX_EXPLORE_LEGS,
+    MAX_EXPLORE_ROUTE_DISTANCE,
+    MIN_LEG_SEPARATION,
     ExpectedFinalState,
     TaskPlan,
     TaskStep,
     canonical_item_name,
+    finite_number,
 )
 from app.tasks.validation import collect_references
 
@@ -309,9 +313,17 @@ async def plan_resource_task(
 
 # ---------------------------------------------------------------- exploration（Phase 7F.1）
 
-#: 有界探索的默认硬上限：目标点距离当前坐标不超过这个值（格）。
+#: 有界探索的默认硬上限：**整条路线**的总长度不超过这个值（格）。
 #: 复用既有 move_to.max_distance 的思路，不新增一批配置旋钮。
-EXPLORE_DEFAULT_DISTANCE = 24.0
+#: Phase 7F.3：这是**路线总预算**，不是每段预算 —— 多段共享同一份 24 格，
+#: 绝不把单段预算变成每段预算（那是 3 倍的授权扩张）。
+EXPLORE_DEFAULT_DISTANCE = MAX_EXPLORE_ROUTE_DISTANCE
+
+#: Phase 7F.3：一条路线最多几段移动（与计划校验共用同一个常量，绝不各写一份）。
+EXPLORE_MAX_LEGS = MAX_EXPLORE_LEGS
+
+#: Phase 7F.3：单段太近就不算探索（与既有 POI 选择口径一致的 4 格）。
+MIN_LEG_DISTANCE = 4.0
 
 #: 罗盘方向 → (dx, dz) 单位向量（Minecraft：-Z = north，+X = east）。
 _COMPASS_VECTORS: dict[str, tuple[int, int]] = {
@@ -379,12 +391,107 @@ def _explore_target(
     }
 
 
+def _planar(ax: float, az: float, bx: float, bz: float) -> float:
+    """水平距离（与探索目标选择、计划校验同口径：只看 x/z）。"""
+    dx = ax - bx
+    dz = az - bz
+    return (dx * dx + dz * dz) ** 0.5
+
+
+def _explore_waypoints(
+    view: Mapping[str, Any],
+    sx: float,
+    sy: float,
+    sz: float,
+    max_distance: float,
+    legs: int,
+) -> list[dict[str, float]]:
+    """确定性地生成一条**有界**路线（Phase 7F.3）。
+
+    规则（全部确定性、可审计，只读真实世界视图）：
+
+    * 第 1 段 = :func:`_explore_target` 的结果 —— 与 Phase 7F.1 **完全相同**；
+    * 第 2..N 段只从真实 POI 里挑：坐标必须有限、与**所有**已选路点相距 >= 4 格
+      （彼此有意义、不重复），且与上一段的间距也在预算内；
+    * 候选按 (距离, x, z) 全序排序后逐个贪心选取 —— 同一个世界视图必然得到同一条路线；
+    * 候选不够就**明确缩短路线**（返回更少的段），绝不重复路点、绝不编造坐标、
+      绝不因为想要 3 段就放宽任何一条规则。
+
+    返回的每一项是 ``{"x", "y", "z", "distance"}``，``distance`` 是**这一段本身**
+    的长度（从上一段，第 1 段从起点算），会被写进冻结计划供校验与审计。
+    """
+    first = _explore_target(view, sx, sy, sz, max_distance)
+    if first is None:  # pragma: no cover - 兜底方向永远有值
+        return []
+    route: list[dict[str, float]] = [
+        {
+            "x": float(first["x"]),
+            "y": float(first["y"]),
+            "z": float(first["z"]),
+            "distance": _planar(float(first["x"]), float(first["z"]), sx, sz),
+        }
+    ]
+    total = route[0]["distance"]
+    limit = max(1, min(int(legs), EXPLORE_MAX_LEGS))
+    if limit == 1 or total > max_distance:
+        return route
+
+    # 候选：真实 POI、坐标有限、与起点相距 >= MIN_LEG_DISTANCE 且不超单段预算
+    candidates: list[tuple[float, float, float, dict[str, float]]] = []
+    semantic = view.get("semantic")
+    pois = semantic.get("points_of_interest") if isinstance(semantic, Mapping) else None
+    if isinstance(pois, list):
+        for item in pois:
+            if not isinstance(item, Mapping):
+                continue
+            pos = item.get("pos")
+            if not isinstance(pos, Mapping):
+                continue
+            tx = finite_number(pos.get("x"))
+            ty = finite_number(pos.get("y"))
+            tz = finite_number(pos.get("z"))
+            if tx is None or ty is None or tz is None:
+                continue
+            distance = _planar(tx, tz, sx, sz)
+            if distance < MIN_LEG_DISTANCE or distance > max_distance:
+                continue
+            candidates.append(
+                (round(distance, 3), round(tx, 3), round(tz, 3), {"x": tx, "y": ty, "z": tz})
+            )
+    candidates.sort(key=lambda entry: (entry[0], entry[1], entry[2]))
+
+    while len(route) < limit:
+        previous = route[-1]
+        picked: tuple[dict[str, float], float] | None = None
+        for _, _, _, point in candidates:
+            if any(
+                _planar(point["x"], point["z"], chosen["x"], chosen["z"]) < MIN_LEG_SEPARATION
+                for chosen in route
+            ):
+                continue
+            step_distance = _planar(point["x"], point["z"], previous["x"], previous["z"])
+            if step_distance < MIN_LEG_DISTANCE:
+                continue
+            if total + step_distance > max_distance + 1e-9:
+                continue
+            picked = (point, step_distance)
+            break
+        if picked is None:
+            # 观察不足以安全规划更多段 -> 明确缩短路线（绝不凑段数）
+            break
+        point, step_distance = picked
+        route.append({"x": point["x"], "y": point["y"], "z": point["z"], "distance": step_distance})
+        total += step_distance
+    return route
+
+
 async def plan_exploration_task(
     objective: str,
     *,
     observe: ObserveFn,
     max_distance: float = EXPLORE_DEFAULT_DISTANCE,
     arrive_radius: float = DEFAULT_ARRIVE_RADIUS,
+    legs: int = 1,
 ) -> PlannedTask:
     """确定性探索任务模板（Phase 7F.1 §四 / 7F.2）。
 
@@ -397,6 +504,12 @@ async def plan_exploration_task(
 
     Phase 7F.2：到达后再跑一步 SAFE ``minecraft_world``（step_3），为记忆回流提供
     **执行期**的真实新事实来源；没有这一步，任务只剩"我移动过"，谈不上可确认的新观察。
+
+    Phase 7F.3：``legs`` 请求一条**有界多段**路线（最多 3 段，全部共享同一份总距离预算）。
+    ``legs=1``（默认）时输出与 Phase 7F.1/7F.2 **逐字节相同** —— 单段计划不带 ``route``
+    字段，所以 plan_hash 与既有授权记录完全一致。多段时每一段的**目标坐标、到达半径、
+    距离**都写进冻结计划（``expected_final_state.route``），因此进 plan_hash、进确认指纹，
+    批准后任何路点改动都会被既有授权机制检测出来。
     """
     world_view = await _safe_observe(observe, "minecraft_world", {})
     world_result = _result_of(world_view)
@@ -418,47 +531,118 @@ async def plan_exploration_task(
     except (KeyError, TypeError, ValueError):
         raise ObservationFailed("世界视图里没有罐头自己的坐标，无法规划探索目标") from None
 
-    target = _explore_target(world_result, sx, sy, sz, float(max_distance))
-    if target is None:  # pragma: no cover - 兜底方向永远有值
+    waypoints = _explore_waypoints(world_result, sx, sy, sz, float(max_distance), legs)
+    if not waypoints:  # pragma: no cover - 兜底方向永远有值
         raise ObservationFailed("世界视图里没有可用的探索方向或目标")
 
-    steps = [
-        TaskStep(
-            step_id="step_1",
-            tool="minecraft_move_to",
-            arguments={"x": int(target["x"]), "y": int(target["y"]), "z": int(target["z"])},
-            risk="LOW",
-        ),
-        TaskStep(
-            step_id="step_2",
-            tool="minecraft_look_at",
-            arguments={
-                "x": float(target["x"]),
-                "y": float(target["y"]) + 1.5,
-                "z": float(target["z"]),
-            },
-            risk="SAFE",
-        ),
-        # Phase 7F.2：到达后做**一次**有界 SAFE 观察，让探索有真实结果可回流
-        # （只读 minecraft_world；没有它就永远只有"我移动过"，没有可确认的新事实）。
-        TaskStep(
-            step_id="step_3",
-            tool="minecraft_world",
-            arguments={},
-            risk="SAFE",
-        ),
-    ]
-    plan = TaskPlan(
-        objective=objective,
-        steps=steps,
-        expected_final_state=ExpectedFinalState(
+    if len(waypoints) == 1:
+        # Phase 7F.1/7F.2 的单段计划：**逐字节不变**（不带 route 字段 -> plan_hash 不变）
+        target = waypoints[0]
+        steps = [
+            TaskStep(
+                step_id="step_1",
+                tool="minecraft_move_to",
+                arguments={"x": int(target["x"]), "y": int(target["y"]), "z": int(target["z"])},
+                risk="LOW",
+            ),
+            TaskStep(
+                step_id="step_2",
+                tool="minecraft_look_at",
+                arguments={
+                    "x": float(target["x"]),
+                    "y": float(target["y"]) + 1.5,
+                    "z": float(target["z"]),
+                },
+                risk="SAFE",
+            ),
+            # Phase 7F.2：到达后做**一次**有界 SAFE 观察，让探索有真实结果可回流
+            # （只读 minecraft_world；没有它就永远只有"我移动过"，没有可确认的新事实）。
+            TaskStep(
+                step_id="step_3",
+                tool="minecraft_world",
+                arguments={},
+                risk="SAFE",
+            ),
+        ]
+        expected = ExpectedFinalState(
             position_within={
                 "x": float(target["x"]),
                 "y": float(target["y"]),
                 "z": float(target["z"]),
                 "radius": float(arrive_radius),
             }
-        ),
+        )
+    else:
+        # Phase 7F.3：多段路线。每一段 = 移动步 + 该段朝向步；逐段后置条件冻结进计划。
+        steps = []
+        route_legs: list[dict[str, Any]] = []
+        for index, waypoint in enumerate(waypoints, start=1):
+            move_id = f"step_{2 * index - 1}"
+            look_id = f"step_{2 * index}"
+            steps.append(
+                TaskStep(
+                    step_id=move_id,
+                    tool="minecraft_move_to",
+                    arguments={
+                        "x": int(waypoint["x"]),
+                        "y": int(waypoint["y"]),
+                        "z": int(waypoint["z"]),
+                    },
+                    risk="LOW",
+                )
+            )
+            steps.append(
+                TaskStep(
+                    step_id=look_id,
+                    tool="minecraft_look_at",
+                    arguments={
+                        "x": float(waypoint["x"]),
+                        "y": float(waypoint["y"]) + 1.5,
+                        "z": float(waypoint["z"]),
+                    },
+                    risk="SAFE",
+                )
+            )
+            route_legs.append(
+                {
+                    "index": index,
+                    "step_id": move_id,
+                    "position_within": {
+                        "x": float(waypoint["x"]),
+                        "y": float(waypoint["y"]),
+                        "z": float(waypoint["z"]),
+                        "radius": float(arrive_radius),
+                    },
+                    "distance": float(waypoint["distance"]),
+                }
+            )
+        # 到达后一次有界 SAFE 观察（与单段同样的理由：给记忆回流一份执行期真实新事实）
+        steps.append(
+            TaskStep(
+                step_id=f"step_{2 * len(waypoints) + 1}",
+                tool="minecraft_world",
+                arguments={},
+                risk="SAFE",
+            )
+        )
+        final = waypoints[-1]
+        expected = ExpectedFinalState(
+            position_within={
+                "x": float(final["x"]),
+                "y": float(final["y"]),
+                "z": float(final["z"]),
+                "radius": float(arrive_radius),
+            },
+            route={
+                "start": {"x": sx, "y": sy, "z": sz},
+                "budget": float(max_distance),
+                "legs": route_legs,
+            },
+        )
+    plan = TaskPlan(
+        objective=objective,
+        steps=steps,
+        expected_final_state=expected,
         observations=[item.to_payload() for item in observations],
     )
     return PlannedTask(objective=objective, plan=plan, observations=observations)

@@ -21,6 +21,7 @@ from typing import Any
 from app.integrations.minecraft.agent import ACTION_RISK
 from app.tasks.agent_plan import PlanTarget
 from app.tasks.planner import (
+    EXPLORE_MAX_LEGS,
     ObservationFailed,
     PlannedTask,
     plan_exploration_task,
@@ -130,12 +131,17 @@ class BoundedAgentPlanner:
         allow_low: bool = True,
         allow_medium: bool = False,
         follow_timeout_seconds: float = FOLLOW_TIMEOUT_FALLBACK_SECONDS,
+        explore_legs: int = 1,
     ) -> None:
         self.risk_table = dict(risk_table or ACTION_RISK)
         self.allow_safe = bool(allow_safe)
         self.allow_low = bool(allow_low)
         self.allow_medium = bool(allow_medium)
         self.follow_timeout_seconds = float(follow_timeout_seconds)
+        #: Phase 7F.3：探索计划请求几段移动（1..EXPLORE_MAX_LEGS）。默认 1 保持
+        #: Phase 7F.1/7F.2 的单段语义不变；多段是**显式请求**的能力，不是偷偷改行为。
+        #: 世界观察不足以安全规划多段时会自动缩短路线（绝不凑段数）。
+        self.explore_legs = max(1, min(int(explore_legs), EXPLORE_MAX_LEGS))
 
     # ------------------------------------------------------------ 入口
 
@@ -262,7 +268,9 @@ class BoundedAgentPlanner:
                 checks=tuple(checks),
             )
         try:
-            planned = await plan_exploration_task(objective, observe=observe)
+            planned = await plan_exploration_task(
+                objective, observe=observe, legs=self.explore_legs
+            )
         except ObservationFailed as exc:
             checks.append({"check": "observe", "ok": False, "detail": {"error": str(exc)[:200]}})
             return PlanningResult(

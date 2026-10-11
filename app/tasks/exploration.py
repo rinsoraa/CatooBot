@@ -17,7 +17,6 @@
 
 from __future__ import annotations
 
-import math
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from enum import Enum
@@ -31,6 +30,7 @@ from app.memory.minecraft.model import (
     cluster_position,
     number_or,
 )
+from app.tasks.models import finite_number
 
 #: 有界探索一次最多落几条新兴趣点事实（bounded，避免整片世界被写进记忆）。
 MAX_NEW_FACTS = 5
@@ -107,15 +107,12 @@ def _finite_axis(value: Any) -> float | None:
     超出 ``float`` 值域的巨大整数（``float(10 ** 400)``）会抛 ``OverflowError``，
     同样**不是**有效世界坐标：这里一并 fail-closed 返回 ``None``，绝不向上传播异常
     （Phase 7F.2.2.1 数值转换溢出加固）。
+
+    Phase 7F.3：判定逻辑收敛到 app.tasks.models.finite_number —— 计划边界（路点坐标）
+    与记忆边界（探索证据）从此共用**同一个** fail-closed 谓词，不再有两份等价实现。
     """
 
-    if isinstance(value, bool) or not isinstance(value, (int, float, str)):
-        return None
-    try:
-        number = float(value)
-    except (TypeError, ValueError, OverflowError):
-        return None
-    return number if math.isfinite(number) else None
+    return finite_number(value)
 
 
 def _clean_position(value: Any) -> dict[str, float] | None:

@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import time
 import uuid
 from collections.abc import Mapping
@@ -489,6 +490,117 @@ class PlanVersion:
 #: 后置条件用的是**重新读到的世界坐标**，不是动作返回值。
 DEFAULT_ARRIVE_RADIUS = 2.0
 
+#: Phase 7F.3：一条有界路线**最多**允许的移动段数（第一版硬上限）。
+#: 超过就在计划校验阶段被拒绝，绝不"凑段数"。
+MAX_EXPLORE_LEGS = 3
+
+#: Phase 7F.3：**整条路线**的总距离硬上限（格）—— 沿用 Phase 7F.1 的单段预算，
+#: 绝不把单段 24 格悄悄变成每段 24 格（那是 3 倍的授权扩张）。
+MAX_EXPLORE_ROUTE_DISTANCE = 24.0
+
+#: Phase 7F.3：两个路点之间的最小间距（格）。比它更近就算同一个目标，
+#: 计划直接拒绝 —— 不允许用重复路点凑段数。
+MIN_LEG_SEPARATION = 1.0
+
+
+def finite_number(value: Any) -> float | None:
+    """把不可信输入转成**有限浮点数**，否则 fail-closed 返回 ``None``。
+
+    这是数值进入**冻结计划**与**记忆**之前的唯一判定入口（Phase 7F.2.2 / 7F.2.2.1 / 7F.3）：
+
+    * ``bool`` 一律拒绝（它是 ``int`` 子类，会被静默当成 1/0）；
+    * 只接受 ``int`` / ``float`` / ``str``（有限数字字符串是既有兼容行为）；
+    * ``float()`` 的三种失败都接住：``TypeError`` / ``ValueError`` /
+      **``OverflowError``**（``float(10 ** 400)`` 抛的就是它 —— 曾经以"抛异常"替代 fail-closed）；
+    * 结果必须通过 ``math.isfinite()``（``NaN`` / ``±Infinity`` 一律拒绝）。
+    """
+    if isinstance(value, bool) or not isinstance(value, (int, float, str)):
+        return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    return number if math.isfinite(number) else None
+
+
+def _xyz_of(value: Any) -> dict[str, float] | None:
+    """从 ``{"x","y","z"}`` 形状里读出三个有限坐标（读不出 → None，fail-closed）。"""
+    if not isinstance(value, Mapping):
+        return None
+    coords: dict[str, float] = {}
+    for axis in ("x", "y", "z"):
+        number = finite_number(value.get(axis))
+        if number is None:
+            return None
+        coords[axis] = number
+    return coords
+
+
+def _route_of(payload: Mapping[str, Any] | None) -> dict[str, Any] | None:
+    """解析冻结路线的 ``route`` 结构（Phase 7F.3）。
+
+    三种结果，必须区分清楚：
+
+    * **不存在** → ``None``（单段计划，行为与 7F.1/7F.2 完全一致）；
+    * **完整且合法** → 规范化后的 route；
+    * **存在但不合法** → ``{"invalid": True, "reason": ...}``。
+
+    第三种绝不能被当成"没有路线"：那会让一份被篡改/损坏的多段计划**静默退化**成
+    "不做逐段校验"，等于把 fail-closed 变成 fail-open。计划校验会因此直接拒绝它。
+    """
+    if not isinstance(payload, Mapping):
+        return None
+    raw = payload.get("route")
+    if raw is None:
+        return None
+    if not isinstance(raw, Mapping):
+        return {"invalid": True, "reason": "route 不是对象"}
+    start = _xyz_of(raw.get("start"))
+    if start is None:
+        return {"invalid": True, "reason": "route.start 坐标不合法"}
+    budget = finite_number(raw.get("budget"))
+    if budget is None or budget <= 0:
+        return {"invalid": True, "reason": "route.budget 不合法"}
+    raw_legs = raw.get("legs")
+    if not isinstance(raw_legs, list) or not raw_legs:
+        return {"invalid": True, "reason": "route.legs 缺失或为空"}
+    legs: list[dict[str, Any]] = []
+    for item in raw_legs:
+        if not isinstance(item, Mapping):
+            return {"invalid": True, "reason": "route.legs 里有非对象元素"}
+        try:
+            index = int(item["index"])
+        except (KeyError, TypeError, ValueError):
+            return {"invalid": True, "reason": "route.legs.index 不合法"}
+        if index < 1 or index != len(legs) + 1:
+            return {"invalid": True, "reason": f"route.legs.index 不连续（{index}）"}
+        step_id = str(item.get("step_id") or "")
+        if not step_id:
+            return {"invalid": True, "reason": f"route.legs[{index}] 缺少 step_id"}
+        # 注意：路线目标用**严格有限**判定（_xyz_of + finite_number），不复用
+        # _position_within_of —— 后者对 NaN/Infinity 只做 float() 不做 isfinite。
+        # 路线目标决定执行顺序（后一段依赖前一段的到达证据），必须严格有限。
+        raw_target = item.get("position_within")
+        if not isinstance(raw_target, Mapping):
+            return {"invalid": True, "reason": f"route.legs[{index}] 缺少目标坐标"}
+        coords = _xyz_of(raw_target)
+        radius = finite_number(raw_target.get("radius"))
+        if coords is None or radius is None or radius <= 0:
+            return {"invalid": True, "reason": f"route.legs[{index}] 目标坐标/半径不合法"}
+        target: dict[str, float] = {**coords, "radius": radius}
+        distance = finite_number(item.get("distance"))
+        if distance is None or distance < 0:
+            return {"invalid": True, "reason": f"route.legs[{index}] distance 不合法"}
+        legs.append(
+            {
+                "index": index,
+                "step_id": step_id,
+                "position_within": target,
+                "distance": distance,
+            }
+        )
+    return {"start": start, "budget": budget, "legs": legs}
+
 
 def _position_within_of(payload: Mapping[str, Any] | None) -> dict[str, float] | None:
     """从 payload 里读出探索后置条件 ``position_within``（读不出 → None，fail-closed）。"""
@@ -515,6 +627,10 @@ class ExpectedFinalState:
     #: Phase 7F.1：有界探索的后置条件 —— 用 SAFE 读（minecraft_world）确认
     #: "罐头最终在 (x,y,z) 的 radius 格内"。不是靠动作返回值自述，是重新读世界。
     position_within: dict[str, float] | None = None
+    #: Phase 7F.3：**有界多段路线**的逐段后置条件（冻结在计划里，进 plan_hash）。
+    #: ``{"start": {x,y,z}, "budget": 24.0, "legs": [{"index", "step_id",
+    #: "position_within", "distance"}, ...]}``。单段计划**不带**这个字段（保持逐字节兼容）。
+    route: dict[str, Any] | None = None
 
     def to_payload(self) -> dict[str, Any]:
         payload: dict[str, Any] = {
@@ -527,7 +643,32 @@ class ExpectedFinalState:
                 "z": float(self.position_within["z"]),
                 "radius": float(self.position_within.get("radius", DEFAULT_ARRIVE_RADIUS)),
             }
+        if self.route:
+            payload["route"] = self.route
         return payload
+
+    def legs(self) -> list[dict[str, Any]]:
+        """合法的逐段后置条件（没有路线 / 路线非法 → 空列表）。"""
+        if not isinstance(self.route, Mapping) or self.route.get("invalid"):
+            return []
+        items = self.route.get("legs")
+        return (
+            [dict(item) for item in items if isinstance(item, Mapping)]
+            if isinstance(items, list)
+            else []
+        )
+
+    def leg_for_step(self, step_id: str) -> dict[str, Any] | None:
+        """这一步是不是某一段的移动步？是就返回那一段的冻结后置条件。"""
+        for leg in self.legs():
+            if str(leg.get("step_id") or "") == str(step_id):
+                return leg
+        return None
+
+    @property
+    def route_invalid(self) -> bool:
+        """路线存在但被判定非法（计划必须被拒绝，绝不当成"没有路线"）。"""
+        return isinstance(self.route, Mapping) and bool(self.route.get("invalid"))
 
     @classmethod
     def from_payload(cls, payload: Mapping[str, Any] | None) -> ExpectedFinalState:
@@ -539,11 +680,15 @@ class ExpectedFinalState:
                     delta[canonical_item_name(key)] = int(value)
                 except (TypeError, ValueError):  # pragma: no cover - 计划校验会先拦掉
                     continue
-        return cls(inventory_delta=delta, position_within=_position_within_of(payload))
+        return cls(
+            inventory_delta=delta,
+            position_within=_position_within_of(payload),
+            route=_route_of(payload),
+        )
 
     @property
     def empty(self) -> bool:
-        return not self.inventory_delta and self.position_within is None
+        return not self.inventory_delta and self.position_within is None and self.route is None
 
 
 @dataclass
@@ -719,6 +864,11 @@ class TaskRecord:
     failed_step: str = ""
     result: dict[str, Any] = field(default_factory=dict)
     verification: dict[str, Any] = field(default_factory=dict)
+    #: Phase 7F.3：逐段到达验证的**持久化证据**（每段一条；崩溃/重放后仍可审计）。
+    #: 形状：``{"index", "step_id", "action_id", "target", "position", "distance",
+    #: "verified", "failure", "message", "checked_at"}``。**绝不放在内存变量里** ——
+    #: 否则进程恢复就丢掉了"这一段到底有没有到达"的依据。
+    leg_verifications: list[dict[str, Any]] = field(default_factory=list)
     replans: int = 0
     no_progress: int = 0
     last_progress_key: str = ""
@@ -887,6 +1037,7 @@ class TaskRecord:
             "failed_step": self.failed_step,
             "result": dict(self.result),
             "verification": dict(self.verification),
+            "leg_verifications": [dict(item) for item in self.leg_verifications],
             "replans": self.replans,
             "no_progress": self.no_progress,
             "confirmation_id": self.confirmation_id,
@@ -924,6 +1075,11 @@ class TaskRecord:
             failed_step=str(payload.get("failed_step") or ""),
             result=dict(payload.get("result") or {}),
             verification=dict(payload.get("verification") or {}),
+            leg_verifications=[
+                dict(item)
+                for item in (payload.get("leg_verifications") or [])
+                if isinstance(item, Mapping)
+            ],
             replans=int(payload.get("replans") or 0),
             no_progress=int(payload.get("no_progress") or 0),
             confirmation_id=str(payload.get("confirmation_id") or ""),

@@ -61,6 +61,7 @@ from app.tasks.models import (
     TaskStep,
     arguments_hash,
     canonical_item_name,
+    finite_number,
     new_task_id,
 )
 from app.tasks.validation import (
@@ -506,6 +507,12 @@ class TaskRuntime:
             step = record.next_step()
             if step is None:
                 return await self._finish(record)
+            # Phase 7F.3：执行下一步之前，把所有**已走完但还没验证**的段先验证掉。
+            # 放在这里（而不是"结算后立即验证"）是为了同时覆盖崩溃恢复：进程可能在
+            # "动作已结算"与"到达验证"之间死掉，恢复后 drive 直接从下一步继续 ——
+            # 若不在这里补验证，下一段就会在**没有上一段到达证据**的情况下开始走。
+            if not await self._ensure_legs_verified(record, before_step=step):
+                return record
             if record.state is not TaskState.RUNNING:
                 await self._enter(record, TaskState.RUNNING)
             outcome = await self._run_step(record, step)
@@ -1268,6 +1275,137 @@ class TaskRuntime:
 
     # ------------------------------------------------------------ 内部
 
+    # ------------------------------------------------- 逐段到达验证（Phase 7F.3）
+
+    def _leg_target_of(self, leg: Mapping[str, Any]) -> dict[str, float] | None:
+        """把冻结计划里的一个路点目标规范成 _verify_position_within 认得的形状。"""
+        raw = leg.get("position_within")
+        if not isinstance(raw, Mapping):
+            return None
+        target: dict[str, float] = {}
+        for axis in ("x", "y", "z"):
+            number = finite_number(raw.get(axis))
+            if number is None:
+                return None
+            target[axis] = number
+        radius = finite_number(raw.get("radius"))
+        if radius is None or radius <= 0:
+            return None
+        target["radius"] = radius
+        return target
+
+    def _leg_evidence(
+        self,
+        record: TaskRecord,
+        leg: Mapping[str, Any],
+        step: TaskStep | None,
+        result: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        """一段的**可审计**证据：路点编号 / 目标 / 实际坐标 / 距离 / 结果 / 失败原因 / 关联标识。"""
+        position = result.get("position_within")
+        position = dict(position) if isinstance(position, Mapping) else None
+        ok = bool(result.get("ok"))
+        return {
+            "index": int(leg.get("index") or 0),
+            "step_id": str(leg.get("step_id") or ""),
+            "task_id": record.task_id,
+            "action_id": str(getattr(step, "action_id", "") or ""),
+            "target": dict(leg.get("position_within") or {}),
+            "position": position,
+            "distance": position.get("distance") if position else None,
+            "verified": ok,
+            "failure": "" if ok else TaskFailure.VERIFICATION.value,
+            "message": str(result.get("message") or ""),
+            "checked_at": self._clock(),
+        }
+
+    async def _fail_leg(
+        self,
+        record: TaskRecord,
+        leg: Mapping[str, Any],
+        step: TaskStep | None,
+        result: Mapping[str, Any],
+    ) -> None:
+        """某一段的到达验证没过 → 整任务 FAILED(VERIFICATION)：后面的段一步都不许走。
+
+        与终态校验（_finish）**同一套语义**：同一种证据失败就用同一个失败分类；
+        绝不继续走完剩下的路点，也绝不把"没到"写成成功。
+        """
+        record.leg_verifications.append(self._leg_evidence(record, leg, step, result))
+        record.state = TaskState.FAILED
+        record.failure = TaskFailure.VERIFICATION.value
+        record.failed_step = str(leg.get("step_id") or "")
+        record.message = str(result.get("message") or "路线中途段的到达验证没通过")
+        await self._save(record, event=TASK_FAILED)
+        await self._publish(TASK_FAILED, self._event_payload(record))
+
+    async def _ensure_legs_verified(self, record: TaskRecord, *, before_step: TaskStep) -> bool:
+        """执行 before_step 之前，把所有**已走完但未验证**的段验证掉（Phase 7F.3）。
+
+        返回 True = 可以继续执行 before_step；False = 已经因此终止。
+
+        * "走完"的判据是**持久化的** StepState.SUCCEEDED，不是动作返回值，
+          也不是"动作进了 RUNNING"；
+        * 到达判定复用 7F.1 的 _verify_position_within（重读真实世界 + 有界等待 + fail-closed）；
+        * 判据来自**冻结计划**里的逐段后置条件（进 plan_hash ⟹ 进授权指纹）；
+        * 已记录过的段不重复验证（幂等：恢复/重放不会重复写证据，也不会重复执行动作）；
+        * 单段计划（没有 route）时这里是纯粹的 no-op —— 7F.1/7F.2 行为一字不改。
+        """
+        legs = record.plan.expected_final_state.legs()
+        if not legs:
+            return True
+        positions = {item.step_id: index for index, item in enumerate(record.steps, start=1)}
+        current = positions.get(before_step.step_id, len(record.steps) + 1)
+        for leg in legs:
+            step_id = str(leg.get("step_id") or "")
+            position = positions.get(step_id)
+            if position is None or position >= current:
+                continue  # 这一段还没走到，等它走完再说
+            index = int(leg.get("index") or 0)
+            step = record.plan.step(step_id)
+            if step is None or step.state is not StepState.SUCCEEDED:
+                await self._fail_leg(
+                    record,
+                    leg,
+                    step,
+                    {
+                        "ok": False,
+                        "position_within": None,
+                        "message": (
+                            f"路线第 {index} 段没有完成"
+                            f"（{step.state.value if step is not None else '-'}），"
+                            "不能继续后面的路点"
+                        ),
+                    },
+                )
+                return False
+            if any(
+                int(item.get("index") or 0) == index and item.get("verified") is True
+                for item in record.leg_verifications
+            ):
+                continue  # 已经验证过：恢复/重放幂等
+            target = self._leg_target_of(leg)
+            if target is None:
+                await self._fail_leg(
+                    record,
+                    leg,
+                    step,
+                    {
+                        "ok": False,
+                        "position_within": None,
+                        "message": f"路线第 {index} 段的目标坐标不合法",
+                    },
+                )
+                return False
+            result = await self._verify_position_within(target)
+            if result.get("ok"):
+                record.leg_verifications.append(self._leg_evidence(record, leg, step, result))
+                await self._save(record)
+                continue
+            await self._fail_leg(record, leg, step, result)
+            return False
+        return True
+
     async def _finish(self, record: TaskRecord) -> TaskRecord:
         """所有 required 步骤完成后：用 SAFE 读**重新验证**最终状态（§八十二/§八十三）。"""
         expected = record.plan.expected_final_state
@@ -1667,6 +1805,7 @@ class TaskRuntime:
                 else None
             ),
             "verification": record.verification,
+            "leg_verifications": [dict(item) for item in record.leg_verifications],
             "result": record.result,
             "summary": self._fallback_summary(record),
             "replans": record.replans,
