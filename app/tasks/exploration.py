@@ -17,6 +17,7 @@
 
 from __future__ import annotations
 
+import math
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from enum import Enum
@@ -97,15 +98,41 @@ def is_exploration_task(record: Any) -> bool:
     return bool(_expected_position(record))
 
 
+def _finite_axis(value: Any) -> float | None:
+    """单个坐标轴：拒绝 ``bool``、不可转换值与非有限实数（``NaN`` / ``±Infinity``）。
+
+    ``True`` / ``False`` 是 Python 的 ``int`` 子类，绝不能被当成 ``1`` / ``0``；
+    ``float("nan")`` / ``float("inf")`` 转换成功但**不是**有效世界坐标，一律拒绝。
+    """
+
+    if isinstance(value, bool) or not isinstance(value, (int, float, str)):
+        return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    return number if math.isfinite(number) else None
+
+
 def _clean_position(value: Any) -> dict[str, float] | None:
-    """把一个位置映射规范成 ``{x, y, z}`` 浮点；缺任何一维或不可解析 → ``None``。"""
+    """把一个位置映射规范成 ``{x, y, z}`` **有限**浮点；任何无效一维 → ``None``。
+
+    缺字段、类型异常、不可解析、``bool`` 或非有限值（``NaN`` / ``±Infinity``）一律
+    fail-closed。合法负坐标与小数坐标（含有限数字字符串）照常通过
+    （Phase 7F.2.2 坐标域加固）。
+    """
 
     if not isinstance(value, Mapping):
         return None
-    try:
-        return {key: float(value[key]) for key in _POSITION_KEYS}
-    except (KeyError, TypeError, ValueError):
-        return None
+    cleaned: dict[str, float] = {}
+    for key in _POSITION_KEYS:
+        if key not in value:
+            return None
+        number = _finite_axis(value[key])
+        if number is None:
+            return None
+        cleaned[key] = number
+    return cleaned
 
 
 def verified_arrival(record: Any) -> dict[str, float] | None:

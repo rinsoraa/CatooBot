@@ -1,5 +1,32 @@
 # Changelog
 
+## Minecraft Phase 7F.2.2 — Coordinate Domain Hardening（探索坐标域加固）
+
+* **目标**：在 7F.2.1 已统一终态到达判定之后，收紧探索坐标的**数值有效性**。
+  **核心不变量**：坐标“能转成 float”**不等于**有效 —— `NaN` / `±Infinity` / `bool`（`True`/`False`）/ 缺字段 /
+  类型异常 / 不可解析字符串，一律**不得**通过 `verified_arrival()` 成为正向探索记忆
+  （到达 `EVENT` 经历或 actionable `LOCATION` 新事实）的依据；合法负坐标与小数（含有限数字字符串）照常通过。
+  小型防御性补丁，非新增探索能力。
+* **审计发现**：`app/tasks/exploration.py` 的 `_clean_position()` 修复前只做 `float(value[key])`，
+  因此 `float("nan")` / `float("inf")` / `"Infinity"` / `"1e400"` 会变成非有限数，`True`/`False`
+  会被当成 `1.0`/`0.0`，都可能穿过 `verified_arrival()` 写出“到达坐标 x=nan/inf/bool”的正向记忆。
+* **最小修复**：新增 `_finite_axis(value)`（先显式拒绝 `bool`，再 `float(...)`，最后 `math.isfinite()` 把关），
+  `_clean_position()` 改为逐轴复用该判定并对 mapping / 缺字段 / 无效值 fail-closed 返回 `None`；
+  **不设**世界坐标固定绝对上限，保留有限数字字符串兼容性。`verified_arrival()` 与其调用链（`exploration_facts` /
+  `arrival_fact` / `exploration_outcome`）**一字未改**；结果分类语义不变。
+* **回归测试（`tests/test_exploration_feedback.py`）**：新增 `TestCoordinateDomainHardening`（53 项，含参数化）——
+  单元层覆盖 `_clean_position` / `verified_arrival` 的 `NaN` / `±Infinity` / `bool` / 缺字段 / 错误类型 /
+  非有限字符串（各轴）以及合法负坐标、小数、有限数字字符串；**记忆层**验证 `SUCCEEDED` + `checked/ok=True`
+  但坐标为 `NaN`/`±Infinity`/`bool` 时**真实存储**只留 `TASK`、无 `EVENT`/`LOCATION`、无 actionable，且重复发布稳定。
+* **测试**：全量 **`3697 passed`**（基线 3644 + 53）。ruff / format / mypy（336 files）/ WebUI typecheck +
+  Vitest（528）+ build + Playwright E2E（7）/ `minecraft_runtime npm test` 全绿；迁移演练 v36→v36 **幂等**、
+  83 表、`integrity ok`、`lost_rows {}`。
+* **真实 Java 服务器门禁 —— PASS**（`scripts/feedback_smoke_real.py` + `scripts/explore_smoke_real.py
+  --sections all`，Fabric 1.21.1，offline `Catodayo`）：正常成功路径与 LifeIntent 反馈链通过；
+  positive（距目标 0.71 格 `SUCCEEDED`）/ blocked（安全 `PAUSED`）/ cancel（真停且不再产生动作）全部通过。
+* **安全边界（一字未松）**：19 工具 / `ACTION_RISK` / `allow_medium=false` / 两道门 / 授权 / 取消暂停超时语义
+  全部不变；**无新表、无新迁移**（最高仍 **36**）；未触碰 `.env` / 密钥 / Character Bible / 敏感配置。
+
 ## Minecraft Phase 7F.2.1 — Terminal-State Invariant Hardening（探索投影终态不变量加固）
 
 * **目标**：在不改变 Phase 7F.2 正常业务行为的前提下，补牢探索结果投影的**终态约束**。

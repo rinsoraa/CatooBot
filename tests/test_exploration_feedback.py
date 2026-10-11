@@ -11,6 +11,8 @@ from __future__ import annotations
 
 from typing import Any
 
+import pytest
+
 from app.activity.initiative import INTENT_ACTIVITY_MAP, hint_book_from, normalise_hint
 from app.initiative.candidates import InitiativeContext, MemorySignal, propose_intents
 from app.initiative.model import LifeIntentStatus, LifeIntentType
@@ -18,10 +20,12 @@ from app.memory.minecraft.model import MinecraftMemoryKind
 from app.tasks.agent_plan import PlanStatus
 from app.tasks.exploration import (
     ExplorationOutcome,
+    _clean_position,
     arrival_fact,
     exploration_facts,
     exploration_outcome,
     is_exploration_task,
+    verified_arrival,
 )
 from app.tasks.models import (
     ExpectedFinalState,
@@ -359,6 +363,122 @@ class TestTerminalStateInvariant:
         )
         assert len(events) == 1
         assert len(locations) == 1
+        await database.close()
+
+
+# ------------------------------------------------ 4c. 坐标域加固（Phase 7F.2.2）
+
+
+class TestCoordinateDomainHardening:
+    """Phase 7F.2.2：探索坐标必须落在**有限实数**域内，否则一律 fail-closed。
+
+    ``bool``（``int`` 子类）、类型异常、缺字段、不可解析字符串、``NaN`` /
+    ``±Infinity`` 都不能冒充世界坐标；合法负坐标与小数（含有限数字字符串）照常通过。
+    """
+
+    # -------------------------------------------------- 单元：_clean_position
+
+    @pytest.mark.parametrize("axis", ["x", "y", "z"])
+    @pytest.mark.parametrize("bad", [float("nan"), float("inf"), float("-inf")])
+    def test_clean_position_rejects_non_finite(self, axis, bad) -> None:
+        assert _clean_position({**TARGET, axis: bad}) is None
+
+    @pytest.mark.parametrize("axis", ["x", "y", "z"])
+    @pytest.mark.parametrize("bad", [True, False])
+    def test_clean_position_rejects_bool(self, axis, bad) -> None:
+        # True/False 是 int 子类，绝不能被当成 1/0
+        assert _clean_position({**TARGET, axis: bad}) is None
+
+    def test_clean_position_rejects_missing_field(self) -> None:
+        assert _clean_position({"x": 1.0, "y": 2.0}) is None
+        assert _clean_position({"x": 1.0, "z": 2.0}) is None
+        assert _clean_position({"y": 1.0, "z": 2.0}) is None
+
+    @pytest.mark.parametrize("bad", [None, [1.0], {"a": 1}, object()])
+    def test_clean_position_rejects_wrong_type(self, bad) -> None:
+        assert _clean_position({**TARGET, "x": bad}) is None
+
+    @pytest.mark.parametrize(
+        "bad", ["north", "", "NaN", "inf", "-inf", "Infinity", "-Infinity", "1e400"]
+    )
+    def test_clean_position_rejects_unusable_strings(self, bad) -> None:
+        assert _clean_position({**TARGET, "x": bad}) is None
+
+    @pytest.mark.parametrize("bad", [None, [1.0, 2.0, 3.0], "116,64,100", 116])
+    def test_clean_position_rejects_non_mapping(self, bad) -> None:
+        assert _clean_position(bad) is None
+
+    def test_clean_position_accepts_negatives_and_decimals(self) -> None:
+        cleaned = _clean_position({"x": -116.5, "y": 63, "z": 0})
+        assert cleaned == {"x": -116.5, "y": 63.0, "z": 0.0}
+        assert all(isinstance(v, float) for v in cleaned.values())
+
+    def test_clean_position_accepts_finite_numeric_strings(self) -> None:
+        assert _clean_position({"x": "116", "y": "63.5", "z": "-100"}) == {
+            "x": 116.0,
+            "y": 63.5,
+            "z": -100.0,
+        }
+
+    # -------------------------------------------------- 单元：verified_arrival
+
+    @pytest.mark.parametrize("axis", ["x", "y", "z"])
+    @pytest.mark.parametrize("bad", [float("nan"), float("inf"), float("-inf"), True])
+    def test_verified_arrival_rejects_invalid_axis(self, axis, bad) -> None:
+        record = explore_record()
+        record.verification["position_within"][axis] = bad
+        assert verified_arrival(record) is None
+        assert exploration_outcome(record).arrived is False
+
+    def test_verified_arrival_rejects_non_mapping_position(self) -> None:
+        record = explore_record()
+        record.verification["position_within"] = "116,64,100"
+        assert verified_arrival(record) is None
+
+    def test_verified_arrival_accepts_finite_decimals(self) -> None:
+        record = explore_record()
+        record.verification["position_within"] = {"x": -116.5, "y": 63, "z": 0}
+        assert verified_arrival(record) == {"x": -116.5, "y": 63.0, "z": 0.0}
+
+    # -------------------------------------------------- 记忆层：坏坐标不落正向事实
+
+    async def _publish(self, tmp_path, record):
+        bridge, database, _manager, _service = await build_bridge(tmp_path)
+        await bridge.on_task_finished(record)
+        facts = await bridge.store.all_facts(server_id=bridge.server_id())
+        return database, facts
+
+    @pytest.mark.parametrize("bad", [float("nan"), float("inf"), float("-inf"), True])
+    async def test_invalid_axis_writes_no_positive_memory(self, tmp_path, bad) -> None:
+        record = explore_record(steps=[world_step(pois=[_poi(116, 100)])])
+        record.verification["position_within"]["x"] = bad
+        database, facts = await self._publish(tmp_path, record)
+        kinds = [fact.kind for fact in facts]
+        assert MinecraftMemoryKind.EVENT not in kinds
+        assert MinecraftMemoryKind.LOCATION not in kinds
+        assert all(fact.extra.get("actionable") is not True for fact in facts)
+        assert kinds == [MinecraftMemoryKind.TASK]
+        assert facts[0].extra.get("exploration_outcome") == (
+            ExplorationOutcome.CANCELLED_OR_INTERRUPTED.value
+        )
+        assert exploration_facts(record, server_id="mc-1") == ()
+        assert arrival_fact(record, server_id="mc-1") is None
+        await database.close()
+
+    async def test_repeated_invalid_publish_is_stable(self, tmp_path) -> None:
+        bridge, database, _manager, _service = await build_bridge(tmp_path)
+        record = explore_record(steps=[world_step(pois=[_poi(116, 100)])])
+        record.verification["position_within"]["z"] = float("nan")
+        for _ in range(3):
+            await bridge.on_task_finished(record)
+        events = await bridge.store.facts(
+            server_id=bridge.server_id(), kinds=[MinecraftMemoryKind.EVENT]
+        )
+        locations = await bridge.store.facts(
+            server_id=bridge.server_id(), kinds=[MinecraftMemoryKind.LOCATION]
+        )
+        assert events == []
+        assert locations == []
         await database.close()
 
 
