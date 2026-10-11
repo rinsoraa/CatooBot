@@ -298,6 +298,51 @@ LifeIntent → `TaskProposal`（created，来源 LIFE，`intent_id` 一致）→
 
 ---
 
+## 9. CI、数据库与敏感文件边界
+
+### 9.1 CI（GitHub Actions）
+
+| 项 | 结果 |
+| --- | --- |
+| commit | `4d732628c0f04f36bafbf51560f166fda99a0a80` |
+| attempt 1 | `webui · typecheck · tests · build` = **success**；`lint · format · types · tests` = **failure** |
+| 失败原因 | **项目已知的 follow_player E2E 抖动**：`[e2e] FAILED: Error: timeout waiting for: runtime 看见 Followee`
+（`minecraft_runtime/test/e2e.js:110` 注释就记录过同一现象：机器繁忙时实体包与区块加载滞后）。
+**不是本阶段引入**，且它发生在 follow 段、**早于**新增的鉴权段 |
+| 处置 | 按既有纪律触发 `rerun-failed-jobs`（**没有**为通过而修改断言或放宽阈值） |
+| attempt 2 | **两个 job 均 success** |
+
+**attempt 2 的 CI 证据**：`ruff check .` = All checks passed；`ruff format --check .` = 637 files already formatted
+（CI 只看到镜像内文件）；`mypy app` = Success（336 source files）；`pytest tests` = **3799 passed, 3 skipped in 311.69s**
+（与本地 3802 精确对账：差的 3 条即既有平台条件性 skip，本阶段新增 **23 项无一被跳过**）；Browser E2E = 7 passed (21.3s)；
+`minecraft_runtime` 全部套件 = ALL CHECKS PASSED，其中包含
+**`[e2e] bridge auth boundary + runtime instance ✓ (missing/wrong -> 401, valid -> 200, no bypass, no token leak)`**
+—— 鉴权边界在 CI 的真实 spawn + 真实 HTTP 下也通过了。
+
+### 9.2 数据库
+
+* **无新表、无新迁移**（最高仍 36）；演练 `version [36,36]`、`tables [83,83]`、`integrity [ok,ok]`、`lost_rows {}`、
+  `quick_check ok`、FK 违规 0；
+* 逐段证据与运行时实例标识都落在**既有** `agent_task_runs.payload`（单个 TEXT 列）里；
+* 真机后 live DB：`integrity ok`、`max_version 36`、83 张业务表、FK 违规 0。
+
+### 9.3 敏感文件边界
+
+| 项 | 状态 |
+| --- | --- |
+| 19 工具 / `ACTION_RISK` / `allow_medium=false` | **未改** |
+| LifeIntent / TaskProposal / AgentPlan 语义 | **未改** |
+| 计划批准 + 第二道执行确认 / `TaskAuthorization` / `TaskStepAuthorization` / Policy | **未改**（桥接凭据**不是**它们的替代品） |
+| 多段 ≤3 段与共享 24 格预算 / `explore_legs=1` 默认值 | **未改** |
+| 无界重试 | **未引入** |
+| 真实 Character Bible / 密钥 / `.env` | **未触碰**（凭据每进程内存生成，`.env` 未新增任何键） |
+| `.env` / `config/config.yaml` / `data/` / `logs/` / `auth.json` | 镜像**未跟踪**（`git ls-files` 扫描为空） |
+| 发布边界 | `scripts/` 仍**不进** GitHub 发布（实测镜像无 `scripts`） |
+| 发布前密钥扫描 | 镜像 diff 命中项全是**代码引用**（变量名 / 环境变量名 / `secrets.token_urlsafe`），**无任何真实凭据值** |
+| 凭据暴露面 | 不进 Git / 日志 / 错误响应 / 事件 / 任务 payload / WebUI（注册表标记为**敏感项**，值永不返回） |
+
+---
+
 ## 10. 失败、重跑、SKIPPED 与遗留限制
 
 ### 10.1 开发期被仓库自己的契约测试抓住的一个真实缺口
