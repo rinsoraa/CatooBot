@@ -343,6 +343,12 @@ async def test_e_authorize_step_matrix() -> None:
     runtime, _, _, _ = make_runtime(invoke=Recorder(minecraft_move_to="detached"))
     record = await create_confirmed(runtime)
     assert record.state is TaskState.WAITING_ACTION, "停在等待动作时才能验授权矩阵"
+    # Phase 7F.5.2 §二.3：步骤授权现在只在**明确允许执行的 RUNNING** 放行 ——
+    # WAITING_ACTION 说明已经有动作在外部跑，那时不该再授权任何步骤。WAITING_ACTION →
+    # RUNNING 是状态机允许的转移（resume() 走的就是这条），这里用它把任务摆回"正在执行"，
+    # 以便继续验证授权矩阵本身（有效 → 放行；参数/计划/任务对不上 → 一律拒绝）。
+    await runtime._enter(record, TaskState.RUNNING)
+    await runtime._save(record)
     step = record.steps[0]
     ok = await runtime.authorize_step(
         task_id=record.task_id,

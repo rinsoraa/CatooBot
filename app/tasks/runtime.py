@@ -275,6 +275,10 @@ class TaskRuntime:
         self._identity_probe = identity_probe
         self._label_of = label_of
         self._log = logger
+        #: Phase 7F.5.2 §三.3：身份变化对账的**再入保护**。对账内部会走 SAFE 控制面
+        #: （minecraft_stop → 健康检查 → 可能再次观测到实例变化），所以回调必须能重入而
+        #: 不递归等待。这里只打标记、**绝不等待**：无锁、无等待 ⇒ 结构上不可能死锁。
+        self._identity_reconcile_inflight = False
 
     def runtime_instance(self) -> str:
         """当前 Runtime 实例标识（Phase 7F.5）。拿不到就返回空串。
@@ -338,33 +342,90 @@ class TaskRuntime:
         return current
 
     async def _dispatch_precheck(self, record: TaskRecord, step: TaskStep, *, risk: str) -> bool:
-        """外部动作发出**之前**的最后一道复核（Phase 7F.5.1 §三.4）。
+        """外部动作发出**之前**的最后一道复核（Phase 7F.5.1 §三.4 / 7F.5.2 §二.1）。
 
-        实例变化/取消/重规划的对账直接改**持久化记录**，而编排层手里的 record 可能还是
+        实例变化/取消/重规划/暂停的对账直接改**持久化记录**，而编排层手里的 record 可能还是
         旧快照。所以这里从 store 重新 load，用持久化真相判断这一步是否仍然被允许派发：
         任何一项对不上就**不派发**（返回 False），既不猜、也不重新派发 —— 该做的对账
         已经由对账方做完了。
         """
+        return await self._dispatch_guard(record, step, risk=risk, expect_intent=True)
+
+    async def _dispatch_allowed(
+        self, record: TaskRecord, step: TaskStep, *, risk: str, expect_intent: bool
+    ) -> tuple[str, TaskRecord]:
+        """派发资格的统一谓词（Phase 7F.5.2 §二.1）。
+
+        返回「(原因码, 持久化快照)」：原因码为空串表示**允许派发**，否则给出拒绝原因。
+        判定**全部基于持久化真相**：别的协程（pause/cancel/expire/身份对账）改的是 store
+        里的那一份，编排层手里的对象可能是旧快照 —— 拿旧快照判断就「看不见」暂停。
+
+        expect_intent 区分两个窗口：
+
+        * False：派发意图**还没落盘**（落盘前复核）；
+        * True：派发意图**已经落盘**（真正发出外部请求之前的最后一道复核）。
+        """
         fresh = await self._require(record.task_id)
-        if fresh.state.terminal:
-            return False
+        # 1) **只有 RUNNING 明确允许派发**。终态、PAUSED、等确认、等动作、重规划、PLANNING、
+        #    WAITING_USER 一律拒绝 —— PAUSED 是 7F.5.2 补上的缺口：pause() 在没有前台动作
+        #    时会把任务直接持久化成 PAUSED，而编排层手里的 record 还是 RUNNING。
+        if fresh.state is not TaskState.RUNNING:
+            return "task.not_running", fresh
+        if fresh.replan_required:
+            # 需要重新规划 = 旧计划已失效：新计划 + 新确认之前一步世界动作都不许走。
+            return "task.replan_required", fresh
+        if fresh.pause_requested:
+            # 用户已经请求暂停：这一次动作绝不发出（外部动作计数必须为零，§三.1）。
+            return "task.pause_requested", fresh
         fresh_step = fresh.step(step.step_id)
         if fresh_step is None:
-            return False
-        if fresh_step.dispatch_state != DispatchState.INTENT.value:
-            # 已经被对账判成歧义（AMBIGUOUS），或者状态已被推进。
-            return False
+            return "step.missing", fresh
+        if expect_intent:
+            if fresh_step.dispatch_state != DispatchState.INTENT.value:
+                # 已经被对账判成歧义（AMBIGUOUS），或者状态已被推进。
+                return "step.not_intent", fresh
+        elif fresh_step.dispatch_unresolved:
+            # 上一次派发的结果还悬着（INTENT/AMBIGUOUS）：**绝不再开一代**，也绝不在同一轮里
+            # 把代次再加一次（§二.2）。
+            return "step.dispatch_unresolved", fresh
         if fresh_step.dispatch_generation != step.dispatch_generation:
-            return False
-        if risk not in SAFE_RISKS and fresh.authorization is None:
-            # 授权已被对账清掉：这一步不能再动世界。
-            return False
+            return "step.generation_changed", fresh
+        # 2) 授权仍然有效，而且仍然绑在**同一版**冻结计划上（§二.1）。
+        if risk not in SAFE_RISKS:
+            auth = fresh.authorization
+            if auth is None:
+                # 授权已被对账清掉：这一步不能再动世界。
+                return "authorization.missing", fresh
+            if not auth.valid(now=self._clock()):
+                return "authorization.expired", fresh
+            if auth.plan_hash != fresh.plan_hash:
+                return "authorization.plan_changed", fresh
+            if int(auth.plan_version or 0) != int(fresh.plan_version):
+                return "authorization.plan_version_changed", fresh
+        # 3) 身份：这次动作要发给**记录的**那个实例，而且它必须仍是当前实例（§二.1）。
         current = self.runtime_instance()
         recorded = str(fresh_step.dispatch_runtime_instance or "")
         if recorded and current and recorded != current:
+            return "runtime.instance_changed", fresh
+        return "", fresh
+
+    async def _dispatch_guard(
+        self, record: TaskRecord, step: TaskStep, *, risk: str, expect_intent: bool
+    ) -> bool:
+        """复核派发资格：允许 → True；拒绝 → False（必要时先做受控歧义暂停）。"""
+        reason, fresh = await self._dispatch_allowed(
+            record, step, risk=risk, expect_intent=expect_intent
+        )
+        if not reason:
+            return True
+        if reason == "runtime.instance_changed":
+            current = self.runtime_instance()
+            fresh_step = fresh.step(step.step_id)
+            recorded = str(fresh_step.dispatch_runtime_instance or "") if fresh_step else ""
+            self._adopt_lifecycle(record, fresh)
             await self._pause_ambiguous_dispatch(
-                fresh,
-                fresh_step,
+                record,
+                step,
                 message=(
                     f"派发前发现 Runtime 实例已更换（记录的是 {recorded}，当前是 {current}）："
                     "为不把动作发给错误的实例，已安全停下，请人工核对。"
@@ -372,7 +433,34 @@ class TaskRuntime:
                 reason="runtime_instance_changed_before_dispatch",
             )
             return False
-        return True
+        self._log_info(
+            "dispatch refused",
+            task_id=record.task_id,
+            step=step.step_id,
+            reason=reason,
+        )
+        return False
+
+    def _adopt_lifecycle(self, record: TaskRecord, fresh: TaskRecord) -> None:
+        """把持久化真相里的**生命周期字段**取回内存对象（Phase 7F.5.2 §二.2）。
+
+        别的协程改的是 store 里的那一份，编排层手里的对象可能是旧快照；带着旧快照去
+        _save 就会把持久化的 PAUSED 覆盖回 RUNNING。这里先把真相取回来，保证之后任何一次
+        落盘写的都是与 store 一致的状态。
+        """
+        record.state = fresh.state
+        record.authorization = fresh.authorization
+        record.authorization_expired_at = fresh.authorization_expired_at
+        record.replan_required = fresh.replan_required
+        record.replan_reason = fresh.replan_reason
+        record.pause_requested = fresh.pause_requested
+        record.pending_action_id = fresh.pending_action_id
+        record.pending_step_id = fresh.pending_step_id
+        record.failure = fresh.failure
+        record.failed_step = fresh.failed_step
+        record.message = fresh.message
+        record.recovery = fresh.recovery
+        record.updated_at = fresh.updated_at
 
     # ------------------------------------------------------------ 步骤授权
 
@@ -400,6 +488,11 @@ class TaskRuntime:
         """
         record = await self._store.load(str(task_id))
         if record is None or record.state.terminal:
+            return False
+        # Phase 7F.5.2 §二.3：**只有明确允许执行的 RUNNING 才放行**。已经暂停（或等确认/
+        # 等动作/重规划）的任务绝不能因为「授权对象还在有效期内」就把步骤放出去 ——
+        # 用户暂停与派发交错时，安全行为必须是可解释、可测试的。
+        if record.state is not TaskState.RUNNING:
             return False
         if record.authorization is None or not record.authorization.valid(now=self._clock()):
             return False
@@ -598,6 +691,17 @@ class TaskRuntime:
         record = await self._require(task_id)
         guard = 0
         while True:
+            # Phase 7F.5.2 §二.2：**每一轮都以持久化真相为准**。pause()/cancel()/expire()/
+            # 身份对账改的都是 store 里的那一份记录，而循环手里这个对象可能还是旧快照 ——
+            # 拿旧快照判断状态就「看不见」刚刚发生的暂停，会继续往下派发，甚至把持久化的
+            # PAUSED 覆盖回 RUNNING。
+            fresh = await self._require(task_id)
+            # last_progress_key 是 TaskRecord 里**唯一不参与序列化**的字段（既有不对称）：
+            # 重新 load 会让它回到空串，no-progress 检测就永远数不到"连续两次同一个动作"。
+            # 它本来就是"这一次推进里上一步是什么"的内存标记，按原语义带过去。
+            if record.last_progress_key and not fresh.last_progress_key:
+                fresh.last_progress_key = record.last_progress_key
+            record = fresh
             guard += 1
             if guard > self.config.max_steps + 2:
                 return await self._fail(record, TaskFailure.INTERNAL, "任务推进超出内部步数上限")
@@ -641,8 +745,15 @@ class TaskRuntime:
             outcome = await self._run_step(record, step)
             if outcome == "wait":
                 return record
-            if record.state.terminal or record.state is TaskState.PAUSED:
-                return record
+            if outcome == "continue":
+                continue
+            if outcome == "blocked":
+                # 派发在**发出外部动作之前**被拦下（Phase 7F.5.2 §二.2）：执行流程立即停止，
+                # 并且绝不用手里这个旧快照去覆盖持久化的 PAUSED/终态。
+                return await self._settle_blocked(record, step)
+            # 其余 "stop" 一律以**持久化真相**返回：状态的改动可能来自别的协程
+            # （pause/cancel/expire/身份对账），而这里手里的对象是旧快照。
+            return await self._require(task_id)
 
     # ------------------------------------------------------------ 步骤执行
 
@@ -746,6 +857,12 @@ class TaskRuntime:
             identity = await self._resolve_dispatch_identity(record, step)
             if identity is None:
                 return "stop"
+            # Phase 7F.5.2 §二.1/§二.2：**落盘派发意图之前**先按持久化真相复核这一步还有没有
+            # 资格派发。关键：这次复核返回之后到 _save 之间**没有任何 await**，所以 pause()
+            # 不可能挤在「复核通过」与「写意图」之间 —— 持久化的 PAUSED 绝不会被内存里的
+            # 旧快照覆盖回 RUNNING。
+            if not await self._dispatch_guard(record, step, risk=risk, expect_intent=False):
+                return "blocked"
             step.dispatch_generation += 1
             step.dispatch_key = dispatch_key_of(
                 record.task_id, record.plan_hash, step.step_id, step.dispatch_generation
@@ -764,7 +881,7 @@ class TaskRuntime:
             # 实例变化时的对账可能刚刚把这一步判成歧义并清掉授权，而内存里的 record 还是
             # 旧快照 —— 只看内存对象就会把「已被安全停下的动作」继续发出去。
             if not await self._dispatch_precheck(record, step, risk=risk):
-                return "stop"
+                return "blocked"
             invocation = await self._invoke_step(record, step, grant)
             if invocation.ok:
                 break
@@ -782,7 +899,46 @@ class TaskRuntime:
         step.finished_at = self._clock()
         return await self._settle(record, step, invocation)
 
+    async def _settle_blocked(self, record: TaskRecord, step: TaskStep) -> TaskRecord:
+        """派发被拦下之后，把执行流程与持久化真相对齐（Phase 7F.5.2 §二.2/§二.4）。
+
+        复核是在 _invoke_step **之前**拒绝的，所以这一次派发**确认没有发出**（外部动作计数
+        为零）。据此：
+
+        * 把落盘的派发意图如实 retire 掉 —— 它以后**不该**被当成「结果未知」（那是 7F.4
+          针对「可能已经发出」的语义，用在这里就是谎报）。代次保持不变：这一代从来不曾真正
+          派发过，也绝不因为同一轮重复复核就再 +1；
+        * **绝不**把持久化的 PAUSED/终态覆盖回 RUNNING（下面只读真相，不写旧快照）；
+        * 用户正是在这个窗口请求了暂停 → 现在如实落到 PAUSED（外部动作计数为零）；
+        * 其余情况一律返回持久化真相，让调用方看到的状态与 store 一致。
+        """
+        fresh = await self._require(record.task_id)
+        fresh_step = fresh.step(step.step_id)
+        if fresh_step is not None and fresh_step.dispatch_state == DispatchState.INTENT.value:
+            fresh_step.dispatch_state = ""
+            fresh_step.dispatch_at = 0.0
+            if fresh_step.state is StepState.RUNNING:
+                fresh_step.state = StepState.PENDING
+            await self._save(fresh)
+        if (
+            fresh.pause_requested
+            and fresh.state is TaskState.RUNNING
+            and not fresh.pending_action_id
+        ):
+            fresh.pause_requested = False
+            fresh.message = "已暂停（派发在发出外部动作之前被拦下）"
+            await self._enter(fresh, TaskState.PAUSED)
+            await self._publish(TASK_PAUSED, self._event_payload(fresh))
+            await self._save(fresh, event=TASK_PAUSED)
+        return fresh
+
     async def _settle(self, record: TaskRecord, step: TaskStep, invocation: TaskInvocation) -> str:
+        # Phase 7F.5.2 §二.2/§三.6：调用期间任务可能已经被暂停/取消/过期/判歧义 —— 那些改动
+        # 直接落在 store 里，而这里的 record 还是旧快照。先把真相取回来：既不把持久化的
+        # PAUSED 覆盖回 RUNNING，也不制造「任务已暂停、动作却没有记录」的假象。
+        persisted = await self._require(record.task_id)
+        if persisted.state is not TaskState.RUNNING:
+            return await self._record_settlement_under_pause(record, step, invocation, persisted)
         if invocation.detached:
             # Phase 7F.5.1 §四：动作**已经跑到外部**了，必须有可信实例身份才能进入
             # 「等动作」。Runtime 可达却没有实例（或调用期间换了人）时，这条动作的终态
@@ -859,6 +1015,61 @@ class TaskRuntime:
         await self._publish(TASK_STEP_FAILED, self._event_payload(record, step))
         await self._save(record, event=TASK_STEP_FAILED, step_id=step.step_id)
         await self._pause_after_failure(record, failure, step)
+        return "stop"
+
+    async def _record_settlement_under_pause(
+        self,
+        record: TaskRecord,
+        step: TaskStep,
+        invocation: TaskInvocation,
+        persisted: TaskRecord,
+    ) -> str:
+        """任务在调用期间已被暂停/取消/过期：只把**步骤证据**记实（Phase 7F.5.2 §二.2/§三.6）。
+
+        任务状态一律以持久化真相为准 —— 绝不因为一次调用返回就把 PAUSED/CANCELLED 推回
+        RUNNING；同时，**已经跑到外部的动作仍要留下完整关联**（action_id + pending），
+        绝不能出现「任务说已暂停、动作却在外面跑且没有记录」的假象。
+        """
+        self._adopt_lifecycle(record, persisted)
+        if invocation.detached:
+            step.state = StepState.WAITING_ACTION
+            step.dispatch_state = DispatchState.ACCEPTED.value
+            step.dispatch_identity_tracked = self._runtime_instance_of is not None
+            step.dispatch_runtime_instance = str(
+                invocation.runtime_instance or step.dispatch_runtime_instance or ""
+            )
+            step.action_id = invocation.action_id
+            step.status = invocation.status
+            step.summary = invocation.summary or step.summary
+            record.pending_action_id = invocation.action_id
+            record.pending_step_id = step.step_id
+            if record.state is TaskState.PAUSED:
+                # 等这个动作真正结束后再停：动作有记录、状态不撒谎。
+                record.pause_requested = True
+                record.message = "已请求暂停：当前动作仍在外部运行，等它结束后再停"
+            await self._publish(TASK_STEP_WAITING, self._event_payload(record, step))
+            await self._save(record, event=TASK_STEP_WAITING, step_id=step.step_id)
+            return "stop"
+        if invocation.ok:
+            step.state = StepState.SUCCEEDED
+            step.dispatch_state = DispatchState.SETTLED.value
+            step.status = invocation.status or "SUCCEEDED"
+            step.result = dict(invocation.result)
+            step.summary = invocation.summary or step.summary
+            await self._publish(TASK_STEP_SUCCEEDED, self._event_payload(record, step))
+            await self._save(record, event=TASK_STEP_SUCCEEDED, step_id=step.step_id)
+            return "stop"
+        # 明确失败（含歧义）：只记步骤证据，任务状态仍以持久化真相为准。
+        step.state = StepState.FAILED
+        step.dispatch_state = (
+            DispatchState.AMBIGUOUS.value if invocation.ambiguous else DispatchState.SETTLED.value
+        )
+        step.status = invocation.status or "FAILED"
+        step.error = invocation.error
+        step.failure = classify_failure(invocation.code, event=invocation.status).value
+        step.message = invocation.error or invocation.code
+        await self._publish(TASK_STEP_FAILED, self._event_payload(record, step))
+        await self._save(record, event=TASK_STEP_FAILED, step_id=step.step_id)
         return "stop"
 
     def _validate_resolved(self, step: TaskStep) -> list[str]:
@@ -1368,33 +1579,45 @@ class TaskRuntime:
         current = str(runtime_instance or "")
         if not current:
             return []
-        affected: list[TaskRecord] = []
-        for record in await self._store.list_pending():
-            stale = next(
-                (
-                    item
-                    for item in record.steps
-                    if item.dispatch_state
-                    in {DispatchState.INTENT.value, DispatchState.ACCEPTED.value}
-                    and str(item.dispatch_runtime_instance or "")
-                    and str(item.dispatch_runtime_instance) != current
-                ),
-                None,
-            )
-            if stale is None:
-                continue
-            await self._pause_ambiguous_dispatch(
-                record,
-                stale,
-                message=(
-                    f"Runtime 实例已更换（这次动作记录的是 {stale.dispatch_runtime_instance}，"
-                    f"当前是 {current}）：旧动作的真实状态无法查询，"
-                    "为不重复世界动作已安全停下，请人工核对。"
-                ),
-                reason="runtime_instance_changed",
-            )
-            affected.append(record)
-        return affected
+        if self._identity_reconcile_inflight:
+            # Phase 7F.5.2 §三.3：对账内部会走 SAFE 控制面（minecraft_stop → 健康检查 →
+            # 可能再次观测到实例变化 → 又回到这里）。这里**只打标记、绝不等待**：重入直接
+            # 返回空，既不递归等待 stop，也不与身份观测互相等锁 —— 结构上不存在死锁。
+            # 跳过这一轮是安全的：对账本身幂等，而**派发**另有落盘前/落盘后两道身份复核
+            # （_dispatch_allowed），安全性并不依赖这个回调跑完。
+            self._log_info("identity reconcile re-entered; skipped", runtime_instance=current)
+            return []
+        self._identity_reconcile_inflight = True
+        try:
+            affected: list[TaskRecord] = []
+            for record in await self._store.list_pending():
+                stale = next(
+                    (
+                        item
+                        for item in record.steps
+                        if item.dispatch_state
+                        in {DispatchState.INTENT.value, DispatchState.ACCEPTED.value}
+                        and str(item.dispatch_runtime_instance or "")
+                        and str(item.dispatch_runtime_instance) != current
+                    ),
+                    None,
+                )
+                if stale is None:
+                    continue
+                await self._pause_ambiguous_dispatch(
+                    record,
+                    stale,
+                    message=(
+                        f"Runtime 实例已更换（这次动作记录的是 {stale.dispatch_runtime_instance}，"
+                        f"当前是 {current}）：旧动作的真实状态无法查询，"
+                        "为不重复世界动作已安全停下，请人工核对。"
+                    ),
+                    reason="runtime_instance_changed",
+                )
+                affected.append(record)
+            return affected
+        finally:
+            self._identity_reconcile_inflight = False
 
     async def on_action_event(
         self,
@@ -1555,6 +1778,27 @@ class TaskRuntime:
             if stop_action:
                 await self._stop_action()
             await self._save(record, event=TASK_PAUSED)
+            return record
+        inflight = next(
+            (item for item in record.steps if item.dispatch_state == DispatchState.INTENT.value),
+            None,
+        )
+        if inflight is not None:
+            # Phase 7F.5.2 §三.6：派发意图已经落盘，但**外部结果未知**（可能已经发出去、
+            # 也可能还没发出）。此时把任务直接标成「已暂停」就是假象：动作可能仍在外面跑，
+            # 而记录里什么都没有。无法确认外部状态 → 如实进入受控暂停 + 人工核对（与 7F.4
+            # 的歧义语义完全一致）：清授权、要求重新规划、尽力真停、绝不重发这一步。
+            record.pause_requested = False
+            await self._pause_ambiguous_dispatch(
+                record,
+                inflight,
+                message=(
+                    f"收到暂停（{reason}）时这一步的派发结果未知（可能已经发出）：为不出现"
+                    "「任务已暂停而动作仍在跑」的假象，已受控暂停，请人工核对关联键 "
+                    f"{inflight.dispatch_key or '-'}。"
+                ),
+                reason="paused_during_dispatch",
+            )
             return record
         record.pause_requested = False
         await self._enter(record, TaskState.PAUSED)

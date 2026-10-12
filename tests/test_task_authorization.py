@@ -245,6 +245,11 @@ async def test_bridge_accepts_a_step_the_runtime_authorizes() -> None:
     bridge = MinecraftAgentBridge(service)
     bridge.set_task_authorizer(runtime.authorize_step)
     assert record.state is TaskState.WAITING_ACTION
+    # Phase 7F.5.2 §二.3：授权复核只在**明确允许执行的 RUNNING** 放行（WAITING_ACTION 不再
+    # 放行：那时已经有动作在外部跑）。WAITING_ACTION → RUNNING 是状态机允许的转移
+    # （resume() 走的就是这条），用它把任务摆回"正在执行"再验 bridge 的放行/拒绝行为。
+    await runtime._enter(record, TaskState.RUNNING)
+    await runtime._save(record)
     step = record.steps[1]
     result = await bridge.invoke_task_step(
         step.tool,

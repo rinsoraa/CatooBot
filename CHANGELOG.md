@@ -1,5 +1,47 @@
 # Changelog
 
+## Minecraft Phase 7F.5.2 — Pre-dispatch Pause Race Closure（派发前暂停竞态闭合）
+
+* **目标**：**定向并发安全修正** —— 用户暂停与派发动作交错时，外部动作**一次都不能发出**，
+  持久化的 `PAUSED` **绝不被**旧内存快照覆盖回 `RUNNING`，已经发出的调用**必须有记录**。不新增任何游玩能力。
+* **审计确认的三处真实缺陷**：① `_dispatch_precheck()` 只判 `fresh.state.terminal`，而 **`PAUSED` 不是终态**
+  —— 刚被暂停的任务照样能通过复核（且对非 SAFE 步骤只检查授权对象是否为 `None`，不校验有效期与计划绑定）；
+  ② `pause()` 在 `pending_action_id` 为空时直接 `_enter(PAUSED)` + `_save`，而那个窗口里它**正是空的**
+  （`pending_action_id` 要到 `_settle` 才写）；③ 派发被拒后 `drive()` 仍持有进来时 load 的那份 `RUNNING` 对象，
+  会继续推进同一步、再次 `dispatch_generation += 1`，并把持久化的 `PAUSED` **覆盖回 `RUNNING`**。
+* **统一派发谓词** `_dispatch_allowed()`（`app/tasks/runtime.py:354`）：**只有 `RUNNING` 明确允许派发**
+  （终态 / `PAUSED` / 等确认 / 等动作 / 重规划 / PLANNING / WAITING_USER 一律拒绝）+ 步骤仍是**本次代次的 `INTENT`**
+  + 代次未变 + 非 SAFE 动作的授权**仍有效且绑在同一版冻结计划**（`plan_hash` + `plan_version`）+ 实例一致 +
+  未 `replan_required` / 未 `pause_requested`；每个拒绝都带原因码（可审计、可测）。
+* **两个窗口**用同一谓词的不同阶段表达：落盘**前**复核（`expect_intent=False`，要求没有悬空的未决派发）与
+  落盘**后**、真正发出请求**之前**的最后一道复核（`expect_intent=True`）。落盘前复核返回之后到 `_save` 之间
+  **没有任何 await**，所以 `pause()` 不可能挤在「复核通过」与「写意图」之间。
+* **流程状态同步**：`drive()` **每一轮都重新 load 持久化真相**（不再信任旧快照；`last_progress_key` 这个
+  **唯一不参与序列化**的字段按原语义带过去，保证 no-progress 检测不被重读破坏）；`_run_step()` 用新的
+  `blocked` 结果表示「发出动作之前被拦下」，`drive()` 收到立即 `_settle_blocked()` 返回、**不再进入下一轮**；
+  其余 `stop` 也一律返回**从 store 重新读出的**记录。
+* **`_settle_blocked()`**：复核是在 `_invoke_step` **之前**拒绝的 ⇒ 这次派发**确认没有发出** ⇒ 把落盘的意图
+  **如实 retire**（`dispatch_state` 清空、代次**保持不变**），**绝不**把它当成「结果未知」（那是针对
+  「可能已经发出」的语义，用在这里就是谎报）；用户正是在这个窗口请求暂停 → 如实落到 `PAUSED`。
+* **授权复核的暂停缺口**：`authorize_step()` 现在要求 `record.state is TaskState.RUNNING` ——
+  已暂停的任务绝不能仅凭「授权还没过期」放行步骤。控制面（`minecraft_stop` 等空 `task_id` 调用）走
+  `invoke_developer`，不经过授权器，真停能力不受影响。
+* **三类窗口分别处理**：未发出 → 拒绝 + retire（计数为零）；已发出但无答复/调用期间换实例 → 沿用既有
+  **歧义**语义（受控暂停 + 清授权 + 要求重规划 + 人工核对，绝不重发）；已知在跑 → 沿用既有生命周期
+  （`pause_requested` + 尽力真停，等它结束再停）。`_settle()` 结算前新增**新鲜度守卫**：任务在调用期间
+  被暂停/取消/过期时交给 `_record_settlement_under_pause()` —— **只记步骤证据、绝不把状态推回**
+  `RUNNING`/`WAITING_ACTION`，但动作的 `action_id` + `pending_action_id` **必须落盘**，杜绝
+  「任务说已暂停、动作却在外面跑且没有任何记录」的假象。
+* **不加锁**：对账内 `stop_action()` → Service `_ensure_runtime()` → 健康检查 → 可能再次观测到实例变化 →
+  回到 `on_runtime_instance_changed()` 是一条**真实存在**的重入链，加跨网络调用的锁就会在同一条链上重入。
+  排序保证改为**持久化状态比较 + 发动作前复核**；身份对账再加**只打标记、绝不等待**的再入保护（重入立即返回空）。
+* **新增 11 项确定性故障注入**（`tests/test_predispatch_pause_race.py`）：用可控 store 钩子（只在首次把
+  `dispatch_state` 写成 `INTENT` 的那次 `save` 上、且在 `super().save()` **之后**触发）与 `asyncio.Event`
+  门闩制造交错，**不依赖 sleep**；断言外部动作启动次数、任务状态、`authorization`、`dispatch_state`、
+  `dispatch_generation`、`pending_action_id`、`replan_required`，以及**真实 SQLite 回读**结果。
+* **勘误**：7F.5 **已经**实现桥接动作 API 的 Bearer 鉴权（`runtime.js:3974-3977` 全路由前 401）与
+  「未配置 `MC_BRIDGE_TOKEN` 则拒绝启动」（`runtime.js:4396-4397`）；7F.5.1 交付报告里「无鉴权」的说法
+  **是错的**（沿用了 7F.4 的旧描述未重新核对源码），详见 `docs/MINECRAFT_PHASE7F5.2.md` §5.1。
 ## Minecraft Phase 7F.5.1 — Runtime Identity Observation & Correlation Guard（运行时身份观测与关联守卫）
 
 * **目标**：7F.5 的**定向修正** —— 让运行时实例身份真正贯穿调用链，并在身份不可信时 fail-closed。**不新增任何游玩能力**。
