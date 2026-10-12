@@ -240,6 +240,49 @@ def _reconcile(outcome: ReconcileOutcome, **detail: Any) -> dict[str, Any]:
     return {"outcome": outcome.value, "detail": detail}
 
 
+class _LifecycleLock:
+    """按任务串行化「生命周期转换 ↔ 结算落盘」（Phase 7F.5.3 Follow-up §三）。
+
+    为什么需要它：`cancel()` / `expire()` 的旧顺序是「读快照 → await stop → 按旧快照算在途
+    → 整份保存」。stop 是长 await，期间 `_settle()` 完全可能把**真实 action_id / pending
+    关联**写进 store，而随后那次整份保存会把它覆盖回旧快照 —— 动作在外面跑，记录里却再也
+    找不到关联。
+
+    可重入：同一个 asyncio 任务再次进入不自锁（stop 等控制调用可能在同一调用链上回到生命周期
+    读写），跨协程仍然严格互斥。**绝不在持有它的时候发起外部调用**（见 cancel/expire 的三段式）。
+    """
+
+    __slots__ = ("_lock", "_owner", "_depth")
+
+    def __init__(self) -> None:
+        self._lock = asyncio.Lock()
+        self._owner: asyncio.Task[Any] | None = None
+        self._depth = 0
+
+    @property
+    def idle(self) -> bool:
+        """没人持有、也没人排队（只用于有界回收）。"""
+        return self._depth == 0 and self._owner is None and not self._lock.locked()
+
+    async def __aenter__(self) -> _LifecycleLock:
+        current = asyncio.current_task()
+        if current is not None and self._owner is current:
+            self._depth += 1
+            return self
+        await self._lock.acquire()
+        self._owner = current
+        self._depth = 1
+        return self
+
+    async def __aexit__(self, *_exc: object) -> None:
+        self._depth -= 1
+        if self._depth > 0:
+            return
+        self._depth = 0
+        self._owner = None
+        self._lock.release()
+
+
 class TaskRuntime:
     """多步骤任务的生命期管理（状态 / 调度 / 等待 / 恢复 / 取消 / 校验）。"""
 
@@ -292,6 +335,12 @@ class TaskRuntime:
         #: 已结算过的 action_id（有界）：重复终态事件必须是**幂等空操作** —— 既不改变任何
         #: 状态，也不该被误当成"未知事件"塞进暂存区。
         self._settled_action_ids: list[str] = []
+        #: Phase 7F.5.3 Follow-up §三：**按任务**串行化「生命周期转换 ↔ 结算落盘」。
+        #: 旧实现是「读快照 → await stop → 按旧快照算在途 → 整份保存」，stop 期间 _settle()
+        #: 写进去的真实 action_id / pending 关联会被旧快照整份覆盖掉。现在 cancel()/expire()/
+        #: _settle()/_pause_ambiguous_dispatch() 的读-改-写都在同一把锁里，绝不整份覆盖
+        #: 比快照更新的证据。锁表有界（见 _lifecycle）。
+        self._lifecycle_locks: dict[str, _LifecycleLock] = {}
 
     def runtime_instance(self) -> str:
         """当前 Runtime 实例标识（Phase 7F.5）。拿不到就返回空串。
@@ -946,6 +995,15 @@ class TaskRuntime:
         return fresh
 
     async def _settle(self, record: TaskRecord, step: TaskStep, invocation: TaskInvocation) -> str:
+        # Phase 7F.5.3 Follow-up §三：结算的读-改-写与 cancel()/expire() 同属"生命周期转换"，
+        # 必须在同一把按任务锁里串行化 —— 否则取消流程手里的旧快照会整份覆盖掉这里刚写进去的
+        # 真实 action_id / pending 关联（可重入：_pause_ambiguous_dispatch 也在这把锁里）。
+        async with self._lifecycle(record.task_id):
+            return await self._settle_locked(record, step, invocation)
+
+    async def _settle_locked(
+        self, record: TaskRecord, step: TaskStep, invocation: TaskInvocation
+    ) -> str:
         # Phase 7F.5.2 §二.2/§三.6：调用期间任务可能已经被暂停/取消/过期/判歧义 —— 那些改动
         # 直接落在 store 里，而这里的 record 还是旧快照。先把真相取回来：既不把持久化的
         # PAUSED 覆盖回 RUNNING，也不制造「任务已暂停、动作却没有记录」的假象。
@@ -1210,6 +1268,16 @@ class TaskRuntime:
     async def _pause_ambiguous_dispatch(
         self, record: TaskRecord, step: TaskStep, *, message: str, reason: str = ""
     ) -> None:
+        # Phase 7F.5.3 Follow-up §三：这里也有一段「await stop 之后再整份保存」，同样必须与
+        # 取消/过期/结算串行化，否则一样会覆盖更新的动作关联（可重入，不会自锁）。
+        async with self._lifecycle(record.task_id):
+            await self._pause_ambiguous_dispatch_locked(
+                record, step, message=message, reason=reason
+            )
+
+    async def _pause_ambiguous_dispatch_locked(
+        self, record: TaskRecord, step: TaskStep, *, message: str, reason: str = ""
+    ) -> None:
         """派发结果**未知** -> 受控暂停 + 人工介入（Phase 7F.4）。
 
         绝不做两件事：猜「它没执行」、或者重新派发同一个动作。做法是：
@@ -1278,6 +1346,115 @@ class TaskRuntime:
             return
         await self._publish(TASK_PAUSED, self._event_payload(record, step))
         await self._save(record, event=TASK_PAUSED, step_id=step.step_id)
+
+    def _lifecycle(self, task_id: str) -> _LifecycleLock:
+        """取这个任务的生命周期锁（Phase 7F.5.3 Follow-up §三）。
+
+        锁表**有界**：只回收「没被持有、也没人排队」的表项，避免长期运行下无界增长。
+        """
+        key = str(task_id or "")
+        lock = self._lifecycle_locks.get(key)
+        if lock is None:
+            if len(self._lifecycle_locks) >= 256:
+                for stale in [k for k, v in self._lifecycle_locks.items() if v.idle]:
+                    self._lifecycle_locks.pop(stale, None)
+            lock = _LifecycleLock()
+            self._lifecycle_locks[key] = lock
+        return lock
+
+    def _mark_inflight_for_terminal(
+        self, record: TaskRecord, *, reason: str, prefix: str, mark_step: bool = True
+    ) -> None:
+        """终态转换前的在途判定（Phase 7F.5.3 §三.A）——**必须对着最新记录做**。
+
+        有真实 action_id → 保留 pending 关联（终态任务照样有事件匹配能力，等真实终态收敛）；
+        只有派发意图（还没有 action_id）→ 保留 INTENT 与证据，让 _settle 拿到真实 action_id
+        后**再次**走既有 SAFE 控制面停止；确定没有在途派发时，才按原样清空。
+        """
+        inflight = self._inflight_step(record)
+        if inflight is not None and str(inflight.action_id or ""):
+            inflight.state = StepState.WAITING_ACTION
+            inflight.message = reason
+            record.pending_action_id = str(inflight.action_id)
+            record.pending_step_id = inflight.step_id
+            record.recovery = self._outstanding_action_evidence(
+                inflight, reason=f"{prefix}_with_outstanding_action", note=reason
+            )
+        elif inflight is not None:
+            # 外部是否已经接受这次请求**未知**：如实留证据，绝不假装"什么都没发生"。
+            inflight.message = reason
+            record.recovery = self._outstanding_action_evidence(
+                inflight, reason=f"{prefix}_during_dispatch", note=reason
+            )
+        else:
+            step = record.step(record.pending_step_id) if record.pending_step_id else None
+            if mark_step and step is not None and step.state is StepState.WAITING_ACTION:
+                step.state = StepState.CANCELLED
+                step.message = reason
+            record.pending_action_id = ""
+            record.pending_step_id = ""
+
+    async def _merge_stop_evidence(self, task_id: str, *, reason: str, note: str) -> TaskRecord:
+        """stop 之后**重新读取**最新记录并只**合并**停止证据（Phase 7F.5.3 Follow-up §三.1）。
+
+        关键在"只合并"：stop 期间 _settle() 可能已经写进去真实 action_id / pending / ACCEPTED，
+        那次写入比取消流程手里的快照**更完整**，必须原样保留，只补"请求过 stop"的证据。
+        「请求过 stop」仍然不等于「动作已经停止」：stop_confirmed 保持 False，绝不谎报。
+        """
+        async with self._lifecycle(task_id):
+            latest = await self._store.load(task_id)
+            if latest is None:
+                raise TaskAuthorizationError(f"找不到任务 {task_id}", code="task.not_found")
+            if not latest.state.terminal:
+                return latest
+            inflight = self._inflight_step(latest)
+            step = (
+                inflight
+                if inflight is not None
+                else (latest.step(latest.pending_step_id) if latest.pending_step_id else None)
+            )
+            raw = latest.recovery if isinstance(latest.recovery, Mapping) else {}
+            detail = dict(raw.get("detail") or {}) if isinstance(raw, Mapping) else {}
+            if step is None and not detail:
+                # 确定没有在途派发：这一下 stop 是空操作，绝不编造没有发生的停止证据。
+                return latest
+            action_id = str(getattr(step, "action_id", "") or "")
+            if step is not None:
+                detail["dispatch_key"] = detail.get("dispatch_key") or step.dispatch_key
+                detail["dispatch_generation"] = (
+                    detail.get("dispatch_generation") or step.dispatch_generation
+                )
+                detail["step_id"] = detail.get("step_id") or step.step_id
+                detail["dispatch_state"] = step.dispatch_state or detail.get("dispatch_state", "")
+                detail["runtime_instance"] = (
+                    detail.get("runtime_instance") or step.dispatch_runtime_instance
+                )
+                detail["action_id"] = action_id or str(detail.get("action_id") or "")
+                detail["pending_action_id"] = str(
+                    latest.pending_action_id or detail.get("action_id") or ""
+                )
+                detail["stop_after_accept"] = bool(detail.get("stop_after_accept")) or bool(
+                    action_id
+                )
+                detail["stop_after_accept_requests"] = max(
+                    int(detail.get("stop_after_accept_requests") or 0),
+                    1 if (action_id or detail["stop_after_accept"]) else 0,
+                )
+            detail["stop_requested"] = True
+            detail["stop_confirmed"] = bool(detail.get("stop_confirmed", False))
+            detail.setdefault("dispatch_reason", reason)
+            detail["note"] = str(note)[:200]
+            detail["at"] = self._clock()
+            latest.recovery = {
+                "reason": str(raw.get("reason") or reason),
+                "outcome": str(raw.get("outcome") or ReconcileOutcome.UNKNOWN.value),
+                "at": self._clock(),
+                "detail": detail,
+                "message": str(raw.get("message") or note)[:400],
+            }
+            latest.updated_at = self._clock()
+            await self._save(latest)
+            return latest
 
     def _inflight_step(self, record: TaskRecord) -> TaskStep | None:
         """当前**在途派发**的那一步（INTENT 或 ACCEPTED），没有就返回 None。
@@ -2105,50 +2282,54 @@ class TaskRuntime:
         return await self.drive(task_id)
 
     async def cancel(self, task_id: str, *, reason: str = "user cancel") -> TaskRecord:
-        """取消（§二十七/§二十八）：立刻终态 + 经已有 minecraft_stop 停掉前台动作。
+        """取消（§二十七/§二十八）：**先落盘终态真相，再经已有 minecraft_stop 停掉前台动作**。
 
-        Phase 7F.5.3 §三.B：**一次 stop 可能来得太早** —— 如果此刻动作还没被 Runtime 接受，
-        这一下停不掉稍后才被创建的动作。所以这里不再把在途关联一概抹掉：
+        Phase 7F.5.3 Follow-up §三：旧顺序是「读快照 → await stop → 按旧快照算在途 → 整份保存」。
+        stop 是长 await，期间 _settle() 完全可能把真实 action_id / pending 关联写进 store，而随后
+        那次整份保存会把它覆盖回旧快照 —— 动作在外面跑、记录里却再也找不到关联。现在分三段：
 
-        * 已经拿到真实 action_id 的动作 → **保留 pending 关联**（终态任务同样有事件匹配能力），
-          等真实终态事件到达时收敛；
-        * 只有派发意图、还没有 action_id 的窗口 → **保留 INTENT 与证据**，让 _settle 有机会
-          拿到真实 action_id 并**再次**走既有 SAFE 控制面停止；
-        * 确定没有在途派发时，才按原样清空。
+        1. 在**按任务串行化**的临界区里重新读取最新记录，按**最新真相**判定在途并落盘终态；
+        2. 出了临界区才调用 stop（外部调用绝不夹在临界区里等，避免与对账/身份观测互相等待）；
+        3. stop 之后再进临界区**重新读取**最新记录，只**合并**停止证据 —— 绝不覆盖更新的关联。
+
+        在途判定（Phase 7F.5.3 §三.B）：有真实 action_id → 保留 pending 关联（终态任务照样有
+        事件匹配能力，等真实终态收敛）；只有派发意图 → 保留 INTENT 与证据，让 _settle 拿到真实
+        action_id 后**再次**走既有 SAFE 控制面停止；确定没有在途派发时才按原样清空。
         """
-        record = await self._require(task_id)
-        if record.state.terminal:
-            return record
+        async with self._lifecycle(task_id):
+            record = await self._require(task_id)
+            if record.state.terminal:
+                return record
+            self._mark_inflight_for_terminal(record, reason=reason, prefix="cancel", mark_step=True)
+            await self._cancel_record(record, reason=reason)
+        # 终态真相已经落盘 —— 现在才去停，而且是在锁外。
         await self._stop_action()
-        inflight = self._inflight_step(record)
-        if inflight is not None and str(inflight.action_id or ""):
-            inflight.state = StepState.WAITING_ACTION
-            inflight.message = reason
-            record.pending_action_id = str(inflight.action_id)
-            record.pending_step_id = inflight.step_id
-            record.recovery = self._outstanding_action_evidence(
-                inflight, reason="cancel_with_outstanding_action", note=reason
-            )
-        elif inflight is not None:
-            # 外部是否已经接受这次请求**未知**：如实留证据，绝不假装"什么都没发生"。
-            inflight.message = reason
-            record.recovery = self._outstanding_action_evidence(
-                inflight, reason="cancel_during_dispatch", note=reason
-            )
-        else:
-            step = record.step(record.pending_step_id) if record.pending_step_id else None
-            if step is not None and step.state is StepState.WAITING_ACTION:
-                step.state = StepState.CANCELLED
-                step.message = reason
-            record.pending_action_id = ""
-            record.pending_step_id = ""
-        return await self._cancel_record(record, reason=reason)
+        return await self._merge_stop_evidence(
+            task_id, reason="cancel_during_dispatch", note=reason
+        )
 
     async def expire(self, task_id: str, *, reason: str = "task ttl") -> TaskRecord:
-        """过期（§三十一）：同样不能让在途动作脱离生命周期管理（Phase 7F.5.3 §三.B）。"""
-        record = await self._require(task_id)
-        if record.state.terminal:
-            return record
+        """过期（§三十一）：同样不能让在途动作脱离生命周期管理；先落盘终态再在锁外停。
+
+        Phase 7F.5.3 Follow-up §三：顺序与 cancel() 完全一致（读最新 → 落盘终态 → 锁外 stop →
+        重新读取并只合并停止证据），绝不拿旧快照覆盖 _settle() 刚写进去的真实 action_id。
+        """
+        async with self._lifecycle(task_id):
+            record = await self._require(task_id)
+            if record.state.terminal:
+                return record
+            self._mark_inflight_for_terminal(
+                record, reason=reason, prefix="expired", mark_step=False
+            )
+            record.state = TaskState.EXPIRED
+            record.message = reason
+            record.updated_at = self._clock()
+            await self._save(record, event=TASK_EXPIRED)
+            await self._publish(TASK_EXPIRED, self._event_payload(record))
+        await self._stop_action()
+        return await self._merge_stop_evidence(
+            task_id, reason="expired_during_dispatch", note=reason
+        )
         await self._stop_action()
         inflight = self._inflight_step(record)
         record.message = reason

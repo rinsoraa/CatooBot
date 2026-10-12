@@ -1,5 +1,36 @@
 # Changelog
 
+## Minecraft Phase 7F.5.3 Follow-up — Cancel/Expire Snapshot Race Closure（取消/过期快照竞态闭合）
+
+* **目标**：只修一处**生命周期竞态**，不新增任何 Minecraft 能力、不放宽任何既有断言、不引入数据库迁移。
+  核心命题：`cancel()` / `expire()` 与动作响应结算并发时，**不得用旧 TaskRecord 覆盖新持久化状态**，
+  从而丢失真实 `action_id` 与未决动作关联。
+* **根因（审计实测）**：顺序是「`_require()` 读快照 → `await _stop_action()` → 在**旧快照**上算
+  `_inflight_step()` → 整份写回」。`_stop_action()` 是长 await，期间 `_settle()` 会把真实 `action_id` /
+  `pending_action_id` / `ACCEPTED` 写进 store，而随后那次保存把**旧快照整份覆盖**回去
+  （Sqlite 侧 `ON CONFLICT ... payload=excluded.payload`，无任何版本校验）→ 世界动作仍在跑，
+  持久化记录里却再也找不到它，迟到的真实终态事件再也匹配不到任何任务。
+* **修复**：新增**按任务、可重入**的 `_LifecycleLock` 与 `TaskRuntime._lifecycle()`（锁表有界，≥256 时只回收空闲项）；
+  `cancel()` / `expire()` 改成**三段式** —— ①临界区内重新读取最新记录、按**最新真相**判定在途并**先落盘终态**；
+  ②出临界区再 `await _stop_action()`（外部调用绝不夹在临界区里等，避免与对账/身份观测互相等待）；
+  ③再进临界区**重新读取**最新记录、只**合并**停止证据（只增不减，绝不覆盖更新的关联）。
+  `_settle()` 与 `_pause_ambiguous_dispatch()` 的读-改-写同样纳入该锁；在途判定抽成
+  `_mark_inflight_for_terminal()`，行为与 7F.5.3 完全一致（cancel 标步骤 `CANCELLED`、expire 不标）。
+* **不变量**：取消后仍 `CANCELLED`、过期后仍 `EXPIRED`；外部已接受就必须保留真实 `action_id`、步骤关联与
+  `pending` 直到真实终态事件收敛；`stop_requested=True` 而 `stop_confirmed=False`（**请求过 stop 不等于
+  动作已停止**）；「结果未知」不等于失败 —— 绝不重发、绝不宣称 exactly-once。
+* **新增 8 项确定性交错用例**（`tests/test_cancel_expire_snapshot_race.py`）：**每一次** `minecraft_stop`
+  都有独立门闩，精确复现「取消那次 stop 还没回来、结算先写完真实关联」这一被修的次序，并**逐次快照**断言
+  「一旦真实关联落盘，后续任何一次 save 都不得把它抹掉」；覆盖 cancel 与 expire **各自独立**的
+  「已接受但响应未交付」窗口、「接受之前取消」对照窗口（世界动作计数 0 vs 1，证明是两个不同场景）、
+  迟到/早到/重复终态事件，以及**真实 SQLite 全量回读**（含 `find_by_action(include_terminal=True)` 仍可匹配）。
+* **反证（确定性）**：把 `cancel()`/`expire()` 临时还原成旧顺序后，同文件 **4 failed**（终态未先落盘 /
+  接受之后未再停一次），一次性门闩探针直接打出旧代码 `action_id='' pending='' dispatch=INTENT` 的丢关联结果；
+  还原修复后 **8 passed**、`tests/test_inflight_cancel_expire.py` 一并 **18 passed**。
+* 边界不变：19 工具、`ACTION_RISK`、`allow_medium=false`、两道独立确认门、多段 ≤3 段与共享 24 格预算、
+  `explore_legs=1` 默认值；**无新表、无新迁移**（最高仍 36）。真机门禁 `scripts/cancel_inflight_smoke_real.py`
+  覆盖真实在途取消：真实 `action_id` 可审计、**世界动作次数始终 1**、stop 请求与终态事件收敛如实记录。
+
 ## Minecraft Phase 7F.5.3 — In-flight Cancellation & Expiry Reconciliation（在途取消与过期对账）
 
 * **目标**：只修「异步动作已经进入真实调用链」时的取消 / 过期 / 事件关联安全，不新增任何游玩能力。
