@@ -37,6 +37,13 @@
   CI 上 pytest `3851 passed, 3 skipped in 276.59s`（与本地 `3854 passed` 精确对账，新增 8 项无一被跳过）。
 
 
+* **最终提交 CI 补记**：代码 + 文档提交 `47d1c24` 的 run `38293848353` attempt 1 撞同一类 flake
+  （`[e2e] ASSERT FAILED: Test A：夹具 dirt 已放置`）→ **attempt 2 两 job success**；补记提交 `6602921` 的
+  run `38295828011` attempt 1 同一断言、attempt 2 **另一条**断言 `[e2e] ASSERT FAILED: player distance`
+  → **attempt 3 两 job success**。失败步骤始终是 `minecraft_runtime`（**纯 Node**，本阶段**完全未触碰**）
+  的 e2e 断言；本地 `npm test` exit 0。纪律：只重跑、绝不改断言/超时/阈值。
+
+
 ## Minecraft Phase 7F.5.3 — In-flight Cancellation & Expiry Reconciliation（在途取消与过期对账）
 
 * **目标**：只修「异步动作已经进入真实调用链」时的取消 / 过期 / 事件关联安全，不新增任何游玩能力。

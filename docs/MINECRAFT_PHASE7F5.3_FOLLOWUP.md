@@ -234,6 +234,24 @@ AgentPlan `READY_FOR_APPROVAL` → 批准后 `PENDING_CONFIRMATION` 且**规划�
 
 本次 CI flake 与 7F.5.3 §4.6.1 记录的是**同一类**（假服务器夹具/区块加载滞后），本地 `npm test` exit 0。
 
+#### 5.2.1 两个提交各自的 CI 结果（逐 attempt 记录）
+
+| run | 提交 | attempt 1 | attempt 2 | attempt 3 | 最终结论 |
+|---|---|---|---|---|---|
+| https://github.com/rinsoraa/CatooBot/actions/runs/38293848353 | `47d1c24`（代码 + 文档） | `checks` **failure**（`[e2e] ASSERT FAILED: Test A：夹具 dirt 已放置`）、`webui` success | **两个 job 均 success** | — | **success** |
+| https://github.com/rinsoraa/CatooBot/actions/runs/38295828011 | `6602921`（补记 CI 证据，docs-only） | `checks` **failure**（同一夹具断言）、`webui` success | `checks` **failure**（**另一条**断言 `[e2e] ASSERT FAILED: player distance`） | **两个 job 均 success** | **success** |
+
+**失败定位（明确区分「失败 job」与「测试断言」）**：三次失败**全部**落在同一个 job 的同一个步骤 ——
+`checks` 里的 `Minecraft runtime tests (ActionRuntime 单测 + E2E)`，而且都是**测试断言**失败
+（`ASSERT FAILED`），断言点互不相同（夹具放置 / 玩家距离），符合 `minecraft_runtime/test/e2e.js:110`
+注释记录的「机器繁忙时实体包与区块加载滞后」这一类**环境敏感 flake**。
+
+**与本次修复无因果关系（可核验）**：本阶段改动只有 `app/tasks/runtime.py`（Python）、
+`tests/test_cancel_expire_snapshot_race.py`、`docs/*`、`CHANGELOG.md` 与本地脚本 ——
+**完全没有触碰 `minecraft_runtime/`**，而失败步骤跑的正是该目录下**纯 Node** 的 ActionRuntime
+单测 + flying-squid e2e；本地同一套件 `npm test` exit 0。
+处置严格按纪律：**只重跑失败 job，绝不修改断言 / 超时 / 阈值**。最终两个提交的 run 结论均为 success。
+
 ## §6 安全边界与已知限制
 
 ### 6.1 边界保持不变
