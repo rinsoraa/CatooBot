@@ -224,7 +224,38 @@
 
 ### §4.6 CI
 
-<!--CI-->
+### §4.6 CI（运行 ID / attempt / 两个 job 的结论 / 实际 SKIPPED 清单）
+
+* 代码提交：`9b0cc121988025174db4229c9930b4481dd57be6`
+  （`Phase 7F.5.3: in-flight cancellation & expiry reconciliation (terminal tasks keep matchable action, re-stop after accept, early events retained)`），
+  仓库共 262 commits；镜像 `HEAD = origin/main`，工作树干净。
+* **CI run id `38282813624` · attempt 1 · 两个 job 均 success**（无 flake、无需重跑）：
+  * `lint · format · types · tests` → **success**。逐步全绿：ruff check ✓ / ruff format --check ✓ / mypy app ✓ /
+    **pytest → `3843 passed, 3 skipped in 327.94s`** / Browser E2E ✓ / Minecraft runtime tests ✓。
+  * `webui · typecheck · tests · build` → **success**（含 Verify the committed bundle matches the build ✓）。
+  * URL：<https://github.com/rinsoraa/CatooBot/actions/runs/38282813624>
+* CI 的 `3843 passed, 3 skipped` 与本地 `3846 passed` 精确对账：差的 3 条是**既有**平台条件性 skip，
+  本阶段新增的 **10 项无一被跳过**。
+* **实际 SKIPPED 清单**（全部是既有假服务器限制，与本阶段无关）：
+  1. `equip / inventory_move STOP`：假服务器背包永远是空的，没有可取消的窗口；
+  2. `container STOP`：inspect 毫秒级完成，没有可取消窗口；
+  3. `craft 成功路径`：flying-squid 没有 `/give`；
+  4. `craft STOP`：合成毫秒级完成，没有可取消窗口；
+  5. `3×3 craft 成功路径`：箱子里凑不出 8 块木板；
+  6. `dropped_items / pickup 成功路径`：假服务器不支持 `/summon`，造不出真实掉落物。
+
+### §4.7 发布前核对（任务书 §六 清单）
+
+| 核对项 | 结论 |
+| --- | --- |
+| 源工作树与发布镜像预期内容一致 | ✅ 第二次 `sync_github.py` 报 `mirror already up to date` |
+| 发布镜像与 `origin/main` 最终 SHA 一致 | ✅ 镜像 `HEAD = origin/main = 9b0cc12`、`git status` 干净（262 commits） |
+| `scripts/` 仍未发布 | ✅ 实测镜像内**不存在** `scripts/` 目录（新增的真机门禁脚本只在本地） |
+| 无真实凭据进入日志/事件/任务 payload/WebUI/Git | ✅ 本次 9 个改动文件逐一扫描（`gho_`/`sk-`/`AKIA`/`MC_BRIDGE_TOKEN=`/`Bearer <长串>`/`password=`）**全部 clean** |
+| 不引入不必要的数据库迁移 | ✅ **无新表、无新迁移**（演练 `tables [83,83]`、`added_tables []`、`lost_rows {}`；新证据字段全部写在既有 payload 的 `recovery` 里） |
+| CI 报告含 URL/ID/attempt/两 job 结论/SKIPPED 清单 | ✅ 见 §4.6 |
+| 真实 Fabric 回归 | ✅ 7F.1 PASS、7F.5.1 PASS（20/20）、**新增在途取消门禁 PASS（19 项）**；7F.2 的既有条件见 §4.5 |
+| 交付环境已恢复 | ✅ CatooBot 运行中（python 21152 + node 31644）；25580 / 8500 / 25565 在线；live DB `integrity ok`、`quick_check ok`、最高迁移 36、84 表、FK 违规 0 |
 
 ## §5 安全与产品边界
 
