@@ -48,6 +48,12 @@
   TaskAuthorization/TaskStepAuthorization/Policy/AgentBridge/ActionRuntime、多段 ≤3 段共享 24 格、
   `explore_legs=1` 默认值；无新表、无新迁移。
 
+* **CI**：run [`38308796190`](https://github.com/rinsoraa/CatooBot/actions/runs/38308796190) **attempt 1 两个 job 均 success**（本轮无 flake、无重跑）；
+  CI 上 pytest **3860 passed, 3 skipped**（= 本地 3863 − 3 条既有平台条件性 skip，新增 9 项无一被跳过）；
+  CI 上 minecraft_runtime find-blocks-test 41/41 + e2e bridge auth boundary + runtime instance ✓ + e2e ALL CHECKS PASSED。
+  发布核对：源工作树与镜像**逐文件内容哈希 0 差异**（1149 文件）；镜像 == origin/main == `697fcdac9c6b02c2cb90b030313927c95c47a8bd`（268 commits）；
+  `scripts/` 与 `minecraft_runtime/auth.json` **均未发布**；`config/config.yaml`、`data/` 被 .gitignore 忽略且未 tracked；改动文件凭据扫描 0 命中。
+
 ## Minecraft Phase 7F.5.3 Follow-up — Cancel/Expire Snapshot Race Closure（取消/过期快照竞态闭合）
 
 * **目标**：只修一处**生命周期竞态**，不新增任何 Minecraft 能力、不放宽任何既有断言、不引入数据库迁移。

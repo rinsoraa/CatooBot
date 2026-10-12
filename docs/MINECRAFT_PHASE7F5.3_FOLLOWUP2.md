@@ -231,7 +231,24 @@ tests/test_task_runtime.py，并新增测试与文档；**app/memory 与 app/ini
 
 ## §6 CI
 
-（见 §6.1：每个 run 的 URL/ID、最新 attempt、两个 job 的真实结论、实际 SKIPPED 清单）
+工作流 .github/workflows/ci.yml 两个 job：lint · format · types · tests（ruff / format / mypy / pytest +
+WebUI 安装与 Playwright E2E + minecraft_runtime npm test）与 webui · typecheck · tests · build。
+
+| 项 | 值 |
+| --- | --- |
+| run ID | **38308796190** |
+| URL | https://github.com/rinsoraa/CatooBot/actions/runs/38308796190 |
+| attempt | **1**（一次通过；本轮无 flake、无重跑） |
+| lint · format · types · tests | completed / **success** |
+| webui · typecheck · tests · build | completed / **success** |
+| CI 上 pytest | **3860 passed, 3 skipped in 303.87s**（= 本地 3863 − 3 条既有平台条件性 skip；新增 9 项**无一被跳过**） |
+| CI 上 minecraft_runtime | find-blocks-test 41/41 ALL CHECKS PASSED；e2e bridge auth boundary + runtime instance ✓；runtime exited cleanly ✓；e2e ALL CHECKS PASSED |
+| 实际 SKIPPED 清单（全部为既有假服务器限制，与本阶段无关） | equip / inventory_move STOP（假服务器背包永远是空的）；container STOP（inspect 毫秒级完成）；craft 成功路径（flying-squid 没有 /give）；craft STOP（合成毫秒级完成）；3×3 craft 成功路径（凑不出 8 块木板）；dropped_items / pickup 成功路径（不支持 /summon） |
+
+发布核对：源工作树与发布镜像**逐文件内容哈希 0 差异**（1149 个文件比对）；镜像 == origin/main ==
+**697fcdac9c6b02c2cb90b030313927c95c47a8bd**（268 commits，工作树干净）；scripts/ **未发布**（镜像内不存在）；
+minecraft_runtime/auth.json **未发布**（镜像内不存在）；config/config.yaml 与 data/ 被 .gitignore 忽略且未 tracked；
+改动文件凭据扫描 0 命中；无新表无新迁移。
 
 ---
 
