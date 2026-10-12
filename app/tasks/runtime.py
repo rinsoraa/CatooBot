@@ -106,6 +106,10 @@ class TaskConfig:
     #: （两者都是有界内存结构：既不会无限增长，也不承诺进程崩溃后仍然保留）。
     max_deferred_action_events: int = 50
     max_settled_action_ids: int = 200
+    #: Phase 7F.5.3 Follow-up 2 §三：每个任务被推迟到锁外的 SAFE stop 请求上限（有界队列）。
+    max_pending_stop_requests: int = 8
+    #: 锁内消费早到终态事件后需要"出锁后续跑"的任务上限（同样是进程内有界结构）。
+    max_pending_drives: int = 16
 
 
 @dataclass
@@ -250,6 +254,10 @@ class _LifecycleLock:
 
     可重入：同一个 asyncio 任务再次进入不自锁（stop 等控制调用可能在同一调用链上回到生命周期
     读写），跨协程仍然严格互斥。**绝不在持有它的时候发起外部调用**（见 cancel/expire 的三段式）。
+
+    Phase 7F.5.3 Follow-up 2 §三：可重入意味着嵌套调用"出锁"时并没有真的释放锁 —— 最外层才是
+    真正的释放点。所以需要外部调用（SAFE stop）的路径一律只**排队**，由最外层退出锁之后统一
+    执行（见 _defer_stop / _flush_pending_stops）。
     """
 
     __slots__ = ("_lock", "_owner", "_depth")
@@ -263,6 +271,15 @@ class _LifecycleLock:
     def idle(self) -> bool:
         """没人持有、也没人排队（只用于有界回收）。"""
         return self._depth == 0 and self._owner is None and not self._lock.locked()
+
+    def owned_by_current(self) -> bool:
+        """当前 asyncio 任务是否**已经**持有这把锁（可重入判定，Follow-up 2 §三）。
+
+        用来决定「谁来执行被推迟的 SAFE stop」：已经在锁内的嵌套调用只排队，最外层退出锁后
+        统一 flush —— 否则嵌套路径会在锁**仍然被外层持有**的情况下去做外部调用。
+        """
+        current = asyncio.current_task()
+        return current is not None and self._owner is current
 
     async def __aenter__(self) -> _LifecycleLock:
         current = asyncio.current_task()
@@ -341,6 +358,11 @@ class TaskRuntime:
         #: _settle()/_pause_ambiguous_dispatch() 的读-改-写都在同一把锁里，绝不整份覆盖
         #: 比快照更新的证据。锁表有界（见 _lifecycle）。
         self._lifecycle_locks: dict[str, _LifecycleLock] = {}
+        # Phase 7F.5.3 Follow-up 2 §三：被**推迟到锁外**的 SAFE stop（每任务一个有界队列）。
+        # 锁内只排队；最外层退出锁之后才真的调用 minecraft_stop，再回锁内只合并停止证据。
+        self._pending_stops: dict[str, list[str]] = {}
+        #: 锁内消费了早到终态事件 → 出锁后要续跑的任务（有界）。
+        self._pending_drives: list[str] = []
 
     def runtime_instance(self) -> str:
         """当前 Runtime 实例标识（Phase 7F.5）。拿不到就返回空串。
@@ -998,8 +1020,19 @@ class TaskRuntime:
         # Phase 7F.5.3 Follow-up §三：结算的读-改-写与 cancel()/expire() 同属"生命周期转换"，
         # 必须在同一把按任务锁里串行化 —— 否则取消流程手里的旧快照会整份覆盖掉这里刚写进去的
         # 真实 action_id / pending 关联（可重入：_pause_ambiguous_dispatch 也在这把锁里）。
-        async with self._lifecycle(record.task_id):
+        # Phase 7F.5.3 Follow-up 2 §三：锁内**绝不**外部调用 —— 需要 SAFE stop 时只排队
+        # （_defer_stop），这里确认已出锁之后再统一执行，然后回锁内只合并停止证据。
+        lock = self._lifecycle(record.task_id)
+        if lock.owned_by_current():
             return await self._settle_locked(record, step, invocation)
+        async with lock:
+            outcome = await self._settle_locked(record, step, invocation)
+        await self._flush_pending_stops(record.task_id)
+        if self._consume_pending_drive(record.task_id):
+            # 锁内消费了一条**早到的终态事件**（它已经把这步结算掉了）：出锁后必须让 drive()
+            # 继续推进，否则任务会停在 RUNNING 而 pending 已清空 —— 既不再等待、也不再前进。
+            return "continue"
+        return outcome
 
     async def _settle_locked(
         self, record: TaskRecord, step: TaskStep, invocation: TaskInvocation
@@ -1124,7 +1157,8 @@ class TaskRuntime:
             # Phase 7F.5.3 §三.B：拿到**真实 action_id** 之后必须**再停一次**（既有 SAFE
             # 控制面）—— 取消/过期时那一次 stop 可能先于动作创建到达，只靠它停不住这个动作；
             # 同时也绝不把"发过 stop"当成"动作肯定已停止"（停不掉就如实留证据给人工核对）。
-            await self._stop_action()
+            # Follow-up 2 §三：锁内绝不外部调用 —— 关联先落盘，stop 推迟到锁外执行。
+            self._defer_stop(str(record.task_id), "settled_under_terminal")
             detail = dict((record.recovery or {}).get("detail") or {})
             detail.update(
                 {
@@ -1141,6 +1175,7 @@ class TaskRuntime:
                     "stop_after_accept": True,
                     "stop_after_accept_requests": int(detail.get("stop_after_accept_requests") or 0)
                     + 1,
+                    "stop_requested": True,
                     "stop_confirmed": False,
                     "note": (
                         "动作已被 Runtime 接受：已再次经既有 SAFE 控制面请求停止，"
@@ -1268,14 +1303,24 @@ class TaskRuntime:
     async def _pause_ambiguous_dispatch(
         self, record: TaskRecord, step: TaskStep, *, message: str, reason: str = ""
     ) -> None:
-        # Phase 7F.5.3 Follow-up §三：这里也有一段「await stop 之后再整份保存」，同样必须与
-        # 取消/过期/结算串行化，否则一样会覆盖更新的动作关联（可重入，不会自锁）。
-        async with self._lifecycle(record.task_id):
-            await self._pause_ambiguous_dispatch_locked(
-                record, step, message=message, reason=reason
-            )
+        # Phase 7F.5.3 Follow-up §三 + Follow-up 2 §一.B/§三：这里有两处必须一起修：
+        #   ① 临界区里传入的 record/step 是**调用方的旧快照** —— 锁不等于数据新鲜度，所以进锁后
+        #      用最新持久化记录重新定位这一步，并在最新的 generation / dispatch_key / dispatch_state
+        #      上做单调性判定；
+        #   ② 锁内绝不发起外部调用：SAFE stop 只排队，最外层出锁后统一执行
+        #      （_flush_pending_stops）。
+        task_id = str(record.task_id)
+        lock = self._lifecycle(task_id)
+        if lock.owned_by_current():
+            # 已经在锁内（例如 _settle() 内部调过来）：可重入锁只有最外层会真正释放，
+            # 所以由最外层负责 flush，这里只写证据。
+            await self._pause_ambiguous_dispatch_fresh(record, step, message=message, reason=reason)
+            return
+        async with lock:
+            await self._pause_ambiguous_dispatch_fresh(record, step, message=message, reason=reason)
+        await self._flush_pending_stops(task_id)
 
-    async def _pause_ambiguous_dispatch_locked(
+    async def _pause_ambiguous_dispatch_fresh(
         self, record: TaskRecord, step: TaskStep, *, message: str, reason: str = ""
     ) -> None:
         """派发结果**未知** -> 受控暂停 + 人工介入（Phase 7F.4）。
@@ -1292,6 +1337,59 @@ class TaskRuntime:
         注意：这**不是** exactly-once。外部动作有没有真的发生，本阶段无法证明；
         能保证的只是**不会因为恢复而再发一次**。
         """
+        # ── Follow-up 2 §一.B：锁不等于数据新鲜度 ─────────────────────────────────
+        # 用**最新持久化记录**重新定位这一步，并在最新 generation / dispatch_key /
+        # dispatch_state 上做单调性判定：陈旧回调绝不允许把新状态倒退。
+        latest = await self._store.load(str(record.task_id))
+        if latest is not None:
+            fresh_step = latest.step(str(step.step_id)) if step.step_id else None
+            if fresh_step is None:
+                self._log_info(
+                    "ambiguous dispatch dropped: step no longer exists",
+                    task_id=record.task_id,
+                    step=step.step_id,
+                )
+                return
+            if int(fresh_step.dispatch_generation or 0) > int(step.dispatch_generation or 0):
+                self._log_info(
+                    "ambiguous dispatch dropped: stale generation",
+                    task_id=record.task_id,
+                    step=step.step_id,
+                )
+                return
+            if (
+                fresh_step.dispatch_key
+                and step.dispatch_key
+                and fresh_step.dispatch_key != step.dispatch_key
+            ):
+                self._log_info(
+                    "ambiguous dispatch dropped: stale dispatch key",
+                    task_id=record.task_id,
+                    step=step.step_id,
+                )
+                return
+            if (
+                fresh_step.dispatch_state == DispatchState.SETTLED.value
+                and step.dispatch_state != DispatchState.SETTLED.value
+            ):
+                # 只有「调用方读到的还在派发中（INTENT/ACCEPTED/AMBIGUOUS），而 store 里已经结算
+                # （SETTLED）」才是真陈旧回调。上一代就已 SETTLED 的步骤仍允许被**派发前**的
+                # fail-closed 检查拒绝 —— 那时调用方快照本身也是 SETTLED，不是"倒退"。
+                self._log_info(
+                    "ambiguous dispatch dropped: step already settled",
+                    task_id=record.task_id,
+                    step=step.step_id,
+                )
+                return
+            # 让**调用方对象**就地变成最新真相，再在它身上按原逻辑改写并保存：否则会写成
+            # "store 更新了、调用方手里还是旧快照"，调用方稍后一保存就把新事实覆盖回去。
+            step_id = str(step.step_id)
+            record.__dict__.update(latest.__dict__)
+            adopted = record.step(step_id) if step_id else None
+            if adopted is None:
+                return
+            step = adopted
+        # 终态判定一律看**最新记录**：绝不依赖调用方传入的 terminal 布尔值。
         step.state = StepState.FAILED
         step.dispatch_state = DispatchState.AMBIGUOUS.value
         step.failure = TaskFailure.DISPATCH_AMBIGUOUS.value
@@ -1330,6 +1428,8 @@ class TaskRuntime:
                 "action_id": outstanding,
                 "pending_action_id": outstanding,
                 "terminal_state_preserved": terminal_record,
+                "stop_requested": True,
+                "stop_confirmed": False,
                 "task_state": record.state.value,
                 "at": self._clock(),
             },
@@ -1338,7 +1438,11 @@ class TaskRuntime:
         # 受控暂停要**真的停下来**：外部动作可能还在跑（这正是「无法确认」的含义），
         # 所以用既有的 SAFE 控制面尽力停掉它。停不掉也不改变这里的 fail-closed 结论，
         # 更不会因此重新派发任何动作（_stop_action 自己吞异常、不改任务终态）。
-        await self._stop_action()
+        # Follow-up 2 §三：锁内绝不发起外部调用 —— 只排队，最外层出锁后 _flush_pending_stops()
+        # 真正调用 minecraft_stop，再回锁内只合并停止证据（连带 stop_requested 已在上面写死）。
+        # 既有语义：受控暂停**总是**尽力真停（不看有没有 action_id —— 只有派发意图时，
+        # 请求也可能已经外发）。锁内只排队，最外层出锁后真正调用 SAFE 控制面。
+        self._defer_stop(str(record.task_id), str(reason or TaskFailure.DISPATCH_AMBIGUOUS.value))
         await self._publish(TASK_STEP_FAILED, self._event_payload(record, step))
         if terminal_record:
             # 终态任务：发它自己的终态事件并落盘步骤级证据，**绝不谎报"暂停"**。
@@ -1361,6 +1465,56 @@ class TaskRuntime:
             lock = _LifecycleLock()
             self._lifecycle_locks[key] = lock
         return lock
+
+    def _defer_drive(self, task_id: str) -> None:
+        """登记"出锁后要续跑"（有界、去重）。锁内绝不调用 drive()。"""
+        key = str(task_id or "")
+        if not key or key in self._pending_drives:
+            return
+        self._pending_drives.append(key)
+        del self._pending_drives[: -self.config.max_pending_drives]
+
+    def _consume_pending_drive(self, task_id: str) -> bool:
+        key = str(task_id or "")
+        if key in self._pending_drives:
+            self._pending_drives.remove(key)
+            return True
+        return False
+
+    def _defer_stop(self, task_id: str, reason: str) -> None:
+        """把一次 SAFE stop **推迟到锁外**执行（Phase 7F.5.3 Follow-up 2 §三）。
+
+        锁内绝不做外部调用：这里只排队，最外层退出锁之后由 _flush_pending_stops() 真正执行。
+        队列**有界**（每任务最多 config.max_pending_stop_requests 条），绝不无限增长。
+        """
+        key = str(task_id or "")
+        if not key:
+            return
+        queue = self._pending_stops.setdefault(key, [])
+        queue.append(str(reason or "lifecycle"))
+        del queue[: -self.config.max_pending_stop_requests]
+
+    async def _flush_pending_stops(self, task_id: str) -> None:
+        """在**锁外**执行被推迟的 minecraft_stop，然后回锁内只合并停止请求证据（Follow-up 2 §三）。
+
+        固定三段式：锁内写「安全的中间状态 + 请求过 stop」的证据 → 这里（确认已出锁）调用既有
+        SAFE 控制面 → _merge_stop_evidence 重新读取最新记录并**只合并**停止证据。这样 stop 期间
+        _settle()/on_action_event() 写进去的真实 action_id、终态、SETTLED 都不会被覆盖；
+        没有真实停止证据时 stop_confirmed 保持 False（绝不谎报"已经停了"）。
+        """
+        key = str(task_id or "")
+        reasons = self._pending_stops.pop(key, [])
+        if not reasons:
+            return
+        await self._stop_action()
+        await self._merge_stop_evidence(
+            key,
+            reason=reasons[-1],
+            note=(
+                "已在锁外经既有 SAFE 控制面（minecraft_stop）请求停止；没有任何证据表明动作"
+                "已经停止，stop_confirmed 保持 False，仍需真实终态事件收敛，请人工核对。"
+            ),
+        )
 
     def _mark_inflight_for_terminal(
         self, record: TaskRecord, *, reason: str, prefix: str, mark_step: bool = True
@@ -1400,13 +1554,14 @@ class TaskRuntime:
         关键在"只合并"：stop 期间 _settle() 可能已经写进去真实 action_id / pending / ACCEPTED，
         那次写入比取消流程手里的快照**更完整**，必须原样保留，只补"请求过 stop"的证据。
         「请求过 stop」仍然不等于「动作已经停止」：stop_confirmed 保持 False，绝不谎报。
+
+        Follow-up 2 §三：这里**不要求任务已终态** —— 被推迟的 stop 也会走到 PAUSED 等非终态记录上
+        （例如歧义暂停路径）。合并只碰 recovery 证据，绝不改 task state，所以对任何状态都安全。
         """
         async with self._lifecycle(task_id):
             latest = await self._store.load(task_id)
             if latest is None:
                 raise TaskAuthorizationError(f"找不到任务 {task_id}", code="task.not_found")
-            if not latest.state.terminal:
-                return latest
             inflight = self._inflight_step(latest)
             step = (
                 inflight
@@ -1996,32 +2151,113 @@ class TaskRuntime:
           兼容结算，并持久化 dispatch_legacy_fallback 标记，人工核对时能看出走过的回退路径；
         * 匹配不到 → 未知事件，什么都不改（任务状态、授权、派发代次一律不动）。
 
+        Phase 7F.5.3 Follow-up 2 §一.A：事件处理与 cancel()/expire()/_settle() 共用**同一把按任务
+        生命周期锁**，而且**锁内重新查询**（锁不等于数据新鲜度）—— 绝不用锁外读到的旧快照整份写回
+        覆盖更新的终态 / 真实 action_id。终态任务（CANCELLED/EXPIRED）只收敛步骤证据与 pending
+        关联，绝不重新进入 RUNNING/WAITING_ACTION/PAUSED，也绝不 drive()。
+
+        多重匹配时**按 task_id 排序逐把加锁**，且锁内绝不获取第二把任务锁 —— 结构上不存在
+        交叉加锁死锁。drive() 一律在**锁外**执行（它可能真的发世界动作，持锁会把取消挡住整个时长）。
+
         注意：实例标识只解决**关联唯一性**，不是幂等键、也不提供 exactly-once 保证。
         """
         if not action_id:
             return None
-        # Phase 7F.5.3：**含终态**匹配 —— 取消/过期之后才被 Runtime 接受的动作落在终态记录上，
-        # 用「非终态」过滤会让它的终态事件永远匹配不到（动作于是脱离生命周期管理）。
-        matches = await self._store.find_by_action(str(action_id), include_terminal=True)
-        if not matches:
+        payload: dict[str, Any] = {
+            "action_id": str(action_id),
+            "event": str(event),
+            "status": str(status or ""),
+            "result": dict(result or {}),
+            "error": str(error or ""),
+            "code": str(code or ""),
+            "runtime_instance": str(runtime_instance or ""),
+        }
+        # 先做一次**无锁**的候选发现，只用来决定要对哪些任务加锁；真正的判定在锁内重查。
+        candidates = await self._store.find_by_action(str(action_id), include_terminal=True)
+        if not candidates:
             # §二窗口 6：事件可能比 action_id 落盘更早到达（HTTP 响应仍在途）。先存下来，
             # 等这一步真正拿到 action_id 之后立刻消费（_consume_deferred_action_event），
             # 绝不静默丢弃；重复事件在暂存区里只保留最新一份。
-            self._defer_action_event(
-                {
-                    "action_id": str(action_id),
-                    "event": str(event),
-                    "status": str(status or ""),
-                    "result": dict(result or {}),
-                    "error": str(error or ""),
-                    "code": str(code or ""),
-                    "runtime_instance": str(runtime_instance or ""),
-                }
-            )
+            self._defer_action_event(payload)
             return None
+        if len(candidates) > 1:
+            for task_id in sorted({str(item.task_id) for item in candidates}):
+                await self._ambiguous_event_for_task(task_id, payload)
+            return None
+        task_id = str(candidates[0].task_id)
+        lock = self._lifecycle(task_id)
+        if lock.owned_by_current():
+            # 已在锁内（例如 _settle() 消费早到事件时调用）：这里**不能** drive —— 它可能真的
+            # 发世界动作，而可重入锁只有最外层才真正释放。登记"待续跑"，由最外层在出锁后
+            # 让它以 "continue" 继续（见 _settle 的 wrapper）。
+            target, should_drive = await self._on_action_event_locked(task_id, payload)
+            if should_drive:
+                self._defer_drive(task_id)
+            return target
+        async with lock:
+            target, should_drive = await self._on_action_event_locked(task_id, payload)
+        await self._flush_pending_stops(task_id)
+        if should_drive or self._consume_pending_drive(task_id):
+            # 动作结束了：先把状态切回 RUNNING **并落盘**再继续下一步（已在 _on_action_event_locked
+            # 内完成）。drive() 在这里、也就是**锁外**调用：它会从存储重新 load，若期间任务已被
+            # 取消/过期，drive() 的终态守卫（record.state.terminal）会直接返回，绝不复活任务。
+            return await self.drive(task_id)
+        return target
+
+    async def _ambiguous_event_for_task(self, task_id: str, payload: Mapping[str, Any]) -> None:
+        """同一个 action_id 命中多条记录时的歧义分支（按 task_id 逐把加锁，绝不嵌套加锁）。"""
+        lock = self._lifecycle(task_id)
+        if lock.owned_by_current():
+            await self._pause_ambiguous_for_action(task_id, payload)
+            return
+        async with lock:
+            await self._pause_ambiguous_for_action(task_id, payload)
+        await self._flush_pending_stops(task_id)
+
+    async def _pause_ambiguous_for_action(self, task_id: str, payload: Mapping[str, Any]) -> None:
+        record = await self._store.load(str(task_id))
+        if record is None:
+            return
+        step = record.step(record.pending_step_id) if record.pending_step_id else None
+        if step is None:
+            return
+        await self._pause_ambiguous_dispatch(
+            record,
+            step,
+            message=(
+                f"同一个 action_id（{payload.get('action_id') or ''}）关联了多条任务记录："
+                "无法判断这次终态属于谁，已全部安全停下，请人工核对。"
+            ),
+            reason="action_id_ambiguous",
+        )
+
+    async def _on_action_event_locked(
+        self, task_id: str, payload: Mapping[str, Any]
+    ) -> tuple[TaskRecord | None, bool]:
+        """锁内完成事件的判定与结算；返回 (记录, 是否需要在**锁外**继续 drive())。"""
+        action_id = str(payload.get("action_id") or "")
+        event = str(payload.get("event") or "")
+        status = str(payload.get("status") or "")
+        result = payload.get("result") or {}
+        error = str(payload.get("error") or "")
+        code = str(payload.get("code") or "")
+        runtime_instance = str(payload.get("runtime_instance") or "")
+        # Follow-up 2 §一.A.2/3：**锁内重新查询**并重新验证匹配数量、步骤与关联事实。
+        matches = await self._store.find_by_action(action_id, include_terminal=True)
+        if not matches:
+            if action_id in self._settled_action_ids:
+                # 已结算过的重复事件：幂等空操作（既不重复结算，也不再进暂存区）。
+                return None, False
+            # 关联在这两步之间消失了（可能正在建立、也可能是未知事件）：留在暂存区，
+            # 绝不因为一次正常竞争就把事件**永久丢弃**。
+            self._defer_action_event(dict(payload))
+            return None, False
         if len(matches) > 1:
-            # 多条记录都关联同一个 action_id：**没有**可靠办法判断终态属于谁 → 一律歧义。
+            # 锁内绝不获取第二把任务锁（避免交叉加锁死锁）：只处理**本任务**这一条，
+            # 其余记录由调用方的逐把加锁分支或后续事件处理。
             for item in matches:
+                if str(item.task_id) != str(task_id):
+                    continue
                 step = item.step(item.pending_step_id) if item.pending_step_id else None
                 if step is None:
                     continue
@@ -2034,11 +2270,13 @@ class TaskRuntime:
                     ),
                     reason="action_id_ambiguous",
                 )
-            return None
+            return None, False
         target = matches[0]
+        if str(target.task_id) != str(task_id):
+            return None, False
         step = target.step(target.pending_step_id) if target.pending_step_id else None
         if step is None:
-            return None
+            return None, False
         recorded = str(step.dispatch_runtime_instance or "")
         incoming = str(runtime_instance or "")
         if not step.dispatch_identity_tracked:
@@ -2064,7 +2302,7 @@ class TaskRuntime:
                     "missing_runtime_instance_event" if recorded else "runtime_instance_missing"
                 ),
             )
-            return None
+            return None, False
         elif not recorded:
             # 新格式记录却没有实例：这次派发本身就无法归属 -> 同样不得据此结算。
             await self._pause_ambiguous_dispatch(
@@ -2076,7 +2314,7 @@ class TaskRuntime:
                 ),
                 reason="runtime_instance_unattributed_event",
             )
-            return None
+            return None, False
         elif recorded != incoming:
             await self._pause_ambiguous_dispatch(
                 target,
@@ -2088,7 +2326,7 @@ class TaskRuntime:
                 ),
                 reason="stale_runtime_instance_event",
             )
-            return None
+            return None, False
         terminal = str(event).rsplit(".", 1)[-1]
         step.finished_at = self._clock()
         step.status = status or terminal.upper()
@@ -2109,7 +2347,7 @@ class TaskRuntime:
             await self._publish(TASK_STEP_SUCCEEDED, self._event_payload(target, step))
             await self._save(target, event=TASK_STEP_SUCCEEDED, step_id=step.step_id)
             if terminal_record:
-                return target
+                return target, False
         else:
             failure = classify_failure(code, event=str(event))
             step.state = StepState.CANCELLED if terminal == "cancelled" else StepState.FAILED
@@ -2120,28 +2358,28 @@ class TaskRuntime:
             await self._save(target, event=TASK_STEP_FAILED, step_id=step.step_id)
             if terminal_record:
                 # 终态任务的迟到终态事件：只收敛证据，绝不再进入正常派发/续跑。
-                return target
+                return target, False
             if target.pause_requested:
                 target.pause_requested = False
                 await self._enter(target, TaskState.PAUSED)
                 await self._publish(TASK_PAUSED, self._event_payload(target, step))
                 await self._save(target, event=TASK_PAUSED, step_id=step.step_id)
-                return target
+                return target, False
             await self._pause_after_failure(target, failure, step)
-            return target
+            return target, False
         if target.pause_requested:
             # §二十九：暂停等当前动作**自然结束**，绝不在动作中间硬切状态
             target.pause_requested = False
             await self._enter(target, TaskState.PAUSED)
             await self._publish(TASK_PAUSED, self._event_payload(target, step))
             await self._save(target, event=TASK_PAUSED, step_id=step.step_id)
-            return target
-        # 动作结束了：先把状态切回 RUNNING **并落盘**再继续下一步。
+            return target, False
+        # 动作结束了：先把状态切回 RUNNING **并落盘**，再回到锁外继续（drive 由调用方执行）。
         # drive() 会从存储重新 load（那是 checkpoint 的真身），只改内存对象不落盘的话
         # 它会读到"还在 WAITING_ACTION"的旧快照，然后原地返回、任务永远停在等动作。
         await self._enter(target, TaskState.RUNNING)
         await self._save(target)
-        return await self.drive(target.task_id)
+        return target, True
 
     # ------------------------------------------------------------ 暂停/恢复/取消/过期
 
@@ -2304,9 +2542,12 @@ class TaskRuntime:
             await self._cancel_record(record, reason=reason)
         # 终态真相已经落盘 —— 现在才去停，而且是在锁外。
         await self._stop_action()
-        return await self._merge_stop_evidence(
+        merged = await self._merge_stop_evidence(
             task_id, reason="cancel_during_dispatch", note=reason
         )
+        # 持锁期间可能还有别的路径排过队（例如 _settle 的「接受后再停一次」）：一并执行。
+        await self._flush_pending_stops(task_id)
+        return merged
 
     async def expire(self, task_id: str, *, reason: str = "task ttl") -> TaskRecord:
         """过期（§三十一）：同样不能让在途动作脱离生命周期管理；先落盘终态再在锁外停。
@@ -2327,28 +2568,12 @@ class TaskRuntime:
             await self._save(record, event=TASK_EXPIRED)
             await self._publish(TASK_EXPIRED, self._event_payload(record))
         await self._stop_action()
-        return await self._merge_stop_evidence(
+        merged = await self._merge_stop_evidence(
             task_id, reason="expired_during_dispatch", note=reason
         )
-        await self._stop_action()
-        inflight = self._inflight_step(record)
-        record.message = reason
-        if inflight is not None and str(inflight.action_id or ""):
-            inflight.state = StepState.WAITING_ACTION
-            record.pending_action_id = str(inflight.action_id)
-            record.pending_step_id = inflight.step_id
-            record.recovery = self._outstanding_action_evidence(
-                inflight, reason="expired_with_outstanding_action", note=reason
-            )
-        elif inflight is not None:
-            record.recovery = self._outstanding_action_evidence(
-                inflight, reason="expired_during_dispatch", note=reason
-            )
-        record.state = TaskState.EXPIRED
-        record.updated_at = self._clock()
-        await self._save(record, event=TASK_EXPIRED)
-        await self._publish(TASK_EXPIRED, self._event_payload(record))
-        return record
+        # 持锁期间可能还有别的路径排过队：一并执行（同样只在锁外调用 SAFE 控制面）。
+        await self._flush_pending_stops(task_id)
+        return merged
 
     async def tick(self, now: float | None = None) -> list[TaskRecord]:
         """周期收尾：到点过期的任务（§三十一/§六十三）。"""
@@ -2765,6 +2990,45 @@ class TaskRuntime:
     async def _save(
         self, record: TaskRecord, *, event: str = "", step_id: str = "", detail: str = ""
     ) -> None:
+        """**唯一**的 TaskRecord 写入口，并且带「终态吸收」（Phase 7F.5.3 Follow-up 2 §一）。
+
+        为什么放在这一个点上：不是所有转换路径都能持锁完成（_run_step 里有外部调用、
+        _finish/_fail/_settle_blocked/pause/resume/recover/replan 各自读-改-写）。但它们**都**
+        经过这里。只要在写之前、在**同一把按任务锁内**复核一次持久化状态，就能保证：
+        CANCELLED/EXPIRED 之后，任何旧快照都不可能把任务写回非终态。
+        """
+        task_id = str(record.task_id or "")
+        if not task_id:
+            record.updated_at = self._clock()
+            await self._store.save(record, event=event, step_id=step_id, detail=detail)
+            return
+        lock = self._lifecycle(task_id)
+        if lock.owned_by_current():
+            await self._save_absorbing_terminal(record, event=event, step_id=step_id, detail=detail)
+            return
+        async with lock:
+            await self._save_absorbing_terminal(record, event=event, step_id=step_id, detail=detail)
+
+    async def _save_absorbing_terminal(
+        self, record: TaskRecord, *, event: str = "", step_id: str = "", detail: str = ""
+    ) -> None:
+        """写之前复核持久化真相：**已终态就绝不写回非终态**（旧快照绝不复活任务）。
+
+        检查与写入都在同一把按任务锁内完成，因此不存在 TOCTOU 窗口。被吸收时：采纳终态真相
+        （状态 / 授权 / pending 关联 / 恢复证据），**保留调用方想写的步骤证据**，并把被丢弃的
+        旧证据记进 recovery.detail 供人工核对 —— 绝不静默丢信息。
+        """
+        latest = await self._store.load(str(record.task_id))
+        if latest is not None and latest.state.terminal and not record.state.terminal:
+            evidence = record.recovery if isinstance(record.recovery, Mapping) else {}
+            self._adopt_lifecycle(record, latest)
+            if evidence:
+                merged = dict(latest.recovery) if isinstance(latest.recovery, Mapping) else {}
+                base = dict(merged.get("detail") or {})
+                base["superseded_by_terminal_state"] = True
+                base["superseded_evidence"] = dict(evidence)
+                merged["detail"] = base
+                record.recovery = merged
         record.updated_at = self._clock()
         await self._store.save(record, event=event, step_id=step_id, detail=detail)
 

@@ -246,6 +246,28 @@ async def create_confirmed(runtime: TaskRuntime, *, plan: TaskPlan | None = None
     )
 
 
+async def paused_task(runtime: TaskRuntime, *, plan: TaskPlan | None = None) -> Any:
+    """造一个**真的**非终态（PAUSED）的任务，供 replan 类用例使用。
+
+    不能像以前那样先 create_confirmed（那条路会一路跑完 -> SUCCEEDED）再把内存对象硬改成
+    PAUSED 落盘：Phase 7F.5.3 Follow-up 2 之后 _save 会**吸收终态**（旧快照绝不复活任务），
+    那种写法既写不进去、也正是本阶段要修的缺陷本身。
+    """
+    record = await runtime.create_task(
+        (plan or simple_plan()).objective,
+        session_id="private:10001",
+        user_id="10001",
+        origin="user",
+        plan=plan or simple_plan(),
+    )
+    assert not record.state.terminal
+    record.state = TaskState.PAUSED
+    await runtime._save(record)  # noqa: SLF001
+    reloaded = await runtime._require(record.task_id)  # noqa: SLF001
+    assert reloaded.state is TaskState.PAUSED
+    return reloaded
+
+
 # ------------------------------------------------------------------ A/B/C：创建与计划校验
 
 
@@ -608,10 +630,7 @@ async def test_n_no_progress_pauses_the_task() -> None:
 
 async def test_p_max_replans_is_enforced() -> None:
     runtime, _, _, _ = make_runtime(config=TaskConfig(max_replans=1))
-    record = await create_confirmed(runtime)
-    record.state = TaskState.PAUSED
-    record.pause_requested = False
-    await runtime._save(record)  # noqa: SLF001
+    record = await paused_task(runtime)
     first = await runtime.replan(record.task_id, simple_plan())
     assert first.state is TaskState.PENDING_CONFIRMATION and first.replans == 1
     first.state = TaskState.PAUSED
@@ -668,9 +687,7 @@ async def test_s_changed_resolved_arguments_are_recomputed_from_the_plan() -> No
 
 async def test_t_replan_requires_a_new_confirmation() -> None:
     runtime, _, confirmations, _ = make_runtime()
-    record = await create_confirmed(runtime)
-    record.state = TaskState.PAUSED
-    await runtime._save(record)  # noqa: SLF001
+    record = await paused_task(runtime)
     new_plan = simple_plan(steps=[("minecraft_move_to", {"x": 5, "y": 64, "z": 5})])
     old_hash = record.plan_hash
     replanned = await runtime.replan(record.task_id, new_plan, reason="目标没了")

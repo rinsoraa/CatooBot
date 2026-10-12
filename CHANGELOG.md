@@ -1,5 +1,53 @@
 # Changelog
 
+## Minecraft Phase 7F.5.3 Follow-up 2 — Event Settlement & Ambiguous Reconciliation Serialization（事件结算与歧义对账串行化）
+
+* **目标**：只修**生命周期状态更新的一致性**，不新增任何 Minecraft 能力、不新增工具/表/迁移、不放宽任何既有断言。
+  基线：Phase 7F.5.3 Follow-up 最终发布 `6894623`。
+* **发现 A（审计实测）**：`on_action_event()` 读 TaskRecord、改步骤与 pending 关联、再**整份写回** payload，
+  却不与 `cancel()`/`expire()`/`_settle()` 共用按任务生命周期锁 —— 取消已落盘 `CANCELLED` 之后，
+  事件仍可能把**旧快照**写回去：任务复活，或真实 `action_id`/pending 关联被清掉（迟到终态事件再也匹配不到）。
+* **发现 B（审计实测）**：`_pause_ambiguous_dispatch()` 取得锁后直接把**调用方传入的** record/step 交给内部方法。
+  **锁不等于数据新鲜度** —— 取消在这两步之间落盘后，内部方法仍按旧快照判"非终态"，把 `CANCELLED` 改写成 `PAUSED`。
+* **修复**：① `on_action_event()` 改为「按 task_id 加锁 -> **锁内重新查询** `find_by_action(include_terminal=True)`
+  -> 重新验证匹配数量/步骤/派发代次/关联键/实例身份 -> 从最新记录结算」；终态任务只收敛步骤证据与 pending，
+  **绝不** `_enter(RUNNING/WAITING_ACTION/PAUSED)`、**绝不** `drive()`（`drive()` 一律在**锁外**执行）；
+  多重匹配按 task_id **排序逐把加锁**，锁内绝不获取第二把任务锁（结构上无交叉加锁死锁）；
+  重查后匹配消失时区分「已结算的重复事件 / 早到事件 / 未知事件」，**绝不永久丢弃**。
+  ② `_pause_ambiguous_dispatch()` 进锁后 `_store.load()` **重新读取**、用 `step_id` 重新定位步骤，并加
+  **单调性守卫**（步骤已不存在 / 持久化代次更新 / 关联键不同 / store 已 SETTLED 而快照不是）—— 陈旧回调一律丢弃；
+  终态判定一律看最新记录（不依赖调用方的 terminal 布尔值）。
+  ③ **SAFE stop 全部移出锁**：新增 `_defer_stop()`/`_flush_pending_stops()`（有界队列），
+  `_pause_ambiguous_dispatch_fresh()` 与 `_record_settlement_under_pause()` 只排队，最外层出锁后才真正调用
+  `minecraft_stop`，再回锁内 `_merge_stop_evidence()` **只合并停止请求证据**（`stop_confirmed` 无真实证据恒为 False）；
+  `cancel()`/`expire()` 出锁后同样 flush 排队项。
+  ④ **唯一写入口的终态吸收**：全仓 `self._store.save(` 在生产代码里只出现一次（`_save()`），因此在该点加
+  「写前在同一把锁内复核持久化状态」：已 CANCELLED/EXPIRED 就**绝不写回非终态**，采纳终态真相（状态/授权/pending/
+  恢复证据）、**保留调用方想写的步骤证据**，并把被取代的旧证据记进 `recovery.detail.superseded_by_terminal_state`
+  （绝不静默丢信息）—— 于是 `_run_step`/`_finish`/`_fail`/`_settle_blocked`/`pause`/`resume`/`recover`/`replan` 等
+  **无法持锁**的路径也被一并堵住。顺带删除了 `expire()` 里 7F.5.3 遗留的 19 行死代码。
+* **不变量**：`CANCELLED`/`EXPIRED` 不被任何迟到事件、歧义回调或旧快照改写为非终态；真实 `action_id` 与 pending
+  关联不被旧记录覆盖；已确认的 `SETTLED` 不被旧快照降级为 `INTENT`/`ACCEPTED`/`AMBIGUOUS`；
+  未知结果绝不触发自动重发，也不宣称 exactly-once。
+* **新增 9 项确定性竞态测试**（`tests/test_task_lifecycle_event_race.py`，可控 store 门闩 + `asyncio.Event` +
+  **真实 SQLite**，无 sleep 同步）：事件读旧记录后取消先完成（不复活）/ 事件先结算后取消（不降级）/
+  SETTLED 单调性 / 歧义处理**等锁**期间取消先写终态 / 身份探测与取消并发 / 事件与歧义竞态各自的真实 SQLite 回读 /
+  未持锁旧快照被终态吸收 / 吸收时保留步骤证据与关联。
+  同时按新语义**收紧**两处既有测试：`tests/test_task_runtime.py` 的 replan 用例原先依赖
+  「把已经跑完 SUCCEEDED 的记录硬改 PAUSED 再落盘」（正是本阶段禁止的行为），改为用合法路径造非终态任务。
+* **门禁**：ruff/format/mypy 全绿（664 files / 336 source files）；全量 `pytest` **3863 passed**（基线 3854 + 9）；
+  WebUI typecheck/Vitest 528/build/E2E 7 passed；`minecraft_runtime` ALL CHECKS PASSED；
+  迁移演练 v36→v36 幂等（83 表、integrity ok、`lost_rows {}`）—— **无新表无新迁移**。
+* **真实 Fabric**：`explore_smoke_real.py --sections all` PASS、`cancel_inflight_smoke_real.py` **PASS 19/19**
+  （真实 action_id 可审计、世界动作恒 1、终态事件收敛 SETTLED、保持 CANCELLED）、
+  `runtime_restart_identity_smoke_real.py` **PASS 20/20**（实例变化 -> 歧义暂停 -> 恢复后零重发 -> 新任务不越确认门）。
+  `feedback_smoke_real.py` **FAIL 1 项**：既有失败（候选生成侧内容去重 + 固定槽位窗口），
+  已用 **A/B 反证**（换成已发布基线 `app/tasks/runtime.py`、零行本改动，同样 FAIL）+ 改动面哈希证据
+  （`app/memory`/`app/initiative` 逐字节未变）+ 只读数据取证证明与本阶段无关；**未放宽断言、未跳过门禁**。
+* **边界不变**：19 工具、`ACTION_RISK`、`allow_medium=false`、两道独立确认门、不绕过
+  TaskAuthorization/TaskStepAuthorization/Policy/AgentBridge/ActionRuntime、多段 ≤3 段共享 24 格、
+  `explore_legs=1` 默认值；无新表、无新迁移。
+
 ## Minecraft Phase 7F.5.3 Follow-up — Cancel/Expire Snapshot Race Closure（取消/过期快照竞态闭合）
 
 * **目标**：只修一处**生命周期竞态**，不新增任何 Minecraft 能力、不放宽任何既有断言、不引入数据库迁移。
