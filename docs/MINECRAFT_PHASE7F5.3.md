@@ -244,6 +244,25 @@
   5. `3×3 craft 成功路径`：箱子里凑不出 8 块木板；
   6. `dropped_items / pickup 成功路径`：假服务器不支持 `/summon`，造不出真实掉落物。
 
+
+### §4.6.1 最终发布提交的 CI：一次**环境敏感 flake** 与重跑（如实记录）
+
+最终发布提交 `14c58db1cc1ebd85a37c1d41d0a8c75036107dfa` 的 run **`38283815287`**：
+
+| attempt | `lint · format · types · tests` | `webui · typecheck · tests · build` | 失败点 |
+| --- | --- | --- | --- |
+| 1 | **failure** | success | 失败步骤 = `Minecraft runtime tests (ActionRuntime 单测 + E2E)`：`[e2e] FAILED: Error: ASSERT FAILED: Test B：夹具 dirt 已放置` |
+| 2 | **failure** | success | 同一 job 的**另一个** e2e 断言：`[e2e] FAILED: Error: ASSERT FAILED: 假服务器上背包是空的（held_item=null, items=[]）` |
+| 3 | **success** | success | —（两个 job 全绿） |
+
+* 这是**已知的环境敏感 flake**：`minecraft_runtime/test/e2e.js:110` 的注释记录了
+  「机器繁忙时实体包与区块加载滞后」，7F.5 阶段出现过同类失败（`runtime 看见 Followee` 超时）。
+* 关键佐证「与本阶段改动无关」：① 本阶段**一个字节都没改** `minecraft_runtime/`；
+  ② 三次 attempt 的 **pytest 步骤全部通过**（attempt 1 = `3843 passed, 3 skipped in 327.94s`、
+  attempt 2 = `3843 passed, 3 skipped in 340.11s`）；③ **代码提交 run `38282813624` 的同一步骤是 success**。
+* 按纪律**没有**改动任何断言、超时或阈值，只对失败 job 执行 `rerun-failed-jobs`，
+  保留全部运行链接：<https://github.com/rinsoraa/CatooBot/actions/runs/38283815287>。
+
 ### §4.7 发布前核对（任务书 §六 清单）
 
 | 核对项 | 结论 |
