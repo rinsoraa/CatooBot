@@ -220,6 +220,20 @@ AgentPlan `READY_FOR_APPROVAL` → 批准后 `PENDING_CONFIRMATION` 且**规划�
 `life_intents` 143、`activity_episodes` 247、`task_proposals` 42、`agent_task_runs` 218。
 环境已恢复：CatooBot 运行中（python 36736 + node 28944），25580 / 8500 / 25565 全部在线。
 
+### 5.2 CI
+
+| 项 | 值 |
+|---|---|
+| run id / URL | `38293848353` —— https://github.com/rinsoraa/CatooBot/actions/runs/38293848353 |
+| attempt 1 | `webui · typecheck · tests · build` **success**；`lint · format · types · tests` **failure** —— 唯一失败步骤是 `Minecraft runtime tests (ActionRuntime 单测 + E2E)`，失败点 `[e2e] FAILED: Error: ASSERT FAILED: Test A：夹具 dirt 已放置` |
+| 处置 | **绝不改断言 / 超时 / 阈值**；只 `POST /repos/rinsoraa/CatooBot/actions/runs/38293848353/rerun-failed-jobs`（HTTP 201） |
+| attempt 2（最新） | **两个 job 均 success，run conclusion = success** |
+| CI 上 pytest（attempt 2） | `3851 passed, 3 skipped in 276.59s` —— 与本地 `3854 passed` **精确对账**：差的 3 条是既有平台条件性 skip，本阶段新增 8 项**无一被跳过** |
+| CI 上 minecraft_runtime | `[find-blocks-test] 41/41 ALL CHECKS PASSED`、`[e2e] bridge auth boundary + runtime instance ✓`、`[e2e] ALL CHECKS PASSED` |
+| 实际 SKIPPED 清单（minecraft_runtime 假服务器限制，全部既有、与本阶段无关） | ① `equip / inventory_move STOP`（假服务器背包永远是空的）② `container STOP`（inspect 毫秒级完成）③ `craft 成功路径`（flying-squid 没有 /give）④ `craft STOP`（合成毫秒级完成）⑤ `3×3 craft 成功路径`（没有 /give，凑不出 8 块木板）⑥ `dropped_items / pickup 成功路径`（假服务器不支持 /summon） |
+
+本次 CI flake 与 7F.5.3 §4.6.1 记录的是**同一类**（假服务器夹具/区块加载滞后），本地 `npm test` exit 0。
+
 ## §6 安全边界与已知限制
 
 ### 6.1 边界保持不变

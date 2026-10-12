@@ -31,6 +31,12 @@
   `explore_legs=1` 默认值；**无新表、无新迁移**（最高仍 36）。真机门禁 `scripts/cancel_inflight_smoke_real.py`
   覆盖真实在途取消：真实 `action_id` 可审计、**世界动作次数始终 1**、stop 请求与终态事件收敛如实记录。
 
+* **CI**：run `38293848353` attempt 1 → `webui` success、`checks` failure（唯一失败步骤 `Minecraft runtime tests`，
+  失败点 `[e2e] ASSERT FAILED: Test A：夹具 dirt 已放置` —— 既有环境敏感 flake，本地 `npm test` exit 0）；
+  按纪律**不改断言/超时/阈值**，只重跑失败 job → **attempt 2 两个 job 均 success**。
+  CI 上 pytest `3851 passed, 3 skipped in 276.59s`（与本地 `3854 passed` 精确对账，新增 8 项无一被跳过）。
+
+
 ## Minecraft Phase 7F.5.3 — In-flight Cancellation & Expiry Reconciliation（在途取消与过期对账）
 
 * **目标**：只修「异步动作已经进入真实调用链」时的取消 / 过期 / 事件关联安全，不新增任何游玩能力。
