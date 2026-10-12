@@ -12,6 +12,7 @@ from typing import Any
 import pytest
 
 from app.tasks.models import (
+    DispatchState,
     StepState,
     TaskFailure,
     TaskPlan,
@@ -546,7 +547,14 @@ async def test_k_resume_with_expired_authorization_asks_for_confirmation_again()
     assert len(confirmations.created) == 2, "过期后要重新挂一条确认（绝不偷偷继续）"
 
 
-async def test_l_cancel_stops_the_action_and_ignores_late_completion() -> None:
+async def test_l_cancel_stops_the_action_and_late_completion_never_undoes_it() -> None:
+    """Phase 7F.5.3 §四.8：已取消任务的迟到终态事件**必须收敛**，但绝不翻案。
+
+    改动前这里断言「迟到的 completed 返回 None（被丢弃）」—— 丢弃会让终态任务上的真实动作
+    永远无法收敛（dispatch_state 停在 ACCEPTED、pending_action_id 永远挂着）。现在的语义：
+    事件被**如实处理**（收敛步骤证据、清掉未决关联、仍可审计），任务终态**保持不变**，
+    也绝不重新进入正常派发或续跑。
+    """
     invoke = Recorder(minecraft_move_to="detached")
     runtime, _, _, _ = make_runtime(invoke=invoke)
     record = await create_confirmed(runtime)
@@ -557,8 +565,13 @@ async def test_l_cancel_stops_the_action_and_ignores_late_completion() -> None:
     late = await runtime.on_action_event(
         action_id=action_id, event="minecraft.action.completed", status="SUCCEEDED"
     )
-    assert late is None, "已经取消的任务绝不被迟到的 completed 翻案"
-    assert (await runtime.get(record.task_id)).state is TaskState.CANCELLED
+    assert late is not None, "迟到终态事件必须被处理（否则动作永远无法收敛）"
+    assert late.state is TaskState.CANCELLED, "但绝不改变任务终态"
+    stored = await runtime.get(record.task_id)
+    assert stored is not None and stored.state is TaskState.CANCELLED
+    assert stored.pending_action_id == "", "终态事件到达后未决关联必须收敛"
+    assert stored.plan.steps[0].dispatch_state == DispatchState.SETTLED.value
+    assert stored.plan.steps[0].state is StepState.SUCCEEDED
 
 
 async def test_m_expiration_stops_and_marks_expired() -> None:

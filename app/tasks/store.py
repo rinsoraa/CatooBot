@@ -15,7 +15,7 @@ import json
 import time
 from typing import Any, Protocol
 
-from app.tasks.models import TaskRecord, TaskState
+from app.tasks.models import DispatchState, TaskRecord, TaskState
 
 
 class TaskStore(Protocol):
@@ -34,6 +34,12 @@ class TaskStore(Protocol):
     async def list_pending(self, limit: int | None = None) -> list[TaskRecord]: ...
 
     async def find_pending_by_action(self, action_id: str) -> list[TaskRecord]: ...
+
+    async def find_by_action(
+        self, action_id: str, *, include_terminal: bool = False
+    ) -> list[TaskRecord]: ...
+
+    async def list_outstanding(self, limit: int | None = None) -> list[TaskRecord]: ...
 
     async def checkpoints(self, task_id: str, limit: int = 50) -> list[dict[str, Any]]: ...
 
@@ -95,14 +101,47 @@ class InMemoryTaskStore:
 
     async def find_pending_by_action(self, action_id: str) -> list[TaskRecord]:
         """按 action_id 找出**所有**仍在等它的未决任务（多匹配 = 歧义）。"""
+        return await self.find_by_action(action_id, include_terminal=False)
+
+    async def find_by_action(
+        self, action_id: str, *, include_terminal: bool = False
+    ) -> list[TaskRecord]:
+        """按 action_id 找记录（Phase 7F.5.3），可选是否包含**终态**任务。
+
+        终态任务也必须有事件匹配能力：取消/过期**之后**才被 Runtime 接受的动作会落在
+        终态记录上（TaskRuntime._record_settlement_under_pause）。如果这里把它们排除，
+        那条动作的终态事件就永远匹配不到 —— 动作会脱离生命周期管理。
+        """
         wanted = str(action_id or "")
         if not wanted:
             return []
-        return [
+        items = [
             item
-            for item in await self.list_pending()
+            for item in self._records.values()
             if str(item.pending_action_id or "") == wanted
+            and (include_terminal or not item.state.terminal)
         ]
+        items.sort(key=lambda item: item.updated_at, reverse=True)
+        return [_copy(item) for item in items]
+
+    async def list_outstanding(self, limit: int | None = None) -> list[TaskRecord]:
+        """**有在途派发**的记录（任何状态，含终态）—— Phase 7F.5.3。
+
+        「终态 + 仍未结算的动作」必须仍被生命周期看到：取消/过期之后才被 Runtime 接受的动作
+        就落在终态记录上，用 list_pending（排除终态）会把它漏掉。
+        """
+        records = [
+            item
+            for item in self._records.values()
+            if any(
+                step.dispatch_state in {DispatchState.INTENT.value, DispatchState.ACCEPTED.value}
+                for step in item.steps
+            )
+        ]
+        records.sort(key=lambda item: item.updated_at, reverse=True)
+        if limit is not None:
+            records = records[: int(limit)]
+        return [_copy(item) for item in records]
 
     async def checkpoints(self, task_id: str, limit: int = 50) -> list[dict[str, Any]]:
         rows = [row for row in self._log if row["task_id"] == task_id]
@@ -208,13 +247,62 @@ class SqliteTaskStore:
 
     async def find_pending_by_action(self, action_id: str) -> list[TaskRecord]:
         """按 action_id 找出**所有**仍在等它的未决任务（多匹配 = 歧义，绝不取第一个）。"""
+        return await self.find_by_action(action_id, include_terminal=False)
+
+    async def find_by_action(
+        self, action_id: str, *, include_terminal: bool = False
+    ) -> list[TaskRecord]:
+        """按 action_id 找记录（Phase 7F.5.3），可选包含终态任务。
+
+        pending_action_id 只存在于 payload 里（表没有这一列），所以这里先用 SQL 的 LIKE
+        做一次**廉价文本预筛**、再在 Python 侧**精确比对**。action_id 只含 [a-z0-9_]、
+        不含 LIKE 通配符，因此预筛不会漏匹配。这样既不需要新列、不需要迁移，也能覆盖
+        终态行 —— 终态任务同样必须有事件匹配能力，否则它身上的真实动作会脱离生命周期。
+        """
         wanted = str(action_id or "")
         if not wanted:
             return []
+        if not include_terminal:
+            return [
+                record
+                for record in await self.list_pending()
+                if str(record.pending_action_id or "") == wanted
+            ]
+        rows = await self._db.fetchall(
+            "SELECT payload FROM agent_task_runs WHERE payload LIKE ? ORDER BY updated_at DESC",
+            (f"%{wanted}%",),
+        )
         return [
             record
-            for record in await self.list_pending()
+            for record in (TaskRecord.from_payload(json.loads(row["payload"])) for row in rows)
             if str(record.pending_action_id or "") == wanted
+        ]
+
+    async def list_outstanding(self, limit: int | None = None) -> list[TaskRecord]:
+        """**有在途派发**的记录（任何状态，含终态）—— Phase 7F.5.3。
+
+        同样用 SQL 的 LIKE 预筛 payload（dispatch_state 只存在于 payload 里），再在 Python
+        侧精确过滤：既不需要新列/迁移，也能把「终态 + 仍未结算的动作」纳入生命周期管理。
+        """
+        sql = (
+            "SELECT payload FROM agent_task_runs WHERE payload LIKE ? OR payload LIKE ?"
+            " ORDER BY updated_at DESC"
+        )
+        params: list[Any] = [
+            f'%"dispatch_state": "{DispatchState.INTENT.value}"%',
+            f'%"dispatch_state": "{DispatchState.ACCEPTED.value}"%',
+        ]
+        if limit is not None:
+            sql += " LIMIT ?"
+            params.append(int(limit))
+        rows = await self._db.fetchall(sql, tuple(params))
+        return [
+            record
+            for record in (TaskRecord.from_payload(json.loads(row["payload"])) for row in rows)
+            if any(
+                step.dispatch_state in {DispatchState.INTENT.value, DispatchState.ACCEPTED.value}
+                for step in record.steps
+            )
         ]
 
     async def checkpoints(self, task_id: str, limit: int = 50) -> list[dict[str, Any]]:

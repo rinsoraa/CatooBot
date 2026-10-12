@@ -100,8 +100,12 @@ class TaskConfig:
     position_verify_attempts: int = POSITION_VERIFY_ATTEMPTS
     position_verify_interval_seconds: float = POSITION_VERIFY_INTERVAL_SECONDS
     #: 5A.1 §十/§十一：一份计划授权的有效期（≠ 任务总时长）。生产上取
-    #: ``minecraft.agent.confirmation.ttl_seconds``；测试/真机 expiry 场景用极短值。
+    #: minecraft.agent.confirmation.ttl_seconds；测试/真机 expiry 场景用极短值。
     authorization_ttl_seconds: float = 60.0
+    #: Phase 7F.5.3 §二窗口 6：先到动作事件的有界暂存容量，以及"已结算 action_id"环的大小
+    #: （两者都是有界内存结构：既不会无限增长，也不承诺进程崩溃后仍然保留）。
+    max_deferred_action_events: int = 50
+    max_settled_action_ids: int = 200
 
 
 @dataclass
@@ -279,6 +283,15 @@ class TaskRuntime:
         #: （minecraft_stop → 健康检查 → 可能再次观测到实例变化），所以回调必须能重入而
         #: 不递归等待。这里只打标记、**绝不等待**：无锁、无等待 ⇒ 结构上不可能死锁。
         self._identity_reconcile_inflight = False
+        #: Phase 7F.5.3 §二窗口 6：**先到的动作终态事件**暂存区（action_id -> 事件内容）。
+        #: 事件可能比 action_id 落盘更早到达（HTTP 响应仍在途）；匹配不到时先存下来，
+        #: 等这一步真正拿到 action_id 之后立刻消费掉 —— 绝不静默丢弃。有界（FIFO 淘汰最旧），
+        #: 与 Node 侧事件队列同样只保证"进程存活期间不丢"，这一点在文档里如实写明。
+        self._deferred_action_events: dict[str, dict[str, Any]] = {}
+        self._deferred_action_order: list[str] = []
+        #: 已结算过的 action_id（有界）：重复终态事件必须是**幂等空操作** —— 既不改变任何
+        #: 状态，也不该被误当成"未知事件"塞进暂存区。
+        self._settled_action_ids: list[str] = []
 
     def runtime_instance(self) -> str:
         """当前 Runtime 实例标识（Phase 7F.5）。拿不到就返回空串。
@@ -969,6 +982,13 @@ class TaskRuntime:
             await self._enter(record, TaskState.WAITING_ACTION)
             await self._publish(TASK_STEP_WAITING, self._event_payload(record, step))
             await self._save(record, event=TASK_STEP_WAITING, step_id=step.step_id)
+            # Phase 7F.5.3 §二窗口 6：这条动作的终态事件可能比 action_id 落盘更早到达
+            # （HTTP 响应仍在途）—— 现在已经有真实关联，立刻消费它，绝不永久丢失。
+            if (
+                await self._consume_deferred_action_event(str(invocation.action_id or ""))
+                is not None
+            ):
+                return "stop"
             return "wait"
 
         if invocation.ok:
@@ -1043,12 +1063,49 @@ class TaskRuntime:
             step.summary = invocation.summary or step.summary
             record.pending_action_id = invocation.action_id
             record.pending_step_id = step.step_id
+            # Phase 7F.5.3 §三.B：拿到**真实 action_id** 之后必须**再停一次**（既有 SAFE
+            # 控制面）—— 取消/过期时那一次 stop 可能先于动作创建到达，只靠它停不住这个动作；
+            # 同时也绝不把"发过 stop"当成"动作肯定已停止"（停不掉就如实留证据给人工核对）。
+            await self._stop_action()
+            detail = dict((record.recovery or {}).get("detail") or {})
+            detail.update(
+                {
+                    "dispatch_key": step.dispatch_key,
+                    "dispatch_generation": step.dispatch_generation,
+                    "step_id": step.step_id,
+                    "dispatch_state": step.dispatch_state,
+                    "dispatch_reason": str(
+                        detail.get("dispatch_reason") or "settled_under_terminal"
+                    ),
+                    "runtime_instance": step.dispatch_runtime_instance,
+                    "action_id": str(invocation.action_id or ""),
+                    "pending_action_id": str(record.pending_action_id or ""),
+                    "stop_after_accept": True,
+                    "stop_after_accept_requests": int(detail.get("stop_after_accept_requests") or 0)
+                    + 1,
+                    "stop_confirmed": False,
+                    "note": (
+                        "动作已被 Runtime 接受：已再次经既有 SAFE 控制面请求停止，"
+                        "但没有证据表明它已经停止 —— 仍需真实终态事件收敛，请人工核对"
+                    ),
+                    "at": self._clock(),
+                }
+            )
+            record.recovery = {
+                "reason": str((record.recovery or {}).get("reason") or "OUTSTANDING_ACTION"),
+                "outcome": ReconcileOutcome.UNKNOWN.value,
+                "at": self._clock(),
+                "detail": detail,
+                "message": "任务已终态，但仍有已被接受、尚未确认终结的动作；已再次请求停止",
+            }
             if record.state is TaskState.PAUSED:
                 # 等这个动作真正结束后再停：动作有记录、状态不撒谎。
                 record.pause_requested = True
                 record.message = "已请求暂停：当前动作仍在外部运行，等它结束后再停"
             await self._publish(TASK_STEP_WAITING, self._event_payload(record, step))
             await self._save(record, event=TASK_STEP_WAITING, step_id=step.step_id)
+            # 这条动作的终态事件可能早于 action_id 落盘到达：现在有真实关联了，立刻消费。
+            await self._consume_deferred_action_event(str(invocation.action_id or ""))
             return "stop"
         if invocation.ok:
             step.state = StepState.SUCCEEDED
@@ -1059,11 +1116,22 @@ class TaskRuntime:
             await self._publish(TASK_STEP_SUCCEEDED, self._event_payload(record, step))
             await self._save(record, event=TASK_STEP_SUCCEEDED, step_id=step.step_id)
             return "stop"
-        # 明确失败（含歧义）：只记步骤证据，任务状态仍以持久化真相为准。
+        if invocation.ambiguous:
+            # 结果**未知**：按既有歧义语义记录证据（终态任务保持终态，见
+            # _pause_ambiguous_dispatch），绝不假设请求失败、也绝不自动重发。
+            await self._pause_ambiguous_dispatch(
+                record,
+                step,
+                message=(
+                    f"调用 {step.tool} 没有拿到 runtime 的答复：无法确认它是否已接受这次动作"
+                    f"（关联键 {step.dispatch_key or '-'}）。为安全起见不重新派发，请人工核对。"
+                ),
+                reason="ambiguous_after_terminal",
+            )
+            return "stop"
+        # 拿到 runtime 的**明确答复**（终态已知）-> SETTLED。
         step.state = StepState.FAILED
-        step.dispatch_state = (
-            DispatchState.AMBIGUOUS.value if invocation.ambiguous else DispatchState.SETTLED.value
-        )
+        step.dispatch_state = DispatchState.SETTLED.value
         step.status = invocation.status or "FAILED"
         step.error = invocation.error
         step.failure = classify_failure(invocation.code, event=invocation.status).value
@@ -1160,15 +1228,26 @@ class TaskRuntime:
         step.dispatch_state = DispatchState.AMBIGUOUS.value
         step.failure = TaskFailure.DISPATCH_AMBIGUOUS.value
         step.message = message[:400]
+        # Phase 7F.5.3 §三.A：**终态任务不改变终态** —— 用户取消就是取消、过期就是过期，
+        # 绝不让一次歧义对账把 CANCELLED/EXPIRED 改写成 PAUSED；但证据照样如实记录。
+        outstanding = str(step.action_id or record.pending_action_id or "")
+        terminal_record = record.state.terminal
         record.authorization = None
-        record.replan_required = True
-        record.replan_reason = TaskFailure.DISPATCH_AMBIGUOUS.value
-        record.state = TaskState.PAUSED
         record.failure = TaskFailure.DISPATCH_AMBIGUOUS.value
         record.failed_step = step.step_id
         record.message = message[:400]
-        record.pending_action_id = ""
-        record.pending_step_id = ""
+        if terminal_record:
+            # 已经拿到**真实 action_id** 的动作必须保留未决关联：否则终态任务上的真实动作会
+            # 失去事件匹配能力（find_by_action 需要 pending_action_id），dispatch_state 会
+            # 永远停在 AMBIGUOUS、无法收敛。replan_required 对终态任务是惰性的，故不设。
+            record.pending_action_id = outstanding
+            record.pending_step_id = step.step_id if outstanding else ""
+        else:
+            record.replan_required = True
+            record.replan_reason = TaskFailure.DISPATCH_AMBIGUOUS.value
+            record.state = TaskState.PAUSED
+            record.pending_action_id = ""
+            record.pending_step_id = ""
         record.recovery = {
             "reason": TaskFailure.DISPATCH_AMBIGUOUS.value,
             "outcome": ReconcileOutcome.UNKNOWN.value,
@@ -1180,8 +1259,10 @@ class TaskRuntime:
                 # Phase 7F.5 §五.2：歧义必须留下可人工核对的全套证据。
                 "dispatch_reason": str(reason or "ambiguous_dispatch"),
                 "runtime_instance": step.dispatch_runtime_instance,
-                "action_id": step.action_id or record.pending_action_id,
-                "pending_action_id": record.pending_action_id,
+                "action_id": outstanding,
+                "pending_action_id": outstanding,
+                "terminal_state_preserved": terminal_record,
+                "task_state": record.state.value,
                 "at": self._clock(),
             },
             "message": message[:400],
@@ -1191,8 +1272,60 @@ class TaskRuntime:
         # 更不会因此重新派发任何动作（_stop_action 自己吞异常、不改任务终态）。
         await self._stop_action()
         await self._publish(TASK_STEP_FAILED, self._event_payload(record, step))
+        if terminal_record:
+            # 终态任务：发它自己的终态事件并落盘步骤级证据，**绝不谎报"暂停"**。
+            await self._save(record, event=TASK_STEP_FAILED, step_id=step.step_id)
+            return
         await self._publish(TASK_PAUSED, self._event_payload(record, step))
         await self._save(record, event=TASK_PAUSED, step_id=step.step_id)
+
+    def _inflight_step(self, record: TaskRecord) -> TaskStep | None:
+        """当前**在途派发**的那一步（INTENT 或 ACCEPTED），没有就返回 None。
+
+        Phase 7F.5.3 §二：取消/过期的判断绝不能只看 pending_action_id 是否为空 ——
+        「意图已落盘但还没有 action_id」的窗口里它是空的，而外部请求可能已经在路上。
+        """
+        for step in record.steps:
+            if step.dispatch_state in {
+                DispatchState.INTENT.value,
+                DispatchState.ACCEPTED.value,
+            }:
+                return step
+        return None
+
+    def _outstanding_action_evidence(
+        self, step: TaskStep, *, reason: str, note: str = ""
+    ) -> dict[str, Any]:
+        """「仍有在途动作、仍需对账/停止」的持久化证据（Phase 7F.5.3 §三.A）。
+
+        复用既有 payload 的 recovery 字段（**不新增 schema、不迁移**）：从持久化记录就能判断
+        动作是否已确认终结（dispatch_state=SETTLED）、是否仍需对账（INTENT/ACCEPTED/AMBIGUOUS）、
+        以及是否仍需要停止（stop_requested 与 pending_action_id）。
+        """
+        return {
+            "reason": str(reason),
+            "outcome": ReconcileOutcome.UNKNOWN.value,
+            "at": self._clock(),
+            "detail": {
+                "dispatch_key": step.dispatch_key,
+                "dispatch_generation": step.dispatch_generation,
+                "step_id": step.step_id,
+                "dispatch_state": step.dispatch_state,
+                "dispatch_reason": str(reason),
+                "runtime_instance": step.dispatch_runtime_instance,
+                "action_id": str(step.action_id or ""),
+                "pending_action_id": str(step.action_id or ""),
+                "stop_requested": True,
+                # 已经拿到真实 action_id = 这次 stop **发生在接受之后**（计数与语义分开记，
+                # 便于人工核对"到底停了几次、是不是在动作存在之后停的"）。
+                "stop_after_accept": bool(str(step.action_id or "")),
+                "stop_after_accept_requests": 1 if str(step.action_id or "") else 0,
+                "stop_confirmed": False,
+                "note": str(note)[:200],
+                "at": self._clock(),
+            },
+            "message": str(note)[:400],
+        }
 
     # ------------------------------------------- Phase 5A.1：重规划 / 到期 / 恢复
 
@@ -1590,7 +1723,9 @@ class TaskRuntime:
         self._identity_reconcile_inflight = True
         try:
             affected: list[TaskRecord] = []
-            for record in await self._store.list_pending():
+            # Phase 7F.5.3：用 list_outstanding（**含终态**）—— 取消/过期之后才被接受的
+            # 动作也必须有实例对账，不能被"非终态"这个过滤条件漏掉。
+            for record in await self._store.list_outstanding():
                 stale = next(
                     (
                         item
@@ -1618,6 +1753,47 @@ class TaskRuntime:
             return affected
         finally:
             self._identity_reconcile_inflight = False
+
+    def _defer_action_event(self, payload: dict[str, Any]) -> None:
+        """暂存匹配不到的动作终态事件（Phase 7F.5.3 §二窗口 6）。有界 FIFO，绝不无限增长。
+
+        边界如实说明：与 Node 侧事件队列一样，这是**进程存活期间**的保证 —— 进程崩溃后既没有
+        事件、也没有关联，任务仍旧 fail-closed（不会因为丢事件而重发动作）。
+        """
+        action_id = str(payload.get("action_id") or "")
+        if not action_id:
+            return
+        if action_id in self._settled_action_ids:
+            # 已经结算过的重复事件：幂等空操作，不该被当成"未知事件"塞进暂存区。
+            return
+        if action_id in self._deferred_action_events:
+            self._deferred_action_events[action_id] = payload
+            return
+        self._deferred_action_events[action_id] = payload
+        self._deferred_action_order.append(action_id)
+        while len(self._deferred_action_order) > self.config.max_deferred_action_events:
+            self._deferred_action_events.pop(self._deferred_action_order.pop(0), None)
+
+    async def _consume_deferred_action_event(self, action_id: str) -> TaskRecord | None:
+        """拿到真实 action_id 之后立刻消费早到的事件（消费一次即移除）。"""
+        wanted = str(action_id or "")
+        if not wanted:
+            return None
+        payload = self._deferred_action_events.pop(wanted, None)
+        if payload is None:
+            return None
+        try:
+            self._deferred_action_order.remove(wanted)
+        except ValueError:
+            pass
+        return await self.on_action_event(**payload)
+
+    def _remember_settled_action(self, action_id: str) -> None:
+        wanted = str(action_id or "")
+        if not wanted:
+            return
+        self._settled_action_ids.append(wanted)
+        del self._settled_action_ids[: -self.config.max_settled_action_ids]
 
     async def on_action_event(
         self,
@@ -1647,8 +1823,24 @@ class TaskRuntime:
         """
         if not action_id:
             return None
-        matches = await self._store.find_pending_by_action(str(action_id))
+        # Phase 7F.5.3：**含终态**匹配 —— 取消/过期之后才被 Runtime 接受的动作落在终态记录上，
+        # 用「非终态」过滤会让它的终态事件永远匹配不到（动作于是脱离生命周期管理）。
+        matches = await self._store.find_by_action(str(action_id), include_terminal=True)
         if not matches:
+            # §二窗口 6：事件可能比 action_id 落盘更早到达（HTTP 响应仍在途）。先存下来，
+            # 等这一步真正拿到 action_id 之后立刻消费（_consume_deferred_action_event），
+            # 绝不静默丢弃；重复事件在暂存区里只保留最新一份。
+            self._defer_action_event(
+                {
+                    "action_id": str(action_id),
+                    "event": str(event),
+                    "status": str(status or ""),
+                    "result": dict(result or {}),
+                    "error": str(error or ""),
+                    "code": str(code or ""),
+                    "runtime_instance": str(runtime_instance or ""),
+                }
+            )
             return None
         if len(matches) > 1:
             # 多条记录都关联同一个 action_id：**没有**可靠办法判断终态属于谁 → 一律歧义。
@@ -1729,10 +1921,18 @@ class TaskRuntime:
         step.result = dict(result or {})
         target.pending_action_id = ""
         target.pending_step_id = ""
+        # Phase 7F.5.3 §三.A/§四.8：**终态任务保持终态** —— 取消就是取消、过期就是过期。
+        # 终态事件只用来收敛这条动作的步骤证据，绝不把它改写回 RUNNING/WAITING_ACTION/PAUSED，
+        # 也绝不重新进入派发或续跑流程。重复事件：结算后 pending 已清空 + 已记入 settled 环，
+        # 因此是幂等空操作（不会再进暂存区）。
+        terminal_record = target.state.terminal
+        self._remember_settled_action(str(action_id))
         if terminal == "completed":
             step.state = StepState.SUCCEEDED
             await self._publish(TASK_STEP_SUCCEEDED, self._event_payload(target, step))
             await self._save(target, event=TASK_STEP_SUCCEEDED, step_id=step.step_id)
+            if terminal_record:
+                return target
         else:
             failure = classify_failure(code, event=str(event))
             step.state = StepState.CANCELLED if terminal == "cancelled" else StepState.FAILED
@@ -1741,6 +1941,9 @@ class TaskRuntime:
             step.message = error or code
             await self._publish(TASK_STEP_FAILED, self._event_payload(target, step))
             await self._save(target, event=TASK_STEP_FAILED, step_id=step.step_id)
+            if terminal_record:
+                # 终态任务的迟到终态事件：只收敛证据，绝不再进入正常派发/续跑。
+                return target
             if target.pause_requested:
                 target.pause_requested = False
                 await self._enter(target, TaskState.PAUSED)
@@ -1902,25 +2105,64 @@ class TaskRuntime:
         return await self.drive(task_id)
 
     async def cancel(self, task_id: str, *, reason: str = "user cancel") -> TaskRecord:
-        """取消（§二十七/§二十八）：立刻终态 + 经已有 minecraft_stop 停掉前台动作。"""
+        """取消（§二十七/§二十八）：立刻终态 + 经已有 minecraft_stop 停掉前台动作。
+
+        Phase 7F.5.3 §三.B：**一次 stop 可能来得太早** —— 如果此刻动作还没被 Runtime 接受，
+        这一下停不掉稍后才被创建的动作。所以这里不再把在途关联一概抹掉：
+
+        * 已经拿到真实 action_id 的动作 → **保留 pending 关联**（终态任务同样有事件匹配能力），
+          等真实终态事件到达时收敛；
+        * 只有派发意图、还没有 action_id 的窗口 → **保留 INTENT 与证据**，让 _settle 有机会
+          拿到真实 action_id 并**再次**走既有 SAFE 控制面停止；
+        * 确定没有在途派发时，才按原样清空。
+        """
         record = await self._require(task_id)
         if record.state.terminal:
             return record
         await self._stop_action()
-        step = record.step(record.pending_step_id) if record.pending_step_id else None
-        if step is not None and step.state is StepState.WAITING_ACTION:
-            step.state = StepState.CANCELLED
-            step.message = reason
-        record.pending_action_id = ""
-        record.pending_step_id = ""
+        inflight = self._inflight_step(record)
+        if inflight is not None and str(inflight.action_id or ""):
+            inflight.state = StepState.WAITING_ACTION
+            inflight.message = reason
+            record.pending_action_id = str(inflight.action_id)
+            record.pending_step_id = inflight.step_id
+            record.recovery = self._outstanding_action_evidence(
+                inflight, reason="cancel_with_outstanding_action", note=reason
+            )
+        elif inflight is not None:
+            # 外部是否已经接受这次请求**未知**：如实留证据，绝不假装"什么都没发生"。
+            inflight.message = reason
+            record.recovery = self._outstanding_action_evidence(
+                inflight, reason="cancel_during_dispatch", note=reason
+            )
+        else:
+            step = record.step(record.pending_step_id) if record.pending_step_id else None
+            if step is not None and step.state is StepState.WAITING_ACTION:
+                step.state = StepState.CANCELLED
+                step.message = reason
+            record.pending_action_id = ""
+            record.pending_step_id = ""
         return await self._cancel_record(record, reason=reason)
 
     async def expire(self, task_id: str, *, reason: str = "task ttl") -> TaskRecord:
+        """过期（§三十一）：同样不能让在途动作脱离生命周期管理（Phase 7F.5.3 §三.B）。"""
         record = await self._require(task_id)
         if record.state.terminal:
             return record
         await self._stop_action()
+        inflight = self._inflight_step(record)
         record.message = reason
+        if inflight is not None and str(inflight.action_id or ""):
+            inflight.state = StepState.WAITING_ACTION
+            record.pending_action_id = str(inflight.action_id)
+            record.pending_step_id = inflight.step_id
+            record.recovery = self._outstanding_action_evidence(
+                inflight, reason="expired_with_outstanding_action", note=reason
+            )
+        elif inflight is not None:
+            record.recovery = self._outstanding_action_evidence(
+                inflight, reason="expired_during_dispatch", note=reason
+            )
         record.state = TaskState.EXPIRED
         record.updated_at = self._clock()
         await self._save(record, event=TASK_EXPIRED)

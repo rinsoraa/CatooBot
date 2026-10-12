@@ -1,5 +1,42 @@
 # Changelog
 
+## Minecraft Phase 7F.5.3 — In-flight Cancellation & Expiry Reconciliation（在途取消与过期对账）
+
+* **目标**：只修「异步动作已经进入真实调用链」时的取消 / 过期 / 事件关联安全，不新增任何游玩能力。
+  核心不变量：**用户取消或任务过期后，不能因为一个已经开始的异步请求稍后才被 Runtime 接受，
+  而留下仍在执行、无法停止、或无法被关联的世界动作**；不得宣称 exactly-once，
+  也绝不把「发过 stop」等同于「动作肯定停了」。
+* **审计确认的三个真实缺口**：① `find_pending_by_action()` 走 `list_pending()`（`state NOT IN 四个终态`）
+  ⇒ **终态任务上的真实动作永远匹配不到终态事件**（事件被静默丢弃、`dispatch_state` 永远停在 `ACCEPTED`）；
+  ② `cancel()` 无条件清空 `pending_action_id`/`pending_step_id` 并把 `WAITING_ACTION` 步骤直接标成 `CANCELLED`
+  ⇒ 连匹配依据都没了，而且那个 `CANCELLED` 是**假象**（动作可能仍在跑）；③ 事件先于 `action_id` 落盘到达时
+  匹配不到就 `return None` ⇒ **永久丢弃**。另：`_pause_ambiguous_dispatch()` 会无条件把状态置 `PAUSED`，
+  对已 `CANCELLED`/`EXPIRED` 的任务等于**改写终态**。
+* **存储层**：新增 `find_by_action(action_id, *, include_terminal=False)` 与 `list_outstanding()`（两个实现）：
+  Sqlite 侧用 payload `LIKE` 廉价预筛 + Python 精确比对（`pending_action_id` 只在 payload 里），
+  **不加列、不迁移**；`on_action_event()` 改用含终态匹配，身份对账改用 `list_outstanding()`。
+* **终态绝不被改写**：`_pause_ambiguous_dispatch()` 对终态记录**不改终态**（仍记证据 + 保留真实 `action_id` 的
+  pending 关联 + `terminal_state_preserved`）；`on_action_event()` 命中终态记录时只**收敛步骤证据**
+  （`SETTLED` + 清 pending），绝不 `_enter(RUNNING)`、绝不 `drive()`。
+* **取消 / 过期不再切断在途关联**：`cancel()`/`expire()` 改用 `_inflight_step()` 判断在途派发
+  （**不再只看 `pending_action_id` 是否为空**）：已拿到真实 `action_id` → 保留 pending + 步骤留 `WAITING_ACTION`；
+  只有 `INTENT` → 保留意图让 `_settle` 收敛；无在途 → 沿用原行为。新增 `_outstanding_action_evidence()`
+  把 `dispatch_key`/代次/实例/`stop_after_accept`/`stop_confirmed` 等写进**既有 payload 的 `recovery`**。
+* **拿到真实 `action_id` 之后再停一次**：`_record_settlement_under_pause()` 在 `detached` 时落盘真实关联后
+  再经既有 `minecraft_stop` SAFE 控制面停一次（取消时那一次可能早于动作创建），并记 `stop_after_accept`、
+  `stop_after_accept_requests`、`stop_confirmed: false` —— **停不掉不改变结论**，只留给人工核对。
+* **先到事件的暂存与消费**（§二窗口 6）：`_defer_action_event()` 有界 FIFO（默认 50）暂存匹配不到的事件，
+  `_consume_deferred_action_event()` 在真实 `action_id` 一落盘就立刻消费（消费一次即移除）；
+  `_remember_settled_action()` 维持有界「已结算」环（默认 200）⇒ **重复终态事件是幂等空操作**。
+* **不加锁**：多出来的那次 stop 仍走既有 SAFE 控制面；`对账 → stop → 健康检查 → 身份变化回调 → 对账`
+  这条真实重入链仍由 7F.5.2 的「只打标记、绝不等待」再入保护挡住（无等待 ⇒ 无死锁）。
+* **新增 10 项确定性故障注入**（`tests/test_inflight_cancel_expire.py`，用 `asyncio.Event` 门闩精确停在
+  「请求已发出、响应未回」的窗口，不依赖 sleep），覆盖任务书 §四 八个场景 + **真实 SQLite 完整回读**；
+  两处既有断言按新语义**收紧**更新（旧语义正是缺口 1/2 本身）。
+* **新增真机门禁** `scripts/cancel_inflight_smoke_real.py`（本地专用）：真实在途动作 + 真实取消 →
+  动作仍在管理之下或已由真实终态事件收敛、真实 `action_id` 可审计、任务保持 `CANCELLED`、
+  **世界动作次数始终为 1**；首次运行 3 项因脚本的时序假设失败（真实 stop 让动作几乎立刻收敛），
+  改为接受两种**都安全**的形态后 **PASS（19 项）**。
 ## Minecraft Phase 7F.5.2 — Pre-dispatch Pause Race Closure（派发前暂停竞态闭合）
 
 * **目标**：**定向并发安全修正** —— 用户暂停与派发动作交错时，外部动作**一次都不能发出**，

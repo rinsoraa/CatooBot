@@ -12,7 +12,7 @@ from typing import Any
 
 from app.tasks.agent_plan import PlanTarget
 from app.tasks.agent_planner import BoundedAgentPlanner
-from app.tasks.models import TaskPlan
+from app.tasks.models import DispatchState, TaskPlan
 from app.tasks.validation import validate_plan
 from tests.agent_plan_fakes import SERVER
 
@@ -189,12 +189,16 @@ class TestTaskRuntimeCarriesFollow:
         assert started.state is TaskState.WAITING_ACTION
         assert ("minecraft_follow_player", {"username": "Rinsora"}, "LOW") in invoked
         assert started.plan.steps[0].state is StepState.WAITING_ACTION
-        # 取消：走既有 stop 路径 → 步骤 CANCELLED，任务终态
+        # 取消：走既有 stop 路径 → 任务终态（Phase 7F.5.3：仍**在途**的真实动作保留关联）
         cancelled = await runtime.cancel(record.task_id, reason="用户说不跟了")
         assert cancelled.state.value in {"CANCELLED", "EXPIRED"}
         assert ("minecraft_stop", {}, "SAFE") in invoked
-        # cancel() 把 pending_step 的动作标记为取消；步骤对象在重载后的 record 上
-        assert cancelled.plan.steps[0].state is StepState.CANCELLED
+        # 取消时那一次 stop 可能**早于动作创建**到达，所以绝不能把步骤直接标成 CANCELLED ——
+        # 那等于声称一个可能仍在跑的动作已经停了。如实保留 WAITING_ACTION + 真实 action_id
+        # + pending 关联（终态任务同样有事件匹配能力），等真实终态事件收敛。
+        assert cancelled.plan.steps[0].state is StepState.WAITING_ACTION
+        assert cancelled.plan.steps[0].dispatch_state == DispatchState.ACCEPTED.value
+        assert cancelled.pending_action_id == started.pending_action_id
 
 
 class TestServiceRouteRegistered:
