@@ -244,7 +244,37 @@ if record.state is not TaskState.RUNNING:
 * 环境已恢复：CatooBot 运行中（python **27752** + node **4524**），25580 / 8500 / 25565 全部在线。
 * 本阶段**未**修改数据库 schema，**未**删除任何数据行；世界状态因真机门禁确有变化（既有事实，按纪律记录）。
 
-<!--CI-->
+### §4.6 CI（运行 ID / attempt / 两个 job 的结论 / 实际 SKIPPED 清单）
+
+* 代码提交：`b3014b9fac9b20fa01bb71b0e9fffb93f13d5142`
+  （`Phase 7F.5.2: pre-dispatch pause race closure (no dispatch after pause, stale state cannot overwrite persisted PAUSED)`），
+  仓库共 260 commits；镜像 `HEAD = origin/main`，工作树干净。
+* **CI run id `38209969258` · attempt 1 · 两个 job 均 success**（无 flake、无需重跑）：
+  * `lint · format · types · tests` → **success**。逐步全绿：ruff check ✓ / ruff format --check ✓ / mypy app ✓ /
+    **pytest → `3833 passed, 3 skipped in 260.48s`** / Browser E2E ✓ / Minecraft runtime tests ✓。
+  * `webui · typecheck · tests · build` → **success**。逐步全绿：vue-tsc ✓ / vitest ✓ / vite build ✓ /
+    **Verify the committed bundle matches the build ✓**（重建产物与已提交 bundle 一致，无 churn）。
+  * URL：<https://github.com/rinsoraa/CatooBot/actions/runs/38209969258>
+* CI 的 `3833 passed, 3 skipped` 与本地 `3836 passed` 精确对账：差的 3 条是**既有**平台条件性 skip，
+  本阶段新增的 **11 项无一被跳过**。
+* **实际 SKIPPED 清单**（全部是既有假服务器限制，与本阶段无关）：
+  1. `equip / inventory_move STOP`：假服务器背包永远是空的，没有可取消的窗口；
+  2. `container STOP`：inspect 毫秒级完成，没有可取消窗口；
+  3. `craft 成功路径`：flying-squid 没有 `/give`；
+  4. `craft STOP`：合成毫秒级完成，没有可取消窗口；
+  5. `3×3 craft 成功路径`：箱子里凑不出 8 块木板；
+  6. `dropped_items / pickup 成功路径`：假服务器不支持 `/summon`，造不出真实掉落物。
+
+### §4.7 发布前核对（任务书 §七 清单）
+
+| 核对项 | 结论 |
+| --- | --- |
+| 源工作树与发布镜像预期内容一致 | ✅ 第二次 `sync_github.py` 报 `mirror already up to date` |
+| 发布镜像与 `origin/main` 最终 SHA 一致 | ✅ 镜像 `HEAD = origin/main = b3014b9`、`git status` 干净 |
+| `scripts/` 仍未发布 | ✅ 实测镜像内**不存在** `scripts/` 目录 |
+| 无真实凭据进入日志/事件/任务 payload/WebUI/Git | ✅ 本次改动 8 个文件逐一扫描（`gho_`/`sk-`/`AKIA`/`MC_BRIDGE_TOKEN=`/`Bearer <长串>`/`password=`）**全部 clean**；镜像内 tracked 敏感文件仍只有白名单示例 `config/config.example.yaml` |
+| 不引入不必要的数据库迁移 | ✅ **无新表、无新迁移**（演练 `version [36,36]`） |
+| CI 报告含 URL/ID/attempt/两 job 结论/SKIPPED 清单 | ✅ 见 §4.6 |
 
 ## §5 安全边界
 
