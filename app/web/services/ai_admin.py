@@ -456,7 +456,7 @@ class AIAdminService:
     async def test_model(self, name: str, *, prompt: str = "ping") -> dict[str, Any]:
         """走完整路由器实测一个模型；失败也返回结果（不抛 5xx）。
 
-        这是 W4 统一后的**唯一**测试结果形状（docs/WEBUI_API_CONTRACT.md §6）：
+        这是 W4 统一后的**唯一**测试结果形状（docs/WEBUI_v1.0_API契约.md §6）：
         ``ok / model / requested_model / latency_ms / http_status /
         http_status_source / error_type / message / response``。
         诊断请求不写 Memory / Conversation / Experience。

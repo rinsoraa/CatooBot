@@ -1,4 +1,4 @@
-/** Minecraft 连接层（Phase 1）的类型，与 docs/WEBUI_API_CONTRACT.md §7.5 对齐。 */
+/** Minecraft 连接层（Phase 1）的类型，与 docs/WEBUI_v1.0_API契约.md §7.5 对齐。 */
 
 /** 显式状态机（任务书 §生命周期），镜像自 Bridge runtime。 */
 export type MinecraftPhase =

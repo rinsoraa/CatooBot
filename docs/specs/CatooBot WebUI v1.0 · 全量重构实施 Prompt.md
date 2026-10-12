@@ -113,7 +113,7 @@ credentials
 第一阶段生成：
 
 ```text
-docs/WEBUI_V1_AUDIT.md
+docs/WEBUI_v1.0_现状审计.md
 ```
 
 至少记录：
@@ -142,7 +142,7 @@ URL
 建立：
 
 ```text
-docs/WEBUI_CONFIG_MATRIX.md
+docs/WEBUI_v1.0_配置矩阵.md
 ```
 
 每个配置必须至少记录：
@@ -2025,9 +2025,9 @@ OneBot Gateway
 输出：
 
 ```text
-WEBUI_V1_AUDIT.md
-WEBUI_CONFIG_MATRIX.md
-WEBUI_API_CONTRACT.md
+WEBUI_v1.0_现状审计.md
+WEBUI_v1.0_配置矩阵.md
+WEBUI_v1.0_API契约.md
 ```
 
 并 commit。
@@ -2503,7 +2503,7 @@ UI 明确反馈“是否真的生效”
 9. 每完成一个阶段先运行测试，再提交；
 10. 如果发现架构问题，优先形成最小兼容层，而不是直接重写 Core。
 
-**先完成 W1 审计并形成 `WEBUI_V1_AUDIT.md`、`WEBUI_CONFIG_MATRIX.md`、`WEBUI_API_CONTRACT.md`。**
+**先完成 W1 审计并形成 `WEBUI_v1.0_现状审计.md`、`WEBUI_v1.0_配置矩阵.md`、`WEBUI_v1.0_API契约.md`。**
 
 **只有 W1 审计完成且当前 WebUI / Config / Service 的真实关系已经确认后，才进入 W2。**
 

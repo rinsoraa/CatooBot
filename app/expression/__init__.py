@@ -2,7 +2,7 @@
 
 Short, group-scoped ways of talking she picked up from how a group chats.
 Learning is opt-in and admission-gated; injection is advisory and stays inside
-the existing style limits. See docs/V3_EXPRESSION_LEARNING.md.
+the existing style limits. See docs/v3.0_表达与口癖学习.md.
 """
 
 from app.expression.context import expression_context

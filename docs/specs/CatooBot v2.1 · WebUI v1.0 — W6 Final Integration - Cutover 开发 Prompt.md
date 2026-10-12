@@ -200,11 +200,11 @@ Core：
 编码前必须首先读取：
 
 ```text
-docs/WEBUI_V1_AUDIT.md
-docs/WEBUI_CONFIG_MATRIX.md
-docs/WEBUI_API_CONTRACT.md
-docs/WEBUI_V1_DOMAIN_MAP.md
-docs/WEBUI_V1_MIGRATION_MAP.md
+docs/WEBUI_v1.0_现状审计.md
+docs/WEBUI_v1.0_配置矩阵.md
+docs/WEBUI_v1.0_API契约.md
+docs/WEBUI_v1.0_领域审计DomainMap.md
+docs/WEBUI_v1.0_迁移表.md
 ```
 
 然后检查：
@@ -242,7 +242,7 @@ tsconfig.*
 创建：
 
 ```text
-docs/WEBUI_V1_W6_AUDIT.md
+docs/WEBUI_v1.0_W6审计.md
 ```
 
 至少记录：
@@ -503,7 +503,7 @@ legacy auth
 建立：
 
 ```text
-docs/WEBUI_V1_ROUTE_MATRIX.md
+docs/WEBUI_v1.0_路由矩阵.md
 ```
 
 至少包含：
@@ -1179,7 +1179,7 @@ expert
 重新检查：
 
 ```text
-docs/WEBUI_API_CONTRACT.md
+docs/WEBUI_v1.0_API契约.md
 ```
 
 与实际：
@@ -2620,7 +2620,7 @@ W6 完成前：
 更新：
 
 ```text
-docs/WEBUI_V1_MIGRATION_MAP.md
+docs/WEBUI_v1.0_迁移表.md
 ```
 
 状态应清晰：
@@ -2647,7 +2647,7 @@ W6 final status
 创建：
 
 ```text
-docs/WEBUI_V1_FINAL_ARCHITECTURE.md
+docs/WEBUI_v1.0_最终架构.md
 ```
 
 至少描述：
@@ -3324,7 +3324,7 @@ realtime bug
 创建：
 
 ```text
-docs/WEBUI_V1_FINAL_TEST_MATRIX.md
+docs/WEBUI_v1.0_最终测试矩阵.md
 ```
 
 至少覆盖：

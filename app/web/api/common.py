@@ -3,7 +3,7 @@
 这一层只做四件事：统一信封、统一错误映射、请求体校验、点号键的读写。
 业务语义一律留在既有 Admin Service / Config System / AI Router 里。
 
-契约见 ``docs/WEBUI_API_CONTRACT.md``；本模块是它的可执行版本。
+契约见 ``docs/WEBUI_v1.0_API契约.md``；本模块是它的可执行版本。
 """
 
 from __future__ import annotations

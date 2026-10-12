@@ -4,7 +4,7 @@ Vision results used to live only in the sha256 cache and the prompt of the turn
 they arrived in, so she could never remember what she had seen. This module
 turns *worthwhile* photo understanding into one episodic memory per turn.
 
-Boundaries, all deliberate (see docs/V3_IMAGE_MEMORY.md):
+Boundaries, all deliberate (see docs/v3.0_图像进记忆.md):
 
 * stickers are assets, not memories — they stay in the sticker library;
 * a photo only earns a memory when it carries information (text, people, two or

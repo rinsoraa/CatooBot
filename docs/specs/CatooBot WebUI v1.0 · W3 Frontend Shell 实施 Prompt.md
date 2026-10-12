@@ -336,7 +336,7 @@ fetch()
 先读取：
 
 ```text
-docs/WEBUI_API_CONTRACT.md
+docs/WEBUI_v1.0_API契约.md
 ```
 
 再根据真实 W2 endpoint 测试确认。

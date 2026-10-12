@@ -35,16 +35,16 @@ clean
 W1 已生成：
 
 ```text
-docs/WEBUI_V1_AUDIT.md
-docs/WEBUI_CONFIG_MATRIX.md
-docs/WEBUI_API_CONTRACT.md
+docs/WEBUI_v1.0_现状审计.md
+docs/WEBUI_v1.0_配置矩阵.md
+docs/WEBUI_v1.0_API契约.md
 ```
 
 其中：
 
-> `docs/WEBUI_API_CONTRACT.md` 是 W2 的唯一 API 契约依据。
+> `docs/WEBUI_v1.0_API契约.md` 是 W2 的唯一 API 契约依据。
 
-**开始 W2 前必须重新读取这三个文档，尤其完整读取 `docs/WEBUI_API_CONTRACT.md`，并严格以实际源码与契约为准。**
+**开始 W2 前必须重新读取这三个文档，尤其完整读取 `docs/WEBUI_v1.0_API契约.md`，并严格以实际源码与契约为准。**
 
 ---
 
@@ -167,9 +167,9 @@ Core
 开始编码前必须先检查：
 
 ```text
-docs/WEBUI_API_CONTRACT.md
-docs/WEBUI_V1_AUDIT.md
-docs/WEBUI_CONFIG_MATRIX.md
+docs/WEBUI_v1.0_API契约.md
+docs/WEBUI_v1.0_现状审计.md
+docs/WEBUI_v1.0_配置矩阵.md
 ```
 
 然后检查现有：
@@ -225,7 +225,7 @@ RealtimeHub / WebSocket
 严格按照：
 
 ```text
-docs/WEBUI_API_CONTRACT.md
+docs/WEBUI_v1.0_API契约.md
 ```
 
 定义的 response envelope 实现。
@@ -326,7 +326,7 @@ GET /api/v1/csrf
 具体返回格式以：
 
 ```text
-docs/WEBUI_API_CONTRACT.md
+docs/WEBUI_v1.0_API契约.md
 ```
 
 为准。
@@ -583,7 +583,7 @@ models section
 defaults
 ```
 
-实际优先级以 W1 `WEBUI_CONFIG_MATRIX.md` 为准。
+实际优先级以 W1 `WEBUI_v1.0_配置矩阵.md` 为准。
 
 不能简单：
 
@@ -669,7 +669,7 @@ POST/PATCH /api/v1/config/...
 具体 endpoint 以：
 
 ```text
-WEBUI_API_CONTRACT.md
+WEBUI_v1.0_API契约.md
 ```
 
 为准。
@@ -1208,7 +1208,7 @@ tools
 agent
 ```
 
-具体以 `WEBUI_API_CONTRACT.md` 为准。
+具体以 `WEBUI_v1.0_API契约.md` 为准。
 
 不要为了“接口看起来很全”而一次性新增所有可能 endpoint。
 
@@ -1611,7 +1611,7 @@ W1 已经确认：
 完成后必须逐条检查：
 
 ```text
-docs/WEBUI_API_CONTRACT.md §10
+docs/WEBUI_v1.0_API契约.md §10
 ```
 
 中的 W2 10 项验收要求。

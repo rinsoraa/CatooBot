@@ -1,6 +1,7 @@
 """Phase 6A §三-§七/§三十/§三十一：Activity Episode 的领域模型与状态机。
 
-对齐 ``docs/specs/v1.0.md`` §5-§9（"Episode-Based Activity Model"）与 6A 任务书 §三。
+对齐 ``docs/specs/CatooBot v1.0 World Activity Runtime Episode-Based Activity Model.md``
+§5-§9（"Episode-Based Activity Model"）与 6A 任务书 §三。
 
 设计要点：
 

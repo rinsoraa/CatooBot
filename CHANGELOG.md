@@ -176,7 +176,7 @@
   `dispatch_generation`、`pending_action_id`、`replan_required`，以及**真实 SQLite 回读**结果。
 * **勘误**：7F.5 **已经**实现桥接动作 API 的 Bearer 鉴权（`runtime.js:3974-3977` 全路由前 401）与
   「未配置 `MC_BRIDGE_TOKEN` 则拒绝启动」（`runtime.js:4396-4397`）；7F.5.1 交付报告里「无鉴权」的说法
-  **是错的**（沿用了 7F.4 的旧描述未重新核对源码），详见 `docs/MINECRAFT_PHASE7F5.2.md` §5.1。
+  **是错的**（沿用了 7F.4 的旧描述未重新核对源码），详见 `docs/MINECRAFT_PHASE_7F.5.2.md` §5.1。
 ## Minecraft Phase 7F.5.1 — Runtime Identity Observation & Correlation Guard（运行时身份观测与关联守卫）
 
 * **目标**：7F.5 的**定向修正** —— 让运行时实例身份真正贯穿调用链，并在身份不可信时 fail-closed。**不新增任何游玩能力**。
@@ -698,7 +698,7 @@
 * **边界**：19 工具、ActionRuntime 动作、TaskRuntime 状态、`allow_medium=false` 一律未改；
   没有第二套记忆引擎/任务状态机/调度循环；技能不能授予任何权限。
 * 真机：本轮为"真实 TaskRuntime + 真实 SQLite + 真实迁移"的端到端闭环（含重启后检索）；
-  **真实 Java 服务器门禁 SKIPPED**（本阶段不要求，理由见 `docs/MINECRAFT_PHASE7E.md` §10）。
+  **真实 Java 服务器门禁 SKIPPED**（本阶段不要求，理由见 `docs/MINECRAFT_PHASE_7E.md` §10）。
 
 ## Minecraft Phase 7D.2.1 — Follow Veto Cancellation Result Closure
 
@@ -716,7 +716,7 @@
   用**真 `TaskRuntime` + 真 store** 证明契约本身）。变异验证：改回旧语义 → 8 项失败。
   全量 **3430 passed**。
 * **边界**：只关这一个缺口 —— 不重做 Real Java C，不改 Policy/风险/确认授权/`allow_medium`/
-  TaskRuntime 状态集合/工具集合/迁移。证据与门禁见 `docs/MINECRAFT_PHASE7D.md` §11。
+  TaskRuntime 状态集合/工具集合/迁移。证据与门禁见 `docs/MINECRAFT_PHASE_7D.md` §11。
 
 ## Minecraft Phase 7D.2 — Concurrency & Persistence Closure
 
@@ -742,7 +742,7 @@
   step_1 equip SUCCEEDED → 第二真实客户端 `/setblock -993 80 646 air`（任务运行中）→
   step_3 `minecraft_dig` 前置条件失败 `minecraft.block_not_found`（动作 1ms 即拒）→
   任务 **REPLANNING**（新计划需重新确认，无后续世界动作）。计划冻结坐标、setblock 坐标、
-  失败日志坐标、规划器探测坐标四处一致。完整时间线见 `docs/MINECRAFT_PHASE7D.md` §10.3；
+  失败日志坐标、规划器探测坐标四处一致。完整时间线见 `docs/MINECRAFT_PHASE_7D.md` §10.3；
   **7D.1 的 §9.2 取证已作废**（世界变化早于确认、坐标不一致）。
 
 ## Minecraft Phase 7D — Agent Harness: Bounded Planning & Authorized Execution
@@ -773,7 +773,7 @@
   重启恢复零重复；不支持的目标零计划零任务。真机抓出两个缺口并修复：任务适配器缺
   `follow_player` 服务路由、QQ 入口 handler 未注入计划服务。
 * **7D.1 Real Java C（22:36）—— 已作废**：该轮世界变化发生在**任务确认之前**，且实际 dig
-  坐标与声称清除的区域不一致（见 `docs/MINECRAFT_PHASE7D.md` §9.2）。已按任务书重做，
+  坐标与声称清除的区域不一致（见 `docs/MINECRAFT_PHASE_7D.md` §9.2）。已按任务书重做，
   见本文件顶部的 **Phase 7D.2**（严格「先运行、后改变世界」）。
 
 
@@ -925,7 +925,7 @@
   `WAITING_ACTION` → `SUCCEEDED`，她真的挖到并捡回了 oak_log）、**D PASS**（一条普通聊天消息后
   连续三轮 `reason=RECENT_USER_INTERACTION`）；额外见证 `CHARACTER_RECOVERY` / `SLEEPING` /
   `BURST_PROTECTION` / `RECENT_INITIATIVE` / `DUPLICATE_INTENT` 在真机生效。
-* **真机发现四条**（写进 `docs/MINECRAFT_PHASE7A.md` §15.1）：① **记忆窗口太窄** —— 只扫"最近 3 条"
+* **真机发现四条**（写进 `docs/MINECRAFT_PHASE_7A.md` §15.1）：① **记忆窗口太窄** —— 只扫"最近 3 条"
   时，一条 MC 记忆被三条日常记忆一挤就再也触不到（真机实测稳定停在第 4 位）→ 放宽到 **5**
   （与写侧同宽，**仍有界**）；② `minecraft.agent.confirmation.ttl_seconds` **默认 60 秒**，
   人工确认容易超时（取证时临时放宽到 300 秒，跑完还原）—— 运维提示，不是缺陷；
@@ -1001,13 +1001,13 @@
   Real B 6 次真实失败全部回退且活动照常；Real C 3 次独立 `RULE_REJECTED`；Real D 到硬上限时模型**不被问**；
   Real E 16 次调用对应 16 个不同 cycle 键（一个 cycle 恰好一次）；Real F 重启后同一 cycle 键**不再问**
   （同进程换新键立刻被问，作对照）；Real QQ E 顾问每轮真实超时时她照常回答。
-  ④两个新发现写进 `docs/MINECRAFT_PHASE6D.md` §18：**撞车护栏的不对称**（规则自己的"中性兜底"不查护栏，
+  ④两个新发现写进 `docs/MINECRAFT_PHASE_6D.md` §18：**撞车护栏的不对称**（规则自己的"中性兜底"不查护栏，
   所以规则也会造出它刚否掉的 A→B→A —— 方向安全，要修得动 6B 规则路径，6D 不碰）；
   **真实模型从不提 `extend`**（10/10 都是 `transition`），所以任务书的 Real C 触发法在本机无法复现，
   按"提案被规则拒绝"这一**不变量**取证，`extend` 分支如实标为真机未取证（单测矩阵覆盖）。
 * **测试与文档**：新增 7 个文件、**91 项**（advisor 20 / schema 22 / fallback 12 / guard 10 /
   frequency 11 / injection 9 / recovery 7），覆盖任务书 A–X 矩阵 + 纯规则等价 + AST 安全 guard；
-  文档 `docs/MINECRAFT_PHASE6D.md` + `docs/README.md` 索引。
+  文档 `docs/MINECRAFT_PHASE_6D.md` + `docs/README.md` 索引。
 * 顺手把 6B 的包级守卫更新为 6D 语义：**模型入口只允许存在于 `model_advisor.py` 这一条缝里**
   （其他文件不许 import `app.ai`、不许调 chat/complete/generate）。
 
@@ -1035,7 +1035,7 @@
   冲突检测与受控 replan / 冷却与 dirty / 连续 EXTEND 只 1 次 Planner 调用 / 版本与历史 /
   重启修复 / 当前 Episode 不被改 / 不提前开新活动 / 不二次决策 / 无世界动作 /
   QQ 现状与计划仍隔离 / 6A-6C 回归）。
-* **真机窄门禁 A–D 取得证据**（详见 `docs/MINECRAFT_PHASE6C.md` §20.8 与文档末尾 6C.1 小节）：
+* **真机窄门禁 A–D 取得证据**（详见 `docs/MINECRAFT_PHASE_6C.md` §20.8 与文档末尾 6C.1 小节）：
   真实 EXTEND（`out` +1800s）当场触发 `计划对齐：已重排` 与
   `PLAN-… v18 trigger=episode_extended`，而她**没有被提前切走**（随后仍是 `CONTINUE BEFORE_END`）；
   杀掉进程树（含 Node 桥）重启后 `activity.recovered` + `PLAN-… v21 trigger=recovery`，
@@ -1101,8 +1101,8 @@
   `test_activity_goals.py`、`test_activity_anchors.py`、`test_activity_candidate_ranking.py`、
   `test_activity_plan_persistence.py`、`test_activity_plan_recovery.py`（含 AST 安全 guard、
   3 天快进、确定性矩阵），并更新 runtime / decision / recovery / consistency 四个既有文件；
-  文档 `docs/MINECRAFT_PHASE6C.md` + `docs/README.md` 索引。
-* **真机门禁 A–D + Real QQ A/B 全部取得证据**（详见 `docs/MINECRAFT_PHASE6C.md` §16/§17）：
+  文档 `docs/MINECRAFT_PHASE_6C.md` + `docs/README.md` 索引。
+* **真机门禁 A–D + Real QQ A/B 全部取得证据**（详见 `docs/MINECRAFT_PHASE_6C.md` §16/§17）：
   任务期间 `Activity=minecraft_task`、任务完成后**计划真的重排**（`plan-005 v5` → `plan-006 v6`，
   同为 `trigger=episode_ended`）；Minecraft 离线窗口内计划与活动都不含 Minecraft 活动名、她也不声称
   在服务器里；沙盒 world event 换活动期间零世界动作；QQ 的「你现在在干嘛」答当前 Episode（napping）、
@@ -1150,7 +1150,7 @@
   其余 DEBUG"（真机实测 200 条日志里 197 条是逐 tick 决策行 —— 日志会被淹掉）；
   ②文档记录"Transition Window 需要一条能跑到窗口的长活动才会自然出现"（沙盒自己的换活动通常在
   窗口之前就发生），并给出用配置项放大窗口来取证的可行做法。
-* **真机门禁 A–D 全部取得证据**（详见 `docs/MINECRAFT_PHASE6B.md` §15）：任务期间 `minecraft_task`
+* **真机门禁 A–D 全部取得证据**（详见 `docs/MINECRAFT_PHASE_6B.md` §15）：任务期间 `minecraft_task`
   （TASK 源）；暂停在日志里**当场**触发 `activity.interrupted reason=USER_INTERACTION`（实时路径，
   中间无重启）；恢复产生**新的**同任务 Episode（`parent` 指向前一条，live 始终只有一条）；
   Episode 走到 `planned_end − window` 时连续出现 `reason=TRANSITION_WINDOW … pending=True`
@@ -1158,7 +1158,7 @@
 * **测试与文档**：新增 `tests/test_activity_decision.py`、`test_activity_transition_window.py`、
   `test_activity_bounce_guard.py`、`test_activity_consistency.py`、`test_activity_merge.py`、
   `test_activity_decision_trace.py`（覆盖 A–W 矩阵 + 源码级安全 guard）；
-  文档 `docs/MINECRAFT_PHASE6B.md` + `docs/README.md` 索引。
+  文档 `docs/MINECRAFT_PHASE_6B.md` + `docs/README.md` 索引。
 
 ## Minecraft Phase 6A — 世界活动运行时（Activity Episode）
 
@@ -1222,7 +1222,7 @@
 * **测试与文档**：新增 `tests/test_activity_episode.py`、`test_activity_runtime.py`、
   `test_activity_recovery.py`、`test_activity_projection.py`、`test_activity_events.py`、
   `test_activity_minecraft_adapter.py`（覆盖任务书 A–P 矩阵，含幂等/主唯一/假时钟/恢复/
-  LLM 隔离/记忆隔离/离线不造假/安全 guard）；文档 `docs/MINECRAFT_PHASE6A.md` +
+  LLM 隔离/记忆隔离/离线不造假/安全 guard）；文档 `docs/MINECRAFT_PHASE_6A.md` +
   `docs/README.md`；真机门禁脚本 `scripts/activity_smoke_real.py`（A–E，只读核对）。
 
 ## Minecraft Phase 5C — 身份桥与持久世界记忆
@@ -1325,7 +1325,7 @@
   **REAL QQ: PASS（24/24 项）** —— QQ 建任务 → 确认 → `dig`/`pickup` 两个 MEDIUM 真动作 →
   `FINAL INVENTORY VERIFIED {'oak_log': 1}`；暂停 / 继续 / 取消 / 授权到期（过期后重新确认才继续）/
   重规划（v2 新 hash + 重新确认）/ 非发起人被拒（零副作用）/ 重启恢复（等确认的任务留在等确认）/
-  任务 TTL 过期全部在真机上跑过（详见 `docs/MINECRAFT_PHASE5B.md` §9）。
+  任务 TTL 过期全部在真机上跑过（详见 `docs/MINECRAFT_PHASE_5B.md` §9）。
   另修掉两个真机暴露的 bug：
   ① 入口回复与 `task.confirmation_required` 事件会让**同一份计划发两遍** → 改成同步 publish +
      处理期排队 + 只跳过「回复已说明」的事件；

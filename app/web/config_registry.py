@@ -5,7 +5,7 @@
 
 * 结构从 pydantic 模型推导（``AppConfig.model_fields``），不会与 settings.py 漂移；
 * 只有 UI 元数据是显式的（``_BASIC``/``_ADVANCED``/``_UNUSED`` …），
-  它们与 W1 的 ``docs/WEBUI_CONFIG_MATRIX.md`` 一一对应；
+  它们与 W1 的 ``docs/WEBUI_v1.0_配置矩阵.md`` 一一对应；
 * ``DEFINED_BUT_UNUSED`` / ``LEGACY`` 默认不出现在普通查询里，但从不隐藏事实。
 """
 

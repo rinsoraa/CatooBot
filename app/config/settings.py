@@ -808,7 +808,7 @@ class ExpressionConfig(BaseModel):
 
     Disabled by default (opt-in); when on, group messages are mined for short
     reusable phrases that get injected back into her prompt *for that group
-    only*, inside the existing style limits. See docs/V3_EXPRESSION_LEARNING.md.
+    only*, inside the existing style limits. See docs/v3.0_表达与口癖学习.md.
     """
 
     enabled: bool = False

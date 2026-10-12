@@ -187,7 +187,7 @@ POST /api/v1/ai/models/{name}/test
 }
 ```
 
-而 `WEBUI_API_CONTRACT.md` 某处示例使用：
+而 `WEBUI_v1.0_API契约.md` 某处示例使用：
 
 ```text
 attempts
@@ -196,7 +196,7 @@ final_model
 
 W4 开始编码前：
 
-1. 重新读取 `docs/WEBUI_API_CONTRACT.md`；
+1. 重新读取 `docs/WEBUI_v1.0_API契约.md`；
 2. 阅读 W2 实际 endpoint implementation；
 3. 统一 API contract；
 4. 必须保证 Backend implementation、contract、Frontend types 三者一致。
@@ -3346,7 +3346,7 @@ B
 W4 完成后：
 
 ```text
-docs/WEBUI_API_CONTRACT.md
+docs/WEBUI_v1.0_API契约.md
 ```
 
 必须与：
