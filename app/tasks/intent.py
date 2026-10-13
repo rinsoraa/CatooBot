@@ -307,6 +307,136 @@ _WOOD_NARRATION_MARKERS = (
 )
 
 
+#: Phase 8D Follow-up 2：否定/暂缓标记。多字标记本身无歧义，直接命中。
+_WOOD_NEGATION_MARKERS = (
+    "不要",
+    "不用",
+    "不必",
+    "不想",
+    "不打算",
+    "不需要",
+    "先别",
+    "暂时别",
+)
+
+#: 单字否定「别」需要位置校验：避免把「特别/分别/个别/级别/类别/区别」里的字当否定。
+_WOOD_SINGLE_NEGATIONS = ("别",)
+
+#: 「别」前面允许出现的字（句首/主语/时间/标点）；其余一律不算否定。
+_NEGATION_LEAD_OK = (
+    "",
+    "我",
+    "你",
+    "他",
+    "她",
+    "它",
+    "咱",
+    "先",
+    "请",
+    "那",
+    "就",
+    "，",
+    "。",
+    "！",
+    "？",
+    "、",
+    "；",
+    "：",
+    " ",
+)
+
+#: 否定之后出现「改口/另选目标」→ 作用范围不明，必须澄清（保守 CLARIFY）。
+_WOOD_REDIRECT_MARKERS = ("改", "换", "而是", "另", "重新")
+
+#: 双重否定/纠正句 → 同样无法可靠判定，必须澄清。
+_WOOD_DOUBLE_NEGATION_MARKERS = ("不是不", "并不是不", "不是不想", "不是不能")
+
+#: 与木材相关的名词提示（否定裁定用；比树种表更宽，含裸「树/木」）。
+_WOOD_NOUN_HINTS: tuple[str, ...] = (
+    (
+        "原木",
+        "木头",
+        "木块",
+        "树干",
+        "树",
+        "木",
+    )
+    + tuple(alias for aliases, _code in WOOD_SPECIES for alias in aliases)
+    + tuple(alias for aliases, _code in WOOD_UNSUPPORTED for alias in aliases)
+)
+
+
+class WoodNegation:
+    """木材采集动作的否定裁定结果（§4.1：三种取值，字面量即可，不引入 NLP 框架）。"""
+
+    NOT_NEGATED = "not_negated"
+    NEGATED = "negated"
+    AMBIGUOUS = "ambiguous"
+
+
+def mentions_wood(text: str) -> bool:
+    """这句话是否与木材有关（否定裁定的前置门槛，比树种表更宽）。"""
+    raw = str(text or "")
+    return any(hint in raw for hint in _WOOD_NOUN_HINTS)
+
+
+def _negation_hits(text: str) -> list[tuple[int, str]]:
+    """否定标记及其**合法位置**（「别」必须处于句首/主语/标点之后）。"""
+    hits: list[tuple[int, str]] = []
+    for marker in _WOOD_NEGATION_MARKERS:
+        start = text.find(marker)
+        while start >= 0:
+            hits.append((start, marker))
+            start = text.find(marker, start + 1)
+    for marker in _WOOD_SINGLE_NEGATIONS:
+        start = text.find(marker)
+        while start >= 0:
+            previous = text[start - 1] if start > 0 else ""
+            if previous in _NEGATION_LEAD_OK:
+                hits.append((start, marker))
+            start = text.find(marker, start + 1)
+    return sorted(hits)
+
+
+def _wood_action_after(text: str, start: int, window: int = 8) -> int:
+    """否定标记之后 ``window`` 字内最近的木材动作词位置（没有则 -1）。"""
+    tail = text[start : start + window]
+    found = [tail.find(action) for action in _WOOD_ACTIONS if action in tail]
+    return -1 if not found else start + min(found)
+
+
+def classify_wood_negation(text: str) -> str:
+    """裁定一条消息对木材采集动作的否定语义（确定性、纯函数、无副作用）。
+
+    只考虑**否定词与采集动作的局部关系**（不能 ``'不' in text`` 一刀切，也不能让
+    「要/想/去/带回来」这类肯定标记覆盖前面的否定）：
+
+    * 双重否定/纠正句 → ``AMBIGUOUS``；
+    * 否定标记之后近处有采集动作 → ``NEGATED``；
+    * 否定之后又出现改口/另选目标、或**另一个**采集动作 → ``AMBIGUOUS``；
+    * 其余 → ``NOT_NEGATED``（交回既有肯定请求判断）。
+    """
+    raw = str(text or "").strip()
+    if not raw:
+        return WoodNegation.NOT_NEGATED
+    if any(marker in raw for marker in _WOOD_DOUBLE_NEGATION_MARKERS):
+        return WoodNegation.AMBIGUOUS
+    if not mentions_wood(raw):
+        return WoodNegation.NOT_NEGATED
+    for start, _marker in _negation_hits(raw):
+        action_at = _wood_action_after(raw, start)
+        if action_at < 0:
+            continue
+        after = raw[action_at:]
+        if any(marker in after for marker in _WOOD_REDIRECT_MARKERS):
+            return WoodNegation.AMBIGUOUS
+        rest = raw[action_at + 1 :]
+        if any(action in rest for action in _WOOD_ACTIONS):
+            return WoodNegation.AMBIGUOUS
+        return WoodNegation.NEGATED
+    return WoodNegation.NOT_NEGATED
+
+
 def is_wood_request(text: str) -> bool:
     """区分「明确的采集指令」与「叙述/回忆」（确定性，不调用模型）。
 

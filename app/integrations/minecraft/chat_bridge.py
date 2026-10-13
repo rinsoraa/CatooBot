@@ -31,8 +31,11 @@ from app.tasks.agent_plan import PlanTarget
 from app.tasks.agent_planner import detect_shape
 from app.tasks.intent import (
     TaskIntentDetector,
+    WoodNegation,
     WoodRequest,
+    classify_wood_negation,
     is_wood_request,
+    mentions_wood,
     parse_wood_request,
 )
 from app.tools.models import RouteTarget, RouteTrace, new_route_id
@@ -62,6 +65,25 @@ def chat_session_id(host: str | None, port: int | None, username: str) -> str:
     if host and port:
         return f"{SESSION_PREFIX}:{host}:{port}:{username}"
     return f"{SESSION_PREFIX}:{username}"
+
+
+#: 明确的任务控制说法（§4.3）：以这些词开头的消息一律**交回**任务入口，Phase 8D
+#: Follow-up 2 的否定分支绝不截获它们。这里只用于「让路」，不会启动任何动作。
+_WOOD_CONTROL_PREFIXES = (
+    "取消",
+    "算了",
+    "确认",
+    "暂停",
+    "继续",
+    "恢复",
+    "停止",
+    "停下",
+    "不查了",
+    "别查了",
+    "不用查",
+    "不用继续",
+    "不用找",
+)
 
 
 class MinecraftChatBridge:
@@ -215,6 +237,16 @@ class MinecraftChatBridge:
         # Phase 8D §7.4：木材采集必须在**任务入口之前**判定。旧单目标资源路径
         # （TaskTurnHandler._create → plan_resource_task）会把「砍两棵树」当成一次
         # 单方块挖掘接管：既绕开规划期策略闸，也不是有界木材计划（§3.1 点名）。
+        # Phase 8D Follow-up 2：否定/暂缓/冲突必须在**任何**肯定请求判断之前裁定，
+        # 并且在唯一入口**明确接管**（绝不 return None 落回旧单目标资源路径或角色
+        # 工具链 —— 那正是本次要修的缺陷）。
+        verdict = classify_wood_negation(message)
+        if (
+            verdict is not WoodNegation.NOT_NEGATED
+            and mentions_wood(message)
+            and await self._wood_negation_preempts(handler, session_id, message)
+        ):
+            return self._wood_negation_reply(session_id, message, verdict)
         wood = parse_wood_request(message)
         if wood is not None and await self._wood_preempts(handler, session_id, message, wood):
             return await self._wood_reply(username, session_id, message, wood)
@@ -245,6 +277,47 @@ class MinecraftChatBridge:
         return outcome.reply
 
     # ---------------------------------------------------------- Phase 8D：木材采集
+
+    async def _wood_negation_preempts(self, handler: Any, session_id: str, message: str) -> bool:
+        """否定/冲突裁定是否在入口之前接管（§4.2 优先级 / §4.3 活动任务边界）。
+
+        控制命令、有活动任务时的状态查询、以及会话里已有未终态任务（busy）都保持
+        既有顺序与文案，交回任务入口；其余一律由本分支**明确接管**并给出非执行结论。
+        """
+        detector = getattr(handler, "detector", None)
+        current_task = getattr(handler, "current_task", None)
+        if detector is None or not callable(current_task):
+            return False
+        if detector.control_command(message):
+            return False
+        stripped = str(message or "").strip()
+        if any(stripped.startswith(word) for word in _WOOD_CONTROL_PREFIXES):
+            return False
+        current = await current_task(str(session_id))
+        if current is not None and detector.status_query(message):
+            return False
+        return current is None or bool(current.state.terminal)
+
+    def _wood_negation_reply(self, session_id: str, message: str, verdict: str) -> str:
+        """否定/冲突的非执行结论：零计划、零任务、零工具，只留稳定原因码。"""
+        if verdict == WoodNegation.AMBIGUOUS:
+            self._route(
+                reason_code="wood_negation_ambiguous",
+                route_target=RouteTarget.CLARIFY.value,
+                session_id=session_id,
+                text_chars=len(message),
+            )
+            return (
+                "我有点拿不准你是要我砍、还是不要我砍 —— 你直接说「砍一根橡木原木」"
+                "或者「先不砍」；在那之前我什么都不会动。"
+            )
+        self._route(
+            reason_code="wood_negated_intent",
+            route_target=RouteTarget.CHAT_ONLY.value,
+            session_id=session_id,
+            text_chars=len(message),
+        )
+        return "好，那我不砍了 —— 这次什么都没做。"
 
     async def _wood_preempts(
         self, handler: Any, session_id: str, message: str, wood: WoodRequest

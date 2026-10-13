@@ -6,8 +6,11 @@ import pytest
 
 from app.tasks.intent import (
     WOOD_MAX_TARGETS,
+    WoodNegation,
     WoodRequest,
+    classify_wood_negation,
     is_wood_request,
+    mentions_wood,
     parse_wood_request,
 )
 
@@ -222,3 +225,73 @@ def test_count_units_and_chinese_numerals(text: str, expected: int) -> None:
 def test_request_versus_narration_is_deterministic(text: str, is_request: bool) -> None:
     """§B：命令句（哪怕没有礼貌词）算指令；过去时叙述不算。"""
     assert is_wood_request(text) is is_request
+
+
+# ============================================================ Phase 8D Follow-up 2：否定裁定
+
+NEGATED_TEXTS = (
+    "不要砍两根橡木原木带回来",
+    "我不想砍两根橡木原木带回来",
+    "别砍两根橡木原木带回来",
+    "先别砍两根橡木原木带回来",
+    "暂时别砍两根橡木原木带回来",
+    "我不打算砍两根橡木原木带回来",
+    "不用帮我砍两根橡木原木带回来",
+    "我不需要砍两根橡木原木带回来",
+    "不必砍橡木原木了",
+    "不要砍两根竹子带回来",
+    "不要砍树",
+    "我不想砍木头，我只是问附近有什么树",
+)
+
+AMBIGUOUS_TEXTS = (
+    "不要砍橡木，改砍云杉",
+    "不要砍橡木原木，砍云杉原木",
+    "不是不想砍两根橡木原木带回来",
+    "并不是不想砍橡木",
+)
+
+POSITIVE_TEXTS = (
+    "去砍两根橡木原木带回来",
+    "帮我砍两根橡木原木带回来",
+    "我想砍一根橡木",
+    "砍0根橡木原木",
+    "去砍两根竹子带回来",
+    "帮我砍五根橡木原木带回来",
+    "今天天气不错呀",
+)
+
+FALSE_POSITIVE_TEXTS = (
+    "我特别想砍两根橡木原木带回来",
+    "我分别砍了两根橡木和云杉原木",
+    "这个级别可以砍橡木原木吗",
+    "我觉得不错",
+)
+
+
+@pytest.mark.parametrize("text", NEGATED_TEXTS)
+def test_explicit_negation_is_classified_as_negated(text: str) -> None:
+    assert classify_wood_negation(text) is WoodNegation.NEGATED
+
+
+@pytest.mark.parametrize("text", AMBIGUOUS_TEXTS)
+def test_conflicting_or_double_negation_is_ambiguous(text: str) -> None:
+    assert classify_wood_negation(text) is WoodNegation.AMBIGUOUS
+
+
+@pytest.mark.parametrize("text", POSITIVE_TEXTS)
+def test_positive_or_unrelated_lines_are_not_negated(text: str) -> None:
+    assert classify_wood_negation(text) is WoodNegation.NOT_NEGATED
+
+
+@pytest.mark.parametrize("text", FALSE_POSITIVE_TEXTS)
+def test_negation_lookalikes_inside_words_are_not_negation(text: str) -> None:
+    """「特别/分别/级别」里的「别」、以及没有木材名词的句子都不算否定。"""
+    assert classify_wood_negation(text) is WoodNegation.NOT_NEGATED
+
+
+def test_mentions_wood_is_a_wide_but_bounded_gate() -> None:
+    for text in ("砍树", "橡木", "两根原木", "云杉原木", "砍竹子"):
+        assert mentions_wood(text) is True
+    for text in ("今天天气不错", "跟着我", "看看背包"):
+        assert mentions_wood(text) is False

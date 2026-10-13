@@ -1,5 +1,22 @@
 # Changelog
 
+## Minecraft Phase 8D Follow-up 2 — Wood Negation Guard & No-Action Routing Closure（木材否定护栏与零动作路由收口）
+
+* **缺陷（已复现）**：`is_wood_request()` 只认肯定标记、不裁定否定；`_wood_preempts()` 在 `wood.problem` 为空时
+  直接采信旧任务检测器。于是 `不要砍两根橡木原木带回来`／`我不想砍…`／`别砍…`／`不用帮我砍…` 等**否定句被当成
+  肯定请求**送进木材计划层生成待确认计划；`不要砍树`（未指定树种）同样被当成请求；冲突/双重否定没有澄清路径。
+  先写失败测试：`pytest tests/test_phase8d_wood_routing.py -q` → **14 failed, 18 passed**。
+* **修复（纯增量）**：`app/tasks/intent.py` 新增确定性否定裁定（否定标记 + 「别」的位置校验 + 改口/另选目标 +
+  双重否定 + 否定词与采集动作的**局部**关系）与 `classify_wood_negation()` / `WoodNegation` / `mentions_wood()`；
+  `app/integrations/minecraft/chat_bridge.py` 在**任何肯定请求判断之前**裁定，并由唯一入口**明确接管**：
+  否定 → `wood_negated_intent`／`CHAT_ONLY`，冲突 → `wood_negation_ambiguous`／`CLARIFY`（零计划、零任务、零工具，
+  **绝不** return None 回落旧单目标资源路径或角色工具链）；控制命令（取消/确认/暂停/继续/停止…）一律让路给既有入口。
+* **保持可用**：肯定请求仍进既有有界木材计划；不支持树种仍 `wood_unsupported_species`；多树种仍 `CLARIFY`；
+  `0 根` 仍 `wood_zero_count`；数量上限、叙述过滤、busy/状态查询/控制路径与全部安全不变量不变。
+* **测试**：木材三套件 **132 passed**（88 + 新增 44：helper 矩阵 28、入口回归 16）；较宽回归 **716 passed, 3338 deselected**；
+  `ruff check .` All checks passed；`ruff format --check .` **680 files**；`mypy app` Success（337 files）。
+* **范围**：改动 384 行、**0 删除**；`ACTION_RISK`／`allow_medium` 默认／19 工具／`TaskRuntime`／预算／授权／确认门／
+  Action Runtime／数据库 Schema **零改动**；凭据扫描 0 命中；本阶段只改词法分类与聊天路由，按任务书 §8 不需要重跑真机采集门禁。
 ## Minecraft Phase 8D Follow-up — Wood Intent Parsing & Routing Closure（木材意图解析与路由收口）
 
 * **基线** `41591f0fe7e68074289b1f04b328feeae53d345a`（Phase 8D 最终）。**独立修复提交，保持 8D 原有提交历史，不 reset、不改写历史。**

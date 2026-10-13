@@ -313,3 +313,111 @@ async def test_no_raw_message_text_in_route_evidence(tmp_path: Any) -> None:
         assert "帮我砍两根橡木原木带回来" not in blob
         assert "rt_" in blob
         assert last_route(env).text_chars == len(WOOD_ASK)
+
+
+# ============================================================ Phase 8D Follow-up 2：否定护栏
+
+NEGATED_LINES = [
+    "不要砍两根橡木原木带回来",
+    "我不想砍两根橡木原木带回来",
+    "别砍两根橡木原木带回来",
+    "先别砍两根橡木原木带回来",
+    "暂时别砍两根橡木原木带回来",
+    "我不打算砍两根橡木原木带回来",
+    "不用帮我砍两根橡木原木带回来",
+    "我不需要砍两根橡木原木带回来",
+    "不要砍两根竹子带回来",
+    "不要砍树",
+]
+
+AMBIGUOUS_LINES = [
+    "不要砍橡木，改砍云杉",
+    "不要砍橡木原木，砍云杉原木",
+    "不是不想砍两根橡木原木带回来",
+]
+
+
+@pytest.mark.parametrize("text", NEGATED_LINES)
+async def test_negated_wood_is_taken_over_with_zero_action(
+    tmp_path: Any, monkeypatch: pytest.MonkeyPatch, text: str
+) -> None:
+    """明确否定/暂缓：入口必须**明确接管**并给出非执行结论（绝不回落旧路径）。"""
+    import app.tasks.turn as turn_module
+
+    def _boom(*_: Any, **__: Any) -> Any:
+        raise AssertionError("否定请求不得进入旧单目标 plan_resource_task")
+
+    monkeypatch.setattr(turn_module, "plan_resource_task", _boom)
+    async with stack(tmp_path, "角色回答。") as env:
+        turns, plans = WoodTurns(), WoodPlans()
+        wire(env, turns=turns, plans=plans)
+        await env.say("IdSmoke8D", text)
+        assert plans.calls == [], "否定请求绝不能调用木材计划服务"
+        assert turns.calls == 0, "否定由入口接管，不再交回任务入口"
+        assert env.tools.executor.traces == [], "否定请求必须零 Minecraft 工具执行"
+        route = last_route(env)
+        assert route.reason_code == "wood_negated_intent"
+        assert route.route_target == RouteTarget.CHAT_ONLY.value
+        assert route.task_id == ""
+
+
+@pytest.mark.parametrize("text", AMBIGUOUS_LINES)
+async def test_ambiguous_negation_clarifies_with_zero_action(
+    tmp_path: Any, monkeypatch: pytest.MonkeyPatch, text: str
+) -> None:
+    """否定与肯定目标冲突／双重否定：CLARIFY，零计划零任务零工具，不替用户挑树种。"""
+    import app.tasks.turn as turn_module
+
+    def _boom(*_: Any, **__: Any) -> Any:
+        raise AssertionError("冲突意图不得进入旧单目标 plan_resource_task")
+
+    monkeypatch.setattr(turn_module, "plan_resource_task", _boom)
+    async with stack(tmp_path, "角色回答。") as env:
+        turns, plans = WoodTurns(), WoodPlans()
+        wire(env, turns=turns, plans=plans)
+        await env.say("IdSmoke8D", text)
+        assert plans.calls == []
+        assert turns.calls == 0
+        assert env.tools.executor.traces == []
+        route = last_route(env)
+        assert route.reason_code == "wood_negation_ambiguous"
+        assert route.route_target == RouteTarget.CLARIFY.value
+        assert route.task_id == ""
+
+
+async def test_negation_never_leaks_raw_text_into_route(tmp_path: Any) -> None:
+    async with stack(tmp_path, "角色回答。") as env:
+        turns, plans = WoodTurns(), WoodPlans()
+        wire(env, turns=turns, plans=plans)
+        await env.say("IdSmoke8D", "不要砍两根橡木原木带回来")
+        blob = str(env.runtime.routes.snapshot())
+        assert "不要砍" not in blob
+        route = last_route(env)
+        assert route.text_chars == len("不要砍两根橡木原木带回来")
+
+
+async def test_positive_wood_requests_still_reach_the_plan_layer(tmp_path: Any) -> None:
+    """C 组：肯定请求仍然进入既有有界木材计划（shape_hint=wood），确认前零动作。"""
+    async with stack(tmp_path, "角色回答。") as env:
+        turns, plans = WoodTurns(), WoodPlans()
+        wire(env, turns=turns, plans=plans)
+        await env.say("IdSmoke8D", "去砍两根橡木原木带回来")
+        assert turns.calls == 0
+        assert len(plans.calls) == 1
+        assert plans.calls[0]["shape_hint"] == "wood"
+        assert env.tools.executor.traces == []
+        route = last_route(env)
+        assert route.reason_code == "plan_created"
+        assert route.route_target == RouteTarget.TASK.value
+
+
+async def test_negated_query_line_never_creates_a_collection_task(tmp_path: Any) -> None:
+    """D 组：带否定的「我只问附近有什么树」不得建采集任务、不得调用工具。"""
+    async with stack(tmp_path, "角色回答。") as env:
+        turns, plans = WoodTurns(), WoodPlans()
+        wire(env, turns=turns, plans=plans)
+        await env.say("IdSmoke8D", "我不想砍木头，我只是问附近有什么树")
+        assert plans.calls == []
+        assert env.tools.executor.traces == []
+        route = last_route(env)
+        assert route.reason_code in ("wood_negated_intent", "wood_negation_ambiguous")

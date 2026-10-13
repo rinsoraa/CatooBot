@@ -185,3 +185,75 @@
 | CI 上 ruff format / mypy | 659 files already formatted（CI 只见镜像内文件）；Success: no issues found in 337 source files |
 | 实际 SKIPPED（全部为既有假服务器限制，与本修复无关） | equip / inventory_move STOP；container STOP；craft 成功路径；craft STOP；3×3 craft 成功路径；dropped_items / pickup 成功路径 |
 | 发布核对 | 改动文件凭据扫描 **0 命中**；`agent.py`（`ACTION_RISK`）、`settings.py`（`allow_medium` 默认）、`database/database.py`（迁移）、`tasks/runtime.py`（状态机）、`tasks/validation.py`（预算）、`tools/builtins` + `registry.py`（19 工具）**逐个确认零改动** |
+
+
+## §11 Phase 8D Follow-up 2 — 木材否定护栏与零动作路由收口
+
+任务书：`docs/specs/CatooBot Minecraft Phase 8D Follow-up 2 — Wood Negation Guard & No-Action Routing Closure.md`
+（19854 bytes / 269 行，SHA256 `9702EEB33F7EE1275A59A06D23A1566F721FC6AB747269AA378AB993D91F235C`，逐字节一致）。
+基线 `186dac5df704f0b3ba7fea6470b946f5f8515431`。
+
+### §11.1 缺陷（先复现，再修）
+
+`is_wood_request()` 只认肯定标记（帮我/要/想/去/带回来…），**没有否定语义裁定**；
+路由侧 `_wood_preempts()` 在 `wood.problem` 为空时直接返回 `detector.detect(message).is_task`，
+旧检测器只看「动作词 + 多阶段标记 + 资源词」，不裁定否定。后果：
+
+* `不要砍两根橡木原木带回来`、`我不想砍…`、`别砍…`、`不用帮我砍…` 等**否定句被当成肯定请求**，
+  进入 `AgentPlanService.plan_goal_from_user(shape_hint='wood')` → 生成待确认计划（本该零计划）；
+* `不要砍树` 因树种未指定而先被判定为「请求」；`不要砍两根竹子带回来` 会先回「不支持树种」而不是否定；
+* 冲突/双重否定（`不要砍橡木，改砍云杉`、`不是不想砍橡木…`）没有保守澄清路径。
+
+**先写失败测试后的实测**：`pytest tests/test_phase8d_wood_routing.py -q` → **14 failed, 18 passed**
+（10 条否定 + 3 条冲突 + 1 条否定式查询全部失败，正是缺陷本身）。
+
+### §11.2 修复（最小、纯增量）
+
+| 文件 | 改动 |
+| --- | --- |
+| `app/tasks/intent.py` | 新增确定性否定裁定：`_WOOD_NEGATION_MARKERS`（不要/不用/不必/不想/不打算/不需要/先别/暂时别）、`_WOOD_SINGLE_NEGATIONS`（别）+ `_NEGATION_LEAD_OK`（「别」只有处于句首/主语/标点之后才算，避免「特别/分别/级别/类别」误判）、`_WOOD_REDIRECT_MARKERS`（改/换/而是/另/重新）、`_WOOD_DOUBLE_NEGATION_MARKERS`（不是不/并不是不/不是不想/不是不能）、`_WOOD_NOUN_HINTS` + `mentions_wood()`、`_negation_hits()`、`_wood_action_after()`（否定词与采集动作的**局部**关系）、`WoodNegation`（NOT_NEGATED/NEGATED/AMBIGUOUS）与 `classify_wood_negation()`；`parse_wood_request()` 的树种/数量职责**未动** |
+| `app/integrations/minecraft/chat_bridge.py` | `_task_reply()` 在**任何肯定请求判断之前**裁定否定：`verdict` 非 NOT_NEGATED 且与木材有关 → `_wood_negation_preempts()` 为真则 `_wood_negation_reply()` **明确接管并返回非执行结论**（NEGATED → `wood_negated_intent`/`CHAT_ONLY`；AMBIGUOUS → `wood_negation_ambiguous`/`CLARIFY`）；新增 `_WOOD_CONTROL_PREFIXES`（取消/算了/确认/暂停/继续/恢复/停止/停下/不查了/别查了/不用查/不用继续/不用找）——以这些词开头的消息一律**交回**任务入口（§4.3） |
+| `tests/test_phase8d_wood_intent.py` | 新增否定/冲突/肯定/同形词矩阵（+28 项） |
+| `tests/test_phase8d_wood_routing.py` | 新增入口级回归（+16 项）：10 条否定 + 3 条冲突 + 原文不泄漏 + 肯定请求仍进计划层 + 否定式查询不建任务 |
+
+**为什么不会回落旧路径**：否定结论由 Minecraft 聊天**唯一接管点**（`_task_reply`）直接返回字符串回复，
+既不调用 `handler.handle()`（旧单目标 `plan_resource_task` 的入口），也不进入角色工具链；
+回归用 `monkeypatch` 把 `plan_resource_task` 换成抛异常函数后否定用例仍正常 —— 直接证明旧模板未被调用。
+
+### §11.3 行为矩阵（与任务书 §5 对应，实测）
+
+| 组 | 输入（代表） | 结论 | 证据 |
+| --- | --- | --- | --- |
+| A 否定/暂缓 | 不要砍…／我不想砍…／别砍…／先别砍…／暂时别砍…／不打算砍…／不用帮我砍…／不需要砍…／不要砍竹子…／不要砍树 | `wood_negated_intent` + `CHAT_ONLY` | `plans.calls == []`、`turns.calls == 0`、`executor.traces == []`、`task_id == ''` |
+| B 冲突/双重否定 | 不要砍橡木，改砍云杉／不要砍橡木原木，砍云杉原木／不是不想砍…／并不是不想砍橡木 | `wood_negation_ambiguous` + `CLARIFY` | 同上（零计划、零任务、零工具，不替用户挑树种） |
+| C 肯定请求保持可用 | 去砍两根橡木原木带回来／帮我砍两根…／我想砍一根橡木／砍0根橡木原木／去砍两根竹子带回来／帮我砍五根橡木原木带回来 | 仍进既有 wood 计划层（`shape_hint='wood'`）或既有 `wood_unsupported_species`/`wood_zero_count` | 既有 8D 断言全部保持通过；确认前零动作 |
+| D 叙述/查询/闲聊 | 我昨天砍了两根竹子／我刚刚砍了两根竹子／附近有什么木头？／我不想砍木头，我只是问附近有什么树 | 不建采集任务、不调用工具 | `plans.calls == []`、`executor.traces == []` |
+| 同形词防误判 | 我特别想砍两根橡木原木带回来／我分别砍了两根橡木和云杉原木／这个级别可以砍橡木原木吗／我觉得不错 | `NOT_NEGATED`（不误判否定） | helper 单测 |
+・| E 控制/busy | 取消，别砍树了／有活动任务时的状态查询／未终态任务 busy | 仍由既有任务入口处理 | `turns.calls == 1` 等既有断言保持通过（否定分支只**让路**） |
+
+### §11.4 本地门禁（实测数字与退出码）
+
+| 命令 | 结果 |
+| --- | --- |
+| `pytest tests/test_phase8d_wood_intent.py tests/test_phase8d_wood_plan.py tests/test_phase8d_wood_routing.py -q` | **132 passed**（8D 基线 88 + 新增 44），exit 0 |
+| `pytest tests -q -k "wood or intent or turn or task_entry or agent_plan or skill or minecraft_chat or chat_bridge or phase8"` | **716 passed, 3338 deselected**（基线 672 + 44），exit 0 |
+| 全量 `pytest tests -q` | 见 §11.6（本次记录） |
+| `ruff check .` | All checks passed（exit 0） |
+| `ruff format --check .` | **680 files already formatted**（exit 0） |
+| `mypy app` | Success: no issues found in **337** source files（exit 0） |
+
+### §11.5 范围与安全审计（Step 4）
+
+* `git diff --check` 干净；改动 **384 行，0 删除**；文件清单：`app/tasks/intent.py`、`app/integrations/minecraft/chat_bridge.py`、两个测试文件、任务书归档；
+* `integrations/minecraft/agent.py`（`ACTION_RISK`）、`config/settings.py`（`allow_medium` 默认）、`database/database.py`（迁移）、`tasks/runtime.py`（状态机）、`tasks/validation.py`（预算）、`tools/builtins/*`+`registry.py`（19 工具）、`tasks/planner.py`（木材执行计划）**全部零改动**；
+* 未新增工具/动作/表/迁移/配置项；两道确认门、步骤级授权、`trusted_players`、`TurnOrigin` 派生与 Action Runtime 生命周期未触碰；
+* 凭据扫描 **0 命中**；`scripts/` 仍 **0 tracked**；`config/config.yaml`、`data/`、`minecraft_runtime/auth.json` 未 tracked；
+* 本阶段**只改确定性词法分类与聊天路由**，按任务书 §8 **不要求**重跑七场景真机采集门禁（diff 未触碰动作执行链）。
+
+### §11.6 发布与 CI（实测）
+
+| 项 | 值 |
+| --- | --- |
+| 实现提交 | 见提交链（`Phase 8D Follow-up 2: wood negation guard & no-action routing closure`） |
+| 提交纪律 | 单一独立实现提交；**未 reset、未改写** 8D / 8D Follow-up 历史 |
+| CI | run id / attempt / 两个 job 结论见最终报告（合法重跑只重跑失败 job，不改断言/超时/阈值） |
