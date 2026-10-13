@@ -146,6 +146,21 @@ Node runtime 与事件 payload、任何配置默认值。
 | live DB 核对 | `max_version 36`、84 张表（83 业务 + `sqlite_sequence`）、`quick_check ok`、外键违规 **0** |
 | WebUI / `minecraft_runtime` npm | **未执行（本阶段未改 WebUI/API，也未改事件 payload 或 Node runtime）**；CI 会照常全跑 |
 
+### §7.1 CI（GitHub Actions）
+
+| 项 | 值 |
+| --- | --- |
+| run ID | **38332372539** |
+| URL | https://github.com/rinsoraa/CatooBot/actions/runs/38332372539 |
+| attempt | **1**（一次通过，无 flake、无重跑） |
+| `lint · format · types · tests` | completed / **success** |
+| `webui · typecheck · tests · build` | completed / **success** |
+| CI 上 pytest | **3895 passed, 3 skipped in 307.54s**（= 本地 3898 − 3 条既有平台条件性 skip；新增 19 项**无一被跳过**） |
+| CI 上 Browser E2E | **7 passed (16.9s)** |
+| CI 上 `minecraft_runtime` | dig-capability-test ALL CHECKS PASSED；find-blocks-test ALL CHECKS PASSED；e2e `bridge auth boundary + runtime instance ✓`；e2e ALL CHECKS PASSED |
+| CI 上 ruff format / mypy | 653 files already formatted（CI 只见镜像内文件）；Success: no issues found in **337** source files |
+| 实际 SKIPPED（全部为既有假服务器限制，与本阶段无关） | equip / inventory_move STOP；container STOP；craft 成功路径；craft STOP；3×3 craft 成功路径；dropped_items / pickup 成功路径 |
+
 ## §8 真实 Java 服务器门禁（`scripts/identity_context_smoke_real.py`，本地专用）
 
 **前置**：`scripts/backup_db.py` 备份 live DB（`catoobot-20261013-092342.db`，v36 / 83 表 / 89457 行 / integrity ok）→

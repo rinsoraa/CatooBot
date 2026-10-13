@@ -23,6 +23,10 @@
 * **真实 Java 服务器门禁 PASS**（`scripts/identity_context_smoke_real.py`，本地专用不发布）：真实第二个 Mineflayer 客户端上线取得**权威 UUID** → 真实 SQLite 写入 VERIFIED →
   游戏内解析为 `VERIFIED`、关系键 = QQ 侧同一条、**零额外世界动作**；解绑后两侧 `REVOKED` 且不沿用；只有名字无权威 UUID → `UNBOUND(no_authoritative_uuid)`；
   已核验但不在 `trusted_players` → LOW 仍被既有信任门拒绝（`minecraft.user_not_trusted`）；**真实 QQ 发信端场景如实 SKIPPED**（无可控真实发送端，不编造 PASS）。
+* **CI**：run [38332372539](https://github.com/rinsoraa/CatooBot/actions/runs/38332372539) **attempt 1 两个 job 均 success**（无 flake、无重跑）；
+  CI 上 pytest **3895 passed, 3 skipped**（= 本地 3898 − 3 条既有平台条件性 skip，新增 19 项**无一被跳过**）；Browser E2E **7 passed**；
+  CI 上 `minecraft_runtime` dig-capability-test / find-blocks-test / e2e（含 bridge auth boundary + runtime instance）**ALL CHECKS PASSED**。
+  发布核对：镜像 == origin/main == `f44e4aab387ed4fd6913108b8a4f75ffccc2fef5`（274 commits）；工作区干净；`scripts/`、`minecraft_runtime/auth.json` 未发布；`config/config.yaml`、`data/` 未 tracked；改动文件凭据扫描 0 命中（唯一匹配是测试里的合成 QQ 常量）。
 
 ## Minecraft Phase 8A FIX — Routing Target Contract Fix（路由目标契约修正）
 
