@@ -1,5 +1,45 @@
 # Changelog
 
+## Minecraft Phase 8A — Natural-Language Action Routing & Traceability（自然语言行动路由与决策可观测性）
+
+* **目标**：只解决「请求如何被路由、以及如何看到路由结果」——不新增 Minecraft 能力、不扩大授权范围、
+  不重写 TaskRuntime、不额外增加一次模型调用做分类器。基线：`d725890`（270 commits，工作区干净）。
+* **审计（任务书 §3，严禁笼统归为「LLM 没听懂」）**：用**应用自身的 `load_config()`**（`.env` → `config/config.yaml`
+  → WebUI `overrides.yaml` → 环境）取真实运行时配置：`tools.enabled=True`、`agent.enabled=True`、
+  `candidate_tools=5`、`decision_mode=json`、`minecraft.enabled=True`、`trusted_players=[]` → 「工具没开」被排除；
+  候选检索的关键词已覆盖 §4.2 的常见说法且 `min_score=0.08` 很低 → 也不是候选不足。
+* **有证据的路由缺口（改动前）**：
+  **G1** `_generate` 调 `tools.orchestrator.run(...)` 时没有把决策事实带回来（候选/选中/reason 全被丢弃，仓库里没有任何结构化路由记录）；
+  **G2（真实缺陷）** `ToolOrchestrator.last_traces` 的清空排在「无候选早退」**之后** → 无候选回合会把**上一轮**的 ToolTrace 留在诊断里（stale trace）；
+  **G3** tools 为 `None`/未启用分支只回普通聊天、零诊断痕迹；
+  **G4** `_try_agent` 的分类结论只 narrate 到控制台；
+  **G5** `chat_bridge` 四种丢包（未启用/自身发言/悄悄话/忙碌）一行记录都不留。
+* **实现**：`app/tools/models.py` 新增 `RouteTarget`（有限枚举）、`new_route_id()`、`RouteTrace`（结构化路由证据）
+  与**进程内有界**的 `RouteJournal`（64 条，**不落盘/不加表/不加迁移**）；`app/tools/router.py` 回填决策事实
+  （候选/选中/`tool_called`/`policy_outcome`/`tool_trace_ids`）并**修掉 G2**，新增 `_fill_outcome()`
+  （**只在实际成功时**置 `tool_called=True`；有 `action_id` 且状态在跑 → `action_running`；待确认 → `confirmation_required`；
+  失败 → 稳定映射到 `policy_denied`/`invalid_tool_decision`/`task_authorization_denied`/`minecraft_offline`/…）；
+  `app/character/runtime.py` 构造并落地每条回合的路由记录（含 `turn_origin`、`text_chars`、耗时）并在
+  各出口设码（`tool_runtime_disabled`/`ai_error`/`tool_path_error`/`agent_not_multi_step`/`CLARIFY`）；
+  `app/integrations/minecraft/chat_bridge.py` 给四种丢包各留稳定原因码并记 `task_handled`。
+* **隐私**：路由记录**只留长度与结构化事实** —— 不存聊天原文、Prompt、思维链、凭据、背包数据（测试与真机断言）。
+* **边界（全部未改）**：`ACTION_RISK` 与 19 工具、`allow_medium` 默认值、两道确认门、`TaskAuthorization`/
+  `TaskStepAuthorization`/Policy/`AgentBridge`/Action Runtime、`TurnOrigin` 可靠派生、自我发言过滤；**无新表无新迁移**（最高仍 36）。
+* **门禁**：新增 `tests/test_phase8a_action_routing.py` **16 项**；全量 `pytest` **3879 passed**（基线 3863 + 16）；
+  `ruff check` 通过、`ruff format --check` **666 files**、`mypy app` Success（336 files）；WebUI typecheck/
+  Vitest **528**/build/E2E **7 passed**；`minecraft_runtime` ALL CHECKS PASSED；迁移演练 `version [36,36]`、
+  `tables [83,83]`、`integrity [ok,ok]`、`added_tables []`、`lost_rows {}`。
+* **真实 Java 门禁（`scripts/route_trace_smoke_real.py`，本地专用不发布）**：**PASS，六段落全绿** ——
+  ① 真世界查询 → `MINECRAFT_TOOL` + `minecraft_find_blocks` + `action_succeeded`，真服务器返回「附近找到 8 个：
+  `oak_log((-254,65,-120))…`」；② 闲聊 → `CHAT_ONLY`/`no_tool_candidates` 且零工具执行；③ 游戏内「停下来」→
+  选中并真执行 `minecraft_stop`（未被聊天分支吞掉）；④ 不可信玩家的 LOW 动作 → `policy_denied` +
+  `minecraft.user_not_trusted` 且**没有 action_id**（根本没进 Action Runtime）；⑤ 自身发言 → `mc_chat_self_speech`；
+  ⑥ 路由证据 `rt_` 前缀、三种 target 可区分、无原文、有界。
+* **首轮失败如实记录（均为脚本自身问题，未放宽任何断言）**：请求方误用她自己的账号名（被正确判为自身发言）、
+  假设 `ToolTrace` 有 `success` 字段（实际是 `status`/`result_summary`）、`find_blocks` 参数写成 `block=`（真实 schema 是 `block_names`）、
+  以及**没有等感知层世界视图就绪**（策略门的 `online` 取自 `world_facts().online` 而非连接状态 → 非 `OFFLINE_TOOLS` 动作被
+  fail-closed 判成 `minecraft_offline`，这是**设计行为**）。
+
 ## Minecraft Phase 7F.5.3 Follow-up 2 — Event Settlement & Ambiguous Reconciliation Serialization（事件结算与歧义对账串行化）
 
 * **目标**：只修**生命周期状态更新的一致性**，不新增任何 Minecraft 能力、不新增工具/表/迁移、不放宽任何既有断言。

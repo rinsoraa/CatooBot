@@ -26,6 +26,7 @@ from typing import TYPE_CHECKING, Any
 
 from app.character.turn import TurnOrigin
 from app.integrations.minecraft.agent import PLAYER_KEY
+from app.tools.models import RouteTarget, RouteTrace, new_route_id
 
 if TYPE_CHECKING:  # pragma: no cover
     from app.core.bot import Bot
@@ -92,19 +93,40 @@ class MinecraftChatBridge:
         if event.type_name != "minecraft.chat":
             return None
         if not self.enabled:
+            # Phase 8A：丢包也要有**可诊断的原因码**（以前这里什么都不留）。
+            self._route(reason_code="mc_chat_disabled", route_target=RouteTarget.BLOCKED.value)
             return None
         username = str(event.data.get("username") or "").strip()
         message = str(event.data.get("message") or "").strip()
         if not username or not message:
+            self._route(reason_code="mc_chat_unusable", route_target=RouteTarget.BLOCKED.value)
             return None
         if self.is_self_speech(username):
+            self._route(
+                reason_code="mc_chat_self_speech",
+                route_target=RouteTarget.BLOCKED.value,
+                session_id=self._session_id(username),
+                text_chars=len(message),
+            )
             return None
         if event.data.get("private"):
             # 悄悄话不公开回：本阶段只有公共聊天发送能力（见文档「已知限制」）
             log.info("[MC Chat] 跳过一条悄悄话（%s）", username)
+            self._route(
+                reason_code="mc_chat_private",
+                route_target=RouteTarget.BLOCKED.value,
+                session_id=self._session_id(username),
+                text_chars=len(message),
+            )
             return None
         if self._inflight >= MAX_INFLIGHT:
             log.info("[MC Chat] 忙不过来，跳过一条（%s）：%.40s", username, message)
+            self._route(
+                reason_code="mc_chat_busy",
+                route_target=RouteTarget.BLOCKED.value,
+                session_id=self._session_id(username),
+                text_chars=len(message),
+            )
             return None
         self._inflight += 1
         task = asyncio.create_task(self._reply(username, message))
@@ -183,6 +205,14 @@ class MinecraftChatBridge:
             return None
         if not outcome.handled or not outcome.reply:
             return None
+        # Phase 8A：任务侧接走这句话也是一条**路由结论**（TASK + 任务 ID 可关联）。
+        self._route(
+            reason_code="task_handled",
+            route_target=RouteTarget.TASK.value,
+            session_id=session_id,
+            task_id=str(outcome.task_id or ""),
+            text_chars=len(message),
+        )
         log.info(
             "[MC Task] action=%s task=%s state=%s（%s）",
             outcome.action,
@@ -191,6 +221,41 @@ class MinecraftChatBridge:
             username,
         )
         return outcome.reply
+
+    def _route(
+        self,
+        *,
+        reason_code: str,
+        route_target: str = RouteTarget.CHAT_ONLY.value,
+        session_id: str = "",
+        task_id: str = "",
+        text_chars: int = 0,
+    ) -> None:
+        """记一条结构化路由证据（Phase 8A §五）。
+
+        桥接层的**丢包**（自身发言 / 悄悄话 / 忙碌 / 未启用）与**任务路由**也必须可诊断 ——
+        以前这些路径一行记录都不留，用户只能看到"她没反应/只聊天"。
+        记账失败绝不影响聊天本身（fail-open 只针对诊断，不针对权限）。
+        """
+        character = getattr(self.bot, "character", None)
+        recorder = getattr(character, "record_route", None) if character is not None else None
+        if recorder is None:
+            return
+        try:
+            recorder(
+                RouteTrace(
+                    route_id=new_route_id(),
+                    session_id=session_id,
+                    source="minecraft_chat",
+                    turn_origin=TurnOrigin.USER.value,
+                    route_target=route_target,
+                    reason_code=reason_code,
+                    task_id=task_id,
+                    text_chars=text_chars,
+                )
+            )
+        except Exception:  # noqa: BLE001 - 诊断记账失败绝不能拖垮聊天
+            log.debug("[MC Chat] 路由记账失败（忽略）", exc_info=True)
 
     def _time_context(self) -> Any:
         behavior = getattr(self.bot, "behavior", None)

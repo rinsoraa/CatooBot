@@ -16,6 +16,7 @@ state unavailable → defaults; persona reload failure → keep last persona.
 
 from __future__ import annotations
 
+import json
 import logging
 import time
 from typing import TYPE_CHECKING, Any
@@ -28,6 +29,7 @@ from app.character.response import CharacterResponseProcessor
 from app.character.state import StateManager
 from app.character.turn import TurnOrigin
 from app.memory.manager import MemoryManager
+from app.tools.models import RouteJournal, RouteTarget, RouteTrace, new_route_id
 from app.utils.narrator import narrate
 
 if TYPE_CHECKING:
@@ -86,6 +88,8 @@ class CharacterRuntime:
         self.expression_config: Any = None  # optional ExpressionConfig (Task 22)
         self.metrics: Any = None  # optional Metrics (Task 22 counters)
         self._clock = clock
+        # Phase 8A：进程内**有界**的路由证据环（结构化、可关联、不含原文/思维链）。
+        self.routes = RouteJournal(max_traces=64)
 
     # ------------------------------------------------------------- bootstrap
 
@@ -282,6 +286,15 @@ class CharacterRuntime:
         answers honestly (spec v0.6 §65/§66). Tool results are never written to
         memory (v0.6 §29/§61) — only the reply text returns.
         """
+        started = time.perf_counter()
+        # Phase 8A §五：本回合的**结构化路由证据**。只记决策与结果，不记原文/思维链。
+        route = RouteTrace(
+            route_id=new_route_id(),
+            session_id=str(session_id),
+            source=str((origin_metadata or {}).get("source") or ""),
+            turn_origin=str(getattr(turn_origin, "value", turn_origin) or ""),
+            text_chars=len(str(user_text or "")),
+        )
         tool_context = self._tool_context(
             session_id=session_id,
             user_id=user_id,
@@ -298,15 +311,23 @@ class CharacterRuntime:
                 user_id=user_id,
                 user_text=user_text,
                 context=tool_context,
+                route=route,
             )
             if agent_text is not None:
-                return agent_text
+                return self.record_route(route, agent_text, started=started)
 
         if self.tools is None or not getattr(self.tools, "enabled", False):
+            # Phase 8A：这条分支以前**没有任何诊断痕迹** —— 表面是"只聊天"，真实原因是
+            # 运行时工具总开关关闭（§3/§5.2 要求这种情况与"模型没选工具"可区分）。
+            route.route_target = RouteTarget.CHAT_ONLY.value
+            route.reason_code = "tool_runtime_disabled"
             response = await self.engine.chat(AIRequest(messages=messages, temperature=temperature))
             self._narrate_thinking(response)
-            return response.content
+            return self.record_route(route, response.content, started=started)
 
+        clarify_reason = (
+            route.reason_code if route.route_target == RouteTarget.CLARIFY.value else ""
+        )
         try:
             text, results = await self.tools.orchestrator.run(
                 self.engine,
@@ -314,20 +335,45 @@ class CharacterRuntime:
                 context=tool_context,
                 query=user_text,
                 temperature=temperature,
+                route=route,
             )
         except AIError:
+            route.route_target = RouteTarget.BLOCKED.value
+            route.reason_code = "ai_error"
+            self.record_route(route, "", started=started)
             raise
         except Exception:  # noqa: BLE001 - a tool path bug must not break chat
             self._log.exception("Tool orchestration failed; falling back to plain chat")
+            route.route_target = RouteTarget.CHAT_ONLY.value
+            route.reason_code = "tool_path_error"
+            route.note_fallback("tool_orchestration_failed")
             response = await self.engine.chat(AIRequest(messages=messages, temperature=temperature))
             self._narrate_thinking(response)
-            return response.content
+            return self.record_route(route, response.content, started=started)
         if results:
             self._log.info(
                 "[Tool] turn used %d tool call(s): %s",
                 len(results),
                 ", ".join(f"{r.tool_name}={'ok' if r.success else 'err'}" for r in results),
             )
+        if clarify_reason and not results:
+            # 没有任何工具真的执行 -> 保留"需要澄清"这个更准确的结论（§4.4）。
+            route.route_target = RouteTarget.CLARIFY.value
+            route.reason_code = clarify_reason
+        return self.record_route(route, text, started=started)
+
+    def record_route(self, route: RouteTrace, text: str = "", *, started: float = 0.0) -> str:
+        """记录一条结构化路由证据，并返回原文本（Phase 8A §五）。
+
+        * **只记结构化决策与事件证据**：不记聊天原文、不记 Prompt、不记思维链、不记凭据；
+        * 记录环**进程内有界**（RouteJournal），并额外打一条结构化日志便于检索；
+        * 这个方法是纯记账 —— 不改变执行语义：不重试、不放宽、不伪造成功终态。
+        """
+        if started:
+            route.duration_ms = (time.perf_counter() - started) * 1000.0
+        route.text_chars = route.text_chars or len(str(text or ""))
+        self.routes.record(route)
+        self._log.info("[Route] %s", json.dumps(route.as_log_fields(), ensure_ascii=False))
         return text
 
     @staticmethod
@@ -421,6 +467,7 @@ class CharacterRuntime:
         user_id: int | str,
         user_text: str,
         context: Any,
+        route: RouteTrace | None = None,
     ) -> str | None:
         """Run the agent when the message is genuinely multi-step.
 
@@ -431,6 +478,10 @@ class CharacterRuntime:
         try:
             control = await agent.handle_control(user_text, session_id)
             if control:
+                # 控制意图（取消/暂停/继续）走的是**对话确认**，不是世界动作。
+                if route is not None:
+                    route.route_target = RouteTarget.CHAT_ONLY.value
+                    route.reason_code = "control_reply"
                 return await self._control_reply(messages, temperature, control)
 
             candidates = self.tools.registry.candidates(user_text) if self.tools is not None else []
@@ -444,6 +495,8 @@ class CharacterRuntime:
                 ),
             )
             if classification.kind != "multi_step" or not agent.can_handle("multi_step"):
+                if route is not None:
+                    route.note_fallback("agent_not_multi_step:" + str(classification.kind))
                 return None
 
             self._log.info(
@@ -459,6 +512,10 @@ class CharacterRuntime:
                 classification=classification,
             )
             await self._note_agent_result(result, session_id=session_id, user_id=user_id)
+            if route is not None:
+                route.route_target = RouteTarget.TASK.value
+                route.reason_code = "agent_multi_step"
+                route.task_id = str(getattr(result, "task_id", "") or "")
             if result.status == "failed" and result.error_type in (
                 "planning_failed",
                 "plan_invalid",
@@ -470,9 +527,16 @@ class CharacterRuntime:
                     result.error_type,
                 )
                 narrate().task("目标不够清楚，改成直接问她", detail=result.error_type)
+                if route is not None:
+                    # 目标不清楚 → 这条回合的性质是"需要澄清"，不是"走普通聊天"。
+                    route.route_target = RouteTarget.CLARIFY.value
+                    route.reason_code = "agent_goal_unclear"
+                    route.note_fallback("agent_goal_unclear")
                 return None
             if not result.is_usable:
                 narrate().task("这次没查出东西，按普通聊天回", detail=result.status)
+                if route is not None:
+                    route.note_fallback("agent_no_result")
                 return None  # nothing to say beyond the normal reply
             prompt = (  # facts travel as untrusted reference data (spec v0.7 §109)
                 result.to_prompt_block() + "\n\n请基于以上结果，用你自己的语气自然地回答用户。"
@@ -491,6 +555,8 @@ class CharacterRuntime:
         except Exception:  # noqa: BLE001 - agent trouble must never break chat
             self._log.exception("Agent turn failed; falling back to plain chat")
             narrate().warn("规划这条路走不通，退回普通聊天")
+            if route is not None:
+                route.note_fallback("agent_failed")
             return None
 
     async def _control_reply(

@@ -22,7 +22,14 @@ from app.ai.models import AIRequest, AIResponse, ChatMessage
 from app.config.settings import ToolsConfig
 from app.tools.base import Tool as ToolBase
 from app.tools.executor import ToolExecutor
-from app.tools.models import ToolCall, ToolContext, ToolResult, ToolTrace
+from app.tools.models import (
+    RouteTarget,
+    RouteTrace,
+    ToolCall,
+    ToolContext,
+    ToolResult,
+    ToolTrace,
+)
 from app.tools.policy import ToolPolicy, TurnBudget
 from app.tools.registry import ToolRegistry
 from app.tools.result import guard_external
@@ -138,6 +145,8 @@ class ToolOrchestrator:
         self.policy = policy
         self._log = logger or logging.getLogger("CatooBot.Tools")
         self.last_traces: list[ToolTrace] = []
+        #: Phase 8A：本轮的结构化路由证据（与 last_traces 同生命周期）。
+        self.last_route: RouteTrace | None = None
 
     async def run(
         self,
@@ -149,12 +158,22 @@ class ToolOrchestrator:
         temperature: float | None = None,
         allowed_tools: list[str] | None = None,
         decision: dict[str, Any] | None = None,
+        route: RouteTrace | None = None,
     ) -> tuple[str, list[ToolResult]]:
         """Return ``(final_text, results)``; the text is always safe to send."""
         decision = decision if decision is not None else {}
+        # Phase 8A 修复：**先**清空上一轮的执行 trace。旧顺序把清空放在候选查询之后，
+        # 于是「这一轮没有任何工具候选」的早退会把**上一轮**的 ToolTrace 留在 last_traces
+        # 里 —— 诊断时看起来像这一轮真的调过工具（stale trace，见 Phase 8A 审计）。
+        self.last_traces = []
+        self.last_route = route
         safe_messages = list(messages) or [ChatMessage.user(query)]
         candidates = self.router.candidates(query, allowed=allowed_tools)
         if not candidates:
+            if route is not None:
+                route.route_target = RouteTarget.CHAT_ONLY.value
+                route.reason_code = "no_tool_candidates"
+                route.candidates = []
             response = await engine.chat(AIRequest(messages=safe_messages, temperature=temperature))
             return response.content, []
 
@@ -162,6 +181,9 @@ class ToolOrchestrator:
         decision["candidates"] = [
             {"name": tool.metadata.name, "score": score} for tool, score in candidates
         ]
+        if route is not None:
+            route.route_target = RouteTarget.MINECRAFT_TOOL.value
+            route.candidates = [dict(item) for item in decision["candidates"]]
         self._log.info("[Tool] candidates=%s", ",".join(names))
 
         working = list(safe_messages)
@@ -173,7 +195,6 @@ class ToolOrchestrator:
             max_execution_time=self.config.max_execution_time,
         )
         results: list[ToolResult] = []
-        self.last_traces = []
 
         while True:
             requests_tools = self.config.decision_mode == "native"
@@ -188,12 +209,19 @@ class ToolOrchestrator:
             if call is None:
                 decision["selected"] = None
                 decision["reason"] = "no_tool_needed"
+                if route is not None and not route.selected:
+                    # 只有「这一轮模型**从未**给出可解析的工具调用」才是 model_no_tool_call。
+                    # 一旦本轮提取到过调用（无论成功、被拒还是未知工具），收官回合都不能把
+                    # 已经确定的结果码覆盖掉。
+                    route.reason_code = "model_no_tool_call"
                 return decision_response.content, results
 
             if budget.remaining() <= 0 or budget.timed_out():
                 self._log.warning("[Tool] budget exhausted before '%s'", call.name)
                 decision["selected"] = call.name
                 decision["reason"] = "budget_exceeded"
+                if route is not None:
+                    route.reason_code = "budget_exceeded"
                 # Ask once more with an explicit "no more tools" instruction.
                 working.append(
                     ChatMessage.system(
@@ -208,6 +236,13 @@ class ToolOrchestrator:
             result = await self.executor.execute(call, context, budget)
             results.append(result)
             self.last_traces.extend(self.executor.traces[-1:])
+            if route is not None:
+                route.selected = call.name
+                route.reason_code = "tool_called"
+                if self.last_traces:
+                    route.tool_trace_ids.append(str(self.last_traces[-1].trace_id))
+                    del route.tool_trace_ids[:-8]
+                _fill_outcome(route, result)
             self._log.info(
                 "[Tool] %s -> %s (%s, %.0fms)",
                 call.name,
@@ -233,3 +268,64 @@ class ToolOrchestrator:
             if call is not None:
                 return call
         return self.router.parse_decision(response.content)
+
+
+#: Phase 8A §5.2：把既有的稳定 error_type 映射成**可区分**的路由/执行原因码。
+#: 绝不把"没调用""被拒绝""动作进行中""验证成功"混为一谈。
+_OUTCOME_REASON: dict[str, str] = {
+    "permission_denied": "policy_denied",
+    "rate_limit": "policy_denied",
+    "budget_exceeded": "policy_denied",
+    "loop_detected": "policy_denied",
+    "invalid_arguments": "invalid_tool_decision",
+    "unknown_tool": "invalid_tool_decision",
+    "minecraft.confirmation_required": "confirmation_required",
+    "minecraft.user_not_trusted": "policy_denied",
+    "minecraft.action_not_allowed": "policy_denied",
+    "minecraft.action_busy": "policy_denied",
+    "minecraft.confirmation_expired": "policy_denied",
+    "minecraft.confirmation_mismatch": "policy_denied",
+    "minecraft.confirmation_invalid": "policy_denied",
+    "minecraft.confirmation_not_user_turn": "policy_denied",
+    "minecraft.task_authorization_missing": "task_authorization_denied",
+    "minecraft.player_not_found": "clarify_needed",
+    "task.authorization_denied": "task_authorization_denied",
+    "minecraft.offline": "minecraft_offline",
+    "minecraft.not_connected": "minecraft_offline",
+    "runtime.unreachable": "minecraft_offline",
+    "minecraft.disabled": "minecraft_disabled",
+    "unavailable": "minecraft_disabled",
+    "timeout": "tool_failed",
+}
+
+
+def _fill_outcome(route: RouteTrace, result: ToolResult) -> None:
+    """把一次工具执行映射成稳定的策略/执行状态码（Phase 8A §5.2）。
+
+    只写路由证据，不改变任何执行语义：这里没有重试、没有放宽、没有伪造成功 ——
+    「工具调用成功」与「最终游戏目标达成」仍然是两件事（action_state 只描述这一次调用）。
+    """
+    data = result.data if isinstance(getattr(result, "data", None), dict) else {}
+    action_id = str(data.get("action_id") or "")
+    status = str(data.get("status") or "").upper()
+    if action_id:
+        route.action_id = action_id
+    # 「工具调用是否实际发生」：未知工具 / 参数不合法 / 被策略拦下都在**执行之前**就返回了，
+    # 工具函数根本没跑 —— 不能记成发生过调用（§5.2 要求区分「未调用」与「失败」）。
+    if result.success:
+        route.tool_called = True
+        route.policy_outcome = "allowed"
+        if action_id and status in {"RUNNING", "PENDING", "ACCEPTED", "STARTED"}:
+            route.reason_code = "action_running"
+            route.action_state = "running"
+        elif status in {"PENDING_CONFIRMATION", "CONFIRMATION_REQUIRED"}:
+            route.reason_code = "confirmation_required"
+            route.action_state = "pending_confirmation"
+        else:
+            route.reason_code = "action_succeeded"
+            route.action_state = "succeeded"
+        return
+    error = str(result.error_type or "")
+    route.policy_outcome = error or "failed"
+    route.action_state = "failed"
+    route.reason_code = _OUTCOME_REASON.get(error, "tool_failed")

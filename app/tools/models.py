@@ -15,7 +15,9 @@ label it as such.
 from __future__ import annotations
 
 import json
+import uuid
 from dataclasses import dataclass, field
+from enum import StrEnum
 from typing import Any
 
 from pydantic import BaseModel, Field
@@ -213,3 +215,124 @@ class ToolTrace:
     user_id: str = ""
     group_id: str | None = None
     argument_sources: dict[str, str] = field(default_factory=dict)
+
+
+# --------------------------------------------------------------- 路由证据（Phase 8A）
+
+
+class RouteTarget(StrEnum):
+    """一个自然语言回合**最终被路由到哪里**（有限枚举，Phase 8A §四/§五.2）。
+
+    刻意只有五个值：它回答"这句话归谁处理"，不回答"执行成功没有"——
+    后者由 RouteTrace 的 reason_code / action_state 单独表达。
+    """
+
+    CHAT_ONLY = "CHAT_ONLY"
+    MINECRAFT_TOOL = "MINECRAFT_TOOL"
+    TASK = "TASK"
+    CLARIFY = "CLARIFY"
+    BLOCKED = "BLOCKED"
+
+
+def new_route_id() -> str:
+    """一次性、不可逆的回合关联 ID（不携带任何用户文本）。"""
+    return "rt_" + uuid.uuid4().hex[:12]
+
+
+@dataclass
+class RouteTrace:
+    """一次自然语言回合的**结构化路由证据**（Phase 8A §五）。
+
+    设计约束（§五.1 隐私 / §六.10 不存思维链）：
+
+    * **绝不保存**聊天原文、完整 Prompt、模型隐藏思维链、密钥、确认凭据或背包数据 ——
+      需要体量信息时只记 text_chars；
+    * 只保存**结构化决策与事件证据**，并且可以稳定关联到既有的
+      ToolTrace.trace_id / task_id / Minecraft action_id；
+    * 进程内**有界**（见 RouteJournal）：不是新的持久化体系，不建表、不迁移。
+    """
+
+    route_id: str
+    session_id: str = ""
+    source: str = ""  # minecraft_chat / qq / webui / ...
+    turn_origin: str = ""
+    route_target: str = RouteTarget.CHAT_ONLY.value
+    reason_code: str = ""
+    candidates: list[dict[str, Any]] = field(default_factory=list)
+    selected: str = ""
+    tool_called: bool = False
+    policy_outcome: str = ""
+    task_id: str = ""
+    action_id: str = ""
+    action_state: str = ""
+    duration_ms: float = 0.0
+    text_chars: int = 0
+    tool_trace_ids: list[str] = field(default_factory=list)
+    #: 途中放弃过的分支（例如 agent 失败后回退到工具/聊天），最多保留 4 条。
+    fallbacks: list[str] = field(default_factory=list)
+
+    def note_fallback(self, code: str) -> None:
+        if code and code not in self.fallbacks:
+            self.fallbacks.append(code)
+            del self.fallbacks[:-4]
+
+    def as_log_fields(self) -> dict[str, Any]:
+        """字段明确、可脱敏的结构化日志负载。"""
+        return {
+            "route_id": self.route_id,
+            "source": self.source,
+            "turn_origin": self.turn_origin,
+            "route_target": self.route_target,
+            "reason_code": self.reason_code,
+            "candidates": [str(item.get("name") or "") for item in self.candidates],
+            "selected": self.selected,
+            "tool_called": self.tool_called,
+            "policy_outcome": self.policy_outcome,
+            "task_id": self.task_id,
+            "action_id": self.action_id,
+            "action_state": self.action_state,
+            "duration_ms": round(float(self.duration_ms), 1),
+            "text_chars": int(self.text_chars),
+            "fallbacks": list(self.fallbacks),
+        }
+
+    def as_payload(self) -> dict[str, Any]:
+        """只读诊断负载（WebUI/日志用）：比日志多会话与候选分数，仍然不含原文。"""
+        payload = self.as_log_fields()
+        payload["session_id"] = self.session_id
+        payload["candidates"] = [dict(item) for item in self.candidates]
+        payload["tool_trace_ids"] = list(self.tool_trace_ids)
+        return payload
+
+
+class RouteJournal:
+    """**进程内有界**的路由记录环（Phase 8A §五.3）。
+
+    为什么不落库：§五 要求优先复用现有的 ToolTrace / 任务记录 / 日志字段，
+    本阶段不新增表、不做迁移。这里只保留最近若干条供日志、测试与只读诊断读取。
+    """
+
+    def __init__(self, *, max_traces: int = 64) -> None:
+        self._traces: list[RouteTrace] = []
+        self._max = max(1, int(max_traces))
+
+    def record(self, trace: RouteTrace) -> RouteTrace:
+        self._traces.append(trace)
+        if len(self._traces) > self._max:
+            del self._traces[: len(self._traces) - self._max]
+        return trace
+
+    def recent(self, limit: int = 20) -> list[RouteTrace]:
+        """最近的记录，**最旧在前**（与 ToolExecutor.traces 的读法一致）。"""
+        count = max(1, int(limit))
+        return list(self._traces[-count:])
+
+    @property
+    def last(self) -> RouteTrace | None:
+        return self._traces[-1] if self._traces else None
+
+    def __len__(self) -> int:
+        return len(self._traces)
+
+    def snapshot(self, limit: int = 20) -> list[dict[str, Any]]:
+        return [trace.as_payload() for trace in self.recent(limit)]
