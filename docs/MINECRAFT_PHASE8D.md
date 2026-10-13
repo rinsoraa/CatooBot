@@ -237,7 +237,7 @@
 | --- | --- |
 | `pytest tests/test_phase8d_wood_intent.py tests/test_phase8d_wood_plan.py tests/test_phase8d_wood_routing.py -q` | **132 passed**（8D 基线 88 + 新增 44），exit 0 |
 | `pytest tests -q -k "wood or intent or turn or task_entry or agent_plan or skill or minecraft_chat or chat_bridge or phase8"` | **716 passed, 3338 deselected**（基线 672 + 44），exit 0 |
-| 全量 `pytest tests -q` | 见 §11.6（本次记录） |
+| 全量 `pytest tests -q` | **4054 passed**（553.01s；= 基线 4010 + 新增 44，精确吻合），exit 0 |
 | `ruff check .` | All checks passed（exit 0） |
 | `ruff format --check .` | **680 files already formatted**（exit 0） |
 | `mypy app` | Success: no issues found in **337** source files（exit 0） |
@@ -254,6 +254,16 @@
 
 | 项 | 值 |
 | --- | --- |
-| 实现提交 | 见提交链（`Phase 8D Follow-up 2: wood negation guard & no-action routing closure`） |
-| 提交纪律 | 单一独立实现提交；**未 reset、未改写** 8D / 8D Follow-up 历史 |
-| CI | run id / attempt / 两个 job 结论见最终报告（合法重跑只重跑失败 job，不改断言/超时/阈值） |
+| 实现提交 | **`6f13881a83eec8663177dfef3e50526a455d7f5e`**（`Phase 8D Follow-up 2: wood negation guard & no-action routing closure`；7 文件 +743/−1） |
+| 提交纪律 | 单一独立实现提交；**未 reset、未改写** 8D 与 8D Follow-up 历史 |
+| 远端 / 镜像 | 镜像 == `origin/main` == `6f13881`；**285 commits**；工作区干净；`scripts/` 仍 **0 tracked** |
+| CI run | **38428650028**（https://github.com/rinsoraa/CatooBot/actions/runs/38428650028） |
+| attempt | **1**（一次通过；**无 flake、无重跑**） |
+| 两个 job | `lint · format · types · tests` **success**；`webui · typecheck · tests · build` **success** |
+| CI 上 pytest | **4051 passed, 3 skipped in 334.52s**（= 本地 4054 − 3 条既有平台条件性 skip；新增 **44 项无一被跳过**） |
+| CI 上 Browser E2E | **7 passed (22.1s)** |
+| CI 上 `minecraft_runtime` | find-blocks-test ALL CHECKS PASSED；e2e `bridge auth boundary + runtime instance ✓`；e2e ALL CHECKS PASSED |
+| CI 上 ruff format / mypy | 659 files already formatted（CI 只见镜像内文件）；Success: no issues found in 337 source files |
+| 实际 SKIPPED（全部为既有假服务器限制，与本修复无关） | equip / inventory_move STOP；container STOP；craft 成功路径；craft STOP；3×3 craft 成功路径；dropped_items / pickup 成功路径 |
+| 真机门禁 | **不适用（任务书 §8 明确：只改词法分类与聊天路由，不要求重复七场景真机采集门禁）**；diff 未触碰 `planner.py` 木材执行计划 / `agent.py` / 工具实现 / `TaskRuntime` / 授权 / 动作执行 / `minecraft_runtime` |
+| 裁决 | **PASS** |

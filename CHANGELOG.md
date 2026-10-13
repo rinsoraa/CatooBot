@@ -15,6 +15,8 @@
   `0 根` 仍 `wood_zero_count`；数量上限、叙述过滤、busy/状态查询/控制路径与全部安全不变量不变。
 * **测试**：木材三套件 **132 passed**（88 + 新增 44：helper 矩阵 28、入口回归 16）；较宽回归 **716 passed, 3338 deselected**；
   `ruff check .` All checks passed；`ruff format --check .` **680 files**；`mypy app` Success（337 files）。
+* **全量门禁**：`pytest tests -q` **4054 passed**（= 4010 + 44）；CI run [38428650028](https://github.com/rinsoraa/CatooBot/actions/runs/38428650028) **attempt 1 两个 job 均 success**
+  （CI 上 pytest **4051 passed, 3 skipped**、Browser E2E **7 passed**、`minecraft_runtime` 全绿）；镜像 == `origin/main` == `6f13881`（285 commits）；工作区干净。
 * **范围**：改动 384 行、**0 删除**；`ACTION_RISK`／`allow_medium` 默认／19 工具／`TaskRuntime`／预算／授权／确认门／
   Action Runtime／数据库 Schema **零改动**；凭据扫描 0 命中；本阶段只改词法分类与聊天路由，按任务书 §8 不需要重跑真机采集门禁。
 ## Minecraft Phase 8D Follow-up — Wood Intent Parsing & Routing Closure（木材意图解析与路由收口）
