@@ -264,6 +264,19 @@ scripts/stop_catoobot.ps1 / start_*_visible.ps1  本地运维脚本（不发布�
 | `ruff format --check .` | 668 files already formatted（exit 0） |
 | `mypy app` | Success: no issues found in 336 source files（exit 0） |
 
+### §12.4 CI（GitHub Actions）
+
+| 项 | 值 |
+| --- | --- |
+| run ID | **38328283966** |
+| URL | https://github.com/rinsoraa/CatooBot/actions/runs/38328283966 |
+| attempt | **1**（一次通过，无 flake、无重跑） |
+| lint · format · types · tests | completed / **success** |
+| webui · typecheck · tests · build | completed / **success** |
+| CI 上 pytest | **3876 passed, 3 skipped in 334.69s**（= 本地 3879 − 3 条既有平台条件性 skip；本次修正只加断言、不增测试数，故计数与 8A 发布时一致） |
+| CI 上 minecraft_runtime | find-blocks-test **41/41** ALL CHECKS PASSED；e2e `bridge auth boundary + runtime instance ✓`；`[e2e] ALL CHECKS PASSED` |
+| 实际 SKIPPED（全部为既有假服务器限制，与本修正无关） | equip / inventory_move STOP；container STOP；craft 成功路径；craft STOP；3×3 craft 成功路径；dropped_items / pickup 成功路径 |
+
 ### §12.4 范围声明
 
 本修正**只**修上述路由目标契约，不重开已验收阶段、不引入新能力、不改任何权限或授权语义。8A 的其余结论（G1–G5 审计、测试矩阵、真机 6 段落）保持原样有效。

@@ -13,6 +13,10 @@
   真正选中工具时的路由与执行行为不变。
 * **门禁**：`test_phase8a_action_routing.py` 16 passed；相关工具/角色/桥接套件 141 passed；`test_minecraft_agent_e2e.py` 10 passed；
   `ruff check .` All checks passed；`ruff format --check .` 668 files already formatted；`mypy app` Success（336 source files）。
+  全量 `pytest tests -q` **3879 passed**（611.73s）。
+* **CI**：run [38328283966](https://github.com/rinsoraa/CatooBot/actions/runs/38328283966) **attempt 1 两个 job 均 success**（无 flake、无重跑）；
+  CI 上 pytest **3876 passed, 3 skipped**（= 本地 3879 − 3 条既有平台条件性 skip）；CI 上 minecraft_runtime find-blocks-test 41/41 + e2e `bridge auth boundary + runtime instance ✓` + `[e2e] ALL CHECKS PASSED`。
+  发布核对：镜像 == origin/main == 修正后 SHA；工作区干净；`scripts/` 与 `minecraft_runtime/auth.json` 未发布；`config/config.yaml`、`data/` 未 tracked；改动文件凭据扫描 0 命中。
 
 ## Minecraft Phase 8A — Natural-Language Action Routing & Traceability（自然语言行动路由与决策可观测性）
 
