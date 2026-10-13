@@ -113,3 +113,16 @@
 * **§9.2–§9.7**：确认前零动作、取消后仍零动作、目标消失后绝不谎称成功（`PAUSED` + `TARGET_LOST`/`ACTION_FAILED` 真实原因）、挖到但未凑齐绝不算成功（`CANCELLED` + 空复核）、`allow_medium=False` **规划期** `BLOCKED_BY_POLICY`（reason `minecraft_dig:MEDIUM`，不建可执行任务）、观察不到目标时 `plan_plan_rejected`/CLARIFY 不建任务、闲聊/SAFE 查询/busy/控制命令不误接管 —— 全部有真实服务器证据。
 * **安全不变量**：未新增工具/动作/表/迁移；`ACTION_RISK`、19 工具、`allow_medium` 默认、`trusted_players`、`TurnOrigin` 派生、两道确认门、任务授权、冻结计划哈希/参数指纹、Action Runtime 执行生命周期均未改（见 §5 与 git diff 审计）。
 * **诚实记录的限制**（不影响裁决）：木材计划的 `move_to` 以半径 1.5 格判定到达，pathfinder 在部分树位停在约 2.0 格 → 该步失败、任务 `PAUSED`（7F.1 起同族的精度抖动；产品正确地 fail-closed）；核心场景因此按既有 CI 纪律**最多尝试 3 次并保留每次结果**（gate7 首次如实失败、gate8 首次即成功）。
+
+## §9 发布与 CI
+
+| 项 | 值 |
+| --- | --- |
+| 实现提交 | **`0504939b69c5f2c1eac194d7a4983f47cfea1dff`**（`Phase 8D: bounded resource gathering and wood collection`；13 文件 **+1703 / −5**） |
+| 远端 / 镜像 | 镜像 == `origin/main` == 上述 SHA；**281 commits**；工作区干净；`scripts/` **0 tracked**（真机脚本按约定不发布）；`minecraft_runtime/auth.json`、`config/config.yaml`、`data/` 未 tracked |
+| CI run | **38402269084**（https://github.com/rinsoraa/CatooBot/actions/runs/38402269084） |
+| **attempt 1** | `webui · typecheck · tests · build` **success**；`lint · format · types · tests` **failure** —— 唯一失败步骤是 `Minecraft runtime tests (ActionRuntime 单测 + E2E)`，失败点为**既有环境敏感 e2e flake**：`[e2e] FAILED: Error: timeout waiting for: runtime 看见 Followee`（`minecraft_runtime/test/e2e.js:110` 注释记录的「机器繁忙时实体包与区块加载滞后」）。本提交**完全未改动 `minecraft_runtime`**；同一次运行的 pytest 仍 **3969 passed, 3 skipped**、Browser E2E **7 passed** |
+| **attempt 2** | **两个 job 均 success**（按纪律**只重跑失败 job**，未改任何断言 / 超时 / 阈值） |
+| CI 上 pytest | **3969 passed, 3 skipped in 338.63s**（= 本地 3972 − 3 条既有平台条件性 skip；8D 新增 **50 项无一被跳过**） |
+| 实际 SKIPPED（全部为既有假服务器限制，与本阶段无关） | equip / inventory_move STOP；container STOP；craft 成功路径；craft STOP；3×3 craft 成功路径；dropped_items / pickup 成功路径 |
+| 发布核对 | 改动文件凭据扫描 **0 命中**；`app/integrations/minecraft/agent.py`（`ACTION_RISK`）、`app/config/settings.py`（`allow_medium` 默认）、`app/database/database.py`（迁移）、`app/tasks/runtime.py`（状态机）、`app/tasks/validation.py`（预算）、`app/tools/builtins` + `registry.py`（19 工具）**逐个确认零改动** |
