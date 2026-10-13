@@ -224,3 +224,54 @@ Node runtime 与事件 payload、任何配置默认值。
 
 **范围声明**：本阶段是**身份解析与上下文连续性**，不是模型训练，也不是「记住了就有权限」——
 身份核验与动作授权始终是两件事。
+
+## §13 Follow-up 修正（Phase 8B Follow-up — Identity Store Degradation Classification Fix）
+
+**基线 `7395553c14d0871e735422312543b3ba7e24c83d`**（Phase 8B 最终发布）。本修正**只**修降级诊断语义，不重写身份系统、不重开其他已验收阶段。
+
+### §13.1 故障根因（实测，不是推断）
+
+`IdentityResolver._resolve()` 用 `degraded_reason` 的**前后变化**判断本次读取是否失败；
+而 `IdentityStore` 捕获读取异常后写入的是**异常类型名** —— 同类异常连续发生时字符串**不变**，
+于是「读取失败」被误判成「没有绑定」，返回 `UNBOUND` 而不是 `DEGRADED`。
+
+同一故障注入（连续两次 `sqlite3.OperationalError`）下两种判据的实测对比：
+
+| 判据 | read#1 | read#2 | 结论 |
+| --- | --- | --- | --- |
+| 旧（`degraded_reason` 前后比较） | `before=after='OperationalError'` → 认为本次未失败 | 同 | **误判 UNBOUND** |
+| 新（逐次读取结果） | `ok=False error='OperationalError'` | `ok=False error='OperationalError'` | **DEGRADED** |
+| 恢复后 | `ok=True error=''` | — | 按真实数据正常解析 |
+
+### §13.2 实现（最小改动、单一身份存储源）
+
+* `app/integrations/minecraft/identity.py`（**纯增量**）：新增 `LinkRead` / `LinksRead`（`ok` / `error` 语义）与
+  `verified_read` / `by_player_read` / `links_for_read` / `all_links_read` —— **每次读取独立返回成功/失败**，
+  **没有任何共享可变状态**，因此并发解析天然互不干扰（不需要清零全局标记，也就没有竞态）。
+  旧方法（`verified` / `by_player` / `links_for` / `all_links`）保留并委托给新方法，**返回值语义与行为完全不变**。
+* `app/integrations/minecraft/identity_context.py`：降级判定改为「本次解析中**任一**读取返回 error → `DEGRADED`（`identity_store_error`）」，
+  删除 `degraded_reason` 变化判据；解析器优先使用 `*_read` 接口，对没有该接口的旧替身回退到「旧方法 + 前后比较」（兼容路径，仅测试替身会走到）。
+* **Store API 变化：纯增量**（新增 4 个方法 + 2 个结果类型；旧签名与返回值不变，兼容既有调用方）。
+* **数据库 schema：无变化**（无新表、无新迁移、不改真实运行数据）。
+
+### §13.3 新增回归用例（7 项，全部确定性；真实 SQLite + 可控故障 DB，无 sleep、无 LLM）
+
+| 用例 | 断言 |
+| --- | --- |
+| 首次读取失败 | `DEGRADED(identity_store_error)`，`degraded_reason=OperationalError` |
+| **同类异常连续两次** | **两次都是 `DEGRADED`**（旧判据会漏掉第二次） |
+| 已有历史 `degraded_reason` 时再次同类错误 | 当前解析仍为 `DEGRADED` |
+| 存储恢复 | 后续查询按真实数据返回 `VERIFIED`（已绑定）与 `UNBOUND`（未绑定） |
+| Minecraft 侧同一契约 | 连续两次 `DEGRADED`；恢复后 `VERIFIED` 且关系键=QQ 侧同一条 |
+| 并发隔离 | 定向故障（只让失败请求的查询抛）+ 门闩：一个 `DEGRADED`、另一个 `VERIFIED`，互不污染 |
+| 身份层异常不影响聊天 | 真实聊天栈：仍产生 1 个回合并真的把回复发进游戏 |
+
+整套测试：`pytest tests/test_phase8b_identity_context.py -q` → **26 passed**（19 + 7）。
+
+### §13.4 门禁与状态（见 §7 / §7.1 的完整记录）
+
+* 相关套件（身份 / 记忆 / QQ 入口 / MC 聊天桥 / 角色 / 8A 路由 / 工具 / 确认门）**313 passed**。
+* 全量 `pytest tests -q`、`ruff check .`、`ruff format --check .`、`mypy app` 与 CI 结论见发布记录（§7 之下的更新）。
+* 安全不变量：`ACTION_RISK`、工具数量、`allow_medium` 默认值、`trusted_players`、`TurnOrigin` 派生、两道确认门、
+  `TaskAuthorization`/`TaskStepAuthorization`/Policy/AgentBridge/Service/ActionRuntime **全部未改**；
+  `DEGRADED` 依旧只代表「身份上下文不可用」，**不授予也不改变任何 Minecraft 权限**；无新动作、无无界重试；不记录原文/完整 UUID/QQ 号/密钥/思维链。

@@ -234,6 +234,36 @@ LINK_MESSAGES: dict[str, str] = {
 }
 
 
+@dataclass(frozen=True)
+class LinkRead:
+    """**单次**身份读取的结果（Phase 8B Follow-up §三）。
+
+    ``error`` 非空 == 这次读取**失败**（与「有没有绑定」是两件事）；
+    成功时 ``link`` 为 None 表示「成功且无绑定」。旧接口把两者都表示成 None，
+    调用方只能靠 ``degraded_reason`` 是否**变化**猜测 —— 同类异常连续发生时字符串
+    不变，失败就会被误判成「没绑定」。
+    """
+
+    link: IdentityLink | None = None
+    error: str = ""
+
+    @property
+    def ok(self) -> bool:
+        return not self.error
+
+
+@dataclass(frozen=True)
+class LinksRead:
+    """**单次**列表读取的结果（同上；``error`` 非空 == 这次读取失败）。"""
+
+    links: tuple[IdentityLink, ...] = ()
+    error: str = ""
+
+    @property
+    def ok(self) -> bool:
+        return not self.error
+
+
 class IdentityStore:
     """身份桥的持久化（复用同一个 SQLite；失败只降级，绝不影响任务执行，§三十九/§四十）。"""
 
@@ -375,43 +405,62 @@ class IdentityStore:
 
     # ------------------------------------------------------------ 读
 
-    async def verified(self, *, platform: str, user_id: str, server_id: str) -> IdentityLink | None:
-        """这个人在这台服务器上绑定的玩家（没有就是 None —— 不做任何名字猜测）。"""
+    def _mark_degraded(self, exc: BaseException) -> str:
+        """记一次读取失败（返回异常类型名；逐次结果与诊断共用）。"""
+        name = f"{type(exc).__name__}"
+        self.degraded_reason = name
+        self._log.warning("[Minecraft.Identity] read failed (degraded): %s", exc)
+        return name
+
+    async def verified_read(self, *, platform: str, user_id: str, server_id: str) -> LinkRead:
+        """这个人在这台服务器上绑定的玩家（**逐次结果**；失败时 error 非空）。"""
         try:
             row = await self._verified_row(platform, user_id, server_id, "")
-            return IdentityLink.from_row(row) if row is not None else None
         except Exception as exc:  # noqa: BLE001
-            self.degraded_reason = f"{type(exc).__name__}"
-            self._log.warning("[Minecraft.Identity] read failed (degraded): %s", exc)
-            return None
+            return LinkRead(error=self._mark_degraded(exc))
+        return LinkRead(link=IdentityLink.from_row(row) if row is not None else None)
 
-    async def by_player(self, *, server_id: str, player_uuid: str) -> IdentityLink | None:
-        """反过来：这个玩家绑给了谁。"""
+    async def verified(self, *, platform: str, user_id: str, server_id: str) -> IdentityLink | None:
+        """兼容入口：失败仍返回 None（与 Phase 8B 之前完全一致）。"""
+        read = await self.verified_read(platform=platform, user_id=user_id, server_id=server_id)
+        return read.link
+
+    async def by_player_read(self, *, server_id: str, player_uuid: str) -> LinkRead:
+        """反过来：这个玩家绑给了谁（**逐次结果**）。"""
         clean = canonical_uuid(player_uuid)
         if not clean:
-            return None
+            return LinkRead()
         try:
             row = await self._verified_row("", "", server_id, clean)
-            return IdentityLink.from_row(row) if row is not None else None
         except Exception as exc:  # noqa: BLE001
-            self.degraded_reason = f"{type(exc).__name__}"
-            self._log.warning("[Minecraft.Identity] read failed (degraded): %s", exc)
-            return None
+            return LinkRead(error=self._mark_degraded(exc))
+        return LinkRead(link=IdentityLink.from_row(row) if row is not None else None)
 
-    async def links_for(
+    async def by_player(self, *, server_id: str, player_uuid: str) -> IdentityLink | None:
+        """兼容入口：失败仍返回 None。"""
+        return (await self.by_player_read(server_id=server_id, player_uuid=player_uuid)).link
+
+    async def links_for_read(
         self, *, platform: str, user_id: str, include_revoked: bool = True
-    ) -> list[IdentityLink]:
+    ) -> LinksRead:
         try:
             sql = "SELECT * FROM minecraft_identity_links WHERE platform = ? AND user_id = ?"
             if not include_revoked:
                 sql += " AND status = 'VERIFIED'"
             sql += " ORDER BY verified_at DESC"
             rows = await self._rows(sql, (str(platform), str(user_id)))
-            return [IdentityLink.from_row(row) for row in rows]
         except Exception as exc:  # noqa: BLE001
-            self.degraded_reason = f"{type(exc).__name__}"
-            self._log.warning("[Minecraft.Identity] list failed (degraded): %s", exc)
-            return []
+            return LinksRead(error=self._mark_degraded(exc))
+        return LinksRead(links=tuple(IdentityLink.from_row(row) for row in rows))
+
+    async def links_for(
+        self, *, platform: str, user_id: str, include_revoked: bool = True
+    ) -> list[IdentityLink]:
+        """兼容入口：失败仍返回 []。"""
+        read = await self.links_for_read(
+            platform=platform, user_id=user_id, include_revoked=include_revoked
+        )
+        return list(read.links)
 
     async def counts(self) -> dict[str, int]:
         try:
@@ -422,8 +471,8 @@ class IdentityStore:
         except Exception:  # noqa: BLE001
             return {}
 
-    async def all_links(self, *, server_id: str = "", limit: int = 100) -> list[IdentityLink]:
-        """这台服务器上（或全部）的绑定，最新在前（**含已解除的**，§九 历史不删）。"""
+    async def all_links_read(self, *, server_id: str = "", limit: int = 100) -> LinksRead:
+        """这台服务器上（或全部）的绑定，最新在前（含已解除；**逐次结果**）。"""
         try:
             sql = "SELECT * FROM minecraft_identity_links"
             params: list[Any] = []
@@ -433,11 +482,13 @@ class IdentityStore:
             sql += " ORDER BY verified_at DESC LIMIT ?"
             params.append(max(1, min(int(limit), 500)))
             rows = await self._rows(sql, tuple(params))
-            return [IdentityLink.from_row(row) for row in rows]
         except Exception as exc:  # noqa: BLE001
-            self.degraded_reason = f"{type(exc).__name__}"
-            self._log.warning("[Minecraft.Identity] list failed (degraded): %s", exc)
-            return []
+            return LinksRead(error=self._mark_degraded(exc))
+        return LinksRead(links=tuple(IdentityLink.from_row(row) for row in rows))
+
+    async def all_links(self, *, server_id: str = "", limit: int = 100) -> list[IdentityLink]:
+        """兼容入口：失败仍返回 []。"""
+        return list((await self.all_links_read(server_id=server_id, limit=limit)).links)
 
     # ------------------------------------------------------------ 内部
 

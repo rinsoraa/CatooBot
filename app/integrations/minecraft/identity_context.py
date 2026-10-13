@@ -261,36 +261,72 @@ class IdentityResolver:
                 action_trust="identity_unavailable",
             )
         server_id = str(bridge.server_id() or "")
-        before = str(getattr(identities, "degraded_reason", "") or "")
+        # Phase 8B Follow-up §三：降级判定**只看本次读取的逐次结果**，
+        # 不再比较 degraded_reason 是否变化 —— 同类异常连续发生时字符串不变，
+        # 那种判据会把「读取失败」误判成「没有绑定」（返回 UNBOUND）。
         if channel is IdentityChannel.MINECRAFT_CHAT:
-            context = await self._resolve_minecraft(
+            return await self._resolve_minecraft(
                 bridge=bridge,
                 identities=identities,
                 channel=channel,
                 username=local,
                 server_id=server_id,
             )
-        else:
-            context = await self._resolve_platform(
-                identities=identities,
-                channel=channel,
-                user_id=str(user_id or ""),
-                username=local,
-                server_id=server_id,
-            )
-        after = str(getattr(identities, "degraded_reason", "") or "")
-        if after and after != before:
-            # 本次读取期间存储报错 → 明确降级，绝不假装「没有绑定」。
-            return _context(
-                channel=channel,
-                username=local,
-                relationship_key=local_key,
-                resolution=IdentityResolution.DEGRADED,
-                reason="identity_store_error",
-                degraded_reason=after,
-                action_trust="identity_unavailable",
-            )
-        return context
+        return await self._resolve_platform(
+            identities=identities,
+            channel=channel,
+            user_id=str(user_id or ""),
+            username=local,
+            server_id=server_id,
+        )
+
+    async def _read(
+        self,
+        store: Any,
+        *,
+        read_name: str,
+        legacy_name: str,
+        kwargs: dict[str, Any],
+        many: bool = False,
+    ) -> tuple[Any, str]:
+        """**单次**存储读取 → ``(值, error)``（error 非空 == 这次读取失败）。
+
+        优先用 ``IdentityStore`` 的 ``*_read`` 接口：它逐次返回成功/失败，因此
+        「同类异常连续发生」时每一次都能被识别（§三 2/3），且**没有任何共享可变
+        状态** → 并发解析天然互不干扰（§三 4）。没有该接口的旧替身回退到旧方法 +
+        ``degraded_reason`` 变化判据（兼容路径；真实 Store 始终提供 ``*_read``）。
+        """
+        reader = getattr(store, read_name, None)
+        if callable(reader):
+            result = await reader(**kwargs)
+            value = getattr(result, "links" if many else "link", None)
+            return value, str(getattr(result, "error", "") or "")
+        before = str(getattr(store, "degraded_reason", "") or "")
+        value = await getattr(store, legacy_name)(**kwargs)
+        after = str(getattr(store, "degraded_reason", "") or "")
+        error = after if (after and after != before) else ""
+        return (tuple(value or ()) if many else value), error
+
+    def _degraded(
+        self,
+        *,
+        channel: IdentityChannel,
+        username: str,
+        relationship_key: str,
+        server_id: str,
+        error: str,
+    ) -> IdentityContext:
+        """读取失败 → 明确 ``DEGRADED``（绝不假装「没有绑定」，也不授予任何权限）。"""
+        return IdentityContext(
+            resolution=IdentityResolution.DEGRADED,
+            channel=channel,
+            username=username,
+            relationship_key=relationship_key,
+            server_id=server_id,
+            reason="identity_store_error",
+            degraded_reason=error,
+            action_trust="identity_unavailable",
+        )
 
     async def _resolve_minecraft(
         self,
@@ -329,7 +365,20 @@ class IdentityResolver:
                 reason="server_identity_unavailable",
                 **base,
             )
-        link = await identities.by_player(server_id=server_id, player_uuid=player_uuid)
+        link, error = await self._read(
+            identities,
+            read_name="by_player_read",
+            legacy_name="by_player",
+            kwargs={"server_id": server_id, "player_uuid": player_uuid},
+        )
+        if error:
+            return self._degraded(
+                channel=channel,
+                username=username,
+                relationship_key=username,
+                server_id=server_id,
+                error=error,
+            )
         if link is not None and str(link.status) == VERIFIED:
             return self._verified_context(
                 channel=channel,
@@ -338,7 +387,21 @@ class IdentityResolver:
                 link=link,
                 uuid_suffix=player_uuid[-4:],
             )
-        rows = await identities.all_links(server_id=server_id, limit=200)
+        rows, error = await self._read(
+            identities,
+            read_name="all_links_read",
+            legacy_name="all_links",
+            kwargs={"server_id": server_id, "limit": 200},
+            many=True,
+        )
+        if error:
+            return self._degraded(
+                channel=channel,
+                username=username,
+                relationship_key=username,
+                server_id=server_id,
+                error=error,
+            )
         mine = [row for row in rows if row.canonical_uuid == player_uuid]
         if any(str(row.status) == CONFLICT for row in mine):
             return IdentityContext(
@@ -374,9 +437,20 @@ class IdentityResolver:
             )
         link = None
         if server_id:
-            link = await identities.verified(
-                platform=PLATFORM_QQ, user_id=user_id, server_id=server_id
+            link, error = await self._read(
+                identities,
+                read_name="verified_read",
+                legacy_name="verified",
+                kwargs={"platform": PLATFORM_QQ, "user_id": user_id, "server_id": server_id},
             )
+            if error:
+                return self._degraded(
+                    channel=channel,
+                    username=username,
+                    relationship_key=user_id,
+                    server_id=server_id,
+                    error=error,
+                )
         if link is not None and str(link.status) == VERIFIED:
             return self._verified_context(
                 channel=channel,
@@ -385,9 +459,21 @@ class IdentityResolver:
                 link=link,
                 uuid_suffix=canonical_uuid(link.player_uuid)[-4:],
             )
-        rows = await identities.links_for(
-            platform=PLATFORM_QQ, user_id=user_id, include_revoked=True
+        rows, error = await self._read(
+            identities,
+            read_name="links_for_read",
+            legacy_name="links_for",
+            kwargs={"platform": PLATFORM_QQ, "user_id": user_id, "include_revoked": True},
+            many=True,
         )
+        if error:
+            return self._degraded(
+                channel=channel,
+                username=username,
+                relationship_key=user_id,
+                server_id=server_id,
+                error=error,
+            )
         if any(str(row.status) == CONFLICT for row in rows):
             return IdentityContext(
                 resolution=IdentityResolution.CONFLICT, reason="conflict_record", **base

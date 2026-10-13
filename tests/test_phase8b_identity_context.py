@@ -12,9 +12,12 @@
 
 from __future__ import annotations
 
+import asyncio
+import sqlite3
 from pathlib import Path
 from typing import Any
 
+from app.integrations.minecraft.identity import IdentityStore
 from app.integrations.minecraft.identity_context import (
     PERMISSION_EFFECT,
     IdentityChannel,
@@ -421,3 +424,158 @@ def test_identity_module_never_reaches_the_action_layers() -> None:
     ):
         assert forbidden not in source
     assert 'PERMISSION_EFFECT = "none"' in source
+
+
+# --------------------------------------------------------- §四 降级契约回归（8B Follow-up）
+
+
+class _FlakyDB:
+    """把真实 Database 包一层，按需让**读取**抛同一个异常类型（确定性故障注入）。
+
+    只包 ``fetchall``（IdentityStore 的读取路径）；写入（绑定/解绑）不受影响。
+    ``fail_user`` 只让携带该 user_id 的查询失败 —— 用于并发隔离用例。
+    """
+
+    def __init__(self, inner: Any, *, fail_user: str = "", gate: Any = None) -> None:
+        self._inner = inner
+        self.fail_user = fail_user
+        self.gate = gate
+        self.fail = True
+        self.failures = 0
+
+    async def fetchall(self, sql: str, params: tuple[Any, ...]) -> Any:
+        targeted = (not self.fail_user) or (self.fail_user in str(params))
+        if self.fail and targeted:
+            if self.gate is not None and not self.gate.is_set():
+                await self.gate.wait()
+            self.failures += 1
+            raise sqlite3.OperationalError("identity store unavailable")
+        return await self._inner.fetchall(sql, params)
+
+
+async def _flaky_env(tmp_path: Path, *, fail_user: str = "", gate: Any = None) -> Any:
+    """真实 Store（换成故障 DB 的同一个 Store 类）+ 解析器；仍然只有一套身份存储。"""
+    bridge, resolver, _svc, db = await _env(tmp_path)
+    flaky = _FlakyDB(db, fail_user=fail_user, gate=gate)
+    bridge.identities = IdentityStore(flaky)
+    return bridge, resolver, flaky, db
+
+
+async def test_first_read_failure_is_degraded(tmp_path: Path) -> None:
+    """§四：首次读取失败 → DEGRADED（不是 UNBOUND）。"""
+    bridge, resolver, flaky, db = await _flaky_env(tmp_path)
+    try:
+        ctx = await resolver.resolve(session_id="private:1", user_id=QQ_ID, user_name="某人")
+        assert ctx.resolution is IdentityResolution.DEGRADED
+        assert ctx.reason == "identity_store_error"
+        assert ctx.degraded_reason == "OperationalError"
+        assert flaky.failures >= 1
+        assert ctx.permission_effect == PERMISSION_EFFECT
+    finally:
+        await db.close()
+
+
+async def test_same_exception_twice_is_degraded_both_times(tmp_path: Path) -> None:
+    """§四 2：同类异常连续发生两次 → 两次都必须 DEGRADED（旧判据会漏掉第二次）。"""
+    bridge, resolver, flaky, db = await _flaky_env(tmp_path)
+    try:
+        first = await resolver.resolve(session_id="private:1", user_id=QQ_ID, user_name="某人")
+        second = await resolver.resolve(session_id="private:1", user_id=QQ_ID, user_name="某人")
+        assert first.resolution is IdentityResolution.DEGRADED
+        assert second.resolution is IdentityResolution.DEGRADED
+        assert str(bridge.identities.degraded_reason) == "OperationalError"
+        assert flaky.failures >= 2
+    finally:
+        await db.close()
+
+
+async def test_historical_marker_does_not_hide_a_new_failure(tmp_path: Path) -> None:
+    """§四 3：已有历史错误标记时再次发生同类错误，当前解析仍必须是 DEGRADED。"""
+    bridge, resolver, _flaky, db = await _flaky_env(tmp_path)
+    try:
+        bridge.identities.degraded_reason = "OperationalError"  # 历史遗留标记
+        ctx = await resolver.resolve(session_id="private:1", user_id=QQ_ID, user_name="某人")
+        assert ctx.resolution is IdentityResolution.DEGRADED
+        assert ctx.reason == "identity_store_error"
+    finally:
+        await db.close()
+
+
+async def test_recovery_restores_accurate_resolution(tmp_path: Path) -> None:
+    """§四 4：存储恢复后按真实数据恢复（VERIFIED / UNBOUND），不是永久降级。"""
+    bridge, resolver, _svc, db = await _env(tmp_path)
+    try:
+        assert (await _bind(bridge)).ok
+        flaky = _FlakyDB(db)
+        bridge.identities = IdentityStore(flaky)
+        broken = await resolver.resolve(session_id="private:1", user_id=QQ_ID, user_name="某人")
+        assert broken.resolution is IdentityResolution.DEGRADED
+        flaky.fail = False
+        healed = await resolver.resolve(session_id="private:1", user_id=QQ_ID, user_name="某人")
+        assert healed.resolution is IdentityResolution.VERIFIED
+        assert healed.relationship_key == QQ_ID
+        other = await resolver.resolve(
+            session_id="private:2", user_id=OTHER_QQ, user_name="另一个人"
+        )
+        assert other.resolution is IdentityResolution.UNBOUND
+    finally:
+        await db.close()
+
+
+async def test_minecraft_side_satisfies_the_same_contract(tmp_path: Path) -> None:
+    """§四：MC 侧同样满足降级契约（连续两次失败都 DEGRADED；恢复后按真实数据）。"""
+    bridge, resolver, _svc, db = await _env(tmp_path)
+    try:
+        assert (await _bind(bridge)).ok
+        flaky = _FlakyDB(db)
+        bridge.identities = IdentityStore(flaky)
+        one = await resolver.resolve(session_id=MC_SESSION, user_id=PLAYER, user_name=PLAYER)
+        two = await resolver.resolve(session_id=MC_SESSION, user_id=PLAYER, user_name=PLAYER)
+        assert one.resolution is IdentityResolution.DEGRADED
+        assert two.resolution is IdentityResolution.DEGRADED
+        flaky.fail = False
+        healed = await resolver.resolve(session_id=MC_SESSION, user_id=PLAYER, user_name=PLAYER)
+        assert healed.resolution is IdentityResolution.VERIFIED
+        assert healed.relationship_key == QQ_ID
+    finally:
+        await db.close()
+
+
+async def test_concurrent_resolutions_do_not_pollute_each_other(tmp_path: Path) -> None:
+    """§四：并发解析互不污染 —— 一个请求的失败不得影响另一个的成功。
+
+    用**按请求定向**的故障注入（只有失败那个请求的查询会抛）+ 门闩，不依赖 sleep。
+    """
+    bridge, resolver, _svc, db = await _env(tmp_path)
+    try:
+        assert (await _bind(bridge)).ok
+        gate = asyncio.Event()
+        flaky = _FlakyDB(db, fail_user=QQ_ID, gate=gate)
+        bridge.identities = IdentityStore(flaky)
+        failing = asyncio.create_task(
+            resolver.resolve(session_id="private:1", user_id=QQ_ID, user_name="某人")
+        )
+        healthy = asyncio.create_task(
+            resolver.resolve(session_id=MC_SESSION, user_id=PLAYER, user_name=PLAYER)
+        )
+        gate.set()  # 放行失败请求；健康请求本就不等门闩
+        broken, ok = await asyncio.gather(failing, healthy)
+        assert broken.resolution is IdentityResolution.DEGRADED
+        assert ok.resolution is IdentityResolution.VERIFIED
+        assert ok.relationship_key == QQ_ID
+    finally:
+        await db.close()
+
+
+async def test_identity_failure_never_blocks_normal_chat(tmp_path: Path) -> None:
+    """§四：身份层异常仍然不影响普通聊天继续执行（真实聊天栈）。"""
+    service = FakeMinecraftService(players=[{"name": PLAYER, "uuid": UUID_KONGLING}])
+    async with stack(tmp_path, "嗯嗯，在呢", service=service) as env:
+        bridge, db = await _attach_identity(env, tmp_path, db_name="mc8b_deg.db")
+        try:
+            bridge.identities = IdentityStore(_FlakyDB(db))
+            await env.say(PLAYER, "你好呀")
+            assert env.turns == 1
+            assert env.chat_replies and env.chat_replies[-1] == "嗯嗯，在呢"
+        finally:
+            await db.close()

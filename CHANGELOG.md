@@ -1,5 +1,22 @@
 # Changelog
 
+## Minecraft Phase 8B Follow-up — Identity Store Degradation Classification Fix（身份存储降级判定修正）
+
+* **基线** `7395553`（Phase 8B 最终发布）。**只**修降级诊断语义，不重写身份系统、不与 Phase 8C 混合提交。
+* **故障根因（实测）**：`IdentityResolver._resolve()` 用 `degraded_reason` 的**前后变化**判断本次读取是否失败；
+  而 `IdentityStore` 写入的是**异常类型名** —— 同类异常连续发生时字符串不变，于是「读取失败」被误判成「没有绑定」返回 `UNBOUND`。
+  同一故障注入下：旧判据 read#1/read#2 都判「本次未失败」；新接口两次都报 `error='OperationalError'`。
+* **实现（最小、单一身份存储源）**：`identity.py` **纯增量**新增 `LinkRead` / `LinksRead` 与
+  `verified_read` / `by_player_read` / `links_for_read` / `all_links_read`（**逐次**返回成功/失败，无共享可变状态 → 并发天然隔离）；
+  旧方法保留并委托，**返回值语义与行为不变**。`identity_context.py` 改为「本次解析任一读取报错即 `DEGRADED(identity_store_error)`」，删除前后比较判据。
+* **兼容性与 schema**：Store API 变化为**纯增量**（旧签名/返回值不变）；**无新表、无新迁移、不改真实运行数据**。
+* **新增 7 项确定性回归**（真实 SQLite + 可控故障 DB，无 `sleep`、无 LLM）：首次失败→`DEGRADED`；**同类异常连续两次两次都 `DEGRADED`**；
+  历史标记不掩盖新故障；恢复后按真实数据返回 `VERIFIED`/`UNBOUND`；Minecraft 侧同一契约；**并发隔离**（一失败一成功互不污染）；身份层异常不影响普通聊天。
+* **测试与门禁**：`pytest tests/test_phase8b_identity_context.py -q` **26 passed**（19 + 7）；相关套件 **313 passed**；
+  全量 `pytest tests -q`、`ruff check .`（All checks passed）、`ruff format --check .`（672 files）、`mypy app`（Success, 337 source files）与 CI 结论见阶段文档 §13.4 与发布记录。
+* **安全边界**：`ACTION_RISK`、工具数量、`allow_medium` 默认值、`trusted_players`、`TurnOrigin` 派生、两道确认门、任务授权与 Policy/AgentBridge/ActionRuntime **全部未改**；
+  `DEGRADED` 只代表身份上下文不可用，**不授予任何权限**。
+
 ## Minecraft Phase 8B — Cross-Platform Identity Continuity & Trust Context（跨平台身份连续性与信任上下文）
 
 * **性质**：集成**既有**身份桥与角色对话上下文；不新增 Minecraft 能力/工具、不改任何动作授权语义、**不加表不加迁移**。基线 `fde6d68`（Phase 8A FIX 之后的 main HEAD，273 commits）。
