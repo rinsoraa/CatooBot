@@ -1,5 +1,22 @@
 # Changelog
 
+## Minecraft Phase 8C Follow-up — Planning Failure Must Not Fall Through to Tool Execution（规划失败不得回退到工具执行）
+
+* **独立修复提交**（不改写 Phase 8C 既有历史）。任务书归档 `docs/specs/CatooBot Minecraft Phase 8C Follow-up — Planning Failure Must Not Fall Through to Tool Execution.md`（SHA256 `4D8143B6…6EE5`）。
+* **缺陷（已确认）**：`MinecraftChatBridge._plan_reply` 把「计划服务是否装配」判定放在**形状识别之前**，缺失/抛异常时一律 `return None`；
+  而 `None` 的语义是「不归计划层管」→ 回落 `CharacterRuntime.respond()` → 可能进入 `ToolOrchestrator` 的**单步工具链**，
+  把 follow/explore 这类**多步骤**目标降级成一次**无约束的原子工具调用**（任务书 §3.2/§4.3 明确禁止的形态）。
+* **修复（最小）**：`app/integrations/minecraft/chat_bridge.py` 先做形状识别、再做可用性判定；只有**非**受支持形状才返回 `None`；
+  计划服务缺失 → `BLOCKED`/`plan_service_unavailable` + 明确失败答复；计划层抛异常 → `BLOCKED`/`plan_service_error` + 明确失败答复；
+  新增 `_plan_failure()` 统一出口（并在 docstring 写明为什么不能返回 `None`）。普通聊天 / 纯查询 / 控制命令语义**不变**。
+* **孤儿任务**：无需新代码 —— 既有 `_compensate_reserved_plan` / `_compensate_orphan_task` 已覆盖 create/link 失败，
+  既有回归测试 `tests/test_agent_plan_negative.py::test_link_persistence_failure_compensates_the_new_task` 与
+  `::test_crash_between_reserve_and_link_recovers_as_orphan` 在本阶段全绿。
+* **测试**：`tests/test_phase8c_bounded_orchestration.py` 由 16 项增至 **17 项**（新增/改写 3 项：计划层异常不得回落工具链、计划层缺失时闲聊仍正常、
+  计划层缺失时 follow/explore 双形状都 BLOCKED）；原先把「失败回落」写成断言的两个用例按新契约**收紧**（不是放宽）。
+* **门禁**：该文件 17 passed；相关套件（agent plan 全家 + chat bridge + 8A + 8B）**167 passed**；`ruff check .` All checks passed；`mypy app` Success（337 files）。
+* **安全不变量未变**：`ACTION_RISK`、19 工具、`allow_medium` 默认、`trusted_players`、TurnOrigin 派生、两道确认门、任务授权、Policy/AgentBridge/ActionRuntime 全部未改；无新工具/动作/表/迁移。
+
 ## Minecraft Phase 8C — Bounded Goal Planning & Atomic-Tool Orchestration（有界目标规划与原子工具编排）
 
 * **基线** `9bf125c`（Phase 8B Follow-up 最终发布）。本阶段只做**接线**：把游戏内聊天提出的、当前能力范围内的多步目标送进**既有**有界规划/任务链，不新增规划器/状态机/授权系统，不新增工具/动作/表/迁移。

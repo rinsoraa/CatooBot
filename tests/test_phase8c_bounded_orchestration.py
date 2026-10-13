@@ -271,13 +271,22 @@ async def test_plan_rejected_is_reported_truthfully(tmp_path: Any) -> None:
         assert "排不了" in env.chat_replies[-1]
 
 
-async def test_plan_layer_failure_falls_back_to_chat(tmp_path: Any) -> None:
-    """计划层抛异常：这条消息仍要被角色侧正常回答（绝不静默丢掉）。"""
+async def test_plan_layer_error_never_falls_through_to_the_tool_path(tmp_path: Any) -> None:
+    """计划层抛异常：明确失败答复 + BLOCKED 路由，**绝不**回落角色回合/工具链。
+
+    Phase 8C Follow-up：此前这里返回 ``None``，这句话会回落到 ``CharacterRuntime.respond()``，
+    进而可能进入 ``ToolOrchestrator`` 的单步工具链 —— 等于把「多步目标」降级成一次无约束的
+    原子调用。用「角色侧脚本化回答没有出现 + 零工具执行」证明没有走到那条路径。
+    """
     async with stack(tmp_path, "我在的。") as env:
         wire(env, plans=FakePlans(error=RuntimeError("plan boom")))
         await env.say("空凛", "跟着我")
-        assert env.chat_replies == ["我在的。"]
-        assert last_route(env).route_target == RouteTarget.CHAT_ONLY.value
+        route = last_route(env)
+        assert route.route_target == RouteTarget.BLOCKED.value
+        assert route.reason_code == "plan_service_error"
+        assert env.chat_replies and "计划层出错" in env.chat_replies[-1]
+        assert "我在的。" not in env.chat_replies  # 不是角色回合的回答
+        assert env.tools.executor.traces == []  # 单步工具链没被走到
 
 
 async def test_busy_plan_action_is_recorded_as_blocked(tmp_path: Any) -> None:
@@ -312,13 +321,31 @@ async def test_plan_layer_receives_the_mc_identity_not_someone_else(tmp_path: An
         assert "IdSmoke8C" not in call["user_id"]
 
 
-async def test_missing_plan_layer_keeps_chat_working(tmp_path: Any) -> None:
-    """计划层没装配：照常聊天，绝不因为接线缺失就没反应。"""
+async def test_missing_plan_layer_keeps_plain_chat_working(tmp_path: Any) -> None:
+    """计划层没装配：**普通聊天**照常回答（接线缺失不该让闲聊没反应）。"""
     async with stack(tmp_path, "我还在。") as env:
         env.chat.bot.task_turns = FakeTurns()
         env.chat.bot.agent_plans = None
-        await env.say("空凛", "跟着我")
+        await env.say("空凛", "今天天气真好呀")
         assert env.chat_replies == ["我还在。"]
+
+
+async def test_supported_goal_without_plan_service_is_blocked(tmp_path: Any) -> None:
+    """计划层没装配 + 已识别的 follow/explore → BLOCKED 明确回话，**不回落工具链**。
+
+    Phase 8C Follow-up §二：形状识别必须发生在「计划服务可用性」判定之前；已识别的受支持
+    多步目标绝不能因为计划层缺失就走普通聊天分支。
+    """
+    for message in ("跟着我", "去附近转转探索一下"):
+        async with stack(tmp_path, "我还在。") as env:
+            env.chat.bot.task_turns = FakeTurns()
+            env.chat.bot.agent_plans = None
+            await env.say("空凛", message)
+            route = last_route(env)
+            assert route.route_target == RouteTarget.BLOCKED.value, message
+            assert route.reason_code == "plan_service_unavailable", message
+            assert "我还在。" not in env.chat_replies, message
+            assert env.tools.executor.traces == [], message
 
 
 # ============================================================ D 组：可观测与隐私

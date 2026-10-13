@@ -238,10 +238,6 @@ class MinecraftChatBridge:
         控制命令与状态查询一律不接管（§五 路由矩阵）。
         """
         bot = self.bot
-        plans = getattr(bot, "agent_plans", None)
-        plan_goal = getattr(plans, "plan_goal_from_user", None)
-        if not callable(plan_goal):
-            return None
         intent = _DETECTOR.detect(message)
         if "query_only" in intent.reasons:
             return None
@@ -253,6 +249,18 @@ class MinecraftChatBridge:
             shape = "explore"
         else:
             return None
+        # 到这里已经确认「这是她支持的受支持多步目标」。此后**任何**失败都必须如实回话并记
+        # BLOCKED 路由，绝不再返回 None —— 返回 None 会回落到普通角色回合，进而可能进入
+        # ToolOrchestrator 的单步工具链，等于把多步目标降级成一次无约束的原子调用。
+        plans = getattr(bot, "agent_plans", None)
+        plan_goal = getattr(plans, "plan_goal_from_user", None)
+        if not callable(plan_goal):
+            return self._plan_failure(
+                session_id,
+                message,
+                reason_code="plan_service_unavailable",
+                text="我这条多步计划现在排不了（计划服务没装配），所以我什么都没做。",
+            )
         target: Any = PlanTarget()
         if shape == "follow":
             resolved = await self._follow_target(username, session_id)
@@ -276,8 +284,27 @@ class MinecraftChatBridge:
             )
         except Exception:  # noqa: BLE001 - 计划层故障只影响这一条消息
             log.exception("[MC Plan] 计划层接线失败（%s）", username)
-            return None
+            return self._plan_failure(
+                session_id,
+                message,
+                reason_code="plan_service_error",
+                text="这条计划没排成功（计划层出错），我没有执行任何动作。",
+            )
         return self._plan_reply_text(username, session_id, message, shape, out)
+
+    def _plan_failure(self, session_id: str, message: str, *, reason_code: str, text: str) -> str:
+        """已识别的多步目标在计划层不可用/出错时的**明确失败答复**（BLOCKED 路由）。
+
+        关键：这里必须返回字符串而不是 ``None`` —— ``None`` 会让这句话回落到普通角色回合，
+        进而可能进入 ``ToolOrchestrator`` 的单步工具链（把多步目标降级成原子调用）。
+        """
+        self._route(
+            reason_code=reason_code,
+            route_target=RouteTarget.BLOCKED.value,
+            session_id=session_id,
+            text_chars=len(message),
+        )
+        return text
 
     async def _follow_target(self, username: str, session_id: str) -> Any | None:
         """游戏内说话者 → **已验证**的跟随目标（8B 身份解析 + 5C 目标解析）。

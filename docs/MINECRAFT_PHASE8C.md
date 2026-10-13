@@ -196,3 +196,55 @@ minecraft.chat 事件
 ## §12 裁决
 
 **PASS。** 六项必需真机维度**全部取得真实环境证据**：真实多步目标经游戏内聊天入口 → 既有有界规划 → 确认门 → 受授权 TaskRuntime 执行 → 可验证终态（到达 `0.98`）；确认前零执行、未确认即取消；目标不足 fail-closed（并以真实权威 UUID 证明 VERIFIED 后同一请求成立）；MEDIUM 被既有策略门阻止且无 `action_id`；执行中取消不续派；闲聊/SAFE 查询不误接管。未新增能力/工具/表/迁移，未扩大授权，未放宽任何断言（失败与重跑如实记录于 §9.1）。
+
+## §13 Follow-up 修复（规划失败不得回退到工具执行）
+
+**独立提交，不改写 §1–§12 的历史记录。** 任务书归档 `docs/specs/CatooBot Minecraft Phase 8C Follow-up — Planning Failure Must Not Fall Through to Tool Execution.md`（2143 bytes / 27 行，SHA256 `4D8143B6DB64DBB5E5A000292658479921454DAFCEB2A8B0C50037A9110D6EE5`）。
+
+### §13.1 已确认的缺陷（改动前）
+
+`MinecraftChatBridge._plan_reply` 把「计划服务是否装配」的判定放在**形状识别之前**：
+
+```text
+241-244:  plans = getattr(bot, "agent_plans", None)
+          plan_goal = getattr(plans, "plan_goal_from_user", None)
+          if not callable(plan_goal): return None   # 任何消息都直接交回角色回合
+277-279:  except Exception: … return None           # 计划层抛异常同样交回
+```
+
+`None` 的语义是「这句话不归计划层管」→ `_task_reply` 返回 `None` → `CharacterRuntime.respond()` → 可能进入 `ToolOrchestrator` 的**单步工具链**。后果：一个**多步骤**目标（follow/explore）在计划层不可用或出错时，会被降级成**一次无约束的原子工具调用** —— 正是任务书 §3.2/§4.3 明令禁止的形态。
+
+### §13.2 修复（最小、语义收紧）
+
+* `app/integrations/minecraft/chat_bridge.py`：
+  - **顺序调整**：先做形状识别（query_only / 控制命令 / 状态查询排除 → follow/explore 识别），**之后**才检查计划服务可用性。只有**非**受支持形状才返回 `None`（普通聊天 / 纯查询 / 控制命令语义不变）。
+  - 计划服务缺失 → 明确失败答复 + `BLOCKED` 路由 `plan_service_unavailable`（**返回字符串**，不是 `None`）。
+  - 计划层抛异常 → 明确失败答复 + `BLOCKED` 路由 `plan_service_error`（**返回字符串**）。
+  - 新增 `_plan_failure(...)`：统一的「已识别多步目标失败」出口（记 BLOCKED + 返回可见文案），docstring 写明**为什么不能返回 None**。
+* **孤儿任务补偿：无需新代码** —— 既有 `AgentPlanService` 已在 create/link 各失败点补偿（`_compensate_reserved_plan` / `_compensate_orphan_task`，见 `agent_service.py:387/402/421/478`；`_link_reserved_plan` 内部捕获存储故障），`plan_goal_from_user` 的通用化**保留**了这些路径。证据：既有回归测试 `tests/test_agent_plan_negative.py::test_link_persistence_failure_compensates_the_new_task` 与 `::test_crash_between_reserve_and_link_recovers_as_orphan`（后者断言 `summary["orphans"] == 1` 被对账/补偿）在本阶段全绿。
+
+### §13.3 测试（新增/改写 3 项；该文件共 17 项）
+
+| 用例 | 断言 |
+| --- | --- |
+| `test_plan_layer_error_never_falls_through_to_the_tool_path` | 计划层抛异常 → `BLOCKED`/`plan_service_error` + 明确文案；**角色侧回答没有出现**（`"我在的。" not in replies`）；`tools.executor.traces == []`（单步工具链没被走到） |
+| `test_missing_plan_layer_keeps_plain_chat_working` | 计划层没装配 + **普通闲聊** → 照常由角色回答（前三类语义不变） |
+| `test_supported_goal_without_plan_service_is_blocked` | 计划层没装配 + **follow 与 explore 两种形状** → 都得到 `BLOCKED`/`plan_service_unavailable`、非角色回答、零工具执行 |
+
+**改写说明（诚实记录）**：原有的 `test_plan_layer_failure_falls_back_to_chat` 与 `test_missing_plan_layer_keeps_chat_working` **正是把缺陷行为写成了断言**（失败也要回落到角色回合）；本阶段按新契约收紧为「必须明确失败 + 不得回落」，这是**收紧**而不是放宽断言。
+
+### §13.4 门禁与不变量
+
+| 项 | 结果 |
+| --- | --- |
+| `pytest tests/test_phase8c_bounded_orchestration.py -q` | **17 passed** |
+| 相关套件（agent plan 全家 + chat bridge + 8A 路由 + 8B 身份） | **167 passed**（含上面两个既有补偿测试） |
+| 全量 `pytest tests -q` | **3922 passed**（725.15s；= 8C 基线 3921 + 本阶段净增 1） |
+| `ruff check .` | All checks passed |
+| `ruff format --check .` | 已格式化（无待改文件） |
+| `mypy app` | Success（337 source files） |
+| 安全不变量 | `ACTION_RISK`、19 工具、`allow_medium` 默认、`trusted_players`、TurnOrigin 派生、两道确认门、TaskAuthorization/TaskStepAuthorization、Policy/AgentBridge/ActionRuntime **均未改**；无新工具/动作/表/迁移 |
+
+### §13.5 裁决
+
+**PASS**：规划失败不再回退到另一条工具执行路径（有「角色侧回答未出现 + 零工具执行」的真实证据），既有补偿路径被回归测试证明不留可执行孤儿任务，且前三类输入语义不变。
