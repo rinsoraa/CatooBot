@@ -196,6 +196,16 @@ class TaskTurnHandler:
         #: 适配性通过时用它物化的计划，否则原样回退既有确定性模板；异常一律回退。
         self._skills = skills
 
+    # ------------------------------------------------ 只读访问器（Phase 8D）
+    @property
+    def detector(self) -> TaskIntentDetector:
+        """入口用的确定性检测器 —— MC 桥接在**接管之前**必须用同一套判定（§7.4）。"""
+        return self._detector
+
+    async def current_task(self, session_id: str) -> Any | None:
+        """这个会话当前的活动任务（只读；与 handle 内部用的是同一个查询）。"""
+        return await self._runtime.current(session_id)
+
     # ------------------------------------------------------------ 入口
 
     async def handle(

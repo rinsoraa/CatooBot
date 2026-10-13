@@ -20,12 +20,14 @@ from typing import Any
 
 from app.integrations.minecraft.agent import ACTION_RISK
 from app.tasks.agent_plan import PlanTarget
+from app.tasks.intent import parse_wood_request
 from app.tasks.planner import (
     EXPLORE_MAX_LEGS,
     ObservationFailed,
     PlannedTask,
     plan_exploration_task,
     plan_resource_task,
+    plan_wood_task,
 )
 from app.tasks.turn import DROP_OVERRIDES, block_for
 
@@ -95,7 +97,12 @@ EXPLORE_DEFAULT_DISTANCE = 24.0
 
 
 def detect_shape(objective: str) -> str:
-    """确定性形状判定：follow / resource / explore / unknown（绝不靠模型猜）。"""
+    """确定性形状判定：follow / resource / explore / unknown（绝不靠模型猜）。
+
+    Phase 8D 的木材形状**不在这里**判定：它由 MC 入口用同一套确定性解析
+    （``intent.parse_wood_request``）判明后，以 ``shape_hint`` 显式传给 :meth:`plan`。
+    这样既有调用方（技能感知资源计划 / LIFE / QQ follow）的形状判定**逐字不变**。
+    """
     text = str(objective or "").strip()
     if not text:
         return "unknown"
@@ -151,11 +158,18 @@ class BoundedAgentPlanner:
         *,
         target: PlanTarget | None = None,
         observe: ObserveFn | None = None,
+        shape_hint: str = "",
     ) -> PlanningResult:
-        """按形状路由（follow / resource / explore / unknown），产出六值结论之一。"""
-        shape = detect_shape(objective)
+        """按形状路由（follow / wood / resource / explore / unknown），产出六值结论之一。
+
+        ``shape_hint`` 只接受调用方**已经用确定性规则判明**的形状（Phase 8D 的 MC 木材入口
+        就是这么做的）；留空时行为与 Phase 8D 之前**逐字一致**。
+        """
+        shape = str(shape_hint or "") or detect_shape(objective)
         if shape == "follow":
             return self._plan_follow(objective, target or PlanTarget())
+        if shape == "wood":
+            return await self._plan_wood(objective, observe)
         if shape == "resource":
             return await self._plan_resource(objective, observe)
         if shape == "explore":
@@ -353,6 +367,83 @@ class BoundedAgentPlanner:
             plan=planned,
             risk_summary=_risk_summary_of(planned, self.risk_table),
             checks=({"check": "plan", "ok": True, "detail": {"steps": len(planned.plan.steps)}},),
+        )
+
+    async def _plan_wood(self, objective: str, observe: ObserveFn | None) -> PlanningResult:
+        """有界木材采集（Phase 8D §2.2）：最多 2 根原木，目标必须来自真实观察。
+
+        **规划期就必须过 Policy 闸**（§3.1）：含 MEDIUM（dig / pickup）的木材计划在
+        allow_medium=false 时直接 BLOCKED_BY_POLICY，**不创建可执行任务** —— 这正是
+        旧的 MC 资源路径（turn.py 直接调 plan_resource_task）绕开的那道闸。
+        """
+        request = parse_wood_request(objective)
+        if request is None:
+            return self._plan_unknown(objective)
+        if request.problem:
+            problem_detail = {"problem": request.problem, "detail": request.detail}
+            return PlanningResult(
+                outcome=PlanningOutcome.BLOCKED_BY_PRECONDITION,
+                reason=f"{request.problem}:{request.detail}"[:200],
+                checks=({"check": "wood_intent", "ok": False, "detail": problem_detail},),
+            )
+        if observe is None:
+            return PlanningResult(
+                outcome=PlanningOutcome.BLOCKED_BY_PRECONDITION,
+                reason="observe_unavailable",
+                checks=({"check": "observe", "ok": False, "detail": {}},),
+            )
+        try:
+            planned = await plan_wood_task(
+                objective,
+                observe=observe,
+                candidates=request.candidates,
+                count=request.count,
+            )
+        except ObservationFailed as exc:
+            return PlanningResult(
+                outcome=PlanningOutcome.BLOCKED_BY_PRECONDITION,
+                reason=str(exc)[:200],
+                checks=({"check": "observe", "ok": False, "detail": {"error": str(exc)[:200]}},),
+            )
+        except Exception as exc:  # noqa: BLE001 - 规划失败绝不假装可执行
+            return PlanningResult(
+                outcome=PlanningOutcome.NEEDS_MORE_INFORMATION,
+                reason=f"planning_failed:{type(exc).__name__}",
+                checks=({"check": "plan", "ok": False, "detail": {"error": str(exc)[:200]}},),
+            )
+        blocked = self._policy_blocked(planned)
+        if blocked is not None:
+            return PlanningResult(
+                outcome=PlanningOutcome.BLOCKED_BY_POLICY,
+                reason=blocked,
+                plan=planned,
+                risk_summary=_risk_summary_of(planned, self.risk_table),
+                checks=(
+                    {
+                        "check": "risk_flags",
+                        "ok": False,
+                        "detail": {"reason": blocked, "capped": request.capped},
+                    },
+                ),
+            )
+        targets = sum(1 for step in planned.plan.steps if step.tool == "minecraft_dig")
+        detail: dict[str, Any] = {
+            "steps": len(planned.plan.steps),
+            "targets": targets,
+            "requested": request.requested,
+            "capped": request.capped,
+            "truncated": targets < request.count,
+        }
+        if targets < request.count:
+            # 请求 2 根、但只证明了 1 根：**绝不**假称识别了整棵树（§2.2 行 53）。
+            # 把稳定原因码写进 checks，回复层据此在确认前明确显示真实数量（§5.3 行 160）。
+            detail["reason"] = "wood_target_group_unproven"
+        return PlanningResult(
+            outcome=PlanningOutcome.READY_FOR_APPROVAL,
+            reason="wood_plan_ready",
+            plan=planned,
+            risk_summary=_risk_summary_of(planned, self.risk_table),
+            checks=({"check": "plan", "ok": True, "detail": detail},),
         )
 
     def _policy_blocked(self, planned: PlannedTask) -> str | None:

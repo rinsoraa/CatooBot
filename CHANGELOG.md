@@ -1,5 +1,14 @@
 # Changelog
 
+## Minecraft Phase 8D — Bounded Resource Gathering & Wood Collection（有界木材采集）
+
+* **目标（任务书 §2）**：在**游戏内聊天入口**支持小规模、有界、可审计的木材采集 —— 每任务 ≤2 个原木方块且必须来自同一组可验证的相邻树干；只采集**观察确认**的目标、只执行**用户确认的冻结计划**、只把**真实进入背包**的物品算作成果。基线 `a1b2079`。
+* **审计（任务书 §3，源码取证）**：确认任务书点名**不得继承**的缺口 —— MC 旧资源路径（`chat_bridge → TaskTurnHandler.handle → turn.py:485 plan_resource_task`）**绕开** `BoundedAgentPlanner._policy_blocked`，含 MEDIUM（dig/pickup）的木材计划会先建成待确认任务、只到执行期才被拦；另确认既有 `plan_resource_task` 是**单目标方块**语义（`inventory_delta={drop: 1}`）、既有 `detect()` 无数量/树种解析、多目标 + 逐目标 `expected_block`/`expected_item` 关联尚不存在。
+* **实现**：新增确定性木材意图（`WoodRequest`/`parse_wood_request`）、有界木材规划模板（`plan_wood_task`：同组证明 + 逐目标冻结坐标/`expected_block` + 逐目标 `dropped_items`/`pickup_item` 关联 + `inventory_delta` 作唯一成功证据）、规划期形状分派与策略闸（`agent_planner._plan_wood` **必经 `_policy_blocked`** → `allow_medium=False` 时 `BLOCKED_BY_POLICY` 且**不创建可执行任务**）、MC 专属唯一接管（`chat_bridge` 在任务入口**之前**判定；控制/状态/活动任务/闲聊/纯查询一律交回既有入口；**QQ 路径零影响**）、`TaskTurnHandler` 补只读访问器 `detector`/`current_task` 并把 `origin` 形参真正传下去。
+* **未改动**：`ACTION_RISK`、19 个既有工具、`allow_medium` 默认值、`trusted_players`、`TurnOrigin` 派生、两道确认门、`TaskAuthorization`/`TaskStepAuthorization`、Policy/AgentBridge/ActionRuntime、冻结计划哈希/参数指纹/`action_id` 对账语义；**无新表无新迁移**。
+* **门禁（实测）**：8D 新增测试 **24 + 14 + 12 = 50 项**；全量 `pytest tests -q` **3972 passed**（= 基线 3922 + 50）；`ruff check .` All checks passed；`ruff format --check .` **679 files**；`mypy app` Success（337 source files）；迁移演练 `version [36,36]`、`integrity [ok,ok]`、`tables [83,83]`、`added_tables []`、`lost_rows {}`（已最新版的预期 no-op）。
+* **真实 Java 门禁 7/7 PASS**（`scripts/wood_gathering_smoke_real.py`，本地专用不发布；真实第二客户端 + `mineflayer-pathfinder`）：核心场景**首次即真实成功** —— 游戏内聊天「帮我砍一根橡木原木带回来」→ 冻结计划（单 dig 目标 + `expected_block=oak_log` + 坐标）→ **确认前零 `action_id`** → 游戏内「确认」→ 受授权执行 → `SUCCEEDED` + **真实背包增量** `{"oak_log": 1, "ok": true}` + 真实 `action_id`；另含 `allow_medium=False` **规划期**阻断（无任务、reason `minecraft_dig:MEDIUM`）、确认前取消零动作、第二客户端**真的挖掉**冻结目标后任务绝不谎称成功（`PAUSED`/`ACTION_FAILED`、dig 步仍 `PENDING`）、两目标挖到 1 根即取消（`CANCELLED`，dig 成功 ≠ 任务成功）、云杉观察不到 → `plan_plan_rejected`/CLARIFY、闲聊/SAFE 查询/busy/控制不误接管。
+* **如实记录**：gate7 首次因「挖到但掉落物尚未同步 → `pickup_item` FAILED → 任务 PAUSED」真实失败（产品 fail-closed，不谎称成功）；核心场景按既有 CI 纪律**最多 3 次并保留每次结果**，gate8 首次即成功；**未放宽任何断言、到达半径、预算或策略条件**。已知精度抖动：木材 `move_to` 以半径 1.5 格判定到达，pathfinder 在部分树位停在约 2 格（7F.1 起同族）。
 ## Minecraft Phase 8C Follow-up — Planning Failure Must Not Fall Through to Tool Execution（规划失败不得回退到工具执行）
 
 * **独立修复提交**（不改写 Phase 8C 既有历史）。任务书归档 `docs/specs/CatooBot Minecraft Phase 8C Follow-up — Planning Failure Must Not Fall Through to Tool Execution.md`（SHA256 `4D8143B6…6EE5`）。

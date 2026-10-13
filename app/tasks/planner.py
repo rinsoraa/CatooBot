@@ -311,6 +311,229 @@ async def plan_resource_task(
     return PlannedTask(objective=objective, plan=plan, observations=observations)
 
 
+# ---------------------------------------------------------------- wood gathering（Phase 8D）
+
+#: 木材采集的硬上限（与 app.tasks.intent.WOOD_MAX_TARGETS 一致）。
+#: 这里再钉一次，是为了让**规划层自己**证明「预算不随用户请求扩大」。
+WOOD_MAX_TARGETS = 2
+
+#: 同一个树干组里相邻原木的竖直间隔**必须正好是 1 格**（证明「同一根树干」的可观察事实）。
+WOOD_GROUP_Y_STEP = 1
+
+
+@dataclass(frozen=True)
+class _WoodTarget:
+    """一个已被真实观察确认的原木方块（Phase 8D：坐标 + 方块 id 都要冻结进计划）。"""
+
+    block: str
+    x: int
+    y: int
+    z: int
+    distance: float
+
+
+def _wood_match_target(match: Mapping[str, Any]) -> _WoodTarget | None:
+    """把 find_blocks 的一条命中投影成目标（字段缺失就丢弃，绝不猜）。
+
+    真实字段形状（test_minecraft_find_blocks_tool.py:222-226）：
+    ``{"block": {"name": ...}, "position": {"x","y","z"}, "distance": ...}``。
+    """
+    position = match.get("position")
+    block = match.get("block")
+    name = block.get("name") if isinstance(block, Mapping) else None
+    if not isinstance(position, Mapping) or not isinstance(name, str) or not name:
+        return None
+    x, y, z = position.get("x"), position.get("y"), position.get("z")
+    if not isinstance(x, (int, float)):
+        return None
+    if not isinstance(y, (int, float)):
+        return None
+    if not isinstance(z, (int, float)):
+        return None
+    distance = match.get("distance")
+    return _WoodTarget(
+        block=canonical_item_name(name),
+        x=int(x),
+        y=int(y),
+        z=int(z),
+        distance=float(distance) if isinstance(distance, (int, float)) else float("inf"),
+    )
+
+
+def _wood_group(targets: list[_WoodTarget], count: int) -> list[_WoodTarget] | None:
+    """挑出一组**可证明属于同一根树干**的原木（确定性；证明不了就返回 None）。
+
+    只用 find_blocks 真实给出的事实（方块 id + 坐标），规则：
+
+    * 按**精确 (x, z) 列**分组 —— 树干是竖直的，换一列就是另一棵树；
+    * 同一组必须是**同一个方块 id**（不把橡木和云杉混成同一棵）；
+    * 从最低那格往上必须**逐格相邻**（|Δy| == 1），中间跳格就证明不了连续树干；
+    * 列间排序：连续段更长优先 → 更近优先 → (x, z) 字典序（完全可复现）；
+    * 凑不满 count 就取它能证明的那几个（数量取三者最小值，§5.3）——
+      一个都证明不了返回 None，调用方 fail-closed，**绝不按距离猜**。
+    """
+    columns: dict[tuple[int, int, str], list[_WoodTarget]] = {}
+    for target in targets:
+        columns.setdefault((target.x, target.z, target.block), []).append(target)
+    runs: list[list[_WoodTarget]] = []
+    for items in columns.values():
+        run: list[_WoodTarget] = []
+        for target in sorted(items, key=lambda item: item.y):
+            if run and target.y - run[-1].y != WOOD_GROUP_Y_STEP:
+                break
+            run.append(target)
+        if run:
+            runs.append(run)
+    if not runs:
+        return None
+    runs.sort(key=lambda run: (-len(run), run[0].distance, run[0].x, run[0].z))
+    best = runs[0]
+    return best[: max(1, min(int(count), len(best), WOOD_MAX_TARGETS))]
+
+
+async def plan_wood_task(
+    objective: str,
+    *,
+    observe: ObserveFn,
+    candidates: tuple[str, ...],
+    count: int = 1,
+    max_distance: int = 16,
+) -> PlannedTask:
+    """有界木材采集模板（Phase 8D §2.2/§5.3）。
+
+    流程：**找 → 证明同一组树干 → 逐目标 走/挖/捡 → 背包复核**。
+
+    硬约束（都在这里、不靠注释承诺）：
+
+    * 最多 WOOD_MAX_TARGETS 个原木方块，**不随用户请求扩大**；
+    * 目标只能来自 minecraft_find_blocks 的**真实观察**，且必须能证明同列相邻；
+    * 证明不了就 ObservationFailed（no_wood_target / wood_target_group_unproven），绝不猜；
+    * 每个目标冻结自己的**坐标 + expected_block**；掉落物引用**它自己那一步**；
+    * 成功证据 = ExpectedFinalState(inventory_delta={掉落物: 个数})（真实背包增量）。
+
+    原木不需要工具（徒手可破），因此这里**不写 equip 步骤**，动作步数 ≤ 6（预算 8）。
+    """
+    names = [canonical_item_name(name) for name in candidates if str(name or "").strip()]
+    if not names:
+        raise ObservationFailed("no_wood_target：木材支持矩阵为空，没有可观察的原木种类")
+    wanted = max(1, min(int(count), WOOD_MAX_TARGETS))
+    observations: list[Observation] = []
+
+    found_args = {"block_names": list(names), "max_distance": max_distance, "max_results": 16}
+    found = await _safe_observe(observe, "minecraft_find_blocks", found_args)
+    found_result = _result_of(found)
+    observations.append(
+        Observation(
+            tool="minecraft_find_blocks",
+            arguments=found_args,
+            result=found_result,
+            summary=getattr(found, "summary", ""),
+        )
+    )
+    if not found_result.get("ok"):
+        raise ObservationFailed("no_wood_target：找方块的观察失败（无法确认附近有没有原木）")
+    targets = [
+        target
+        for target in (_wood_match_target(match) for match in (found_result.get("matches") or []))
+        if target is not None
+    ]
+    if not targets:
+        raise ObservationFailed(f"no_wood_target：附近 {max_distance} 格内没有找到原木")
+
+    world_view = await _safe_observe(observe, "minecraft_world", {})
+    world_result = _result_of(world_view)
+    observations.append(
+        Observation(
+            tool="minecraft_world",
+            arguments={},
+            result=world_result,
+            summary=getattr(world_view, "summary", ""),
+        )
+    )
+    self_position = _self_position(world_result)
+    bot_y = self_position.get("y")
+    bot_y = float(bot_y) if isinstance(bot_y, (int, float)) else None
+
+    reachable = [
+        target for target in targets if _reachable_height({"position": {"y": target.y}}, bot_y)
+    ] or targets
+    chosen = _wood_group(reachable, wanted)
+    if chosen is None:
+        raise ObservationFailed(
+            "wood_target_group_unproven：附近的原木证明不了属于同一根树干（同列且逐格相邻）"
+        )
+
+    steps: list[TaskStep] = []
+    index = 0
+
+    def add(tool: str, arguments: dict[str, Any], risk: str) -> TaskStep:
+        nonlocal index
+        index += 1
+        step = TaskStep(
+            step_id=f"step_{index}",
+            tool=tool,
+            arguments=arguments,
+            risk=risk,
+            references=collect_references(arguments),
+        )
+        steps.append(step)
+        return step
+
+    drops: dict[str, int] = {}
+    for target in chosen:
+        probe_args = {"x": target.x, "y": target.y, "z": target.z}
+        probe = await _safe_observe(observe, "minecraft_dig_capability", probe_args)
+        probe_result = _result_of(probe)
+        observations.append(
+            Observation(
+                tool="minecraft_dig_capability",
+                arguments=probe_args,
+                result=probe_result,
+                summary=getattr(probe, "summary", ""),
+            )
+        )
+        can_dig = bool(probe_result.get("can_dig"))
+        reason = probe_result.get("reason")
+        if not can_dig and reason and reason != "too_far":
+            raise ObservationFailed(f"目标 ({target.x},{target.y},{target.z}) 现在挖不了：{reason}")
+        if not can_dig:
+            add(
+                "minecraft_move_to",
+                {"x": target.x, "y": target.y, "z": target.z},
+                "LOW",
+            )
+        add(
+            "minecraft_dig",
+            {
+                "x": target.x,
+                "y": target.y,
+                "z": target.z,
+                "expected_block": target.block,
+            },
+            "MEDIUM",
+        )
+        add("minecraft_dropped_items", {}, "SAFE")
+        drop_step_id = steps[-1].step_id
+        add(
+            "minecraft_pickup_item",
+            {
+                "entity_id": {"from_step": drop_step_id, "path": "items.0.entity_id"},
+                "expected_item": target.block,
+            },
+            "MEDIUM",
+        )
+        drops[target.block] = drops.get(target.block, 0) + 1
+    add("minecraft_inventory", {}, "SAFE")
+
+    plan = TaskPlan(
+        objective=objective,
+        steps=steps,
+        expected_final_state=ExpectedFinalState(inventory_delta=dict(drops)),
+        observations=[item.to_payload() for item in observations],
+    )
+    return PlannedTask(objective=objective, plan=plan, observations=observations)
+
+
 # ---------------------------------------------------------------- exploration（Phase 7F.1）
 
 #: 有界探索的默认硬上限：**整条路线**的总长度不超过这个值（格）。

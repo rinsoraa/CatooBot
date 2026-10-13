@@ -102,6 +102,138 @@ _QUERY_PATTERNS = (
     re.compile(r"(背包里|身上有|手里拿|拿着什么)"),
 )
 
+# ---------------------------------------------------------- Phase 8D：木材采集意图
+
+#: 每个任务最多采集的原木数量（任务书 §2.2 的硬上限；**不随请求扩大**）。
+WOOD_MAX_TARGETS = 2
+
+#: 支持矩阵：别名组 → 已验证支持的原木方块 ID。
+#: 只有这里的 ID 会被规划；**其余一律明确拒绝**（绝不静默映射成橡木）。
+WOOD_SPECIES: tuple[tuple[tuple[str, ...], str], ...] = (
+    (("橡木", "橡树", "橡", "oak"), "minecraft:oak_log"),
+    (("云杉", "杉树", "杉", "spruce"), "minecraft:spruce_log"),
+    (("白桦", "桦木", "桦树", "birch"), "minecraft:birch_log"),
+    (("丛林", "丛林木", "jungle"), "minecraft:jungle_log"),
+    (("金合欢", "acacia"), "minecraft:acacia_log"),
+    (("深色橡木", "暗橡", "dark_oak", "dark oak"), "minecraft:dark_oak_log"),
+)
+
+#: 明确不支持的木材相关词 → 稳定原因码（要么不是树干原木，要么是派生木制品）。
+WOOD_UNSUPPORTED: tuple[tuple[tuple[str, ...], str], ...] = (
+    (("竹子", "bamboo"), "bamboo"),
+    (("菌柄", "绯红", "诡异", "下界木"), "nether_stem"),
+    (("去皮", "stripped"), "stripped_wood"),
+    (("木板", "plank"), "planks"),
+    (("树叶", "叶子", "leaves"), "leaves"),
+    (("木头方块", "wood block"), "wood_block"),
+)
+
+#: 木材采集动作词：只有「把木头弄到手」这一类才算（比 _ACTION_VERBS 更严）。
+_WOOD_ACTIONS = ("砍", "砍伐", "采", "采集", "收集", "挖", "撸")
+
+#: 数量单位 —— **只认原木根数**；"棵" 指树本身，不代表原木根数（见 parse_wood_request）。
+_LOG_COUNT_UNITS = ("根", "个", "块", "条", "截")
+_CHINESE_NUMERALS = {
+    "一": 1,
+    "二": 2,
+    "两": 2,
+    "三": 3,
+    "四": 4,
+    "五": 5,
+    "六": 6,
+    "七": 7,
+    "八": 8,
+    "九": 9,
+    "十": 10,
+}
+
+
+@dataclass(frozen=True)
+class WoodRequest:
+    """一条**确定性**的木材采集请求（Phase 8D）。
+
+    ``problem`` 非空 = 明确拒绝/需要澄清（此时 ``block``/``count`` 无意义）；
+    否则这是一条可以进入既有有界规划链的请求。
+    """
+
+    candidates: tuple[str, ...] = ()
+    species: str = ""
+    count: int = 0
+    requested: int = 0
+    capped: bool = False
+    problem: str = ""
+    detail: str = ""
+
+
+def parse_wood_request(text: str) -> WoodRequest | None:
+    """把一句自然语言解析成木材采集请求（``None`` = 这句话不归木材管）。
+
+    规则（确定性、可测试，不调用模型）：
+
+    * 必须同时有**木材动作词**与**木材名词** —— 少了任何一半都不是采集请求（纯查询不建任务）；
+    * 数量只认原木根数（"两根/1 个/三块"）；"一棵树"不指定根数 → 取默认 1 根；
+    * 用户明确要求超过一任务上限时**不静默截断**：``capped=True`` 交给回复层如实说明；
+    * 未指定树种 → ``candidates`` = 支持矩阵里的全部原木 ID（由观察决定真实目标，不猜树种）；
+    * 多个不同树种同时出现 → ``problem=ambiguous_species``（澄清，不替用户选）；
+    * 命中明确不支持的木材（竹子/菌柄/去皮/木板/树叶/木头方块）→ ``problem=unsupported_species``。
+    """
+    raw = str(text or "").strip()
+    if not raw or len(raw) > 200:
+        return None
+    if not any(action in raw for action in _WOOD_ACTIONS):
+        return None
+
+    hits: list[tuple[str, str]] = []
+    for aliases, block in WOOD_SPECIES:
+        if any(alias in raw.lower() for alias in aliases):
+            hits.append((block, aliases[0]))
+    unsupported = ""
+    for aliases, code in WOOD_UNSUPPORTED:
+        if any(alias in raw.lower() for alias in aliases):
+            unsupported = code
+            break
+    requested = _parse_log_count(raw)
+    if unsupported:
+        # 明确不支持的木材（竹子/菌柄/去皮/木板/树叶/木头方块）→ **先**如实拒绝：
+        # 不能因为它没写"原木/树"就当成与木材无关的话放过（§5.1：要么验证，要么拒绝）。
+        return WoodRequest(requested=requested, problem="unsupported_species", detail=unsupported)
+    has_generic_wood = any(word in raw for word in ("原木", "木头", "树", "log", "wood"))
+    if not hits and not has_generic_wood:
+        return None  # 有动作词但没有木材名词：不是木材请求（交给既有路径）
+    if len(hits) > 1:
+        names = "、".join(name for _block, name in hits)
+        return WoodRequest(requested=requested, problem="ambiguous_species", detail=names)
+
+    candidates: tuple[str, ...]
+    if hits:
+        candidates = (hits[0][0],)
+        species = hits[0][1]
+    else:
+        candidates = tuple(block for _aliases, block in WOOD_SPECIES)
+        species = ""
+    capped = requested > WOOD_MAX_TARGETS
+    count = min(requested, WOOD_MAX_TARGETS)
+    return WoodRequest(
+        candidates=candidates,
+        species=species,
+        count=count,
+        requested=requested,
+        capped=capped,
+    )
+
+
+def _parse_log_count(text: str) -> int:
+    """解析"要几根原木"：数字/中文数字 + 原木单位；说不清就是 1（默认最小、可验证）。"""
+    units = "|".join(_LOG_COUNT_UNITS)
+    match = re.search(rf"(\d{{1,2}})\s*(?:{units})", text)
+    if match:
+        return max(1, int(match.group(1)))
+    match = re.search(rf"([一二两三四五六七八九十])\s*(?:{units})", text)
+    if match:
+        return max(1, _CHINESE_NUMERALS.get(match.group(1), 1))
+    return 1
+
+
 #: Task 控制命令（§六十：复用用户回合识别，不新增工具）
 CONFIRM_COMMANDS = ("确认", "好的", "可以", "开始吧", "执行", "同意", "yes", "ok")
 PAUSE_COMMANDS = ("暂停", "先停一下", "停一下", "等一下")

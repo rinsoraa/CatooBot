@@ -29,7 +29,7 @@ from app.integrations.minecraft.agent import PLAYER_KEY
 from app.integrations.minecraft.identity_context import IdentityResolution
 from app.tasks.agent_plan import PlanTarget
 from app.tasks.agent_planner import detect_shape
-from app.tasks.intent import TaskIntentDetector
+from app.tasks.intent import TaskIntentDetector, WoodRequest, parse_wood_request
 from app.tools.models import RouteTarget, RouteTrace, new_route_id
 
 if TYPE_CHECKING:  # pragma: no cover
@@ -38,6 +38,10 @@ if TYPE_CHECKING:  # pragma: no cover
     from app.integrations.minecraft.service import MinecraftService
 
 log = logging.getLogger("CatooBot.Minecraft.Chat")
+
+#: Phase 8D：明确拒绝（不支持的树种/歧义）也必须有请求语气才算「在让罐头动手」，
+#: 否则会把「我昨天砍了两根竹子」这类闲聊当成指令。
+_REQUEST_MARKERS = ("帮我", "帮忙", "请", "给我", "能不能")
 
 #: 会话命名（§十八）：Minecraft 世界有自己的会话，绝不塞进 QQ 的 private:/group:
 SESSION_PREFIX = "minecraft"
@@ -204,6 +208,12 @@ class MinecraftChatBridge:
         handler = getattr(self.bot, "task_turns", None)
         if handler is None:
             return None
+        # Phase 8D §7.4：木材采集必须在**任务入口之前**判定。旧单目标资源路径
+        # （TaskTurnHandler._create → plan_resource_task）会把「砍两棵树」当成一次
+        # 单方块挖掘接管：既绕开规划期策略闸，也不是有界木材计划（§3.1 点名）。
+        wood = parse_wood_request(message)
+        if wood is not None and await self._wood_preempts(handler, session_id, message, wood):
+            return await self._wood_reply(username, session_id, message, wood)
         try:
             outcome = await handler.handle(session_id=session_id, user_id=username, text=message)
         except Exception:  # noqa: BLE001 - 任务入口坏了也不能让游戏内聊天没反应
@@ -229,6 +239,87 @@ class MinecraftChatBridge:
             username,
         )
         return outcome.reply
+
+    # ---------------------------------------------------------- Phase 8D：木材采集
+
+    async def _wood_preempts(
+        self, handler: Any, session_id: str, message: str, wood: WoodRequest
+    ) -> bool:
+        """木材请求是否应当在**任务入口之前**接管（Phase 8D §7.4 唯一接管）。
+
+        只有「任务入口本来会把它交给 _create」的位置才替代它；其余一律交回既有入口，
+        保持控制命令、状态查询、活动任务 busy、闲聊与纯查询的既有行为与文案逐字不变：
+
+        * 控制命令（确认/取消/暂停/继续…）→ 交回；
+        * 有活动任务时的状态查询 → 交回；
+        * 会话里已有未终态任务 → 交回（由既有入口给出 busy 文案）；
+        * 正常请求（problem 为空）必须是既有检测器认可的**任务**；
+        * 明确拒绝（不支持/歧义）允许更宽的语气，但必须有请求词，避免把闲聊当指令。
+        """
+        detector = getattr(handler, "detector", None)
+        current_task = getattr(handler, "current_task", None)
+        if detector is None or not callable(current_task):
+            return False
+        if detector.control_command(message):
+            return False
+        current = await current_task(str(session_id))
+        if current is not None and detector.status_query(message):
+            return False
+        if current is not None and not current.state.terminal:
+            return False
+        if wood.problem:
+            return any(marker in message for marker in _REQUEST_MARKERS)
+        return bool(detector.detect(message).is_task)
+
+    async def _wood_reply(
+        self, username: str, session_id: str, message: str, wood: WoodRequest
+    ) -> str:
+        """把木材请求交给既有有界计划层（shape_hint=wood）—— 失败**绝不**回落工具链。"""
+        if wood.problem == "unsupported_species":
+            self._route(
+                reason_code="wood_unsupported_species",
+                route_target=RouteTarget.BLOCKED.value,
+                session_id=session_id,
+                text_chars=len(message),
+            )
+            return (
+                f"「{wood.detail}」这类木头我现在采不了（只做已验证的树干原木），所以我什么都没动。"
+            )
+        if wood.problem:
+            self._route(
+                reason_code="wood_ambiguous_species",
+                route_target=RouteTarget.CLARIFY.value,
+                session_id=session_id,
+                text_chars=len(message),
+            )
+            return f"要采哪一种？你提到的树不止一种（{wood.detail}），我不替你挑。"
+        plans = getattr(self.bot, "agent_plans", None)
+        plan_goal = getattr(plans, "plan_goal_from_user", None)
+        if not callable(plan_goal):
+            return self._plan_failure(
+                session_id,
+                message,
+                reason_code="plan_service_unavailable",
+                text="我这条采木头计划现在排不了（计划服务没装配），所以我什么都没做。",
+            )
+        try:
+            out = await plan_goal(
+                objective=str(message),
+                user_id=str(username),
+                session_id=str(session_id),
+                target=PlanTarget(),
+                source="minecraft",
+                shape_hint="wood",
+            )
+        except Exception:  # noqa: BLE001 - 计划层故障只影响这一条消息
+            log.exception("[MC Plan] 木材计划接线失败（%s）", username)
+            return self._plan_failure(
+                session_id,
+                message,
+                reason_code="plan_service_error",
+                text="这条采木头计划没排成功（计划层出错），我没有执行任何动作。",
+            )
+        return self._plan_reply_text(username, session_id, message, "wood", out)
 
     async def _plan_reply(self, username: str, session_id: str, message: str) -> str | None:
         """Phase 8C：游戏内提出的**多步目标**交给既有计划层（QQ 路径零影响）。
@@ -362,6 +453,12 @@ class MinecraftChatBridge:
             log.info(
                 "[MC Plan] shape=%s action=created task=%s（%s）", shape, task_id or "-", username
             )
+            if shape == "wood":
+                # 数量一律取自**冻结的计划**（用户说的数不一定等于计划里的数）。
+                return (
+                    self._wood_summary(record, plan)
+                    + "\n需要你确认后我才会动手。\n回复「确认」开始。"
+                )
             target_name = str(getattr(getattr(plan, "target", None), "player_name", "") or "")
             if shape == "follow" and target_name:
                 duration = dict(getattr(plan, "risk_summary", {}) or {}).get("duration_note")
@@ -390,6 +487,33 @@ class MinecraftChatBridge:
             username,
         )
         return str(out.get("reply") or "这件事现在做不了。")
+
+    def _wood_summary(self, record: Any, plan: Any) -> str:
+        """如实说明这一份木材计划采几根、什么木头（数字来自冻结计划，不是用户说的数）。"""
+        task_plan = getattr(record, "plan", None)
+        state = getattr(task_plan, "expected_final_state", None)
+        expected = getattr(state, "inventory_delta", None)
+        items: dict[str, int] = {}
+        if isinstance(expected, dict):
+            for key, value in expected.items():
+                try:
+                    count = int(value or 0)
+                except (TypeError, ValueError):
+                    continue
+                if count > 0:
+                    items[str(key)] = count
+        total = sum(items.values())
+        names = "、".join(f"{name} x{count}" for name, count in sorted(items.items()))
+        detail: dict[str, Any] = {}
+        checks = getattr(plan, "checks", None) or ()
+        if checks and isinstance(checks[-1], dict):
+            raw = checks[-1].get("detail")
+            if isinstance(raw, dict):
+                detail = dict(raw)
+        text = f"罐头准备这样做：采集 {names or '原木'}（共 {total} 个，来自真实观察确认的目标）。"
+        if detail.get("capped"):
+            text += "你说的比这个多 —— 本期一次最多采 2 根，这一份计划只采上面这些。"
+        return text
 
     def _route(
         self,

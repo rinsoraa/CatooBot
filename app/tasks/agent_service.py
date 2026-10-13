@@ -291,6 +291,7 @@ class AgentPlanService:
         session_id: str,
         target: PlanTarget,
         source: str = "qq",
+        shape_hint: str = "",
         now: float | None = None,
     ) -> dict[str, Any]:
         """用户提出的目标：规划 → 建待确认任务（形状由 planner 决定）。
@@ -308,7 +309,14 @@ class AgentPlanService:
         返回 ``{"action": ..., "reply": ..., "plan": ..., "record": ...}``。
         """
         moment = self._now(now)
-        result = await self.planner.plan(objective, target=target, observe=self.observe)
+        result = await self.planner.plan(
+            objective,
+            target=target,
+            observe=self.observe,
+            # Phase 8D：木材形状由调用方用确定性解析判明后显式传进来；
+            # 其它调用方留空 → 形状判定行为与 Phase 8D 之前逐字一致。
+            shape_hint=shape_hint,
+        )
         if not result.ready or result.plan is None:
             return {
                 "action": "plan_rejected",
