@@ -29,7 +29,12 @@ from app.integrations.minecraft.agent import PLAYER_KEY
 from app.integrations.minecraft.identity_context import IdentityResolution
 from app.tasks.agent_plan import PlanTarget
 from app.tasks.agent_planner import detect_shape
-from app.tasks.intent import TaskIntentDetector, WoodRequest, parse_wood_request
+from app.tasks.intent import (
+    TaskIntentDetector,
+    WoodRequest,
+    is_wood_request,
+    parse_wood_request,
+)
 from app.tools.models import RouteTarget, RouteTrace, new_route_id
 
 if TYPE_CHECKING:  # pragma: no cover
@@ -41,7 +46,6 @@ log = logging.getLogger("CatooBot.Minecraft.Chat")
 
 #: Phase 8D：明确拒绝（不支持的树种/歧义）也必须有请求语气才算「在让罐头动手」，
 #: 否则会把「我昨天砍了两根竹子」这类闲聊当成指令。
-_REQUEST_MARKERS = ("帮我", "帮忙", "请", "给我", "能不能")
 
 #: 会话命名（§十八）：Minecraft 世界有自己的会话，绝不塞进 QQ 的 private:/group:
 SESSION_PREFIX = "minecraft"
@@ -268,7 +272,10 @@ class MinecraftChatBridge:
         if current is not None and not current.state.terminal:
             return False
         if wood.problem:
-            return any(marker in message for marker in _REQUEST_MARKERS)
+            # Phase 8D Follow-up §B：明确请求采集但目标不支持/树种歧义/数量非法时，
+            # 必须给出稳定的 BLOCKED/CLARIFY —— 绝不能因为缺少礼貌词就静默落回
+            # 旧单目标资源路径或普通工具链。叙述/回忆（"我昨天砍了两根竹子"）不算指令。
+            return is_wood_request(message)
         return bool(detector.detect(message).is_task)
 
     async def _wood_reply(
@@ -285,6 +292,14 @@ class MinecraftChatBridge:
             return (
                 f"「{wood.detail}」这类木头我现在采不了（只做已验证的树干原木），所以我什么都没动。"
             )
+        if wood.problem == "zero_count":
+            self._route(
+                reason_code="wood_zero_count",
+                route_target=RouteTarget.CLARIFY.value,
+                session_id=session_id,
+                text_chars=len(message),
+            )
+            return "「0 根」我没法当成一次采集请求 —— 你想要几根？我一次最多采 2 根。"
         if wood.problem:
             self._route(
                 reason_code="wood_ambiguous_species",

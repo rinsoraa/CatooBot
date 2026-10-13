@@ -4,7 +4,12 @@ from __future__ import annotations
 
 import pytest
 
-from app.tasks.intent import WOOD_MAX_TARGETS, WoodRequest, parse_wood_request
+from app.tasks.intent import (
+    WOOD_MAX_TARGETS,
+    WoodRequest,
+    is_wood_request,
+    parse_wood_request,
+)
 
 ALL_LOGS = (
     "minecraft:oak_log",
@@ -111,3 +116,109 @@ def test_mixed_species_is_ambiguous_not_guessed() -> None:
 def test_queries_and_chat_are_not_wood_requests(text: str) -> None:
     """纯查询/闲聊/非木材目标/超长文本都不归木材管（任务书 §5.1）。"""
     assert parse_wood_request(text) is None
+
+
+# ============================================================ Phase 8D Follow-up 回归
+
+DARK_OAK_ALIASES = ("深色橡木", "暗橡", "dark_oak", "dark oak")
+
+
+@pytest.mark.parametrize("alias", DARK_OAK_ALIASES)
+def test_dark_oak_aliases_never_collide_with_oak(alias: str) -> None:
+    """§A 缺陷 1：深色橡木的专属别名绝不能被「橡木/橡」吃掉而误报歧义。"""
+    spacer = " " if " " in alias else ""
+    req = parse_wood_request(f"砍两根{spacer}{alias}{spacer}原木")
+    assert req is not None
+    assert req.problem == ""
+    assert req.species == "深色橡木"
+    assert req.candidates == ("minecraft:dark_oak_log",)
+    assert req.count == 2
+
+
+@pytest.mark.parametrize(
+    ("alias", "block"),
+    (
+        ("橡木", "minecraft:oak_log"),
+        ("云杉", "minecraft:spruce_log"),
+        ("白桦", "minecraft:birch_log"),
+        ("丛林", "minecraft:jungle_log"),
+        ("金合欢", "minecraft:acacia_log"),
+        ("深色橡木", "minecraft:dark_oak_log"),
+    ),
+)
+def test_each_supported_species_resolves_to_its_own_log(alias: str, block: str) -> None:
+    """§A：六种支持原木各自确定性解析，不串味、不猜。"""
+    req = parse_wood_request(f"砍一根{alias}原木")
+    assert req is not None and req.problem == ""
+    assert req.candidates == (block,)
+
+
+@pytest.mark.parametrize(
+    ("text", "requested", "capped", "count"),
+    (
+        ("砍1根橡木原木", 1, False, 1),
+        ("砍2根橡木原木", 2, False, 2),
+        ("砍3根橡木原木", 3, True, 2),
+        ("砍10根橡木原木", 10, True, 2),
+        ("砍99根橡木原木", 99, True, 2),
+        ("砍100根橡木原木", 100, True, 2),
+        ("砍102根橡木原木", 102, True, 2),
+    ),
+)
+def test_count_boundaries_are_parsed_as_whole_tokens(
+    text: str, requested: int, capped: bool, count: int
+) -> None:
+    """§C 缺陷 3：三位数必须整体解析（100 不能变 10），超限必须打 capped 标记。"""
+    req = parse_wood_request(text)
+    assert req is not None and req.problem == ""
+    assert req.requested == requested
+    assert req.capped is capped
+    assert req.count == count, "实际规划绝不超过 WOOD_MAX_TARGETS"
+    assert req.count <= WOOD_MAX_TARGETS
+
+
+@pytest.mark.parametrize("text", ("砍0根橡木原木", "砍零根橡木原木"))
+def test_zero_count_is_clarified_not_silently_promoted(text: str) -> None:
+    """§C：「0 根」必须澄清，绝不静默变成 1 根任务。"""
+    req = parse_wood_request(text)
+    assert req is not None
+    assert req.problem == "zero_count"
+    assert req.requested == 0
+    assert req.count == 0
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    (
+        ("砍两根原木", 2),
+        ("砍两根橡木原木", 2),
+        ("砍三个橡木原木", 3),
+        ("砍十根橡木原木", 10),
+        ("砍一条橡木原木", 1),
+        ("砍两截橡木原木", 2),
+        ("砍一块橡木原木", 1),
+        ("砍橡木原木", 1),
+    ),
+)
+def test_count_units_and_chinese_numerals(text: str, expected: int) -> None:
+    """§C：单位与中文数字矩阵（说不清时默认 1 根，是明确的最小可验证默认）。"""
+    req = parse_wood_request(text)
+    assert req is not None and req.problem == ""
+    assert req.requested == expected
+
+
+@pytest.mark.parametrize(
+    ("text", "is_request"),
+    (
+        ("去砍两根竹子带回来", True),
+        ("帮我砍两根竹子带回来", True),
+        ("砍两根竹子", True),
+        ("我昨天砍了两根竹子", False),
+        ("我刚刚砍了两根竹子", False),
+        ("我上次砍了两根竹子", False),
+        ("昨天砍了两根竹子", False),
+    ),
+)
+def test_request_versus_narration_is_deterministic(text: str, is_request: bool) -> None:
+    """§B：命令句（哪怕没有礼貌词）算指令；过去时叙述不算。"""
+    assert is_wood_request(text) is is_request

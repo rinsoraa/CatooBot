@@ -200,6 +200,69 @@ async def test_ambiguous_species_clarifies(tmp_path: Any) -> None:
         assert route.route_target == RouteTarget.CLARIFY.value
 
 
+# ============================================================ Phase 8D Follow-up §B 回归
+
+
+async def test_imperative_unsupported_request_is_blocked_and_never_falls_back(
+    tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """§B 缺陷 2：命令句（无礼貌词）也必须拒绝，绝不落回旧单目标模板。"""
+    import app.tasks.turn as turn_module
+
+    def _boom(*_: Any, **__: Any) -> Any:
+        raise AssertionError("旧单目标 plan_resource_task 不应该被木材请求调用")
+
+    monkeypatch.setattr(turn_module, "plan_resource_task", _boom)
+    async with stack(tmp_path, "角色回答。") as env:
+        turns, plans = WoodTurns(), WoodPlans()
+        wire(env, turns=turns, plans=plans)
+        await env.say("IdSmoke8D", "去砍两根竹子带回来")
+        assert turns.calls == 0, "命令句同样不得绕过木材入口"
+        assert plans.calls == [], "不支持的木材不得进入计划层"
+        route = last_route(env)
+        assert route.reason_code == "wood_unsupported_species"
+        assert route.route_target == RouteTarget.BLOCKED.value
+        assert env.tools.executor.traces == [], "不得发生任何工具执行"
+
+
+async def test_imperative_mixed_species_clarifies_without_picking_one(tmp_path: Any) -> None:
+    """§B：命令句里的多树种必须澄清，不得自动选橡木。"""
+    async with stack(tmp_path, "角色回答。") as env:
+        turns, plans = WoodTurns(), WoodPlans()
+        wire(env, turns=turns, plans=plans)
+        await env.say("IdSmoke8D", "去砍两根橡木和云杉原木带回来")
+        assert turns.calls == 0
+        assert plans.calls == []
+        route = last_route(env)
+        assert route.reason_code == "wood_ambiguous_species"
+        assert route.route_target == RouteTarget.CLARIFY.value
+        assert env.tools.executor.traces == []
+
+
+async def test_narration_with_imperative_marker_free_phrasing_stays_narration(
+    tmp_path: Any,
+) -> None:
+    """§B：过去时叙述保持普通语义（即使句中有木材动作词）。"""
+    async with stack(tmp_path, "角色回答。") as env:
+        turns, plans = WoodTurns(), WoodPlans()
+        wire(env, turns=turns, plans=plans)
+        await env.say("IdSmoke8D", "我刚刚砍了两根竹子")
+        assert turns.calls == 1
+        assert plans.calls == []
+
+
+async def test_zero_count_clarifies_instead_of_creating_a_task(tmp_path: Any) -> None:
+    """§C：「0 根」必须澄清，不得静默变成 1 根任务。"""
+    async with stack(tmp_path, "角色回答。") as env:
+        turns, plans = WoodTurns(), WoodPlans()
+        wire(env, turns=turns, plans=plans)
+        await env.say("IdSmoke8D", "砍0根橡木原木")
+        assert plans.calls == []
+        route = last_route(env)
+        assert route.reason_code == "wood_zero_count"
+        assert route.route_target == RouteTarget.CLARIFY.value
+
+
 async def test_missing_plan_service_is_blocked_not_fallen_through(tmp_path: Any) -> None:
     """计划层没装配时也必须如实回答，绝不返回 None 回落工具链。"""
     async with stack(tmp_path, "角色回答。") as env:

@@ -126,3 +126,45 @@
 | CI 上 pytest | **3969 passed, 3 skipped in 338.63s**（= 本地 3972 − 3 条既有平台条件性 skip；8D 新增 **50 项无一被跳过**） |
 | 实际 SKIPPED（全部为既有假服务器限制，与本阶段无关） | equip / inventory_move STOP；container STOP；craft 成功路径；craft STOP；3×3 craft 成功路径；dropped_items / pickup 成功路径 |
 | 发布核对 | 改动文件凭据扫描 **0 命中**；`app/integrations/minecraft/agent.py`（`ACTION_RISK`）、`app/config/settings.py`（`allow_medium` 默认）、`app/database/database.py`（迁移）、`app/tasks/runtime.py`（状态机）、`app/tasks/validation.py`（预算）、`app/tools/builtins` + `registry.py`（19 工具）**逐个确认零改动** |
+
+## §10 Phase 8D Follow-up — 木材意图解析与路由收口（独立修复提交）
+
+任务书：`docs/specs/CatooBot Minecraft Phase 8D Follow-up — Wood Intent Parsing & Routing Closure.md`
+（3906 bytes / 58 行，SHA256 `173FD7C907D9AB357604AEE632A8D6B3E36DD444113333ACBA107602AA78FEF5`，逐字节一致）。
+基线 `41591f0fe7e68074289b1f04b328feeae53d345a`（8D 最终；**保持 8D 原有提交历史，不 reset、不改写历史**）。
+
+### §10.1 三个已确认缺陷的根因与修复
+
+| # | 缺陷（改动前真实行为） | 根因 | 修复 |
+| --- | --- | --- | --- |
+| 1 | `深色橡木` / `暗橡` / `dark_oak` / `dark oak` 被判为**多树种歧义** | `WOOD_SPECIES` 用 `alias in text` 的子串匹配：`深色橡木` 同时命中 `橡木`（橡木组）与 `深色橡木`（深色橡木组）→ `len(hits) > 1` → `ambiguous_species` | 新增 `_WOOD_ALIASES`（**别名按长度倒序**）+ `_match_wood_species()`：**最长优先 + 消费式扫描**（命中的别名跨度被跳过，短别名不会重复命中）。真多树种（`橡木和云杉`）仍报 `ambiguous_species` |
+| 2 | `去砍两根竹子带回来` 等**命令句**绕过木材入口 | `_wood_preempts()` 对 `wood.problem` 只认礼貌词 `帮我/帮忙/请/给我/能不能` → 命令句不接管 → 静默落回旧单目标资源路径 / 普通角色路径 | 新增 `is_wood_request(text)`（**确定性**）：叙述/过去时标记（昨天/上次/刚刚/以前/已经…）→ 非指令；请求标记（帮我/去/带回来/要…）→ 指令；两者都没有时只有**命令式语序**（动作词在句首 ≤2 字内、后面不接 `了/过`）才算指令。`_wood_preempts` 的 `problem` 分支改用它 |
+| 3 | `100根` → 1，`102根` → 2，且**不触发超限说明**；`0根` → 静默变成 1 根 | `_parse_log_count()` 用 `\d{1,2}` 只取末尾一两位；`max(1, …)` 把 0 抬成 1 | 改为**完整整数 token** `\d+`；返回值改 `int | None`（`None` = 没写数量 → 默认 1；`0` = 明确 0 根 → 新稳定码 `zero_count` → **澄清**，绝不静默变 1）；中文数字补 `零` |
+
+新增原因码：`zero_count`（数量非法 → CLARIFY，路由 `wood_zero_count`）。
+
+### §10.2 新增回归用例（38 项，全部确定性、不用 sleep、不依赖模型）
+
+| 组 | 用例 |
+| --- | --- |
+| §A 树种解析 | `深色橡木/暗橡/dark_oak/dark oak` **各自**解析为 `minecraft:dark_oak_log` 且 `problem == ''`（5 项）；六种支持原木各自解析为自己的 ID（6 项） |
+| §C 数量解析 | 边界矩阵 `1/2/3/10/99/100/102`（**完整 token** + `capped` 标记 + `count ≤ WOOD_MAX_TARGETS`）；`0根`/`零根` → `zero_count`；单位矩阵（根/个/块/条/截）与中文数字（一/两/三/十）与默认 1 根 |
+| §B 唯一接管 | `去砍两根竹子带回来` → `wood_unsupported_species`/BLOCKED 且 **`plan_resource_task` 被猴补成抛异常仍不被调用**、`env.tools.executor.traces == []`（零工具执行）；`去砍两根橡木和云杉原木带回来` → `wood_ambiguous_species`/CLARIFY 且零工具执行；`我刚刚砍了两根竹子` → 叙述，交回任务入口、不排计划；`砍0根橡木原木` → `wood_zero_count`/CLARIFY，不建任务 |
+| 路由接口 | `is_wood_request` 的 7 条命令句/叙述句矩阵（含 `去砍两根竹子带回来` = True、`我昨天砍了两根竹子` = False） |
+
+### §10.3 门禁（实测）
+
+| 门禁 | 结果 |
+| --- | --- |
+| `pytest tests/test_phase8d_wood_intent.py tests/test_phase8d_wood_plan.py tests/test_phase8d_wood_routing.py -q` | **88 passed**（8D 原 50 + Follow-up 新增 38） |
+| 较宽回归 `-k "wood or intent or turn or task_entry or agent_plan or skill or minecraft_chat or chat_bridge or phase8"` | **672 passed, 3338 deselected** |
+| 全量 `pytest tests -q` | **4010 passed** in 640.35s（= 8D 基线 3972 + 新增 38，精确吻合） |
+| `ruff check .` / `ruff format --check .` / `mypy app` | All checks passed / **680 files** / Success（337 source files） |
+| 迁移演练（副本） | `version [36,36]`、`integrity [ok,ok]`、`tables [83,83]`、`added_tables []`、`lost_rows {}`、`ok:false`（预期 no-op）→ **无新表、无新迁移、schema 未变** |
+| 真实 Java 门禁（按任务书 §门禁 6 重跑） | `scripts/wood_gathering_smoke_real.py` **七场景全 PASS**（`场景结果：1=PASS 3=PASS 5=PASS 4=PASS 2=PASS 6=PASS 7=PASS`，`REAL SERVER: PASS`，退出码 0） |
+
+真机前置：`scripts/backup_db.py` → `catoobot-20261013-221656.db`（v36 / 83 tables / 89921 rows / integrity=ok）；`scripts/stop_catoobot.ps1` 停 Bot 并释放 25580（清理残留 `node runtime.js`）；跑完以**可见窗口**重启（`scripts/start_bot_visible.ps1`，25580/8500/25565 全部恢复在线）。
+
+### §10.4 裁决
+
+**PASS**：三个缺口都由**真实回归证据**证明关闭 —— ①深色橡木全别名正确解析且不再歧义、真多树种仍澄清；②命令句（无礼貌词）稳定得到 BLOCKED/CLARIFY，`plan_resource_task` 被猴补成抛异常仍不被调用、零工具执行，叙述句保持普通语义；③三位数数量整体解析 + `capped` 标记 + 确认前如实显示，`0根` 澄清而非变 1。既有功能与安全不变量保持成立（`ACTION_RISK`/19 工具/`allow_medium` 默认/两道确认门/步骤级授权/TaskRuntime 与 Action Runtime 生命周期/数据库 Schema 均未改动），真机七场景重跑全 PASS。

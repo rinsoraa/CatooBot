@@ -1,5 +1,16 @@
 # Changelog
 
+## Minecraft Phase 8D Follow-up — Wood Intent Parsing & Routing Closure（木材意图解析与路由收口）
+
+* **基线** `41591f0fe7e68074289b1f04b328feeae53d345a`（Phase 8D 最终）。**独立修复提交，保持 8D 原有提交历史，不 reset、不改写历史。**
+* **缺陷 1（树种解析）**：`WOOD_SPECIES` 子串匹配让 `深色橡木`/`暗橡`/`dark_oak`/`dark oak` 同时命中橡木与深色橡木 → 误报 `ambiguous_species`。修复：别名按**长度倒序** + `_match_wood_species()` **最长优先、消费式扫描**；真多树种（橡木和云杉）仍明确澄清。
+* **缺陷 2（唯一接管）**：`_wood_preempts()` 对 `wood.problem` 只认礼貌词 → `去砍两根竹子带回来` 这类命令句静默落回旧单目标资源路径。修复：新增确定性 `is_wood_request()`（叙述/过去时标记 → 非指令；请求标记 → 指令；都没有时只有命令式语序才算），明确请求采集但目标不支持/歧义/数量非法时稳定得到 `BLOCKED`/`CLARIFY`。
+* **缺陷 3（数量解析）**：`\d{1,2}` 把 `100根` 解析成 1（不触发超限说明），`0根` 被静默抬成 1。修复：解析**完整整数 token**，返回值改 `int | None`；`0根`/`零根` → 新稳定码 `zero_count` → 澄清（绝不静默变 1）；超限仍 `capped` 并在确认前如实显示实际采集数量与本期上限。
+* **新增回归**：38 项确定性用例（深色橡木全别名 + 六树种；数量边界 `1/2/3/10/99/100/102` + 单位 + 中文数字 + `0`；命令句/叙述句路由矩阵；`plan_resource_task` 被猴补成抛异常仍不被调用 + 零工具执行）。木材套件 50 → **88**。
+* **门禁**：全量 `pytest tests -q` **4010 passed**（= 8D 3972 + 38）；较宽回归 **672 passed**；`ruff check .` All checks passed；`ruff format --check .` **680 files**；`mypy app` Success（337 source files）；迁移演练 `version [36,36]` / `integrity [ok,ok]` / `tables [83,83]` / `added_tables []` / `lost_rows {}`（**无新表无新迁移**）。
+* **真机门禁（按任务书 §门禁 6 重跑）**：`scripts/wood_gathering_smoke_real.py` **七场景全 PASS**（1/3/5/4/2/6/7 全 PASS，`REAL SERVER: PASS`）。前置：备份 `catoobot-20261013-221656.db`（v36/83 表/89921 行/integrity ok）→ 停 Bot → 跑完以**可见窗口**重启（25580/8500/25565 全部恢复）。
+* **安全不变量**：`ACTION_RISK`、19 工具、`allow_medium` 默认值、两道确认门、步骤级授权、`TaskRuntime`/Action Runtime 生命周期与数据库 Schema **均未改动**；未新增工具/动作/表/迁移。
+
 ## Minecraft Phase 8D — Bounded Resource Gathering & Wood Collection（有界木材采集）
 
 * **目标（任务书 §2）**：在**游戏内聊天入口**支持小规模、有界、可审计的木材采集 —— 每任务 ≤2 个原木方块且必须来自同一组可验证的相邻树干；只采集**观察确认**的目标、只执行**用户确认的冻结计划**、只把**真实进入背包**的物品算作成果。基线 `a1b2079`。

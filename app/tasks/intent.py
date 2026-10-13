@@ -134,6 +134,7 @@ _WOOD_ACTIONS = ("砍", "砍伐", "采", "采集", "收集", "挖", "撸")
 #: 数量单位 —— **只认原木根数**；"棵" 指树本身，不代表原木根数（见 parse_wood_request）。
 _LOG_COUNT_UNITS = ("根", "个", "块", "条", "截")
 _CHINESE_NUMERALS = {
+    "零": 0,
     "一": 1,
     "二": 2,
     "两": 2,
@@ -146,6 +147,39 @@ _CHINESE_NUMERALS = {
     "九": 9,
     "十": 10,
 }
+
+
+#: 别名按**长度倒序**展开（最长优先）。必须这样排序，否则「深色橡木」会同时命中
+#: 「橡木」/「橡」而被误判成多树种歧义（Phase 8D Follow-up §A 修复的缺陷 1）。
+_WOOD_ALIASES: tuple[tuple[str, str], ...] = tuple(
+    sorted(
+        ((alias.lower(), block) for aliases, block in WOOD_SPECIES for alias in aliases if alias),
+        key=lambda item: (-len(item[0]), item[0]),
+    )
+)
+
+#: 每个支持方块对应的**规范展示名**（别名组第一项），用于歧义详情。
+_WOOD_SPECIES_NAME: dict[str, str] = {block: aliases[0] for aliases, block in WOOD_SPECIES}
+
+
+def _match_wood_species(text: str) -> list[tuple[str, str]]:
+    """最长优先 + **消费式**扫描：命中的别名会被跳过，越短的别名不会重复命中。
+
+    这样「深色橡木」只会解析成深色橡木，「橡木和云杉」仍然报出两个树种（澄清）。
+    """
+    lowered = text.lower()
+    found: list[str] = []
+    cursor = 0
+    while cursor < len(lowered):
+        for alias, block in _WOOD_ALIASES:
+            if lowered.startswith(alias, cursor):
+                if block not in found:
+                    found.append(block)
+                cursor += len(alias)
+                break
+        else:
+            cursor += 1
+    return [(block, _WOOD_SPECIES_NAME.get(block, block)) for block in found]
 
 
 @dataclass(frozen=True)
@@ -183,16 +217,17 @@ def parse_wood_request(text: str) -> WoodRequest | None:
     if not any(action in raw for action in _WOOD_ACTIONS):
         return None
 
-    hits: list[tuple[str, str]] = []
-    for aliases, block in WOOD_SPECIES:
-        if any(alias in raw.lower() for alias in aliases):
-            hits.append((block, aliases[0]))
+    hits = _match_wood_species(raw)
     unsupported = ""
     for aliases, code in WOOD_UNSUPPORTED:
         if any(alias in raw.lower() for alias in aliases):
             unsupported = code
             break
-    requested = _parse_log_count(raw)
+    explicit = _parse_log_count(raw)
+    requested = 1 if explicit is None else explicit
+    if explicit == 0:
+        # 「0 根」是明确的数量表达，但 0 不是合法请求 → 澄清；**绝不**静默当成 1 根。
+        return WoodRequest(requested=0, problem="zero_count", detail="0")
     if unsupported:
         # 明确不支持的木材（竹子/菌柄/去皮/木板/树叶/木头方块）→ **先**如实拒绝：
         # 不能因为它没写"原木/树"就当成与木材无关的话放过（§5.1：要么验证，要么拒绝）。
@@ -222,16 +257,78 @@ def parse_wood_request(text: str) -> WoodRequest | None:
     )
 
 
-def _parse_log_count(text: str) -> int:
-    """解析"要几根原木"：数字/中文数字 + 原木单位；说不清就是 1（默认最小、可验证）。"""
+def _parse_log_count(text: str) -> int | None:
+    """解析「要几根原木」：**完整**数字 / 中文数字 + 原木单位。
+
+    * 必须解析完整整数 token（``\\d+``，不是 ``\\d{1,2}``）：否则「100 根」会被截成
+      10、「102 根」会被截成 10，且不会触发超限说明（Phase 8D Follow-up §C 缺陷 3）。
+    * 返回 ``None`` = 这句话没给数量（调用方取默认 1 根）；返回 ``0`` = 明确说了 0 根
+      （调用方必须澄清，不得静默当成 1 根）。
+    """
     units = "|".join(_LOG_COUNT_UNITS)
-    match = re.search(rf"(\d{{1,2}})\s*(?:{units})", text)
+    match = re.search(rf"(\d+)\s*(?:{units})", text)
     if match:
-        return max(1, int(match.group(1)))
-    match = re.search(rf"([一二两三四五六七八九十])\s*(?:{units})", text)
+        return int(match.group(1))
+    match = re.search(rf"([零一二两三四五六七八九十])\s*(?:{units})", text)
     if match:
-        return max(1, _CHINESE_NUMERALS.get(match.group(1), 1))
-    return 1
+        return _CHINESE_NUMERALS.get(match.group(1), 0)
+    return None
+
+
+#: 明确**请求**标记（命令式语气）。Phase 8D Follow-up §B：不能只认礼貌词，否则
+#: 「去砍两根竹子带回来」这种命令句会绕过木材入口、静默落回旧单目标资源路径。
+_WOOD_REQUEST_MARKERS = (
+    "帮我",
+    "帮忙",
+    "请",
+    "给我",
+    "能不能",
+    "可以",
+    "去",
+    "来",
+    "带回来",
+    "要",
+    "想",
+)
+
+#: 叙述/回忆标记（过去时）：出现任意一个就不当作**新的采集指令**。
+_WOOD_NARRATION_MARKERS = (
+    "昨天",
+    "前天",
+    "上次",
+    "上回",
+    "刚才",
+    "刚刚",
+    "以前",
+    "之前",
+    "曾经",
+    "已经",
+    "那天",
+)
+
+
+def is_wood_request(text: str) -> bool:
+    """区分「明确的采集指令」与「叙述/回忆」（确定性，不调用模型）。
+
+    只在 :func:`parse_wood_request` 已判定这句话**与木材有关**之后使用：
+
+    * 有叙述/过去时标记 → 不是新指令（"我昨天砍了两根竹子" 保持普通叙述语义）；
+    * 有请求标记 → 是指令；
+    * 两者都没有 → 只有**命令式语序**才算（动作词在句首附近、后面不接 "了/过"）。
+    """
+    raw = str(text or "").strip()
+    if not raw:
+        return False
+    if any(marker in raw for marker in _WOOD_NARRATION_MARKERS):
+        return False
+    if any(marker in raw for marker in _WOOD_REQUEST_MARKERS):
+        return True
+    index = min((raw.find(action) for action in _WOOD_ACTIONS if action in raw), default=-1)
+    if index < 0:
+        return False
+    if len(raw[:index]) > 2:
+        return False
+    return raw[index + 1 : index + 2] not in ("了", "过")
 
 
 #: Task 控制命令（§六十：复用用户回合识别，不新增工具）
