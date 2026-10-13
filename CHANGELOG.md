@@ -8,6 +8,10 @@
 * **未改动**：`ACTION_RISK`、19 工具、`allow_medium` 默认值、`trusted_players`、`TurnOrigin` 派生规则、两道确认门、`TaskAuthorization`/`TaskStepAuthorization`、计划哈希/参数指纹、AgentBridge/Service/Action Runtime 生命周期。
 * **真实 Java 门禁 6/6 PASS**（`scripts/bounded_orchestration_smoke_real.py`，本地专用不发布；真实 Java 1.21.1 + Fabric + 真实 Node/Mineflayer + 真实第二个客户端）：多步探索经**游戏内聊天** → 计划 3 步 → 确认门（确认前零世界步骤）→ 受授权执行 → `SUCCEEDED` + 到达验证 `0.98`；未确认即取消；未绑定跟随 `plan_target_unverified`、真实权威 UUID 绑定后同一请求 `plan_created`；MEDIUM 资源计划被既有策略门阻止（`PAUSED`、无 `action_id`）；执行中取消不续派（未启动步骤保持 `PENDING`）；闲聊/SAFE 查询零任务。**首次失败与重跑如实记录**（scene 1 两轮 `2.09 > 半径 2.0` 属 7F.1 起已知 pathfinder 精度抖动，产品正确地判失败；未放宽任何断言/阈值）。
 * **测试**：新增 `tests/test_phase8c_bounded_orchestration.py` **16 项**；相关套件 195 passed；`ruff check .` All checks passed；`ruff format --check .` 675 files；`mypy app` Success（337 files）；迁移演练 v36→v36 幂等（83 表 / integrity ok / `lost_rows {}`）→ **无新表无新迁移**。
+  全量 `pytest tests -q` **3921 passed**（706.98s，exit 0）。
+* **发布与 CI**：提交 `e4b591f739332aceda828bc7cd3727d300104924`（278 commits）→ 镜像 == `origin/main`；工作区干净；`scripts/` 与 `minecraft_runtime/auth.json` **未发布**；`config/config.yaml`、`data/` 未 tracked；改动文件凭据扫描 0 命中。
+  CI run [38348210461](https://github.com/rinsoraa/CatooBot/actions/runs/38348210461) **attempt 1 两个 job 均 success**；
+  CI 上 pytest **3918 passed, 3 skipped**（= 本地 3921 − 3 条既有平台 skip）；Browser E2E **7 passed**；`minecraft_runtime` find-blocks-test + e2e（含 bridge auth boundary + runtime instance）**ALL CHECKS PASSED**。
 ## Minecraft Phase 8B Follow-up — Identity Store Degradation Classification Fix（身份存储降级判定修正）
 
 * **基线** `7395553`（Phase 8B 最终发布）。**只**修降级诊断语义，不重写身份系统、不与 Phase 8C 混合提交。

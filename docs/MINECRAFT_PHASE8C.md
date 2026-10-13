@@ -177,7 +177,10 @@ minecraft.chat 事件
 ### §10.1 本地全量与 CI（发布后补记）
 
 * 全量 `pytest tests -q`：**3921 passed**（706.98s，exit 0；= 8B Follow-up 基线 **3905** + 本阶段新增 **16**，精确吻合）。
-* 镜像与 CI：**发布后补记**（本小节将在 CI 完成后更新镜像一致性、两个 job 的 run ID/attempt/结论与实际 SKIPPED 清单）。
+* 发布：`Phase 8C: bounded goal planning & atomic-tool orchestration` → **`e4b591f739332aceda828bc7cd3727d300104924`**（278 commits）；镜像 == `origin/main` == 该 SHA；工作区干净；**源工作区 vs 镜像内容差异 0**（`sync_github.py` 二次运行报 `mirror already up to date`）。
+* **CI run `38348210461` attempt 1：`lint · format · types · tests` success / `webui · typecheck · tests · build` success。** CI 上 pytest **3918 passed, 3 skipped in 320.62s**（= 本地 3921 − 3 条既有平台条件性 skip）；Browser E2E **7 passed**；`minecraft_runtime` find-blocks-test ALL CHECKS PASSED + e2e `bridge auth boundary + runtime instance ✓` + e2e ALL CHECKS PASSED。
+* 实际 SKIPPED（全部为既有平台/假服务器限制，与本阶段无关）：3 条 pytest 平台 skip；e2e `equip / inventory_move STOP`、`container STOP`、`craft 成功路径`、`craft STOP`、`3×3 craft 成功路径`、`dropped_items / pickup 成功路径`。
+* live DB 未被本阶段写入（真机门禁用临时 SQLite）：`quick_check ok`、`max_version 36`、84 张表（83 业务 + `sqlite_sequence`）、外键违规 0。
 
 ### §10.2 安全不变量核验
 
