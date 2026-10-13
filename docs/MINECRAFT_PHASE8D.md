@@ -168,3 +168,20 @@
 ### §10.4 裁决
 
 **PASS**：三个缺口都由**真实回归证据**证明关闭 —— ①深色橡木全别名正确解析且不再歧义、真多树种仍澄清；②命令句（无礼貌词）稳定得到 BLOCKED/CLARIFY，`plan_resource_task` 被猴补成抛异常仍不被调用、零工具执行，叙述句保持普通语义；③三位数数量整体解析 + `capped` 标记 + 确认前如实显示，`0根` 澄清而非变 1。既有功能与安全不变量保持成立（`ACTION_RISK`/19 工具/`allow_medium` 默认/两道确认门/步骤级授权/TaskRuntime 与 Action Runtime 生命周期/数据库 Schema 均未改动），真机七场景重跑全 PASS。
+
+### §10.5 Follow-up 的发布与 CI
+
+| 项 | 值 |
+| --- | --- |
+| Follow-up 提交 | **`0922c285c0380901ff463d428576acb18114c79d`** —— `Phase 8D Follow-up: wood intent parsing & routing closure`（7 文件 +414/−17） |
+| 提交链 | `41591f0`（8D 最终）→ `0922c28`（Follow-up；**未改写 8D 历史**） |
+| 远端 / 镜像 | 镜像 == `origin/main` == `0922c28`；**283 commits**；工作区干净；`scripts/` 仍 **0 tracked**；`minecraft_runtime/auth.json`、`config/config.yaml`、`data/` 未 tracked |
+| CI run | **38413743509**（https://github.com/rinsoraa/CatooBot/actions/runs/38413743509） |
+| attempt | **1**（一次通过；本轮**无 flake、无重跑**） |
+| 两个 job | `lint · format · types · tests` **success**；`webui · typecheck · tests · build` **success** |
+| CI 上 pytest | **4007 passed, 3 skipped in 361.40s**（= 本地 4010 − 3 条既有平台条件性 skip；Follow-up 新增 **38 项无一被跳过**） |
+| CI 上 Browser E2E | **7 passed (21.2s)** |
+| CI 上 `minecraft_runtime` | find-blocks-test ALL CHECKS PASSED；e2e `bridge auth boundary + runtime instance ✓`；e2e ALL CHECKS PASSED |
+| CI 上 ruff format / mypy | 659 files already formatted（CI 只见镜像内文件）；Success: no issues found in 337 source files |
+| 实际 SKIPPED（全部为既有假服务器限制，与本修复无关） | equip / inventory_move STOP；container STOP；craft 成功路径；craft STOP；3×3 craft 成功路径；dropped_items / pickup 成功路径 |
+| 发布核对 | 改动文件凭据扫描 **0 命中**；`agent.py`（`ACTION_RISK`）、`settings.py`（`allow_medium` 默认）、`database/database.py`（迁移）、`tasks/runtime.py`（状态机）、`tasks/validation.py`（预算）、`tools/builtins` + `registry.py`（19 工具）**逐个确认零改动** |

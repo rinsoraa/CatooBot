@@ -10,6 +10,7 @@
 * **门禁**：全量 `pytest tests -q` **4010 passed**（= 8D 3972 + 38）；较宽回归 **672 passed**；`ruff check .` All checks passed；`ruff format --check .` **680 files**；`mypy app` Success（337 source files）；迁移演练 `version [36,36]` / `integrity [ok,ok]` / `tables [83,83]` / `added_tables []` / `lost_rows {}`（**无新表无新迁移**）。
 * **真机门禁（按任务书 §门禁 6 重跑）**：`scripts/wood_gathering_smoke_real.py` **七场景全 PASS**（1/3/5/4/2/6/7 全 PASS，`REAL SERVER: PASS`）。前置：备份 `catoobot-20261013-221656.db`（v36/83 表/89921 行/integrity ok）→ 停 Bot → 跑完以**可见窗口**重启（25580/8500/25565 全部恢复）。
 * **安全不变量**：`ACTION_RISK`、19 工具、`allow_medium` 默认值、两道确认门、步骤级授权、`TaskRuntime`/Action Runtime 生命周期与数据库 Schema **均未改动**；未新增工具/动作/表/迁移。
+* **发布与 CI**：Follow-up 提交 `0922c285c0380901ff463d428576acb18114c79d`（7 文件 +414/−17；**未改写 8D 历史**）→ 镜像 == `origin/main` == 该 SHA（283 commits，工作区干净，`scripts/` 仍 0 tracked）。CI run [38413743509](https://github.com/rinsoraa/CatooBot/actions/runs/38413743509) **attempt 1 两个 job 均 success**（本轮无 flake、无重跑）；CI 上 pytest **4007 passed, 3 skipped**（= 本地 4010 − 3 条既有平台 skip，新增 38 项无一被跳过）、Browser E2E 7 passed、`minecraft_runtime` find-blocks-test + e2e（含 bridge auth boundary + runtime instance）全绿；改动文件凭据扫描 0 命中。
 
 ## Minecraft Phase 8D — Bounded Resource Gathering & Wood Collection（有界木材采集）
 
