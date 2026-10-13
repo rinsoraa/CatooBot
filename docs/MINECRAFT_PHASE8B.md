@@ -275,3 +275,14 @@ Node runtime 与事件 payload、任何配置默认值。
 * 安全不变量：`ACTION_RISK`、工具数量、`allow_medium` 默认值、`trusted_players`、`TurnOrigin` 派生、两道确认门、
   `TaskAuthorization`/`TaskStepAuthorization`/Policy/AgentBridge/Service/ActionRuntime **全部未改**；
   `DEGRADED` 依旧只代表「身份上下文不可用」，**不授予也不改变任何 Minecraft 权限**；无新动作、无无界重试；不记录原文/完整 UUID/QQ 号/密钥/思维链。
+
+### §13.5 CI（GitHub Actions，含诚实记录的 flake）
+
+| 项 | 值 |
+| --- | --- |
+| run ID | **38336177149**（URL https://github.com/rinsoraa/CatooBot/actions/runs/38336177149） |
+| attempt 1 | `webui` **success**；`lint · format · types · tests` **failure** |
+| attempt 1 失败步骤 | 仅 **Minecraft runtime tests（ActionRuntime 单测 + E2E）**：`[e2e] FAILED: Error: timeout waiting for: observer appears in snapshot players` —— 属**已知的环境敏感 e2e flake**（实体包/区块加载滞后，见 `minecraft_runtime/test/e2e.js:110` 注释的同族问题） |
+| attempt 1 的对照证据 | 同一次运行里 **pytest 3902 passed, 3 skipped in 241.21s**（= 本地 3905 − 3 条既有平台条件性 skip，**新增 7 项无一被跳过**）、Browser E2E **7 passed**、ActionRuntime 单测全绿 |
+| 处置 | **只重跑失败 job**（`POST …/rerun-failed-jobs`）；**未修改任何断言、超时或阈值** |
+| attempt 2 | `lint · format · types · tests` **success**、`webui · typecheck · tests · build` **success** → run 结论 **success** |

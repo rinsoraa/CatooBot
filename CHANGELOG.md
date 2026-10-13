@@ -16,6 +16,9 @@
   全量 `pytest tests -q`、`ruff check .`（All checks passed）、`ruff format --check .`（672 files）、`mypy app`（Success, 337 source files）与 CI 结论见阶段文档 §13.4 与发布记录。
 * **安全边界**：`ACTION_RISK`、工具数量、`allow_medium` 默认值、`trusted_players`、`TurnOrigin` 派生、两道确认门、任务授权与 Policy/AgentBridge/ActionRuntime **全部未改**；
   `DEGRADED` 只代表身份上下文不可用，**不授予任何权限**。
+* **CI**：run [38336177149](https://github.com/rinsoraa/CatooBot/actions/runs/38336177149) —— **attempt 1** `webui` success、`lint · format · types · tests` **failure**，失败步骤只有 **Minecraft runtime tests（E2E）**：
+  `[e2e] FAILED: timeout waiting for: observer appears in snapshot players`（**已知环境敏感 e2e flake**，实体包/区块加载滞后）；同一次运行里 **pytest 3902 passed, 3 skipped**、Browser E2E 7 passed、ActionRuntime 单测全绿。
+  按既有纪律**只重跑失败 job**（未改任何断言/超时/阈值）→ **attempt 2 两个 job 均 success**，run 结论 success。
 
 ## Minecraft Phase 8B — Cross-Platform Identity Continuity & Trust Context（跨平台身份连续性与信任上下文）
 
