@@ -1,5 +1,19 @@
 # Changelog
 
+## Minecraft Phase 8A FIX — Routing Target Contract Fix（路由目标契约修正）
+
+* **基线** `8c4efdc`（Phase 8A 已发布）。本阶段是 8A 的**定向契约修正**，不是新能力阶段，也不与 Phase 8B 混在同一提交。
+* **修的是什么（已确认的不一致，不是理论风险）**：`ToolOrchestrator.run()` 有两条「本轮没有发生任何工具动作」的出口 ——
+  「无候选」（`no_tool_candidates`）早已是 `CHAT_ONLY`，但「有候选、模型未给出可解析调用」（`model_no_tool_call`）
+  残留了候选阶段设下的 `MINECRAFT_TOOL`，导致诊断把「模型没调用工具」显示成一次**工具路由**。
+* **改动（最小）**：`app/tools/router.py` 在 `call is None` 且 `route.selected` 为空的分支里，除 `reason_code="model_no_tool_call"`
+  外同时把 `route.route_target` 置回 `RouteTarget.CHAT_ONLY.value`；`tests/test_phase8a_action_routing.py` 的
+  `test_model_not_calling_a_tool_is_distinct_from_no_candidates` 增加 `route.route_target == RouteTarget.CHAT_ONLY.value` 断言。
+* **未改动**：候选检索阈值、模型提示词、`max_calls_per_turn`、`last_traces` 清空顺序、`ACTION_RISK`、`trusted_players`、确认门、授权链；
+  真正选中工具时的路由与执行行为不变。
+* **门禁**：`test_phase8a_action_routing.py` 16 passed；相关工具/角色/桥接套件 141 passed；`test_minecraft_agent_e2e.py` 10 passed；
+  `ruff check .` All checks passed；`ruff format --check .` 668 files already formatted；`mypy app` Success（336 source files）。
+
 ## Minecraft Phase 8A — Natural-Language Action Routing & Traceability（自然语言行动路由与决策可观测性）
 
 * **目标**：只解决「请求如何被路由、以及如何看到路由结果」——不新增 Minecraft 能力、不扩大授权范围、

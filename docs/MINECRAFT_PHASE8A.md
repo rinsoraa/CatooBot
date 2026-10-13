@@ -228,3 +228,42 @@ scripts/stop_catoobot.ps1 / start_*_visible.ps1  本地运维脚本（不发布�
 **PASS**：已从源码定位“只聊天/不行动”的具体路由原因（G1–G5，其中 G2 是可复现的真实缺陷），
 给出可区分的原因码与结构化证据，正/负向契约均有自动化测试，真实 Java 服务器门禁 6 段落全绿；
 未新增能力、未扩大授权、未改风险表与确认门、未加迁移。
+
+## §12 Follow-up 修正（Phase 8A FIX — Routing Target Contract Fix）
+
+**基线 `8c4efdc` → 修正后见提交记录。** 任务书 §7 要求先把 8A 的一个契约不一致单独修掉，再评估 8B。
+
+### §12.1 不一致（已确认，非理论风险）
+
+`ToolOrchestrator.run()` 有两条「本轮没有发生任何工具动作」的出口，但契约只兑现了一半：
+
+| 出口 | `reason_code` | 修正前 `route_target` | 修正后 |
+| --- | --- | --- | --- |
+| 没有任何候选工具 | `no_tool_candidates` | `CHAT_ONLY` | `CHAT_ONLY`（不变） |
+| 有候选、模型未给出可解析调用 | `model_no_tool_call` | **`MINECRAFT_TOOL`（残留候选阶段的值）** | **`CHAT_ONLY`** |
+
+后果：诊断会把「模型没调用工具」显示成一次**工具路由**，与 `§5.2` 要求的「未调用 / 被拒绝 / 动作进行中 / 真实验证成功必须可区分」相冲突。
+
+### §12.2 修正（最小改动，1 处逻辑 + 1 处断言）
+
+* `app/tools/router.py`：在 `call is None` 且 `route.selected` 为空的分支里，除 `reason_code = "model_no_tool_call"` 外，**同时**把 `route.route_target` 置回 `RouteTarget.CHAT_ONLY.value`。
+
+  仍然保留「只有本轮**从未**提取到可解析调用才记 `model_no_tool_call`」的既有条件 —— 一旦本轮提取到过调用（成功/被拒/未知工具），收官回合不会覆盖已确定的结果码。
+* `tests/test_phase8a_action_routing.py::test_model_not_calling_a_tool_is_distinct_from_no_candidates`：新增断言 `route.route_target == RouteTarget.CHAT_ONLY.value`。
+* **未改动**：候选检索阈值（`min_score`）、模型提示词、`max_calls_per_turn`、`last_traces` 清空顺序、`ACTION_RISK`、`trusted_players`、确认门、授权链。
+* 验收条件核对：无候选 与 有候选但模型未选择 **都归为 `CHAT_ONLY`**，但仍保留各自不同的 `reason_code`；真正选中工具时的路由与执行行为不变（`test_explicit_world_query_routes_through_the_tool_path` 等既有断言未变、继续通过）。
+
+### §12.3 实际执行的门禁（本修正）
+
+| 命令 | 结果 |
+| --- | --- |
+| `pytest tests/test_phase8a_action_routing.py -q` | **16 passed** in 5.47s |
+| `pytest tests/test_tools.py tests/test_tool_runtime.py tests/test_character.py tests/test_character_foundation.py tests/test_minecraft_chat_bridge.py -q` | **141 passed** in 30.29s |
+| `pytest tests/test_minecraft_agent_e2e.py -q` | **10 passed** in 0.48s |
+| `ruff check .` | All checks passed（exit 0） |
+| `ruff format --check .` | 668 files already formatted（exit 0） |
+| `mypy app` | Success: no issues found in 336 source files（exit 0） |
+
+### §12.4 范围声明
+
+本修正**只**修上述路由目标契约，不重开已验收阶段、不引入新能力、不改任何权限或授权语义。8A 的其余结论（G1–G5 审计、测试矩阵、真机 6 段落）保持原样有效。

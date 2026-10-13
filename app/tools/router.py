@@ -214,6 +214,11 @@ class ToolOrchestrator:
                     # 一旦本轮提取到过调用（无论成功、被拒还是未知工具），收官回合都不能把
                     # 已经确定的结果码覆盖掉。
                     route.reason_code = "model_no_tool_call"
+                    # Phase 8A FIX：模型没有选择任何工具 == 本轮没有任何工具动作，
+                    # 路由目标必须回到 CHAT_ONLY，与「无候选」保持一致（两者只靠
+                    # reason_code 区分）。此前这里保留了候选阶段设下的 MINECRAFT_TOOL，
+                    # 会让「模型没调用」在诊断上看起来像一次工具路由。
+                    route.route_target = RouteTarget.CHAT_ONLY.value
                 return decision_response.content, results
 
             if budget.remaining() <= 0 or budget.timed_out():

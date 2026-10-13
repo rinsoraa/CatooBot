@@ -106,6 +106,9 @@ async def test_model_not_calling_a_tool_is_distinct_from_no_candidates(tmp_path:
         route = last_route(env)
         assert route.candidates, "背包请求必须有候选工具"
         assert route.reason_code == "model_no_tool_call"
+        # Phase 8A FIX：模型未选择工具时，路由目标是 CHAT_ONLY（与「无候选」相同），
+        # 仅靠 reason_code 区分两者；不能残留候选阶段的 MINECRAFT_TOOL。
+        assert route.route_target == RouteTarget.CHAT_ONLY.value
         assert route.tool_called is False
         assert env.tools.executor.traces == []
 
