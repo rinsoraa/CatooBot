@@ -78,6 +78,9 @@ class CharacterRuntime:
         self.minecraft_agent: Any = None
         # Phase 5C：Minecraft 身份桥 + 持久世界记忆（Bot 装配；只提供上下文）
         self.minecraft_memory: Any = None
+        # Phase 8B：只读跨平台身份解析器（Bot 装配）。**只提供上下文，不参与权限**；
+        # 没有它就降级为未知身份 —— 绝不按昵称猜人、绝不跨服务器复用绑定。
+        self.identity_resolver: Any = None
         # Phase 6A：世界活动（只读：她"现在在做什么"由 Bot 装配的 ActivityRuntime 提供）
         self.activity: Any = None
         # Phase 7A §五十：只读的 LifeIntent 服务（拿不到就不加意图上下文）
@@ -139,14 +142,25 @@ class CharacterRuntime:
         """
         persona = self.personas.persona
         state = await self.states.load()
+        # Phase 8B §四：先解析「这一轮说话的人是谁」（只读、fail-closed、永不抛）。
+        identity = await self._identity_context(
+            session_id=session_id,
+            user_id=user_id,
+            user_name=user_name,
+            is_group=is_group,
+            origin_metadata=origin_metadata,
+        )
+        # 关系/连续性用**稳定人物键**：已核验的同一个人（QQ 与游戏内）共用同一条关系；
+        # 未核验时就是调用方原本的 user_id —— 行为不变，绝不按名字合并身份。
+        relationship_key: int | str = identity.relationship_key or user_id if identity else user_id
         if record_interaction:
-            relationship = await self.relationships.record_interaction(user_id)
+            relationship = await self.relationships.record_interaction(relationship_key)
             await self._note_world_interaction(session_id, user_id)
             # Phase 6A §八：把"有人在跟她说话"记成一次观察（**只记录**，不改活动 ——
             # QQ / 游戏内聊天都不能控制 Activity，§三十八/§三十九）。
             await self._note_activity_interaction(session_id)
         else:
-            relationship = await self.relationships.get(user_id)
+            relationship = await self.relationships.get(relationship_key)
         memories = await self._safe_memories(session_id, user_text, relationship.stage)
 
         facts = ""
@@ -168,7 +182,7 @@ class CharacterRuntime:
             bridge_query = facts_query if facts_query is not None else user_text
             try:
                 cognitive = await sandbox.cognitive_context(
-                    query=bridge_query, relationship_target=str(user_id)
+                    query=bridge_query, relationship_target=str(relationship_key)
                 )
                 sandbox_context = cognitive.as_prompt_payload()
             except Exception:  # noqa: BLE001 - the bridge must never break chat
@@ -178,7 +192,7 @@ class CharacterRuntime:
         # 用只读工具复核过）。**只是上下文** —— 它不参与任何权限判断（§二/§五十二）。
         minecraft_context = self._minecraft_context()
         memory_block = await self._minecraft_memory_context(
-            session_id=session_id, user_id=user_id, text=user_text
+            session_id=session_id, user_id=user_id, text=user_text, identity=identity
         )
         # Phase 6A §四十：她"现在在做什么"（活动上下文；预算 1 条 + ≤3 条变化）
         activity_context = await self._activity_context()
@@ -204,6 +218,9 @@ class CharacterRuntime:
             extra_instruction=extra_instruction,
             world=await self._world_context(),
             minecraft=minecraft_context,
+            # Phase 8B §四 6：只注入最小、只读、无权限效果的身份事实（VERIFIED/已解除/
+            # 冲突/服务器不匹配/降级才有一句话；未绑定什么都不加）。
+            identity=identity.facts() if identity is not None else "",
             activity=activity_context,
             plan=plan_context,
             initiative=initiative_context,
@@ -649,19 +666,65 @@ class CharacterRuntime:
         """会话 → 身份平台名（和 :data:`PLATFORMS` 同口径）。"""
         return "minecraft_chat" if str(session_id).startswith("minecraft:") else "qq"
 
+    async def _identity_context(
+        self,
+        *,
+        session_id: str,
+        user_id: int | str,
+        user_name: str | None = None,
+        is_group: bool = False,
+        origin_metadata: dict[str, str] | None = None,
+    ) -> Any:
+        """Phase 8B：解析一轮的身份上下文（**只读**；失败一律降级为未知身份）。
+
+        解析器由 Bot 装配（:attr:`identity_resolver`）。它不写 ``origin_metadata``——
+        那是给 Policy 读的运输层事实，往里塞身份事实等于变相扩权（§七）。
+        没有装配解析器/解析抛错时返回 ``None``，调用方按「未知身份」继续正常聊天。
+        """
+        resolver = self.identity_resolver
+        if resolver is None:
+            return None
+        try:
+            context = await resolver.resolve(
+                session_id=session_id,
+                user_id=user_id,
+                user_name=user_name or "",
+                is_group=is_group,
+                origin_metadata=origin_metadata,
+            )
+        except Exception:  # noqa: BLE001 - 身份解析绝不影响对话
+            self._log.debug("Identity context unavailable", exc_info=True)
+            return None
+        try:
+            self._log.info("[Identity] %s", context.log_fields())
+        except Exception:  # noqa: BLE001 - 日志失败不影响对话
+            self._log.debug("Identity logging failed", exc_info=True)
+        return context
+
     async def _minecraft_memory_context(
-        self, *, session_id: str, user_id: int | str, text: str
+        self, *, session_id: str, user_id: int | str, text: str, identity: Any = None
     ) -> str:
-        """一次 turn 的「相关 Minecraft 记忆」块（没有记忆/不在世界里 → 空串）。"""
+        """一次 turn 的「相关 Minecraft 记忆」块（没有记忆/不在世界里 → 空串）。
+
+        Phase 8B：身份已核验时用**对手平台的身份键**检索 —— 于是游戏内说话也能取到
+        「这个人在 QQ 这边」的既有记忆（同一个人，同一条连续性）；未核验时沿用
+        本地键（行为与 Phase 8A 完全一致）。这只是上下文，绝不参与权限（§七）。
+        """
         bridge = getattr(self, "minecraft_memory", None)
         if bridge is None:
             return ""
+        platform = self._memory_platform(session_id)
+        identity_user = str(user_id or "")
+        if identity is not None:
+            platform, identity_user = identity.memory_identity(
+                platform=platform, user_id=identity_user
+            )
         try:
             return str(
                 await bridge.context_block(
                     text=text,
-                    platform=self._memory_platform(session_id),
-                    user_id=str(user_id or ""),
+                    platform=platform,
+                    user_id=identity_user,
                 )
             )
         except Exception:  # noqa: BLE001 - 记忆只是上下文，绝不拖垮对话

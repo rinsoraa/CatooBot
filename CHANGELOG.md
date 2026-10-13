@@ -1,5 +1,29 @@
 # Changelog
 
+## Minecraft Phase 8B — Cross-Platform Identity Continuity & Trust Context（跨平台身份连续性与信任上下文）
+
+* **性质**：集成**既有**身份桥与角色对话上下文；不新增 Minecraft 能力/工具、不改任何动作授权语义、**不加表不加迁移**。基线 `fde6d68`（Phase 8A FIX 之后的 main HEAD，273 commits）。
+* **取证（源码，不靠猜）**：`minecraft.chat` 的三处上报（`minecraft_runtime/runtime.js:3692/3697/3713`）**payload 里都没有 uuid**；
+  `player_joined/player_left`（`3718/3725`）与**在线玩家视图**（`1689-1704`）**带** mineflayer 给的权威 UUID（源码注释明写 canonical identity）。
+  因此 MC 侧解析固定为 `username → 在线玩家视图（权威 UUID）→ IdentityStore.by_player(server_id, uuid)`；**未改 Node 事件 payload**。
+* **实际缺口（有证据）**：**G1** 游戏内回合把**显示名当用户 ID**（关系/连续性按名字分叉）；**G2** 已核验玩家的游戏内记忆取不到
+  （`_memory_platform` 对 MC 会话给 `minecraft_chat`，而绑定以 `platform="qq"` 建立 → `link_for` 为 None → `player_uuid=""`）；
+  G3 解析结论不可审计；G4 未绑定/撤销/冲突/服务器不匹配没有统一语义；G5 没有最小身份事实注入。
+* **实现**：新增只读 `app/integrations/minecraft/identity_context.py`（`IdentityResolution` 六值 / `IdentityChannel` / `channel_of()` /
+  `IdentityContext`（最小只读事实 + 稳定原因码 + 记忆键）/ `IdentityResolver`（**永不抛**，存储报错即 `DEGRADED`））；
+  `CharacterRuntime.respond()` 先解析身份，**关系与认知检索改用稳定人物键**（VERIFIED 时 = 对手平台 user id，与 QQ 侧**同键** → 同一条关系；
+  未核验时行为与 8A 完全一致），记忆检索改用对手平台身份键；`build(identity=...)` 在关系层前注入**一句话**只读事实（明确写出「核验**不等于**动作授权」）；
+  `bot.py` 装配解析器并复用**同一个** `bot.minecraft_memory.identities`（**不建第二套 Store、不缓存绑定、不写 `origin_metadata`**）。
+* **隐私**：给模型的事实里**没有**完整 UUID / QQ 号 / 绑定备注 / 凭据；日志只记枚举与稳定原因码。
+* **未改动**：`ACTION_RISK`、19 工具、`allow_medium` 默认值、两道确认门、`TaskAuthorization`/`TaskStepAuthorization`/Policy/`AgentBridge`/Action Runtime、
+  `TurnOrigin` 派生、`identity.py` 既有 Store、Node runtime 与事件协议、任何配置默认值。
+* **测试与门禁**：新增 `tests/test_phase8b_identity_context.py` **19 项**（解析矩阵 / 连续性隔离 / 信任分层；真实 SQLite、无 `sleep`、无 LLM）；
+  全量 `pytest tests -q` **3898 passed**（基线 3879 + 19）；`ruff check .` All checks passed；`ruff format --check .` 671 files；`mypy app` Success（**337** source files）；
+  迁移演练 v36→v36 幂等（83 表 / integrity ok / `lost_rows {}`）→ **无新表无新迁移**；live DB `quick_check ok`、外键 0、max_version 36。
+* **真实 Java 服务器门禁 PASS**（`scripts/identity_context_smoke_real.py`，本地专用不发布）：真实第二个 Mineflayer 客户端上线取得**权威 UUID** → 真实 SQLite 写入 VERIFIED →
+  游戏内解析为 `VERIFIED`、关系键 = QQ 侧同一条、**零额外世界动作**；解绑后两侧 `REVOKED` 且不沿用；只有名字无权威 UUID → `UNBOUND(no_authoritative_uuid)`；
+  已核验但不在 `trusted_players` → LOW 仍被既有信任门拒绝（`minecraft.user_not_trusted`）；**真实 QQ 发信端场景如实 SKIPPED**（无可控真实发送端，不编造 PASS）。
+
 ## Minecraft Phase 8A FIX — Routing Target Contract Fix（路由目标契约修正）
 
 * **基线** `8c4efdc`（Phase 8A 已发布）。本阶段是 8A 的**定向契约修正**，不是新能力阶段，也不与 Phase 8B 混在同一提交。

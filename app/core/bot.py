@@ -1576,6 +1576,7 @@ class Bot:
             from app.integrations.minecraft.identity_commands import (
                 MinecraftIdentityCommands,
             )
+            from app.integrations.minecraft.identity_context import IdentityResolver
             from app.integrations.minecraft.memory_bridge import MinecraftMemoryBridge
 
             persona_name = ""
@@ -1596,6 +1597,13 @@ class Bot:
             if self.character is not None:
                 # 回合上下文注入（QQ 与游戏内共用同一条 respond 路径）
                 self.character.minecraft_memory = self.minecraft_memory
+                # Phase 8B：只读跨平台身份解析器 —— 复用**同一个** IdentityStore
+                # （``minecraft_memory.identities``），不建第二套 Store、不缓存绑定、
+                # 不写 origin_metadata。它只产出上下文，权限仍由既有 Policy /
+                # trusted_players / 确认门 / 任务授权决定（任务书 §七）。
+                self.character.identity_resolver = IdentityResolver(
+                    bridge_getter=lambda: getattr(self, "minecraft_memory", None)
+                )
             self.minecraft_identity = MinecraftIdentityCommands(
                 self, self.minecraft_memory, logger=self.log
             )

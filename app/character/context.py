@@ -124,6 +124,9 @@ class CharacterContextBuilder:
         extra_instruction: str | None = None,
         world: dict | None = None,
         minecraft: str = "",
+        # Phase 8B §四 6：一轮的**最小只读身份事实**（VERIFIED/已解除/冲突/服务器不匹配/
+        # 降级才有一句；未绑定为空串）。没有任何权限效果：动作能不能做仍由 Policy 与确认门决定。
+        identity: str = "",
         # Phase 6A §四十：她**现在在做什么**（来自 ActivityEpisode；≤1 条 + ≤3 条最近变化）。
         # 只是上下文（§四十一 的优先级里排在"当前任务"之后），**不是**权限（§五十）。
         activity: str = "",
@@ -221,6 +224,12 @@ class CharacterContextBuilder:
         if continuity_block:
             system_parts.append(continuity_block)
         trace("continuity", bool(continuity_block), "continuity layer empty or off")
+
+        # 3d. 身份（Phase 8B §四）：**只读事实**，紧挨关系层 —— 先说明「是谁」，再说
+        # 「关系到哪一步」。身份核验不等于动作授权（事实块内措辞已明确写出）。
+        if identity:
+            system_parts.append(identity)
+        trace("identity", bool(identity), "unbound or identity layer absent")
 
         # 4. Relationship with this user
         user_label = user_name or f"用户{relationship.user_id}"
