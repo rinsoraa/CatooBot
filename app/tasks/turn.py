@@ -234,7 +234,8 @@ class TaskTurnHandler:
                     objective=current.objective, state=STATE_LABELS.get(current.state.value, "")
                 ),
             )
-        return await self._create(session_id, user_id, message)
+        # Phase 8C：来源必须一路带下去（此前 _create 里被硬编码成 USER，形参形同虚设）。
+        return await self._create(session_id, user_id, message, origin=origin)
 
     async def _record_agent_plan(
         self, message: str, record: Any, *, session_id: str, user_id: str
@@ -470,7 +471,14 @@ class TaskTurnHandler:
             log.exception("[Task] 技能复用失败（忽略，按原模板规划）")
             return None
 
-    async def _create(self, session_id: str, user_id: str, message: str) -> TaskTurnOutcome:
+    async def _create(
+        self,
+        session_id: str,
+        user_id: str,
+        message: str,
+        *,
+        origin: str = TurnOrigin.USER.value,
+    ) -> TaskTurnOutcome:
         block = block_for(message)
         if not block:
             # 认不出具体目标 → 不开任务，交给正常对话（模型可以用 SAFE 工具去查）
@@ -502,7 +510,7 @@ class TaskTurnHandler:
                 objective,
                 session_id=session_id,
                 user_id=user_id,
-                origin=TurnOrigin.USER.value,
+                origin=str(origin or TurnOrigin.USER.value),
                 plan=planned.plan,
                 source=self._source,
             )

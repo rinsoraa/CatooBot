@@ -227,7 +227,8 @@ class AgentPlanService:
         """
         moment = self._now(now)
         plan_payload = self._plan_payload(planned)
-        plan_hash = str(getattr(getattr(planned, "plan", None), "hash", "") or "")
+        # Phase 8C：TaskPlan 的属性是 plan_hash（没有 .hash）—— 旧写法让记账恒为空串。
+        plan_hash = str(getattr(getattr(planned, "plan", None), "plan_hash", "") or "")
         record = AgentPlan(
             plan_id="",
             source=PlanSource.USER.value,
@@ -270,6 +271,29 @@ class AgentPlanService:
         now: float | None = None,
     ) -> dict[str, Any]:
         """「跟着我」这条链（§八场景 B）：规划 → 建待确认任务。
+
+        Phase 8C：主体已提取为**形状无关**的 plan_goal_from_user（QQ 与游戏内聊天
+        共用同一条受管控链）；这里保持签名、指纹与行为逐字不变地委托。
+        """
+        return await self.plan_goal_from_user(
+            objective=objective,
+            user_id=user_id,
+            session_id=session_id,
+            target=target,
+            now=now,
+        )
+
+    async def plan_goal_from_user(
+        self,
+        *,
+        objective: str,
+        user_id: str,
+        session_id: str,
+        target: PlanTarget,
+        source: str = "qq",
+        now: float | None = None,
+    ) -> dict[str, Any]:
+        """用户提出的目标：规划 → 建待确认任务（形状由 planner 决定）。
 
         7D.1 P1-1 **reserve-then-link**：先原子占用指纹（AgentPlan 以 PLANNING 落盘，
         唯一索引保证同桶同目标只有一个占用者），**任务建立成功后**才落 LINKED 并绑
@@ -349,8 +373,16 @@ class AgentPlanService:
                 user_id=str(user_id),
                 origin="user",
                 plan=result.plan.plan,
-                observations=result.plan.observations,
-                source="qq",
+                # Phase 8C 真机门禁发现：BoundedAgentPlanner 的 explore / resource 形状返回的
+                # planned.observations 是 **Observation 对象**列表，而 TaskRuntime.create_task
+                # 要的是 payload 字典列表（资源形状从不把它传下去，所以这个类型错配一直没暴露；
+                # 跟随形状恰好是字典，所以此前也没暴露）。在边界上归一化，**不动规划器既有返回
+                # 类型** —— 其他消费者零影响。
+                observations=[
+                    dict(item) if isinstance(item, dict) else dict(item.to_payload())
+                    for item in (result.plan.observations or [])
+                ],
+                source=source,
             )
         except Exception as exc:  # noqa: BLE001 - 任务忙等既有异常照既有话术处理
             await self._compensate_reserved_plan(
@@ -1102,7 +1134,8 @@ class AgentPlanService:
     def _hash_of(self, result: Any) -> str:
         plan = getattr(result, "plan", None)
         task_plan = getattr(plan, "plan", None)
-        return str(getattr(task_plan, "hash", "") or "")
+        # Phase 8C：同上 —— 取真实的 plan_hash，别再记空串。
+        return str(getattr(task_plan, "plan_hash", "") or "")
 
     def _target_of_proposal(self, proposal: TaskProposal) -> PlanTarget:
         target = dict(getattr(proposal, "target", {}) or {})

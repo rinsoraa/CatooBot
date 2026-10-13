@@ -1,5 +1,13 @@
 # Changelog
 
+## Minecraft Phase 8C — Bounded Goal Planning & Atomic-Tool Orchestration（有界目标规划与原子工具编排）
+
+* **基线** `9bf125c`（Phase 8B Follow-up 最终发布）。本阶段只做**接线**：把游戏内聊天提出的、当前能力范围内的多步目标送进**既有**有界规划/任务链，不新增规划器/状态机/授权系统，不新增工具/动作/表/迁移。
+* **审计（源码取证 + 两路只读子代理）**：只有 `resource` 形状端到端接线；`follow` 只在 QQ 入口可达；`explore` 没有用户入口；`TaskTurnHandler` 从不使用 `BoundedAgentPlanner`，`AgentPlanService` 只被当记账本用（缺口 G1–G4 + 8 项新增发现，逐条附证据与「修/不修」理由，见阶段文档 §3/§7）。
+* **改动（4 个文件）**：`plan_follow_from_user` 主体提取为形状无关的 `plan_goal_from_user(..., source="qq")`（**QQ 逐字不变**）；`chat_bridge._task_reply` 在任务入口未接管时对 **follow/explore** 接计划层（跟随目标只能来自 VERIFIED 身份解析，解析不出即 fail-closed；纯查询/控制命令/状态查询绝不接管；如实记 `RouteTrace`）；修 `TurnOrigin` 形参失效（`turn.py`）；修 `AgentPlan.plan_hash` 记账恒空（`agent_service.py` 两处）；在边界归一化 `observations`，**修掉 explore 计划建任务时的 `TypeError`**（规划器返回 `Observation` 对象、任务运行时要求 payload 字典）。
+* **未改动**：`ACTION_RISK`、19 工具、`allow_medium` 默认值、`trusted_players`、`TurnOrigin` 派生规则、两道确认门、`TaskAuthorization`/`TaskStepAuthorization`、计划哈希/参数指纹、AgentBridge/Service/Action Runtime 生命周期。
+* **真实 Java 门禁 6/6 PASS**（`scripts/bounded_orchestration_smoke_real.py`，本地专用不发布；真实 Java 1.21.1 + Fabric + 真实 Node/Mineflayer + 真实第二个客户端）：多步探索经**游戏内聊天** → 计划 3 步 → 确认门（确认前零世界步骤）→ 受授权执行 → `SUCCEEDED` + 到达验证 `0.98`；未确认即取消；未绑定跟随 `plan_target_unverified`、真实权威 UUID 绑定后同一请求 `plan_created`；MEDIUM 资源计划被既有策略门阻止（`PAUSED`、无 `action_id`）；执行中取消不续派（未启动步骤保持 `PENDING`）；闲聊/SAFE 查询零任务。**首次失败与重跑如实记录**（scene 1 两轮 `2.09 > 半径 2.0` 属 7F.1 起已知 pathfinder 精度抖动，产品正确地判失败；未放宽任何断言/阈值）。
+* **测试**：新增 `tests/test_phase8c_bounded_orchestration.py` **16 项**；相关套件 195 passed；`ruff check .` All checks passed；`ruff format --check .` 675 files；`mypy app` Success（337 files）；迁移演练 v36→v36 幂等（83 表 / integrity ok / `lost_rows {}`）→ **无新表无新迁移**。
 ## Minecraft Phase 8B Follow-up — Identity Store Degradation Classification Fix（身份存储降级判定修正）
 
 * **基线** `7395553`（Phase 8B 最终发布）。**只**修降级诊断语义，不重写身份系统、不与 Phase 8C 混合提交。
