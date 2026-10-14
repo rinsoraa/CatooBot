@@ -456,3 +456,21 @@ CHAT_ONLY **不是**策略或授权通道（它只关闭本回合的 Agent/Tool 
 2. 真实 provider 仍未运行（解释器与模型都是脚本化替身），因此没有准确率/延迟/token 数据；
 3. 本轮只改「单回合能力模式接缝」，未重构成通用对话工具政策；
 4. 真机门禁**不适用**（未触碰动作/授权/执行链），**不等于**真机链路经本轮验证。
+
+### §15.9 发布与 CI（实测）
+
+| 项 | 值 |
+| --- | --- |
+| 实现提交 | **`716225ae674c9b989a17e9b50168a26c65afacef`**（`Phase 8E Follow-up 2: per-turn capability isolation for non-affirmative wood routing`；6 文件 **+890/−12**） |
+| 提交纪律 | 独立实现提交；**未 reset、未 force-push、未改写** 8D / 8D Follow-up / 8D Follow-up 2 / 8E / 8E Follow-up 历史 |
+| 远端 / 镜像 | 镜像 == `origin/main` == 实现提交；**292 commits**；工作区干净；`scripts/` **0 tracked** |
+| CI run | **38562249896**（https://github.com/rinsoraa/CatooBot/actions/runs/38562249896） |
+| attempt | **1**（一次通过；**无 flake、无重跑**） |
+| 两个 job | `lint · format · types · tests` **success**；`webui · typecheck · tests · build` **success** |
+| CI 上 pytest | **4131 passed, 3 skipped in 756.13s**（= 本地 4134 − 3 条既有平台条件性 skip；新增 10 项**无一被跳过**） |
+| CI 上 Browser E2E | **7 passed (18.7s)** |
+| CI 上 `minecraft_runtime` | find-blocks-test / e2e `bridge auth boundary + runtime instance ✓` / e2e **ALL CHECKS PASSED** |
+| CI 上 ruff format / mypy | 666 files already formatted（CI 只见镜像内文件）；Success: no issues found in 338 source files |
+| 受保护文件 | `git diff --name-only` 对 `agent.py`（`ACTION_RISK`）、`config/settings.py`（`allow_medium`）、`database/database.py`（迁移）、`tasks/runtime.py`、`tasks/validation.py`、`tasks/planner.py`、`tools/registry.py`、`tools/builtins/` **全部零命中**；凭据扫描 **0 命中** |
+| 真机门禁 | **不适用**（本轮只改单回合能力模式接缝，未触碰动作/授权/执行链） |
+| 裁决 | **PASS**（本节范围） |

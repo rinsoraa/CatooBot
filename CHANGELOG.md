@@ -23,6 +23,10 @@
   的对照）、每回合参数隔离、并发隔离（恰好一条 `chat_only_turn`）、非肯定分类零角色回合矩阵、失败关闭。
 * **变异验证**：把 CHAT_ONLY 短路改成恒假（M1/M2）→ **4 failed, 6 passed**（工具面、Agent 面、并发、叙述
   四例精确失败）；恢复后 10 passed、无 MUTATION 残留。M3/M4 由 Follow-up 1 的既有用例持续覆盖。
+* **发布 / CI**：实现提交 `716225ae674c9b989a17e9b50168a26c65afacef`（6 文件 +890/−12）；镜像 == `origin/main` == 该提交（292 commits，工作区干净）；
+  CI run [38562249896](https://github.com/rinsoraa/CatooBot/actions/runs/38562249896) **attempt 1 两个 job 均 success**（无 flake、无重跑）：
+  CI 上 pytest **4131 passed, 3 skipped**（= 本地 4134 − 3 条既有平台 skip，新增 10 项无一被跳过）、Browser E2E **7 passed**、`minecraft_runtime` 全绿；
+  受保护文件零改动；凭据扫描 0 命中；`scripts/` 仍 0 tracked。
 * **门禁**：`tests/test_phase8e_followup2_turn_mode.py` **10 passed**；相关回归 **902 passed, 3232 deselected**；
   全量 `pytest tests -q` **4134 passed**（= 基线 4124 + 10）；`ruff check .` All checks passed；
   `ruff format --check .` **687 files**；`mypy app` Success（338 files）。
