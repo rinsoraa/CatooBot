@@ -26,6 +26,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import TYPE_CHECKING, Any
 
+from app.character.runtime import CharacterTurnMode
 from app.character.turn import TurnOrigin
 from app.integrations.minecraft.agent import PLAYER_KEY
 from app.integrations.minecraft.identity_context import IdentityResolution
@@ -100,6 +101,19 @@ class _WoodRoute(StrEnum):
     DELEGATE_CONTROL = "delegate_control"
     WOOD_POSITIVE_REQUEST = "wood_positive_request"
     SAFE_CLARIFY = "safe_clarify"
+
+
+@dataclass(frozen=True)
+class _TurnReply:
+    """桥接层的回合结论（Phase 8E Follow-up 2 §4.1）。
+
+    ``reply`` 非空 = 本回合已由桥接层回答完毕（任务/木材/澄清），角色层不参与；
+    ``reply`` 为空 = 交给角色层生成，但必须按 ``mode`` 的**单回合能力模式**执行：
+    ``CHAT_ONLY`` 时角色层不得启动 Agent、不得进入 ToolOrchestrator。
+    """
+
+    reply: str | None = None
+    mode: CharacterTurnMode = CharacterTurnMode.NORMAL
 
 
 @dataclass(frozen=True)
@@ -218,10 +232,10 @@ class MinecraftChatBridge:
             # 或者"去砍棵树把木头带回来"这类需要编排的请求）。命中就由任务侧回答，
             # 不再丢给模型自由发挥；没命中（绝大多数聊天）照常走角色回合。
             handled = await self._task_reply(username, session_id, message)
-            if handled is not None:
+            if handled.reply is not None:
                 await bot.ai.conversations.append_user_message(session_id, message)
-                await bot.ai.conversations.append_assistant_message(session_id, handled)
-                await self._say(handled)
+                await bot.ai.conversations.append_assistant_message(session_id, handled.reply)
+                await self._say(handled.reply)
                 return
             reply = await bot.character.respond(
                 session_id,
@@ -239,6 +253,8 @@ class MinecraftChatBridge:
                     "（这条消息来自 Minecraft 游戏内聊天，是服务器里的人在跟你说话；"
                     "回复要短，像游戏里随口说的话。）"
                 ),
+                # Phase 8E Follow-up 2：单回合能力模式（CHAT_ONLY = 无 Agent/无工具）
+                mode=handled.mode,
             )
             if not reply:
                 return
@@ -252,7 +268,7 @@ class MinecraftChatBridge:
         connection = self.service.snapshot().get("connection") or {}
         return chat_session_id(connection.get("host"), connection.get("port"), username)
 
-    async def _task_reply(self, username: str, session_id: str, message: str) -> str | None:
+    async def _task_reply(self, username: str, session_id: str, message: str) -> _TurnReply:
         """任务侧的回答（``None`` = 这句话不归任务管，走正常对话）。
 
         任务运行时没装配、或者识别不出任务意图时一律返回 ``None`` —— 普通对话
@@ -260,7 +276,7 @@ class MinecraftChatBridge:
         """
         handler = getattr(self.bot, "task_turns", None)
         if handler is None:
-            return None
+            return _TurnReply()
         # Phase 8E：木材意图交给**独立 LLM 解释器**判定（它只说「用户想表达什么」）。
         # 权限、参数校验（parse_wood_request + 支持树种矩阵）、SAFE 观察、Policy、
         # 冻结计划、预览、确认门、步骤授权、TaskRuntime 与最终库存验证全部不变，
@@ -269,10 +285,11 @@ class MinecraftChatBridge:
         if mentions_wood(message):
             decision = await self._wood_route(handler, username, session_id, message)
             if decision.route is _WoodRoute.NORMAL_CHAT:
-                # §4.2：查询/叙述由普通角色对话处理 —— **不经过**可创建任务的旧入口。
-                return None
+                # §4.2：查询/叙述由角色对话回答，但**本回合能力受限**（CHAT_ONLY）：
+                # 既不经过可创建任务的旧入口，也不允许 Agent/Tool（Follow-up 2）。
+                return _TurnReply(None, CharacterTurnMode.CHAT_ONLY)
             if decision.reply is not None:
-                return decision.reply
+                return _TurnReply(decision.reply)
             # _WoodRoute.DELEGATE_CONTROL：交回既有确定性控制/忙碌处理。
         try:
             outcome = await handler.handle(session_id=session_id, user_id=username, text=message)
@@ -280,11 +297,11 @@ class MinecraftChatBridge:
             log.warning(
                 "[MC Chat] 任务入口处理失败（%s）：error_type=%s", username, type(exc).__name__
             )
-            return None
+            return _TurnReply()
         if not outcome.handled or not outcome.reply:
             # Phase 8C：任务入口没接管的，再看是不是一条**多步目标**（跟随/有界探索）；
             # 不是就照样还回角色回合（返回 None）。QQ 路径完全不经这里。
-            return await self._plan_reply(username, session_id, message)
+            return _TurnReply(await self._plan_reply(username, session_id, message))
         # Phase 8A：任务侧接走这句话也是一条**路由结论**（TASK + 任务 ID 可关联）。
         self._route(
             reason_code="task_handled",
@@ -300,7 +317,7 @@ class MinecraftChatBridge:
             outcome.state or "-",
             username,
         )
-        return outcome.reply
+        return _TurnReply(outcome.reply)
 
     # ---------------------------------------------------------- Phase 8D：木材采集
 

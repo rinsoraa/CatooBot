@@ -19,6 +19,7 @@ from __future__ import annotations
 import json
 import logging
 import time
+from enum import StrEnum
 from typing import TYPE_CHECKING, Any
 
 from app.ai.errors import AIError
@@ -47,6 +48,29 @@ THOUGHT_TEXT = {
     "multi_step": "这句得拆成几步来做",
     "long_running": "这句像是长期的事",
 }
+
+
+class CharacterTurnMode(StrEnum):
+    """单回合能力模式（Phase 8E Follow-up 2）。
+
+    **只在这一次 respond() 调用内生效**，不写回任何共享配置：
+      * NORMAL    —— 既有完整能力路径（Agent + 工具编排都可用）；
+      * CHAT_ONLY —— 只生成自然语言：**不调用** Agent，**不调用** ToolOrchestrator，
+                     本回合不产生工具调用、action_id 或任务创建。
+    """
+
+    NORMAL = "normal"
+    CHAT_ONLY = "chat_only"
+
+
+def _chat_only_text(text: str) -> str:
+    """CHAT_ONLY 回合的安全文本（§4.2）：疑似工具调用的 JSON 也不能被路由成工具请求。"""
+    stripped = str(text or "").strip()
+    if stripped.startswith("{") and (
+        '"tool"' in stripped or '"arguments"' in stripped or '"tool_calls"' in stripped
+    ):
+        return "这回合我只跟你聊两句，不动手。"
+    return text
 
 
 class CharacterRuntime:
@@ -128,6 +152,7 @@ class CharacterRuntime:
         shared_experiences: list | None = None,
         context_trace: dict | None = None,
         facts_query: str | None = None,
+        mode: CharacterTurnMode = CharacterTurnMode.NORMAL,
     ) -> str:
         """Generate one character reply (already screened). Raises AIError.
 
@@ -254,6 +279,7 @@ class CharacterRuntime:
             time_context=time_context,
             turn_origin=turn_origin,
             origin_metadata=origin_metadata,
+            mode=mode,
         )
         content = self.processor.sanitize(content_text.strip())
         if content and sandbox is not None and getattr(sandbox, "enabled", False):
@@ -296,6 +322,7 @@ class CharacterRuntime:
         turn_origin: TurnOrigin,
         origin_metadata: dict[str, str] | None = None,
         time_context: Any = None,
+        mode: CharacterTurnMode = CharacterTurnMode.NORMAL,
     ) -> str:
         """One AI turn; when tools are on, the bounded tool loop runs here.
 
@@ -312,6 +339,16 @@ class CharacterRuntime:
             turn_origin=str(getattr(turn_origin, "value", turn_origin) or ""),
             text_chars=len(str(user_text or "")),
         )
+        # Phase 8E Follow-up 2 §4.2：**单回合能力模式必须在任何能力分支之前生效**。
+        # CHAT_ONLY：只生成自然语言 —— 绝不进入 Agent、绝不进入 ToolOrchestrator，
+        # 本回合不产生工具调用 / action_id / 任务创建。这是**每回合参数**，不写回共享配置。
+        if mode is CharacterTurnMode.CHAT_ONLY:
+            route.route_target = RouteTarget.CHAT_ONLY.value
+            route.reason_code = "chat_only_turn"
+            response = await self.engine.chat(AIRequest(messages=messages, temperature=temperature))
+            self._narrate_thinking(response)
+            return self.record_route(route, _chat_only_text(response.content), started=started)
+
         tool_context = self._tool_context(
             session_id=session_id,
             user_id=user_id,

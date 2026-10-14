@@ -1,5 +1,34 @@
 # Changelog
 
+## Minecraft Phase 8E Follow-up 2 — 非肯定木材路由的角色回合能力隔离与零副作用闭环
+
+* **性质**：Phase 8E Follow-up 的定向收口。**不新增** Minecraft 工具/动作/表/迁移；不改 `ACTION_RISK`、
+  `allow_medium` 默认、`TurnOrigin` 派生、可信玩家、Policy、风险等级、确认门、任务授权与执行链。
+  基线 `b4a05de4f8052445dda294600a1c2514c28a5cee`。
+* **被提升的保证**：Follow-up 1 只保证「不回落旧 `plan_resource_task()`」；但 `QUERY`/`NARRATION` 走的是
+  **完整能力的角色回合**，其中仍有两条执行面可创建任务或执行动作 —— `_try_agent()`→`AgentRuntime.run()`
+  与 `ToolOrchestrator.run()`。本阶段把它们变成「**按单回合显式关闭**」。
+* **实现**：`app/character/runtime.py` 新增 `CharacterTurnMode`（`NORMAL`/`CHAT_ONLY`）与 `_chat_only_text()`；
+  `respond(..., mode=)` → `_generate(..., mode=)`，并在 `route` 建立之后、**任何能力分支之前**短路：
+  CHAT_ONLY 只调一次 `engine.chat`，记 `route_target=CHAT_ONLY` + `reason_code="chat_only_turn"`，
+  绝不进入 Agent 或工具编排；疑似工具调用的 JSON 被替换为安全纯文本。模式是**每回合参数**，
+  不写回共享配置（不使用 `tools.enabled` 之类的全局开关）。`app/integrations/minecraft/chat_bridge.py`
+  新增 `_TurnReply`（`reply` + `mode`），取代原先用 `str | None` 暗藏「已处理 / 需角色回答」两种语义；
+  仅 `DELEGATE_CONTROL` 继续走既有任务入口。
+* **行为矩阵**：否定/歧义/需澄清/OTHER/解释器失败 → 安全澄清并**结束路由**（零角色回合、零 Agent、零工具、
+  零任务）；`QUERY`/`NARRATION` → 角色自然语言回答但**本回合无 Agent、无工具**；肯定木材请求仍走既有
+  木材专用计划链（规划期 Policy + 双确认门不变）；控制命令/状态查询/busy 仍由确定性入口处理。
+* **测试**：新增 `tests/test_phase8e_followup2_turn_mode.py`（**10 项**）—— §6.1 双执行面反例（工具面：
+  模型输出工具调用 JSON 也不得执行；Agent 面：`handle_control`/`run` 零调用，并有「普通回合仍咨询 Agent」
+  的对照）、每回合参数隔离、并发隔离（恰好一条 `chat_only_turn`）、非肯定分类零角色回合矩阵、失败关闭。
+* **变异验证**：把 CHAT_ONLY 短路改成恒假（M1/M2）→ **4 failed, 6 passed**（工具面、Agent 面、并发、叙述
+  四例精确失败）；恢复后 10 passed、无 MUTATION 残留。M3/M4 由 Follow-up 1 的既有用例持续覆盖。
+* **门禁**：`tests/test_phase8e_followup2_turn_mode.py` **10 passed**；相关回归 **902 passed, 3232 deselected**；
+  全量 `pytest tests -q` **4134 passed**（= 基线 4124 + 10）；`ruff check .` All checks passed；
+  `ruff format --check .` **687 files**；`mypy app` Success（338 files）。
+* **限制（不夸大）**：CHAT_ONLY 回合不能调用只读工具取得实时世界数据（刻意取舍）；真实 provider 仍未运行；
+  未重构成通用对话工具政策；真机门禁**不适用**（未触碰动作/授权/执行链），不等于真机链路经本轮验证。
+
 ## Minecraft Phase 8E Follow-up — 木材意图路由闭环与异常日志隐私收口
 
 * **性质**：Phase 8E 的定向 Follow-up（路由闭环 + 日志隐私）。**不新增** Minecraft 工具/动作/表/迁移，不改

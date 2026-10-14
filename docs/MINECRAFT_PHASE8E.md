@@ -362,3 +362,97 @@ Minecraft chat（不可信输入）
 | 受保护文件 | `git diff --name-only` 对 `agent.py`（`ACTION_RISK`）、`config/settings.py`（`allow_medium`）、`database/database.py`（迁移）、`tasks/runtime.py`、`tasks/validation.py`、`tasks/planner.py`、`tools/registry.py`、`tools/builtins/` **全部零命中** |
 | 真机门禁 | **不适用**（本轮只改分类路由与日志，未触碰动作/授权/执行链；按任务书 §10.8 声明范围，**不等于**真机链路经本轮验证） |
 | 裁决 | **PASS**（本节范围；Phase 8E 的 PARTIAL 由此关闭） |
+
+## §15 Phase 8E Follow-up 2 — 非肯定木材路由的角色回合能力隔离与零副作用闭环
+
+基线 `b4a05de4f8052445dda294600a1c2514c28a5cee`（实测 == `origin/main`，291 commits，工作区干净）。
+
+### §15.1 问题：局部保证不够 —— 还剩两个执行面
+
+Follow-up 1 只保证「不再回落到旧 `TaskTurnHandler._create()` / `plan_resource_task()`」。但 `QUERY` /
+`NARRATION` 走的是 `_reply()` → `CharacterRuntime.respond()` 的**完整能力角色回合**，其中还有两个执行面：
+
+1. **Agent 面**：`_generate()` → `_try_agent()` → `AgentRuntime.run()` 可创建多步任务；
+2. **工具面**：`_generate()` → `ToolOrchestrator.run()` → 工具 runtime → Minecraft Agent Bridge。
+
+也就是说：非肯定木材分类仍然可能经由角色回合创建任务或执行 Minecraft 动作。本阶段把保证提升为
+**单回合能力隔离**：`QUERY` / `NARRATION` 允许角色自然语言回答，但**本回合**禁止 Agent 与工具编排；
+其余非肯定分类（否定/歧义/需澄清/OTHER/失败）**根本不进入角色回合**。
+
+### §15.2 实现（逐文件）
+
+| 文件 | 改动 |
+| --- | --- |
+| `app/character/runtime.py` | 新增 `CharacterTurnMode`（`NORMAL` / `CHAT_ONLY`）与 `_chat_only_text()`；`respond(..., mode=)` → `_generate(..., mode=)`；**在 `route` 建立之后、`_tool_context` / Agent / 工具分支之前**插入 CHAT_ONLY 短路：只调一次 `engine.chat`，记 `route_target=CHAT_ONLY` + `reason_code="chat_only_turn"`，**绝不**进入 `_try_agent()` 或 `ToolOrchestrator.run()`。模式是**每回合参数**，不写回任何共享配置。 |
+| `app/integrations/minecraft/chat_bridge.py` | 新增 `_TurnReply`（`reply` + `mode`，替换原先用 `str \| None` 暗藏语义）；`_task_reply()` 返回 `_TurnReply`：`NORMAL_CHAT` → `_TurnReply(None, CHAT_ONLY)`；`HANDLED`/`SAFE_CLARIFY`/计划失败 → 直接带回确定性回复（**不进角色回合**）；仅 `DELEGATE_CONTROL` 继续 `handler.handle()`；`_reply()` 把 `handled.mode` 作为 `mode=` 传给 `respond()`。 |
+
+### §15.3 路由矩阵（任务书 §4.3）
+
+| 分类 | 结果 | 角色回合 | Agent | 工具面 | 任务创建 |
+| --- | --- | --- | --- | --- | --- |
+| `WOOD_POSITIVE_REQUEST`（极性一致 + 参数校验通过） | 既有木材专用计划链 | 不进入 | 否 | 仅计划内既有工具 | 既有计划链（受确认门约束） |
+| `NEGATED_REQUEST` | 确定性「未执行」回复 | **不进入** | 否 | 否 | 否 |
+| `AMBIGUOUS_INTENT` / `MIXED` / `needs_clarification` | 安全澄清 | **不进入** | 否 | 否 | 否 |
+| `OTHER` / 未知 / 不一致 / 解释器缺失或失败 | 安全澄清 | **不进入** | 否 | 否 | 否 |
+| `QUERY` / `NARRATION` | 角色自然语言回答（**CHAT_ONLY**） | 进入（受限） | **否** | **否** | **否** |
+| 模型自称 `TASK_CONTROL`（检测器不承认） | 安全澄清 | **不进入** | 否 | 否 | 否 |
+| 确定性控制命令 / 状态查询 / busy | 既有任务入口 | 不进入 | 既有语义 | 既有语义 | 既有语义 |
+| 非木材消息 | 既有完整路径 | 进入 | 既有语义 | 既有语义 | 既有语义 |
+
+### §15.4 测试（`tests/test_phase8e_followup2_turn_mode.py`，10 项，全绿）
+
+真实 `CharacterRuntime` / `ToolRuntime` / 真实 `TaskTurnHandler` / 真实 `MinecraftChatBridge`，只有模型、
+解释器、计划层与 sentinel 是替身（**不是**永远 `handled=False` 的入口替身）。
+
+* **§6.1 工具面反例**：模型对查询返回工具调用 JSON → 断言 `executor.traces == []`、回话里不含 `{"tool"`、
+  `route_target=CHAT_ONLY` + `reason_code="chat_only_turn"`（`_chat_only_text()` 把疑似工具调用替换成安全文本）；
+* **§6.1 Agent 面反例**：注入 `SpyAgent`（`enabled=True`）→ 断言 `handle_control` 与 `run` **零调用**；**对照**：
+  随后一条非木材消息仍然咨询 Agent（证明探针是活的、隔离是**分类特定**的）；
+* **模式是每回合参数**：捕获 `respond(mode=)` → 木材查询为 `CHAT_ONLY`、下一条普通消息为 `NORMAL`，且
+  `tools.enabled` 与 `runtime.tools` 未变（**未使用全局开关**）；
+* **并发隔离**：`asyncio.gather` 两条回合 → 路由证据中恰好一条 `chat_only_turn`，另一条不是；零工具执行；
+* **非肯定矩阵**（参数化 6 例：`OTHER` / `NEGATED_REQUEST` / `AMBIGUOUS_INTENT` / `needs_clarification` /
+  `NARRATION` 与 `QUERY` 的表面肯定句）：**零角色回合**（`turns == 0`）+ Agent 两面零调用 + 零工具 +
+  零计划 + 零任务 + sentinel 零调用；
+* **失败关闭**：解释器抛异常 → 零角色回合、零副作用；
+* **叙述允许回答但不给能力**：`NARRATION` → `turns == 1` 且 `traces == []`、Agent 零调用。
+
+### §15.5 变异验证（任务书 §7）
+
+| 变异 | 结果 | 恢复后 |
+| --- | --- | --- |
+| **M1/M2**：`_generate()` 的 CHAT_ONLY 短路改为 `if False and ...`（即回落到 Agent/工具面） | **4 failed, 6 passed**（工具面、Agent 面、并发隔离、叙述四例精确失败） | 10 passed |
+| **M3**：控制命令被木材分支抢截 | Follow-up 1 的 `test_control_commands_never_reach_the_interpreter` 等既有用例持续覆盖（本分支全绿） | — |
+| **M4**：日志重新输出原文/异常正文 | Follow-up 1 的 `tests/test_phase8e_followup_log_privacy.py`（4 项）持续覆盖（本分支全绿） | — |
+
+变异仅在本工作树临时进行，恢复后 `MUTATION` 无残留、`ruff check .` 通过。
+
+### §15.6 门禁（命令与实测结果）
+
+| 命令 | 结果 |
+| --- | --- |
+| `pytest tests/test_phase8e_followup2_turn_mode.py -q` | **10 passed**（2.62s），exit 0 |
+| 相关回归 `-k "wood or intent or turn or task_entry or agent_plan or skill or minecraft_chat or chat_bridge or phase8 or character"` | **902 passed, 3232 deselected**（102.42s），exit 0 |
+| 全量 `pytest tests -q` | **4134 passed**（596.75s；= 8E Follow-up 1 基线 4124 + 新增 10，精确吻合），exit 0 |
+| `ruff check .` | All checks passed，exit 0 |
+| `ruff format --check .` | **687 files already formatted**，exit 0 |
+| `mypy app` | Success: no issues found in **338** source files，exit 0 |
+
+### §15.7 安全不变量与范围
+
+**零改动**：`app/integrations/minecraft/agent.py`（`ACTION_RISK`）、`app/config/settings.py`（`allow_medium` 默认）、
+`app/database/database.py`（迁移）、`app/tasks/runtime.py`（状态机）、`app/tasks/validation.py`（预算）、
+`app/tasks/planner.py`（木材冻结目标/掉落物与拾取引用/库存增量）、`app/tools/registry.py` 与 `app/tools/builtins/`（19 工具与 schema）。
+未新增工具/动作/表/迁移/权限；`TurnOrigin.USER`、`origin_metadata`、可信玩家、Policy、风险等级、确认门与步骤授权语义均未改；
+CHAT_ONLY **不是**策略或授权通道（它只关闭本回合的 Agent/Tool 调度，不授予任何权限）。
+
+### §15.8 裁决与限制
+
+**PASS**（本节范围）：`QUERY` / `NARRATION` 的本回合能力被显式限制为「只能生成文本」，
+其余非肯定分类根本不进入角色回合；两个执行面均有反例测试与变异验证。
+
+限制（如实）：
+1. CHAT_ONLY 回合**不能**调用只读 Minecraft 工具取得实时世界数据（任务书 §1 明确的刻意取舍）；
+2. 真实 provider 仍未运行（解释器与模型都是脚本化替身），因此没有准确率/延迟/token 数据；
+3. 本轮只改「单回合能力模式接缝」，未重构成通用对话工具政策；
+4. 真机门禁**不适用**（未触碰动作/授权/执行链），**不等于**真机链路经本轮验证。
