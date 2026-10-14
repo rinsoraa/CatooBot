@@ -1,5 +1,22 @@
 # Changelog
 
+# Changelog
+
+## Minecraft Phase 8E Follow-up 4 — Context-Grounded LLM Decision & Semantic Routing（上下文接地与语义路由）
+
+* **性质**：修一个**架构级问题** + 把上一轮新增的上下文模块**真正接进生产调用链**。不新增工具/动作/表/迁移，
+  不改 `ACTION_RISK`、`allow_medium` 默认、`trusted_players`、确认门、任务授权、预算、冻结计划与 Action Runtime 生命周期。
+* **修掉的架构问题**：`chat_bridge.py` 的 `if mentions_wood(message)` **关键词主分流闸**位于 LLM 决策之后、九类路由之前，
+  使含木材关键词的消息永远到不了语义路由。修复后：控制优先 → **构造真实上下文** → LLM 决策 → 严格校验 → 九类分流；
+  木材解析只在 `TASK_PROPOSAL` 分支内参与（目标解析 + 额外安全否决），否定/歧义/非法参数只能拒绝或澄清。
+  非木材 `TASK_PROPOSAL` 不再被木材链截走（本轮修的真实回归）。
+* **上下文接线**：`_decide_turn` → `build_turn_context(...)` → `ctx.render()` → `decide(task_context=...)`；六来源各带诚实状态
+  （OK/MISSING/FAILED/STALE/UNAVAILABLE），**背包读不到 ≠ 背包为空**；上下文失败只减少上下文，不影响控制优先。
+* **测试**：新增 `tests/test_phase8e_followup4_context.py`（9 项）与 `tests/test_phase8e_followup4_routing.py`（16 项：17 行语义矩阵、
+  世界/背包**真实查询闭环**、控制非阻塞、并发隔离、M2/M3 夹具）；受影响既有套件 211 passed（未放宽断言）。
+* **变异 M2/M3 缺口闭合**：两处变异均使目标用例 1 failed，恢复后 1 passed，`residue: False`。
+* **真实 Provider：SKIPPED**（`load_config()` 实测 6 个 provider / 0 个可用 api_key）→ 按 §9.4 **裁决 PARTIAL**。
+* **门禁**：全量 `pytest tests -q` **4207 passed**（= FU3 基线 4182 + 25）。
 ## Minecraft Phase 8E Follow-up 3 — 通用 LLM 回合决策契约与统一路由
 
 * **性质**：把「Minecraft 聊天怎么被路由」从**硬编码分支顺序**换成**类型化的统一决策入口**。

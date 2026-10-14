@@ -38,6 +38,7 @@ from app.tasks.intent import (
     mentions_wood,
     parse_wood_request,
 )
+from app.tasks.turn_context import build_turn_context
 from app.tasks.turn_decision import (
     REASON_ENGINE_MISSING,
     TurnDecisionInterpreter,
@@ -298,26 +299,18 @@ class MinecraftChatBridge:
         control = await self._control_turn(handler, username, session_id, message)
         if control is not None:
             return control
-        # 2) 统一 LLM 决策入口。
-        decision_outcome = await self._decide_turn(session_id, message)
+        # 2) 统一 LLM 决策入口 —— **带本回合真实上下文**（FU4 §4.1/§4.2）。
+        decision_outcome = await self._decide_turn(
+            session_id, message, handler=handler, username=username
+        )
         if not decision_outcome.ok:
             # §3.3：无效输出/超时/未知能力等一律**安全澄清**，绝不降级进执行路径。
             return _TurnReply(
                 self._decision_clarify(session_id, message, decision_outcome.reason_code)
             )
-        # 2a) 木材消息仍走既有确定性木材链（§4.3）：正向 = 既有校验 + 计划链；
-        #     否定/歧义/非法参数 = 明确不做或澄清，**绝不**回落通用 Agent/Tool。
-        if mentions_wood(message):
-            wood = await self._wood_route(handler, username, session_id, message)
-            if wood.route is _WoodRoute.NORMAL_CHAT:
-                return _TurnReply(None, CharacterTurnMode.CHAT_ONLY)
-            if wood.reply is not None:
-                return _TurnReply(wood.reply)
-            if wood.route is not _WoodRoute.DELEGATE_CONTROL:
-                return _TurnReply()
-            # §7.1：木材链把控制权交回来时，**直接给既有任务入口**（不经过决策结果，
-            # 否则一个「取消，别砍树了」会因为决策类别是 CHAT 而变成纯聊天）。
-            return await self._delegate_task(handler, username, session_id, message)
+        # §5.1：这里**没有**关键词主分流闸。木材解析只在 TASK_PROPOSAL 分支里参与
+        # （目标解析 + 额外安全否决，见 _route_turn）；含木材关键词的 CHAT/QUERY/
+        # NARRATION 一律遵从已经校验的决策类别。
         kind = (
             decision_outcome.decision.kind
             if decision_outcome.decision is not None
@@ -432,8 +425,20 @@ class MinecraftChatBridge:
         self.turn_decisions = TurnDecisionInterpreter(engine)
         return self.turn_decisions
 
-    async def _decide_turn(self, session_id: str, message: str) -> TurnDecisionOutcome:
-        """一次有界的统一决策（解释器契约是永不抛，这里再兜一层）。"""
+    async def _decide_turn(
+        self,
+        session_id: str,
+        message: str,
+        *,
+        handler: Any = None,
+        username: str = "",
+    ) -> TurnDecisionOutcome:
+        """一次有界的统一决策（解释器契约是永不抛，这里再兜一层）。
+
+        FU4 §4.2：决策前先构造**本回合真实上下文**（世界观察/背包/记忆/身份/活动任务/
+        能力目录），交给解释器作为 ``task_context``；上下文组装失败只减少上下文，
+        绝不影响安全路径（控制优先已在 ``_control_turn`` 返回，早于这里）。
+        """
         interpreter = self._decision_interpreter()
         if interpreter is None:
             return TurnDecisionOutcome(None, REASON_ENGINE_MISSING, 0, 0.0, {})
@@ -443,8 +448,28 @@ class MinecraftChatBridge:
             recent = [str(item)[:240] for item in list(context)[-4:]]
         except Exception:  # noqa: BLE001 - 拿不到上下文就少给一点，不影响安全
             recent = []
+        task_context = ""
         try:
-            return await interpreter.decide(message=message, recent_context=tuple(recent))
+            turn_context = await build_turn_context(
+                service=self.service,
+                character=getattr(self.bot, "character", None),
+                handler=handler,
+                session_id=session_id,
+                username=username,
+                message=message,
+                recent=tuple(recent),
+            )
+            task_context = turn_context.render()
+            # §7/§8：只记状态、来源类别与稳定原因码（不含记忆正文/上下文原文）。
+            log.info("[MC Turn] ctx=%s", turn_context.log_fields())
+        except Exception as exc:  # noqa: BLE001 - 上下文不是决策前提，缺了也要能决策
+            log.warning("[MC Turn] 上下文构造失败：error_type=%s", type(exc).__name__)
+        try:
+            return await interpreter.decide(
+                message=message,
+                recent_context=tuple(recent),
+                task_context=task_context,
+            )
         except Exception as exc:  # noqa: BLE001
             log.warning("[MC Turn] 决策异常：error_type=%s", type(exc).__name__)
             return TurnDecisionOutcome(None, REASON_ENGINE_MISSING, 0, 0.0, {})
@@ -475,6 +500,30 @@ class MinecraftChatBridge:
         if kind in (TurnDecisionKind.QUERY, TurnDecisionKind.ATOMIC_ACTION):
             return await self._run_capability(username, session_id, message, kind, decision)
         if kind is TurnDecisionKind.TASK_PROPOSAL:
+            # FU4 §5.2：木材解析**只在这里**参与 —— 作为目标解析 + 额外安全否决：
+            #   HANDLED           → 否定请求，明确「不做」（绝不升级成行动）
+            #   SAFE_CLARIFY      → 歧义/非法参数/解释器不可用 → 澄清
+            #   NORMAL_CHAT       → 与木材有关的普通提及 → 聊天（CHAT_ONLY）
+            #   DELEGATE_CONTROL  → 控制/状态/忙碌 → 既有任务入口
+            #   WOOD_POSITIVE_REQUEST → 既有木材校验 + 计划链（授权/后置验证不变）
+            #   NOT_WOOD          → 继续既有入口与 follow/explore 计划层
+            wood = _WoodRouteDecision(_WoodRoute.NOT_WOOD)
+            if mentions_wood(message) or parse_wood_request(message) is not None:
+                wood = await self._wood_route(handler, username, session_id, message)
+            if wood.route is _WoodRoute.HANDLED and wood.reply is not None:
+                return _TurnReply(wood.reply)
+            if wood.route is _WoodRoute.SAFE_CLARIFY:
+                return _TurnReply(
+                    wood.reply or self._decision_text(decision, "这件事我需要你说得更具体一点。")
+                )
+            if wood.route is _WoodRoute.NORMAL_CHAT:
+                return _TurnReply(None, CharacterTurnMode.CHAT_ONLY)
+            if wood.route is _WoodRoute.DELEGATE_CONTROL:
+                return await self._delegate_task(handler, username, session_id, message)
+            if wood.route is _WoodRoute.WOOD_POSITIVE_REQUEST:
+                if wood.reply is not None:
+                    return _TurnReply(wood.reply)
+                return _TurnReply(self._decision_text(decision, "这件事我还没有能安全执行的做法。"))
             # 先给**既有任务入口**一次机会：资源任务/控制/状态的既有权威路径就是它
             # （8D 的单目标资源模板），跳过它会直接砍掉既有能力。
             delegated = await self._delegate_task(handler, username, session_id, message)

@@ -365,6 +365,88 @@ Minecraft chat（不可信输入）
 
 ## §15 Phase 8E Follow-up 2 — 非肯定木材路由的角色回合能力隔离与零副作用闭环
 
+## §17 Phase 8E Follow-up 4 — Context-Grounded LLM Decision & Semantic Routing
+
+### §17.1 架构问题（证据）
+
+`chat_bridge.py` 原顺序：`_control_turn` → `_decide_turn` → **`if mentions_wood(message)` 主分流闸** → `_route_turn`。
+含木材关键词的消息**永远到不了九类语义路由**，LLM 的 CHAT/QUERY/NARRATION 决策被确定性词法闸覆盖（任务书 §5.1）。
+
+### §17.2 修复前后
+
+```text
+修复前：控制优先 → LLM 决策 → 关键词闸 → 九类路由
+修复后：控制优先 → 构造真实上下文 → LLM 决策（带上下文） → 严格校验 → 九类路由
+        └── 木材解析只在 TASK_PROPOSAL 分支内参与（目标解析 + 额外安全否决）
+```
+
+木材结论按其显式路由分流（否定 HANDLED / 澄清 SAFE_CLARIFY / 普通提及 NORMAL_CHAT / 控制 DELEGATE_CONTROL /
+正向 WOOD_POSITIVE_REQUEST 走既有校验+计划链 / NOT_WOOD 继续既有入口与 follow-explore 计划层）；
+否定/歧义/非法参数**只能拒绝或澄清**；失败一律安全澄清，不回落普通工具链。非木材 `TASK_PROPOSAL` 不再被木材链截走（本轮修的真实回归）。
+
+### §17.3 上下文真实接线（`app/tasks/turn_context.py`）
+
+`_decide_turn(...)` → `build_turn_context(service, character, handler, …)` → `ctx.render()` → `decide(task_context=…)`；
+`ctx.log_fields()` 只记状态/原因/字符数。
+
+| 来源 | 真实数据源 | 状态 |
+| --- | --- | --- |
+| conversation | 既有会话历史（末 4 条，≤240 字） | OK + 条数 |
+| memory | `MinecraftMemoryBridge.context_block()` | OK / MISSING(no_relevant_memory) / FAILED(异常类型) |
+| identity | `CharacterRuntime.identity_resolver.resolve()` | 仅 VERIFIED 记 OK，其余 MISSING(not_verified) |
+| world | `MinecraftService.world_view()` | OK / STALE(observation_expired >15s) / UNAVAILABLE |
+| inventory | `world_view()` 背包字段 | OK / **MISSING(no_inventory_source)** —— 绝不伪装空背包 |
+| active_task | `TaskTurnHandler.current_task()` | OK(state/step N/M/awaiting_action) / no_active_task / MISSING(task_entry_absent) |
+| capabilities | `ToolRuntime.registry.maybe_get()` + FU3 白名单 | available / disabled / unsupported |
+
+`render()` 有界 ≤900 字符；组装失败只减少上下文（不影响控制优先）并记 `error_type`。
+
+### §17.4 九类路由与零副作用哨兵（新增 16 项）
+
+CHAT/NARRATION → `CHAT_ONLY`（逐回合参数）；QUERY → 单次已审计只读能力；ATOMIC_ACTION → 既有 `ToolExecutor.execute`
+（含 Policy/身份/授权）；TASK_PROPOSAL → 既有任务入口 → follow/explore 计划层 → BLOCKED；CLARIFY/UNSUPPORTED → 安全回复；
+CANCEL/STOP → 既有控制路径。零副作用全部来自真实哨兵：`ToolExecutor.traces`、`AgentRuntime.handle_control/run` 记录、
+`TaskRuntime.create_task` 计数、计划层调用记录、`action_id` 缺失断言。
+
+### §17.5 查询闭环（真实结果驱动回复）
+
+两个用例把 `_observed_text(capability, result)` 换成间谍并断言：工具 trace 恰为 `minecraft_world` / `minecraft_inventory`；
+间谍收到的**真实 `ToolResult.data`** 非空（背包含 `items`/`held_item`）；发回玩家的回复**等于**该真实结果的渲染；
+回复阶段仍是 `CHAT_ONLY`，不二次触发工具。
+
+### §17.6 控制非阻塞（§八）
+
+决策替身在 `decide()` 里 `await asyncio.sleep(30)` 时，对「停下」的回合仍在 5 秒内完成，且 **模型一次都没被调用**、
+控制交回既有入口、零工具执行；「取消，别砍树了」同样控制优先。
+
+### §17.7 变异验证（M1–M7）
+
+M1/M4/M5/M6/M7 沿用 FU3 的捕获记录；**M2/M3 缺口本轮闭合**：夹具让消息带真实工具候选且脚本化模型真的发工具调用，
+把 CHAT 分支改成 NORMAL 模式（M2）或让非法决策继续（M3）→ 目标用例各 **1 failed**，恢复后各 **1 passed**，驱动脚本 `residue: False`。
+
+### §17.8 真实 Provider：**SKIPPED**
+
+用应用自身 `load_config()` 实测有效配置：**providers_total=6 / providers_with_key=0** —— 没有可用模型凭据。
+按 §9.4：不虚构准确率、不用脚本化替身冒充真实模型性能 → 本项 `SKIPPED`，**最终裁决 PARTIAL**。
+
+### §17.9 门禁（实测）
+
+| 命令 | 结果 |
+| --- | --- |
+| `pytest tests -q` | **4207 passed**（679.99s；= FU3 基线 4182 + 本轮新增 25） |
+| 新套件 | `test_phase8e_followup4_context.py` **9 passed**；`test_phase8e_followup4_routing.py` **16 passed** |
+| 受影响既有套件（桥接/8A/8C/8D/8E 全家） | **211 passed**（架构变更未放宽任何断言） |
+| `ruff check .` / `ruff format --check .` / `mypy app` | 见 §17.10 发布记录 |
+
+### §17.10 未验证事项与裁决
+
+* **真实 Provider 语义质量：SKIPPED**（无可用凭据）→ 无准确率/误判分布/延迟/成本数据。
+* **真实 Minecraft 连接**：本阶段只改聊天路由与上下文读取，未触碰动作/授权/执行链 → 真机门禁按范围**不适用**，
+  这**不等于**真机链路经本轮验证。用户要求：**真实 Provider 与真实 Minecraft 连接不是一回事** —— provider/契约测试只证明决策质量，
+  真实世界结论只能来自既有执行链 + 服务器状态 + 独立结果验证。
+* 上下文覆盖「会话末 4 条 + 六大来源」，更丰富的世界语义/长期记忆检索策略留待后续阶段。
+* 木材参数仍是**确定性**解析（`parse_wood_request`），关键词不再主导路由但参数仍由确定性代码校验（刻意取舍）。
+* 裁决：**PARTIAL**（核心工程任务完成并通过门禁；真实 Provider 验证缺失，按 §9.4 不得判 PASS）。
 ## §16 Phase 8E Follow-up 3 — 通用 LLM 回合决策契约与统一路由
 
 基线 `4acd53d2fa559cf4e10ef4cd62f9f667c29f1fc2`（8E Follow-up 2 最终证据提交，293 commits）。

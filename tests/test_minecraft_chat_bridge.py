@@ -28,7 +28,6 @@ from app.integrations.minecraft.agent import MinecraftAgentBridge
 from app.integrations.minecraft.chat_bridge import MinecraftChatBridge, chat_session_id
 from app.integrations.minecraft.events import parse_bridge_event
 from app.integrations.minecraft.service import MinecraftService
-from app.tasks.turn_decision import TurnDecisionKind
 from app.tools.runtime import ToolRuntime
 from tests.ai_mocks import MockAIProvider
 from tests.test_minecraft_agent_confirm_gate import decide
@@ -95,7 +94,7 @@ class ChatStack:
         self.chat = MinecraftChatBridge(FakeBot(self.engine, self.runtime), self.service)  # type: ignore[arg-type]
         #: Phase 8E Follow-up 3：统一决策入口（真实 TurnDecision 契约的替身）。
         self.chat.turn_decisions = (
-            self.decision if self.decision is not None else TurnDecisionStub(TurnDecisionKind.CHAT)
+            self.decision if self.decision is not None else TurnDecisionStub()
         )
         #: 角色回合计数（§二十九：一条消息只能产生一个回合）
         self.turns = 0

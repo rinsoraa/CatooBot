@@ -17,7 +17,6 @@ from pydantic import ValidationError
 
 from app.tasks.intent import TaskIntentDetector
 from app.tasks.turn import TaskTurnOutcome
-from app.tasks.turn_decision import TurnDecisionKind
 from app.tasks.wood_intent import (
     Polarity,
     WoodIntent,
@@ -400,7 +399,7 @@ def test_non_wood_message_never_calls_the_model(tmp_path: Any) -> None:
             engine = ScriptedEngine(payload())
             turns, _ = wire(env, engine)
             # §4.1 语义变化：非木材消息现在走**统一回合决策**（一次），木材解释器不再被调用。
-            decision = TurnDecisionStub(TurnDecisionKind.CHAT)
+            decision = TurnDecisionStub()
             env.chat.turn_decisions = decision
             await env.say("IdSmoke8E", "今天天气不错")
             assert len(decision.calls) == 1, "统一决策恰好一次"
