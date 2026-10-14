@@ -343,3 +343,22 @@ Minecraft chat（不可信输入）
 **本轮裁决：PASS（本节范围内）** —— §6.1 真实入口防回落、§6.2 副作用计数、§6.5 日志隐私与 §7 变异验证全部取得自动化证据；Phase 8E 的 PARTIAL 在本 Follow-up 关闭（发布与 CI 证据见 CHANGELOG 与提交链）。
 
 限制（不夸大）：真实 provider 仍未运行（解释器行为只在脚本化替身下验证）；查询/叙述改走普通对话后由角色回合回答，其**内容质量**不在本阶段范围；`OTHER → SAFE_CLARIFY` 是本轮选定的明确策略（§4.2 允许「普通对话或安全澄清」，此处选澄清以免对看似动作请求的消息静默忽略）。
+
+### §14.10 发布与 CI（实测）
+
+| 项 | 值 |
+| --- | --- |
+| 实现提交 | **`f1ef44532102db2605366ef0c015c646b9b6c758`**（`Phase 8E Follow-up: wood routing closure & log privacy`；9 文件 **+1069/−46**） |
+| 提交纪律 | 独立实现提交；**未 reset、未 force-push、未改写** 8D / 8D Follow-up / 8D Follow-up 2 / 8E 历史 |
+| 远端 / 镜像 | 镜像 == `origin/main` == 实现提交；**290 commits**；工作区干净；`scripts/` **0 tracked** |
+| CI run | **38554613584**（https://github.com/rinsoraa/CatooBot/actions/runs/38554613584） |
+| attempt | **1**（一次通过；**无 flake、无重跑**） |
+| 两个 job | `lint · format · types · tests` **success**；`webui · typecheck · tests · build` **success** |
+| CI 上 pytest | **4121 passed, 3 skipped in 325.88s**（= 本地 4124 − 3 条既有平台条件性 skip；新增 19 项**无一被跳过**） |
+| CI 上 Browser E2E | **7 passed (21.3s)** |
+| CI 上 `minecraft_runtime` | find-blocks-test ALL CHECKS PASSED；e2e `bridge auth boundary + runtime instance ✓`；e2e ALL CHECKS PASSED |
+| CI 上 ruff format / mypy | 665 files already formatted（CI 只见镜像内文件）；Success: no issues found in 338 source files |
+| 改动文件清单 | `app/integrations/minecraft/chat_bridge.py`、`app/tasks/wood_intent.py`、`tests/test_phase8e_followup_routing_closure.py`（新增）、`tests/test_phase8e_followup_log_privacy.py`（新增）、`tests/test_phase8d_wood_routing.py`、`tests/test_phase8e_wood_intent.py`、`docs/MINECRAFT_PHASE8E.md`、`CHANGELOG.md`、任务书归档 |
+| 受保护文件 | `git diff --name-only` 对 `agent.py`（`ACTION_RISK`）、`config/settings.py`（`allow_medium`）、`database/database.py`（迁移）、`tasks/runtime.py`、`tasks/validation.py`、`tasks/planner.py`、`tools/registry.py`、`tools/builtins/` **全部零命中** |
+| 真机门禁 | **不适用**（本轮只改分类路由与日志，未触碰动作/授权/执行链；按任务书 §10.8 声明范围，**不等于**真机链路经本轮验证） |
+| 裁决 | **PASS**（本节范围；Phase 8E 的 PARTIAL 由此关闭） |

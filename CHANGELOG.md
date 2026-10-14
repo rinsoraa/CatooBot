@@ -26,6 +26,10 @@
   隐私测试 **1 failed**（日志出现敏感标记）。恢复后无残留，`ruff check .` 通过。
 * **门禁**：木材全套 **202 passed**；较宽回归 **786 passed, 3338 deselected**；全量 `pytest tests -q` **4124 passed**
   （= 基线 4105 + 19）；`ruff check .` All checks passed；`ruff format --check .` **686 files**；`mypy app` Success（338 files）。
+* **发布 / CI**：实现提交 `f1ef44532102db2605366ef0c015c646b9b6c758`（9 文件 +1069/−46）；镜像 == `origin/main` == 该提交（290 commits，工作区干净）；
+  CI run [38554613584](https://github.com/rinsoraa/CatooBot/actions/runs/38554613584) **attempt 1 两个 job 均 success**（无 flake、无重跑）：
+  CI 上 pytest **4121 passed, 3 skipped**（= 本地 4124 − 3 条既有平台 skip，新增 19 项无一被跳过）、Browser E2E **7 passed**、`minecraft_runtime` 全绿。
+  受保护文件（`ACTION_RISK` / `allow_medium` / 迁移 / `TaskRuntime` / 预算 / 木材计划 / 工具 schema）零改动；凭据扫描 0 命中；`scripts/` 仍 0 tracked。
 * **真机门禁**：**不适用**（本轮只改分类路由与日志，未触碰动作/授权/执行链 —— 任务书 §10.8 允许按范围声明，
   但**不等于**真机链路经本轮验证）。真实 provider 仍未运行，未获准确率/延迟/token 成本数据。
 
