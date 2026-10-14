@@ -436,7 +436,8 @@ M1/M4/M5/M6/M7 沿用 FU3 的捕获记录；**M2/M3 缺口本轮闭合**：夹�
 | `pytest tests -q` | **4207 passed**（679.99s；= FU3 基线 4182 + 本轮新增 25） |
 | 新套件 | `test_phase8e_followup4_context.py` **9 passed**；`test_phase8e_followup4_routing.py` **16 passed** |
 | 受影响既有套件（桥接/8A/8C/8D/8E 全家） | **211 passed**（架构变更未放宽任何断言） |
-| `ruff check .` / `ruff format --check .` / `mypy app` | 见 §17.10 发布记录 |
+| `ruff check .` / `ruff format --check .` / `mypy app` | All checks passed / **694 files** / Success（**340** files） |
+| `git diff --check` / 凭据扫描 | exit 0 / **0 命中** |
 
 ### §17.10 未验证事项与裁决
 
@@ -447,6 +448,23 @@ M1/M4/M5/M6/M7 沿用 FU3 的捕获记录；**M2/M3 缺口本轮闭合**：夹�
 * 上下文覆盖「会话末 4 条 + 六大来源」，更丰富的世界语义/长期记忆检索策略留待后续阶段。
 * 木材参数仍是**确定性**解析（`parse_wood_request`），关键词不再主导路由但参数仍由确定性代码校验（刻意取舍）。
 * 裁决：**PARTIAL**（核心工程任务完成并通过门禁；真实 Provider 验证缺失，按 §9.4 不得判 PASS）。
+
+### §17.11 发布与 CI（实测）
+
+| 项 | 值 |
+| --- | --- |
+| 实现提交 | **`46ead00f306374e7a3e15e29181ee41d5bc9ba50`**（`Phase 8E Follow-up 4: context-grounded LLM decision & semantic routing`；**11 文件 +2434/−26**） |
+| 提交纪律 | 独立实现提交；**未 reset、未 force-push、未改写**任何已发布历史 |
+| 远端 / 镜像 | 镜像 == `origin/main` == 实现提交；**296 commits**；工作区干净；`scripts/` **0 tracked** |
+| CI run | **38606291766**（https://github.com/rinsoraa/CatooBot/actions/runs/38606291766） |
+| attempt | **1**（一次通过；**无 flake、无重跑**） |
+| 两个 job | `lint · format · types · tests` **success**；`webui · typecheck · tests · build` **success** |
+| CI 上 pytest | **4204 passed, 3 skipped in 353.01s**（= 本地 4207 − 3 条既有平台条件性 skip；新增 **25 项无一被跳过**） |
+| CI 上 Browser E2E | **7 passed (21.9s)** |
+| CI 上 `minecraft_runtime` | find-blocks-test ALL CHECKS PASSED；e2e `bridge auth boundary + runtime instance ✓`；e2e ALL CHECKS PASSED |
+| CI 上 ruff format / mypy | 673 files already formatted（CI 只见镜像内文件）；Success: no issues found in 340 source files |
+| 真机门禁 | **不适用**（本轮只改聊天路由与上下文读取，未触碰动作/授权/执行链；**不等于**真机链路经本轮验证） |
+| 裁决 | **PARTIAL**（§17.10：真实 Provider = SKIPPED，按任务书 §9.4 不得判 PASS） |
 ## §16 Phase 8E Follow-up 3 — 通用 LLM 回合决策契约与统一路由
 
 基线 `4acd53d2fa559cf4e10ef4cd62f9f667c29f1fc2`（8E Follow-up 2 最终证据提交，293 commits）。

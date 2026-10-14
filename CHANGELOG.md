@@ -16,7 +16,14 @@
   世界/背包**真实查询闭环**、控制非阻塞、并发隔离、M2/M3 夹具）；受影响既有套件 211 passed（未放宽断言）。
 * **变异 M2/M3 缺口闭合**：两处变异均使目标用例 1 failed，恢复后 1 passed，`residue: False`。
 * **真实 Provider：SKIPPED**（`load_config()` 实测 6 个 provider / 0 个可用 api_key）→ 按 §9.4 **裁决 PARTIAL**。
-* **门禁**：全量 `pytest tests -q` **4207 passed**（= FU3 基线 4182 + 25）。
+* **门禁**：全量 `pytest tests -q` **4207 passed**（= FU3 基线 4182 + 25）；`ruff check .` All checks passed；`ruff format --check .` 694 files；
+  `mypy app` Success（340 files）；迁移演练 version [36,36] / integrity [ok,ok] / tables [83,83] / added_tables [] / lost_rows {}（无新表无新迁移）。
+* **发布 / CI**：实现提交 `46ead00f306374e7a3e15e29181ee41d5bc9ba50`（11 文件 +2434/−26）；镜像 == `origin/main` == 该提交（296 commits，工作区干净）；
+  CI run [38606291766](https://github.com/rinsoraa/CatooBot/actions/runs/38606291766) **attempt 1 两个 job 均 success**（无 flake、无重跑）：
+  CI 上 pytest **4204 passed, 3 skipped**（= 本地 4207 − 3 条既有平台 skip，新增 25 项无一被跳过）、Browser E2E **7 passed**、`minecraft_runtime` 全绿。
+  受保护文件（`ACTION_RISK` / `allow_medium` 默认 / 迁移 / `TaskRuntime` / 预算 / 木材计划 / 工具 schema）零改动；凭据扫描 0 命中；`scripts/` 仍 0 tracked。
+* **裁决：PARTIAL** —— 核心工程目标达成且门禁全绿，但真实 Provider 语义验证（任务书 §9）因环境中 **6 个 provider / 0 个可用 api_key** 而 SKIPPED；
+  按任务书 §9.4「Provider 跳过必须 PARTIAL」，不以脚本化替身冒充真实模型性能。
 ## Minecraft Phase 8E Follow-up 3 — 通用 LLM 回合决策契约与统一路由
 
 * **性质**：把「Minecraft 聊天怎么被路由」从**硬编码分支顺序**换成**类型化的统一决策入口**。
