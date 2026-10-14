@@ -537,6 +537,39 @@ stop 3/4、narration 2/4、cancel 2/4。
 * 样本集（42 条）与标签由我编写（已披露 2 处修正与两种口径），**不是独立第三方基准**；
 * 该结论只说明**模型在本样本集上的决策质量**；**真实 Provider ≠ 真实 Minecraft 连接** —— 真实世界动作的结论仍必须来自既有执行链 + 服务器状态 + 独立结果验证；
 * 真实世界侧本轮**未新增真机证据**（本轮只改提示词、超时与本地评测标签，未触碰动作/授权/执行链）。
+
+#### 17.12.10 第 5 轮（用户批准的 (a)(b)）
+
+**(a) 补齐 `task_proposal` 缺口的示例 —— 达标**：提示词新增通用规则「需要完成一个有限目标用 task_proposal 并给出 task_goal；
+例如采集木材（砍点木头/砍两根橡木）、跟随玩家（跟着我/过来我身边）、走到某处、探索附近（到处走走看看）—— **即使没说数量或树种也要用 task_proposal**，
+缺的参数交给系统按默认值处理」。
+
+| 轮次 | accuracy | 成功率 | 重试>1 | task_proposal | narration | stop | cancel |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| 4 | 0.9048（38/42） | 1.0 | 0 | 3/6 | 4/4 | 6/6 | 4/4 |
+| **5** | **0.9524（40/42）** | **1.0** | **0** | **6/6** | 4/4 | 6/6 | 4/4 |
+
+剩余 2 处：`chat → narration` 1 处（老问题）；**新增 `clarify → task_proposal` 1 处** —— 示例增强了任务倾向，把一个我标 `clarify` 的样本推成 `task_proposal`，
+是真实权衡，如实记录。
+
+**(b) 真机侧验证 —— 未取得通过证据（如实记 BLOCKED）**：新增本地专用 `scripts/turn_decision_smoke_real.py`（不发布），
+复用 `explore_smoke_real` 引导 + `route_trace_smoke_real.Stack` + `wood_gathering_smoke_real.Env/_speak/_make_plans`，
+并把**真实 Provider** 接进统一决策入口（`stack.chat.turn_decisions = TurnDecisionInterpreter(AIEngine(config.ai, None))`）。
+
+实测（真实 Java 1.21.1 + Fabric + 真实 runtime + 真实游戏内聊天）：场景 1 世界查询 **FAIL**（路由证据有、工具 trace 空）、场景 2 背包查询 **FAIL**（同上）、
+场景 3 闲聊 **PASS**（零工具零任务）、场景 4 多步目标 **FAIL**（未创建任务；确认前零世界修改该断言通过）。
+
+**根因已定位（脚本装配问题，非产品缺陷）**：诊断输出 `bot=FakeBot has_char=True has_task_turns=False has_plans=False` ——
+`route_trace_smoke_real.Stack` 的 FakeBot **没有** `task_turns`/`agent_plans`，所以多步目标到不了既有任务入口、查询路径也拿不到工具执行接线；
+真实引擎正常（`enabled=True`）、解释器注入成功（`interp=TurnDecisionInterpreter`）。
+
+**下一步（明确最小）**：把木材门禁里的服务装配（`_make_plans` 之后的 `bot.task_turns`/`bot.agent_plans` 注入）补到本脚本的 Stack，
+并每回合打印**决策结论本身**（kind/route/reason），把「产品决策」与「脚本接线」彻底区分；在此之前 (b) **不得记 PASS**。
+
+#### 17.12.11 本轮裁决
+
+* (a) **达标**（0.9524 ≥ 0.90，成功率 1.0、零重试）；(b) **未达标**（真机侧未取得通过证据，已定位到具体属性）。
+* 综合**维持 PARTIAL**；重申 **真实 Provider ≠ 真实 Minecraft 连接** —— 真实世界结论必须来自既有执行链 + 服务器状态 + 独立结果验证。
 ### §17.11 发布与 CI（实测）
 
 | 项 | 值 |

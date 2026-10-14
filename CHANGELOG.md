@@ -1,5 +1,18 @@
 # Changelog
 
+## Minecraft Phase 8E Follow-up 4 — 语义验证第 5 轮（task_proposal 达标）与真机侧 BLOCKED
+
+* **(a) 达标**：提示词新增通用规则「需要完成一个有限目标用 task_proposal 并给出 task_goal；例如采集木材（砍点木头/砍两根橡木）、
+  跟随玩家、走到某处、探索附近 —— **即使没说数量或树种也要用 task_proposal**，缺的参数交给系统按默认值处理」。
+  实测（同一 42 样本集）：accuracy **0.9048 → 0.9524（40/42）**，成功率 **1.0**，**零重试**；`task_proposal` 由 3/6 → **6/6**。
+  剩余 2 处如实记录：`chat → narration` 1 处（老问题）、**新增 `clarify → task_proposal` 1 处**（示例增强了任务倾向导致的真实权衡，不是纯提升）。
+* **(b) 未达标（如实记 BLOCKED）**：新增本地专用 `scripts/turn_decision_smoke_real.py`（不发布），把**真实 Provider** 接进统一决策入口，
+  在真实 Java 1.21.1 + Fabric + 真实 runtime + 真实游戏内聊天下验证；场景 3 闲聊 PASS，但场景 1/2 查询**零工具执行**、场景 4 多步目标**未创建任务**。
+  **根因已定位（脚本装配问题，非产品缺陷）**：诊断输出 `bot=FakeBot has_char=True has_task_turns=False has_plans=False` —— 该 Stack 的 FakeBot 缺 `task_turns`/`agent_plans`，
+  导致任务入口与工具执行接线不可达；真实引擎正常（`enabled=True`）、解释器注入成功。
+  **下一步（最小）**：把木材门禁的服务装配补到该 Stack，并每回合打印决策结论本身（kind/route/reason），以区分「产品决策」与「脚本接线」。**在此之前 (b) 不得记 PASS。**
+* **裁决维持 PARTIAL**：语义质量达标，但用户要求的真机侧端到端验证尚未取得通过证据；重申 **真实 Provider ≠ 真实 Minecraft 连接**。
+
 ## Minecraft Phase 8E Follow-up 4 — 语义验证四项改进（准确率达标 90.5%）
 
 * 用户批准的四项全部实施：
