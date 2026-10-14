@@ -38,8 +38,15 @@ from app.tasks.intent import (
     mentions_wood,
     parse_wood_request,
 )
+from app.tasks.turn_decision import (
+    REASON_ENGINE_MISSING,
+    TurnDecisionInterpreter,
+    TurnDecisionKind,
+    TurnDecisionOutcome,
+)
 from app.tasks.wood_intent import Polarity, WoodIntent, WoodIntentInterpreter
-from app.tools.models import RouteTarget, RouteTrace, new_route_id
+from app.tools.models import RouteTarget, RouteTrace, ToolCall, new_route_id
+from app.tools.policy import TurnBudget
 
 if TYPE_CHECKING:  # pragma: no cover
     from app.core.bot import Bot
@@ -134,6 +141,9 @@ class MinecraftChatBridge:
         #: Phase 8E：木材意图解释器（**唯一决策源**）。可由装配/测试注入；
         #: 未注入时用既有 AIEngine 惰性构造（不新建 provider 或凭据）。
         self.wood_intent: Any = None
+        #: Phase 8E Follow-up 3：**统一**回合决策解释器（所有 MC 自然语言消息先经它）。
+        #: 同样支持注入；未注入时用同一个既有 AIEngine 惰性构造。
+        self.turn_decisions: Any = None
 
     # ------------------------------------------------------------ 配置/门禁
 
@@ -269,28 +279,56 @@ class MinecraftChatBridge:
         return chat_session_id(connection.get("host"), connection.get("port"), username)
 
     async def _task_reply(self, username: str, session_id: str, message: str) -> _TurnReply:
-        """任务侧的回答（``None`` = 这句话不归任务管，走正常对话）。
+        """统一回合决策入口（Phase 8E Follow-up 3，见 docs/MINECRAFT_PHASE8E.md §16）。
 
-        任务运行时没装配、或者识别不出任务意图时一律返回 ``None`` —— 普通对话
-        仍然是普通对话（§九十九）。
+        顺序（任务书 §4.1 / §7.1）：
+
+        1. **确定性控制优先**：停止/取消/确认/状态查询/活动任务 busy 由既有确定性检测器
+           判定并交回既有任务入口 —— **绝不等待模型**（停止不依赖 LLM 的可用性/速度）；
+        2. 其余自然语言消息**一律**先经 ``TurnDecisionInterpreter``（统一 LLM 决策入口）；
+        3. 按 9 类 kind 路由到**既有**审计过的路径；任何失败都安全澄清。
+
+        模型只决定「用户想表达什么」：权限、参数校验、Policy、确认门、步骤授权、冻结
+        计划、TaskRuntime 与最终库存验证全部仍由既有确定性链路负责。
         """
         handler = getattr(self.bot, "task_turns", None)
         if handler is None:
             return _TurnReply()
-        # Phase 8E：木材意图交给**独立 LLM 解释器**判定（它只说「用户想表达什么」）。
-        # 权限、参数校验（parse_wood_request + 支持树种矩阵）、SAFE 观察、Policy、
-        # 冻结计划、预览、确认门、步骤授权、TaskRuntime 与最终库存验证全部不变，
-        # 仍由既有确定性链路负责。控制命令 / 状态查询 / 活动任务 busy 的优先级保持
-        # 不变（先交回任务入口）；解释器失败一律失败关闭，绝不回落旧单目标模板。
+        # 1) 确定性控制（不等待模型）。
+        control = await self._control_turn(handler, username, session_id, message)
+        if control is not None:
+            return control
+        # 2) 统一 LLM 决策入口。
+        decision_outcome = await self._decide_turn(session_id, message)
+        if not decision_outcome.ok:
+            # §3.3：无效输出/超时/未知能力等一律**安全澄清**，绝不降级进执行路径。
+            return _TurnReply(
+                self._decision_clarify(session_id, message, decision_outcome.reason_code)
+            )
+        # 2a) 木材消息仍走既有确定性木材链（§4.3）：正向 = 既有校验 + 计划链；
+        #     否定/歧义/非法参数 = 明确不做或澄清，**绝不**回落通用 Agent/Tool。
         if mentions_wood(message):
-            decision = await self._wood_route(handler, username, session_id, message)
-            if decision.route is _WoodRoute.NORMAL_CHAT:
-                # §4.2：查询/叙述由角色对话回答，但**本回合能力受限**（CHAT_ONLY）：
-                # 既不经过可创建任务的旧入口，也不允许 Agent/Tool（Follow-up 2）。
+            wood = await self._wood_route(handler, username, session_id, message)
+            if wood.route is _WoodRoute.NORMAL_CHAT:
                 return _TurnReply(None, CharacterTurnMode.CHAT_ONLY)
-            if decision.reply is not None:
-                return _TurnReply(decision.reply)
-            # _WoodRoute.DELEGATE_CONTROL：交回既有确定性控制/忙碌处理。
+            if wood.reply is not None:
+                return _TurnReply(wood.reply)
+            if wood.route is not _WoodRoute.DELEGATE_CONTROL:
+                return _TurnReply()
+            # §7.1：木材链把控制权交回来时，**直接给既有任务入口**（不经过决策结果，
+            # 否则一个「取消，别砍树了」会因为决策类别是 CHAT 而变成纯聊天）。
+            return await self._delegate_task(handler, username, session_id, message)
+        kind = (
+            decision_outcome.decision.kind
+            if decision_outcome.decision is not None
+            else TurnDecisionKind.CHAT
+        )
+        routed = await self._route_turn(
+            handler, username, session_id, message, kind, decision_outcome
+        )
+        if routed is not None:
+            return routed
+        # 3) CANCEL/STOP（模型报告）与木材 DELEGATE_CONTROL：交回既有任务入口。
         try:
             outcome = await handler.handle(session_id=session_id, user_id=username, text=message)
         except Exception as exc:  # noqa: BLE001 - 任务入口坏了也不能让游戏内聊天没反应
@@ -299,9 +337,7 @@ class MinecraftChatBridge:
             )
             return _TurnReply()
         if not outcome.handled or not outcome.reply:
-            # Phase 8C：任务入口没接管的，再看是不是一条**多步目标**（跟随/有界探索）；
-            # 不是就照样还回角色回合（返回 None）。QQ 路径完全不经这里。
-            return _TurnReply(await self._plan_reply(username, session_id, message))
+            return _TurnReply()
         # Phase 8A：任务侧接走这句话也是一条**路由结论**（TASK + 任务 ID 可关联）。
         self._route(
             reason_code="task_handled",
@@ -318,6 +354,288 @@ class MinecraftChatBridge:
             username,
         )
         return _TurnReply(outcome.reply)
+
+    # ------------------------------------------ Phase 8E Follow-up 3：统一决策入口
+
+    async def _control_turn(
+        self, handler: Any, username: str, session_id: str, message: str
+    ) -> _TurnReply | None:
+        """确定性控制优先（``None`` = 不是控制/状态/忙碌，继续走统一决策）。
+
+        控制权在**确定性检测器**手里，绝不因为要等模型而延迟停止（§7.1）。
+        """
+        # 极简替身（测试里的 handler 只有 handle()）：回退到同一个模块级确定性检测器，
+        # 而不是把控制权让给模型 —— §7.1 要求停止/取消永远不依赖模型。
+        detector = getattr(handler, "detector", None) or _DETECTOR
+        reader = getattr(handler, "current_task", None)
+        if callable(reader):
+            try:
+                current = await reader(session_id)
+            except Exception:  # noqa: BLE001 - 取当前任务失败就按「没有活动任务」处理
+                current = None
+        else:
+            current = None
+        active = current is not None and not bool(getattr(current.state, "terminal", True))
+        # 控制词出现在句首（如「取消，别砍树了」）也算控制命令：停止/取消**绝不等模型**。
+        stripped = str(message or "").strip()
+        prefix_control = any(stripped.startswith(item) for item in _WOOD_CONTROL_PREFIXES)
+        try:
+            if prefix_control or detector.control_command(message):
+                return await self._delegate_task(handler, username, session_id, message)
+            if active and detector.status_query(message):
+                return await self._delegate_task(handler, username, session_id, message)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("[MC Chat] 控制判定失败：error_type=%s", type(exc).__name__)
+            return None
+        if active:
+            # 活动任务期间保持既有 busy 语义（不因等模型而延迟或叠加新工作）。
+            return await self._delegate_task(handler, username, session_id, message)
+        return None
+
+    async def _delegate_task(
+        self, handler: Any, username: str, session_id: str, message: str
+    ) -> _TurnReply:
+        """交回既有任务入口（控制/状态/忙碌的唯一权威）。"""
+        try:
+            outcome = await handler.handle(session_id=session_id, user_id=username, text=message)
+        except Exception as exc:  # noqa: BLE001
+            log.warning(
+                "[MC Chat] 任务入口处理失败（%s）：error_type=%s", username, type(exc).__name__
+            )
+            return _TurnReply()
+        if not outcome.handled or not outcome.reply:
+            return _TurnReply()
+        self._turn_route(
+            session_id,
+            message,
+            RouteTarget.TASK.value,
+            "task_handled",
+            task_id=str(outcome.task_id or ""),
+        )
+        log.info(
+            "[MC Task] action=%s task=%s state=%s（%s）",
+            outcome.action,
+            outcome.task_id or "-",
+            outcome.state or "-",
+            username,
+        )
+        return _TurnReply(outcome.reply)
+
+    def _decision_interpreter(self) -> Any:
+        """统一决策解释器（可注入；否则用同一个既有 AIEngine 惰性构造）。"""
+        injected = getattr(self, "turn_decisions", None)
+        if injected is not None:
+            return injected
+        engine = getattr(self.bot, "ai", None)
+        if engine is None or not callable(getattr(engine, "chat", None)):
+            return None
+        self.turn_decisions = TurnDecisionInterpreter(engine)
+        return self.turn_decisions
+
+    async def _decide_turn(self, session_id: str, message: str) -> TurnDecisionOutcome:
+        """一次有界的统一决策（解释器契约是永不抛，这里再兜一层）。"""
+        interpreter = self._decision_interpreter()
+        if interpreter is None:
+            return TurnDecisionOutcome(None, REASON_ENGINE_MISSING, 0, 0.0, {})
+        recent: list[str] = []
+        try:
+            context = await self.bot.ai.conversations.get_context(session_id)
+            recent = [str(item)[:240] for item in list(context)[-4:]]
+        except Exception:  # noqa: BLE001 - 拿不到上下文就少给一点，不影响安全
+            recent = []
+        try:
+            return await interpreter.decide(message=message, recent_context=tuple(recent))
+        except Exception as exc:  # noqa: BLE001
+            log.warning("[MC Turn] 决策异常：error_type=%s", type(exc).__name__)
+            return TurnDecisionOutcome(None, REASON_ENGINE_MISSING, 0, 0.0, {})
+
+    async def _route_turn(
+        self,
+        handler: Any,
+        username: str,
+        session_id: str,
+        message: str,
+        kind: Any,
+        outcome: TurnDecisionOutcome,
+    ) -> _TurnReply | None:
+        """九类决策 → 既有路径（``None`` = 交回既有任务入口）。"""
+        decision = outcome.decision
+        if kind in (TurnDecisionKind.CHAT, TurnDecisionKind.NARRATION):
+            self._turn_route(
+                session_id, message, RouteTarget.CHAT_ONLY.value, f"decision_{kind.value}"
+            )
+            return _TurnReply(None, CharacterTurnMode.CHAT_ONLY)
+        if kind is TurnDecisionKind.CLARIFY:
+            question = str(getattr(decision, "clarification_question", "") or "")
+            self._turn_route(session_id, message, RouteTarget.CLARIFY.value, "decision_clarify")
+            return _TurnReply(question or "我不太确定你想让我做什么，可以说得再具体一点吗？")
+        if kind is TurnDecisionKind.UNSUPPORTED:
+            self._turn_route(session_id, message, RouteTarget.BLOCKED.value, "decision_unsupported")
+            return _TurnReply(self._decision_text(decision, "这件事我现在还做不到。"))
+        if kind in (TurnDecisionKind.QUERY, TurnDecisionKind.ATOMIC_ACTION):
+            return await self._run_capability(username, session_id, message, kind, decision)
+        if kind is TurnDecisionKind.TASK_PROPOSAL:
+            # 先给**既有任务入口**一次机会：资源任务/控制/状态的既有权威路径就是它
+            # （8D 的单目标资源模板），跳过它会直接砍掉既有能力。
+            delegated = await self._delegate_task(handler, username, session_id, message)
+            if delegated.reply is not None:
+                return delegated
+            # 再走 follow/explore 计划层；两者都不认 → 安全澄清（绝不回落工具执行）。
+            planned = await self._plan_reply(username, session_id, message)
+            if planned is not None:
+                return _TurnReply(planned)
+            # 8C Follow-up 语义：形状已识别但计划层没装配 → plan_service_unavailable；
+            # 其余情况才是「这个目标我还没有安全做法」。
+            layer_missing = getattr(self.bot, "agent_plans", None) is None
+            self._turn_route(
+                session_id,
+                message,
+                RouteTarget.BLOCKED.value,
+                "plan_service_unavailable" if layer_missing else "decision_unsupported",
+            )
+            return _TurnReply(self._decision_text(decision, "这件事我还没有能安全执行的做法。"))
+        if kind in (TurnDecisionKind.CANCEL, TurnDecisionKind.STOP):
+            return None  # 交回既有控制路径（唯一权威）
+        return _TurnReply(None, CharacterTurnMode.CHAT_ONLY)
+
+    async def _run_capability(
+        self, username: str, session_id: str, message: str, kind: Any, decision: Any
+    ) -> _TurnReply:
+        """执行**单个**已审计能力：schema 校验 → Policy → 工具 → AgentBridge → Service。
+
+        走的是既有 ``ToolExecutor.execute``（它自己会做参数校验与 ``policy.authorize``），
+        不新增任何执行旁路；能力白名单由 ``turn_decision`` 的可信常量界定。
+        """
+        capability = str(getattr(decision, "capability_id", "") or "")
+        arguments = dict(getattr(decision, "arguments", {}) or {})
+        spoken = self._decision_text(decision, "")
+        executor = getattr(
+            getattr(getattr(self.bot, "character", None), "tools", None), "executor", None
+        )
+        context = await self._turn_context(username, session_id)
+        if executor is None or not capability or context is None:
+            self._turn_route(session_id, message, RouteTarget.BLOCKED.value, "capability_disabled")
+            return _TurnReply(spoken or "我现在没法去做这件事。")
+        label = str(getattr(kind, "value", kind) or "action")
+        try:
+            result = await executor.execute(
+                ToolCall(name=capability, arguments=arguments, reason=f"decision_{label}"),
+                context,
+                TurnBudget(max_calls=1),
+            )
+        except Exception as exc:  # noqa: BLE001 - 工具层契约是不抛，这里再兜一层
+            log.warning("[MC Turn] 能力执行异常：error_type=%s", type(exc).__name__)
+            self._turn_route(session_id, message, RouteTarget.MINECRAFT_TOOL.value, "action_failed")
+            return _TurnReply(spoken or "我试了一下，没成功。")
+        success = bool(getattr(result, "success", False))
+        self._turn_route(
+            session_id,
+            message,
+            RouteTarget.MINECRAFT_TOOL.value,
+            "action_succeeded"
+            if success
+            else str(getattr(result, "error_type", "") or "action_failed"),
+        )
+        if not success:
+            return _TurnReply(spoken or "我试了一下，没成功。")
+        return _TurnReply(spoken or self._observed_text(capability, result))
+
+    async def _turn_context(self, username: str, session_id: str) -> Any:
+        """既有工具上下文（``INTENT_KEY`` 由 ``TurnOrigin`` 派生，调用方无法手写）。"""
+        character = getattr(self.bot, "character", None)
+        builder = getattr(character, "_tool_context", None)
+        if builder is None:
+            return None
+        try:
+            built = builder(
+                session_id=session_id,
+                user_id=username,
+                time_context=self._time_context(),
+                is_group=False,
+                turn_origin=TurnOrigin.USER,
+                origin_metadata={PLAYER_KEY: username},
+            )
+            if hasattr(built, "__await__"):
+                built = await built
+            return built
+        except Exception as exc:  # noqa: BLE001
+            log.warning("[MC Turn] 工具上下文构造失败：error_type=%s", type(exc).__name__)
+            return None
+
+    @staticmethod
+    def _decision_text(decision: Any, fallback: str) -> str:
+        text = str(getattr(decision, "reply_text", "") or "").strip()
+        return text or fallback
+
+    @staticmethod
+    def _observed_text(capability: str, result: Any) -> str:
+        """把**真实**工具结果说成人话（抽不出来就说不确定，绝不编造）。"""
+        if capability == "minecraft_stop":
+            return "停下来了。"
+        if capability == "minecraft_look_at":
+            return "我看过去了。"
+        data = getattr(result, "data", None)
+        if capability == "minecraft_find_blocks" and isinstance(data, dict):
+            matches = data.get("matches") or []
+            if not matches:
+                return "附近没看到这类方块。"
+            names = sorted(
+                {
+                    str((item.get("block") or {}).get("name") or "")
+                    for item in matches
+                    if isinstance(item, dict)
+                }
+                - {""}
+            )
+            label = "、".join(names) or "方块"
+            return f"附近看到 {len(matches)} 个{label}。"
+        if capability == "minecraft_inventory" and isinstance(data, dict):
+            items = data.get("items") or []
+            held = data.get("held_item")
+            held_name = str(held.get("name") or "") if isinstance(held, dict) else ""
+            if not items:
+                return "我身上现在是空的。"
+            return f"我身上有 {len(items)} 样东西" + (
+                f"，手里拿着 {held_name}。" if held_name else "。"
+            )
+        if capability == "minecraft_world" and isinstance(data, dict):
+            position = data.get("position")
+            if isinstance(position, dict) and position:
+                where = f"我在 ({position.get('x')}, {position.get('y')}, {position.get('z')})"
+                dimension = str(data.get("dimension") or "")
+                return where + (f"，{dimension}。" if dimension else "。")
+        summary = str(getattr(result, "summary", "") or "").strip()
+        return summary or "我看过了。"
+
+    def _decision_clarify(self, session_id: str, message: str, reason_code: str) -> str:
+        """决策失败/歧义 → 安全澄清（原因码由**可信代码**生成）。"""
+        raw = str(reason_code or "unknown")
+        code = raw if raw.startswith("decision_") else f"decision_{raw}"
+        self._turn_route(session_id, message, RouteTarget.CLARIFY.value, code)
+        if raw in ("decision_timeout", "decision_model_error", "decision_engine_unavailable"):
+            return "我刚才没想清楚，你再说一遍？"
+        return "这句话我没太理解，你是想让我做什么？"
+
+    def _turn_route(
+        self,
+        session_id: str,
+        message: str,
+        route_target: str,
+        reason_code: str,
+        *,
+        task_id: str = "",
+    ) -> None:
+        """结构化路由证据（记账失败绝不影响执行）。"""
+        try:
+            self._route(
+                reason_code=reason_code,
+                route_target=route_target,
+                session_id=session_id,
+                task_id=task_id,
+                text_chars=len(message),
+            )
+        except Exception as exc:  # noqa: BLE001
+            log.debug("[MC Turn] 路由记账失败：error_type=%s", type(exc).__name__)
 
     # ---------------------------------------------------------- Phase 8D：木材采集
 

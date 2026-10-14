@@ -16,9 +16,11 @@ from typing import Any
 from app.character.turn import TurnOrigin
 from app.integrations.minecraft.chat_bridge import MAX_INFLIGHT
 from app.tasks.turn import TaskTurnOutcome
+from app.tasks.turn_decision import TurnDecisionKind
 from app.tools.models import RouteTarget
 from tests.test_minecraft_agent_confirm_gate import decide
 from tests.test_minecraft_chat_bridge import stack
+from tests.turn_decision_stub import TurnDecisionStub
 
 
 def last_route(env: Any) -> Any:
@@ -146,7 +148,14 @@ async def test_stop_is_not_swallowed_by_the_chat_path(tmp_path: Any) -> None:
 
 async def test_multi_step_goal_routes_to_the_task_side(tmp_path: Any) -> None:
     """§4.3：需要编排的请求交给任务侧，并且不产生一次"裸工具调用"。"""
-    async with stack(tmp_path, "好，我去砍一棵橡树。") as env:
+    # §4.1：多步目标先经统一决策入口 → TASK_PROPOSAL → 既有任务入口接管。
+    async with stack(
+        tmp_path,
+        "好，我去砍一棵橡树。",
+        decision=TurnDecisionStub(
+            TurnDecisionKind.TASK_PROPOSAL, task_goal="去砍一棵橡树，挖一块原木并捡回来"
+        ),
+    ) as env:
         env.chat.bot.task_turns = FakeTurns()  # type: ignore[attr-defined]
         await env.say("空凛", "去砍一棵橡树，挖一块原木并捡回来")
         route = last_route(env)

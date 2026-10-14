@@ -365,6 +365,128 @@ Minecraft chat（不可信输入）
 
 ## §15 Phase 8E Follow-up 2 — 非肯定木材路由的角色回合能力隔离与零副作用闭环
 
+## §16 Phase 8E Follow-up 3 — 通用 LLM 回合决策契约与统一路由
+
+基线 `4acd53d2fa559cf4e10ef4cd62f9f667c29f1fc2`（8E Follow-up 2 最终证据提交，293 commits）。
+
+### §16.1 被修的架构问题（§4.1 明令禁止的形状）
+
+改动前的 `_task_reply` 是「先看消息里有没有木材词」：`if mentions_wood(message):` → 木材专用判定；
+否则 `handler.handle()`（既有任务入口）→ 未接管再 `_plan_reply`（follow/explore）→ 仍未接管才轮到角色回合。
+也就是说：**只有含「木头」的消息经过专用判断**，其余消息的去向由一个**硬编码的分支顺序**决定，
+没有任何统一的、类型化的「这句话想让我做什么」的决策结论，也没有可审计的 decision 证据。
+
+### §16.2 统一入口调用链（改动后）
+
+```
+minecraft.chat → MinecraftChatBridge._reply → _task_reply
+  1) _control_turn：确定性控制优先（控制词句首 / detector.control_command；活动任务的
+     状态查询；未终态 busy）→ 直达既有任务入口，**绝不等待模型**（§7.1）
+  2) _decide_turn：TurnDecisionInterpreter.decide(message, recent_context) → 契约校验后的 TurnDecisionOutcome
+  3) 决策失败（超时/异常/空/非法 JSON/schema）→ _decision_clarify 安全澄清（**绝不降级进执行路径**）
+  4) 木材消息（mentions_wood）→ 既有确定性木材链 _wood_route（§4.3：正向仍走既有校验+计划链；
+     否定/歧义/需澄清 = 明确不做或澄清；DELEGATE_CONTROL → 直达既有任务入口）
+  5) _route_turn：按 kind 分流九类 → CHAT/NARRATION→CHAT_ONLY 角色回合；CLARIFY→澄清；
+     UNSUPPORTED→BLOCKED；QUERY/ATOMIC_ACTION→_run_capability（单个已审计能力）；
+     TASK_PROPOSAL→既有任务入口优先，再计划层，最后 BLOCKED；CANCEL/STOP→既有控制路径
+```
+
+九类路由与副作用（`tests/test_phase8e_followup3_routing_matrix.py`，15 项，全绿）：
+
+| kind | 落点 | 工具 | Agent 面 | 任务 | action_id |
+| --- | --- | --- | --- | --- | --- |
+| CHAT / NARRATION | CHAT_ONLY 角色回合 | 0 | 0 | 0 | 无 |
+| QUERY | 单个只读白名单能力 | 恰好 1 次 | 0 | 0 | 视能力而定 |
+| ATOMIC_ACTION | 单个动作白名单能力 | 恰好 1 次 | 0 | 0 | 视能力而定 |
+| TASK_PROPOSAL | 既有任务入口 → 计划层 | 0 | 0 | 既有链 | 既有链 |
+| CLARIFY / UNSUPPORTED | 澄清 / BLOCKED | 0 | 0 | 0 | 无 |
+| CANCEL / STOP | 既有控制路径 | 0 | 0 | 既有语义 | 无 |
+| 决策失败 | 安全澄清（decision_* 原因码） | 0 | 0 | 0 | 无 |
+
+### §16.3 类型化决策契约（`app/tasks/turn_decision.py`）
+
+* `TurnDecisionKind` 九值：`chat/query/narration/atomic_action/task_proposal/clarify/unsupported/cancel/stop`。
+* `TurnDecision` 字段**恰好 6 个**（`kind/reply_text/capability_id/arguments/task_goal/clarification_question`），
+  `extra=forbid`；文本单行化、去控制字符、限长；`arguments` ≤8 键、键名受限、值只允许标量/标量列表。
+* 能力白名单**只有 5 个已审计能力**：只读 `minecraft_world/find_blocks/inventory/look_at` + 动作 `minecraft_stop`；
+  `minecraft_dig/place/attack/craft/container` **不在其中**（契约层直接 schema 失败）。
+* 禁止模型自授权限：`action_id/authorized/risk/allow_medium/trusted/executed/success` 等字段一律被拒。
+* 失败原因码由**可信代码**生成：`decision_model_error/timeout/empty_response/invalid_json/schema_invalid/
+  decision_engine_unavailable/unsupported_capability/parameter_validation_failed`；有界重试（≤2）且**保留首次真实原因**。
+* 解析严格：整段 JSON → 围栏 → 单对象候选；**绝不从任意文本里抠 JSON 交给执行器**。
+
+### §16.4 安全边界（不新增旁路）
+
+* QUERY/ATOMIC_ACTION 走既有 `ToolExecutor.execute`（**它自己就做 schema 校验 + `policy.authorize`**）→
+  ToolRegistry → ToolPolicy → MinecraftAgentBridge → MinecraftService → 既有 Action Runtime；未新增任何执行路径。
+* `ToolContext` 用既有 `CharacterRuntime._tool_context(turn_origin=TurnOrigin.USER)`（意图键由可信来源派生，调用方无法手写）。
+* 角色侧能力隔离继续用 FU2 的**每回合参数** `CharacterTurnMode.CHAT_ONLY`（不写任何全局开关）。
+* `ACTION_RISK`、19 工具、`allow_medium` 默认、`trusted_players`、两道确认门、任务授权、冻结计划、
+  参数指纹与 Action Runtime 生命周期**零改动**（见 §16.7 的逐文件核验）。
+
+### §16.5 本轮修掉的真实回归（由既有测试抓出来）
+
+1. **TASK_PROPOSAL 必须先问既有任务入口**：初版直接进 follow/explore 计划层，导致资源任务
+   （如「去砍一棵橡树，挖一块原木并捡回来」）无法再创建 —— 既有 `TaskTurnHandler` 才是它的权威路径。
+   现已改为「既有入口 → 计划层 → BLOCKED」，并由 `test_task_proposal_consults_the_existing_entry_first` 看住。
+2. **控制词出现在句首时不等模型**（如「取消，别砍树了」）：`detector.control_command` 对该串返回空，
+   因此新增句首前缀判定，直达既有入口；`test_control_prefix_never_waits_for_the_model` 断言**决策模型零调用**。
+3. **8C Follow-up 的 `plan_service_unavailable` 语义保留**：形状已识别但计划层未装配时仍报该码，
+   而不是笼统的 `decision_unsupported`。
+
+### §16.6 测试与变异（M1–M7）
+
+| 组 | 文件 | 数量 | 结果 |
+| --- | --- | --- | --- |
+| 决策契约 | `tests/test_phase8e_followup3_decision_contract.py` | 33 | 全绿 |
+| 路由矩阵（§9.2） | `tests/test_phase8e_followup3_routing_matrix.py` | 15 | 全绿 |
+| 受影响既有套件 | chat_bridge / 8A / 8C / 8D / 8E / FU1 / FU2 / 隐私 | — | 全部通过（见 §16.7） |
+
+**§9.3 允许的最小适配（语义确已变化，一律用真实契约替身 `TurnDecisionStub`，未放宽断言）**：
+`ChatStack` 新增 `decision=` 注入点（默认 CHAT）；8C 的 `wire()` 注入 TASK_PROPOSAL；
+8A 多步目标用例注入 TASK_PROPOSAL；FU2 的两条「NORMAL 模式」对照断言按新架构改为「一律 CHAT_ONLY」，
+并保留原有的全局开关反例断言（`tools.enabled is True`、`runtime.tools is chat.tools`）。
+
+| 变异 | 变异点 | 结果 |
+| --- | --- | --- |
+| M1 绕过统一入口 | `_task_reply` 直接 `_delegate_task` | **被捕获**：2 failed |
+| M2 普通聊天映射到可执行 Agent 路径 | CHAT/NARRATION 返回 `NORMAL` 模式 | **未被判别**（见 §16.8：候选检索为空 → 仍无工具/Agent 调用，属纵深防御） |
+| M3 无效输出继续进执行路径 | `if False and not decision_outcome.ok` | **未被判别**（kind 兜底 CHAT_ONLY + 木材链仍拦住，属纵深防御） |
+| M4 跳过既有任务入口 | TASK_PROPOSAL 直接进计划层 | **被捕获**：1 failed |
+| M5 STOP/CANCEL 依赖模型 | 关闭确定性控制判定 | **被捕获**：1 failed |
+| M6 异常正文写日志 | detail 追加 `error: str(exc)` | **被捕获**：1 failed |
+| M7 回合决策被缓存复用 | `_decide_turn` 缓存首次 outcome | **被捕获**：1 failed |
+
+每次变异后都按原字节恢复（`identical to original: True`），仓库内 `MUTATION` 残留 **False**。
+
+### §16.7 门禁与安全核验（实测）
+
+* `ruff check .` → All checks passed（exit 0）；`ruff format --check .` → **691 files**（exit 0）；
+  `mypy app` → Success: no issues found in **339** source files（exit 0）。
+* `pytest tests -q`（全量）→ **4182 passed in 613.86s**（exit 0；= 基线 4134 + 本轮新增 33 契约 + 15 矩阵 = 48 项，精确吻合）；无新增 skip。
+* `git diff --check` exit 0；改动文件凭据扫描 **0 命中**；`scripts/` 仍 **0 tracked**。
+* 受保护文件（`agent.py` / `config/settings.py` / `database/database.py` / `tasks/runtime.py` /
+  `tasks/validation.py` / `tasks/planner.py` / `tools/registry.py` / `tools/builtins/`）**零改动**。
+* 未新增工具/动作/表/迁移/配置项。
+
+### §16.8 未验证事项与如实限制
+
+* **真实 Provider：SKIPPED**。环境不调用真实模型服务，全部验证使用脚本化 provider；
+  因此**没有**准确率、误判分布、延迟或 token 成本数据，**不得**用替身冒充准确率。
+* M2/M3 两个变异未被自动测试判别（都是「纵深防御仍然拦住」的情形，已在 §16.6 逐条说明原因）。
+  它们对应的安全属性由矩阵测试的**零副作用断言**（零工具 / 零 Agent / 零任务）持续看住。
+* 上下文缺口如实记录：本阶段只把「玩家消息 + 最近 4 条会话摘要」给决策器，
+  **未接入**记忆、实时世界观察、身份解析结果、背包与能力目录 —— 这些是 FU4 的范围。
+* 木材质检仍在**决策之后**运行（`mentions_wood` 是确定性词法判断），
+  因此木材意图不需要模型也能被安全处理；非木材能力目录的语义精度仍受 provider 能力限制。
+
+### §16.9 裁决与发布
+
+* 实现提交：`Phase 8E Follow-up 3: general LLM turn decision contract & unified routing`（见 §16.9 的提交链）。
+* 提交纪律：实现提交与证据提交**分开**；M1–M7 变异只在工作树内临时进行并逐字节恢复；未 reset、未 force-push。
+* 裁决：**PASS**（本阶段范围内：所有 MC 自然语言消息经统一决策入口、九类路由全部落到既有已审计路径、
+  零副作用与真实哨兵断言齐备、本地与 CI 门禁全绿）。真实 Provider 语义验证列入 FU4。
+
 基线 `b4a05de4f8052445dda294600a1c2514c28a5cee`（实测 == `origin/main`，291 commits，工作区干净）。
 
 ### §15.1 问题：局部保证不够 —— 还剩两个执行面

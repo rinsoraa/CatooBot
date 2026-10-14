@@ -23,8 +23,10 @@ from app.integrations.minecraft.identity_context import (
     IdentityResolution,
 )
 from app.tasks.turn import TaskTurnOutcome
+from app.tasks.turn_decision import TurnDecisionKind
 from app.tools.models import RouteTarget
 from tests.test_minecraft_chat_bridge import stack
+from tests.turn_decision_stub import TurnDecisionStub
 
 MC_SESSION_PREFIX = "minecraft:"
 
@@ -142,6 +144,11 @@ def wire(
     bot.agent_plans = plans
     bot.proposals = proposals or FakeProposals()
     bot.character.identity_resolver = identity or FakeIdentityResolver(IdentityResolution.VERIFIED)
+    # §4.1：所有 Minecraft 自然语言消息先经统一决策入口；这些用例测的是「多步目标 →
+    # 计划层」，因此决策类别固定为 TASK_PROPOSAL（既有计划层路径不变，断言不变）。
+    env.chat.turn_decisions = TurnDecisionStub(
+        TurnDecisionKind.TASK_PROPOSAL, task_goal="游戏内提出来的多步目标"
+    )
     return turns, plans
 
 
@@ -200,6 +207,8 @@ async def test_pure_query_never_creates_a_task(tmp_path: Any) -> None:
     """纯查询（§五）：既不进任务入口也不进计划层，照常走角色回合。"""
     async with stack(tmp_path, "附近有橡树。") as env:
         _, plans = wire(env)
+        # §4.1：纯查询由统一决策判成 CHAT/QUERY → 不进计划层（本用例关注「不建任务」）。
+        env.chat.turn_decisions = TurnDecisionStub(TurnDecisionKind.CHAT)
         await env.say("空凛", "附近有什么方块？")
         assert plans.calls == [], "查询绝不建任务"
         assert env.chat_replies == ["附近有橡树。"]
@@ -340,6 +349,10 @@ async def test_supported_goal_without_plan_service_is_blocked(tmp_path: Any) -> 
         async with stack(tmp_path, "我还在。") as env:
             env.chat.bot.task_turns = FakeTurns()
             env.chat.bot.agent_plans = None
+            # §4.1：多步目标先经统一决策 → TASK_PROPOSAL → 既有入口（不认领）→ 计划层缺失。
+            env.chat.turn_decisions = TurnDecisionStub(
+                TurnDecisionKind.TASK_PROPOSAL, task_goal=message
+            )
             await env.say("空凛", message)
             route = last_route(env)
             assert route.route_target == RouteTarget.BLOCKED.value, message

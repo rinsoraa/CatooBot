@@ -17,6 +17,7 @@ from pydantic import ValidationError
 
 from app.tasks.intent import TaskIntentDetector
 from app.tasks.turn import TaskTurnOutcome
+from app.tasks.turn_decision import TurnDecisionKind
 from app.tasks.wood_intent import (
     Polarity,
     WoodIntent,
@@ -26,6 +27,7 @@ from app.tasks.wood_intent import (
 )
 from app.tools.models import RouteTarget
 from tests.test_minecraft_chat_bridge import stack
+from tests.turn_decision_stub import TurnDecisionStub
 
 WOOD_ASK = "帮我砍两根橡木原木带回来"
 
@@ -397,8 +399,12 @@ def test_non_wood_message_never_calls_the_model(tmp_path: Any) -> None:
         async with stack(tmp_path, "角色回答。") as env:
             engine = ScriptedEngine(payload())
             turns, _ = wire(env, engine)
+            # §4.1 语义变化：非木材消息现在走**统一回合决策**（一次），木材解释器不再被调用。
+            decision = TurnDecisionStub(TurnDecisionKind.CHAT)
+            env.chat.turn_decisions = decision
             await env.say("IdSmoke8E", "今天天气不错")
-            assert engine.requests == []
-            assert turns.calls == 1
+            assert len(decision.calls) == 1, "统一决策恰好一次"
+            assert engine.requests == [], "木材解释器不得被调用"
+            assert turns.calls == 0, "非木材消息不再走任务入口"
 
     asyncio.run(run())

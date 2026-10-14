@@ -28,10 +28,12 @@ from app.integrations.minecraft.agent import MinecraftAgentBridge
 from app.integrations.minecraft.chat_bridge import MinecraftChatBridge, chat_session_id
 from app.integrations.minecraft.events import parse_bridge_event
 from app.integrations.minecraft.service import MinecraftService
+from app.tasks.turn_decision import TurnDecisionKind
 from app.tools.runtime import ToolRuntime
 from tests.ai_mocks import MockAIProvider
 from tests.test_minecraft_agent_confirm_gate import decide
 from tests.test_minecraft_agent_tools import FakeMinecraftService
+from tests.turn_decision_stub import TurnDecisionStub
 
 
 class FakeBot:
@@ -51,11 +53,14 @@ class ChatStack:
         *,
         service: FakeMinecraftService | None = None,
         trusted: list[str] | None = None,
+        decision: Any = None,
     ) -> None:
         self.tmp_path = tmp_path
         self.script = script
         self.service = service or FakeMinecraftService()
         self.trusted = trusted if trusted is not None else ["空凛"]
+        #: Phase 8E Follow-up 3：统一决策入口的替身（None → 默认「普通对话」）。
+        self.decision = decision
 
     async def __aenter__(self) -> ChatStack:
         self.db = Database(DatabaseConfig(url=f"sqlite:///{self.tmp_path / 'chat.db'}"))
@@ -88,6 +93,10 @@ class ChatStack:
         self.bridge = MinecraftAgentBridge(self.service)
         self.runtime.minecraft_agent = self.bridge
         self.chat = MinecraftChatBridge(FakeBot(self.engine, self.runtime), self.service)  # type: ignore[arg-type]
+        #: Phase 8E Follow-up 3：统一决策入口（真实 TurnDecision 契约的替身）。
+        self.chat.turn_decisions = (
+            self.decision if self.decision is not None else TurnDecisionStub(TurnDecisionKind.CHAT)
+        )
         #: 角色回合计数（§二十九：一条消息只能产生一个回合）
         self.turns = 0
         original = self.runtime.respond
@@ -379,11 +388,14 @@ async def test_task_command_is_answered_in_game_without_the_llm(tmp_path: Any) -
 
 
 async def test_task_entry_ignoring_a_message_falls_back_to_normal_chat(tmp_path: Any) -> None:
-    async with stack(tmp_path, decide("minecraft_world"), "我在平原上呢～") as env:
+    # §4.1：这句话由统一决策判成 CHAT → 角色只做 CHAT_ONLY 回合（**一次**模型调用，
+    # 不再有工具调用机会）。脚本因此只给一句自然回复，并新增零工具哨兵。
+    async with stack(tmp_path, "我在平原上呢～") as env:
         env.chat.bot.task_turns = StubTaskTurns(None)  # type: ignore[attr-defined]
         await env.say("空凛", "罐头，你在哪？")
     assert env.turns == 1, "任务入口不认领的消息照常走角色回合"
     assert env.chat_replies == ["我在平原上呢～"]
+    assert env.tools.executor.traces == [], "CHAT_ONLY 回合不得执行任何工具"
 
 
 async def test_multiline_character_reply_is_sent_line_by_line(tmp_path: Any) -> None:

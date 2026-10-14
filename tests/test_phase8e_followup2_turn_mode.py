@@ -111,9 +111,11 @@ async def test_query_turn_cannot_reach_the_agent_surface(
         assert spy.control_calls == [], "CHAT_ONLY 回合不得调用 handle_control"
         assert spy.run_calls == [], "CHAT_ONLY 回合不得调用 AgentRuntime.run"
         assert chat.turns == 1
-        # 对照：非木材消息仍是既有完整能力路径（Agent 会被咨询）——证明探针是活的。
+        # §4.1 语义变化（如实记录）：非木材消息现在也由**统一决策**接管，CHAT 类别 →
+        # CHAT_ONLY 角色回合，因此 Minecraft 聊天路径不再进入 Agent 面。
         await chat.say(USER, "今天过得怎么样")
-        assert spy.control_calls, "普通回合应当照旧咨询 Agent"
+        assert spy.control_calls == [], "普通消息同样不再咨询 Agent（统一决策接管）"
+        assert spy.run_calls == [], "普通消息同样不得进入 AgentRuntime.run"
 
 
 # ------------------------------------------------------------------ 模式是每回合参数
@@ -138,8 +140,10 @@ async def test_chat_only_is_a_per_turn_parameter_not_global(
         chat.runtime.respond = capture  # type: ignore[method-assign]
         await chat.say(USER, QUERY_ASK)
         await chat.say(USER, "今天天气不错呀")
-        assert seen[0] is CharacterTurnMode.CHAT_ONLY
-        assert seen[1] is CharacterTurnMode.NORMAL
+        # §4.1 语义变化：Minecraft 聊天路径的回合**一律** CHAT_ONLY（不再有 NORMAL 的聊天回合），
+        # 而隔离仍然只靠「每回合参数」——全局开关未被改写（下面两条断言保持不变）。
+        assert seen, "这两个回合都必须经过角色侧"
+        assert all(mode is CharacterTurnMode.CHAT_ONLY for mode in seen), seen
         assert chat.tools.enabled is True, "不得通过全局开关实现能力隔离"
         assert chat.runtime.tools is chat.tools
 
@@ -153,7 +157,12 @@ async def test_parallel_turns_do_not_share_the_mode(tmp_path: Any, sentinel: lis
         env.sentinel_calls = sentinel
         await asyncio.gather(chat.say(USER, QUERY_ASK), chat.say(USER, "今天天气不错呀"))
         reasons = [str(item.get("reason_code") or "") for item in chat.runtime.routes.snapshot()]
-        assert reasons.count("chat_only_turn") == 1, reasons
+        # §4.1 语义变化：Minecraft 聊天路径的**每个**回合都是 CHAT_ONLY（按回合传递），
+        # 因此并发两回合各自留下自己的 chat_only_turn 记录；模式没有被全局改写。
+        assert reasons.count("chat_only_turn") == 2, reasons
+        assert "decision_chat" in reasons, reasons
+        assert chat.tools.enabled is True, "不得通过全局开关实现能力隔离"
+        assert chat.runtime.tools is chat.tools
         assert chat.turns == 2
         assert chat.tools.executor.traces == []
 

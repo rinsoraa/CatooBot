@@ -1,5 +1,38 @@
 # Changelog
 
+## Minecraft Phase 8E Follow-up 3 — 通用 LLM 回合决策契约与统一路由
+
+* **性质**：把「Minecraft 聊天怎么被路由」从**硬编码分支顺序**换成**类型化的统一决策入口**。
+  基线 `4acd53d2fa559cf4e10ef4cd62f9f667c29f1fc2`。**不新增** Minecraft 工具/动作/表/迁移；
+  不改 `ACTION_RISK`、`allow_medium` 默认、`trusted_players`、`TurnOrigin` 派生、两道确认门、
+  任务授权、冻结计划、参数指纹与 Action Runtime 生命周期。
+* **被修的架构问题**：旧 `_task_reply` 先看「消息里有没有木材词」——**只有含木头的消息**经过专用判断，
+  其余消息的去向由硬编码分支顺序决定，既没有统一的「这句话想让我做什么」，也没有可审计的决策证据。
+* **新增 `app/tasks/turn_decision.py`**：`TurnDecisionKind` 九值（chat / query / narration / atomic_action /
+  task_proposal / clarify / unsupported / cancel / stop）；`TurnDecision` 字段**恰好 6 个**、`extra=forbid`；
+  能力白名单**只有 5 个已审计能力**（只读 world/find_blocks/inventory/look_at + 动作 stop，**不含 dig/place/attack/craft/container**）；
+  禁止模型自授权限字段（action_id/authorized/risk/allow_medium/trusted/executed/success…）；
+  失败原因码由可信代码生成（decision_model_error / decision_timeout / decision_empty_response /
+  decision_invalid_json / decision_schema_invalid / decision_engine_unavailable …）；严格 JSON 解析 + 有界重试
+  （≤2，保留首次真实原因）；**绝不从任意文本里抠 JSON 交给执行器**。
+* **统一入口**（`MinecraftChatBridge._task_reply`）：① 确定性控制优先（控制词句首 / `detector.control_command` /
+  活动任务的状态查询 / 未终态 busy）→ 直达既有任务入口，**绝不等待模型**；② 统一决策；③ 决策失败 → 安全澄清；
+  ④ 木材消息仍走既有确定性木材链；⑤ 按 kind 分流九类。
+* **只路由到已审计能力**：QUERY/ATOMIC_ACTION 走既有 `ToolExecutor.execute`（自带 schema 校验 + `policy.authorize`）
+  → Policy → MinecraftAgentBridge → MinecraftService → 既有 Action Runtime，**未新增任何执行旁路**。
+* **本轮修掉的真实回归**（由既有测试抓出）：① `TASK_PROPOSAL` 必须先咨询**既有任务入口**，否则资源任务无法再创建；
+  ② 控制词出现在句首时（如「取消，别砍树了」）**不等模型**；③ 保留 8C Follow-up 的 `plan_service_unavailable` 语义。
+* **测试**：新增契约测试 **33 项**、路由矩阵 **15 项**；受影响既有套件按 §9.3 做了最小适配
+  （一律注入真实契约替身 `TurnDecisionStub`，未放宽断言）；`ChatStack` 新增 `decision=` 注入点。
+* **变异验证 M1–M7**：M1（绕过统一入口）、M4（跳过既有入口）、M5（停止依赖模型）、M6（异常正文入日志）、
+  M7（回合决策被缓存复用）**均被自动测试捕获**；M2、M3 属「纵深防御仍然拦住」，已如实说明原因。
+  每次变异后按原字节恢复（`identical to original: True`），无 `MUTATION` 残留。
+* **门禁**：`ruff check .` All checks passed；`ruff format --check .` 691 files；`mypy app` Success（339 files）；
+  全量 `pytest tests -q` 见发布记录。
+* **真实 Provider：SKIPPED**（环境不调用真实模型服务）——全部验证使用脚本化 provider，
+  因此**没有**准确率/延迟/token 成本数据，不得用替身冒充准确率；记忆/世界观察/身份/背包/能力目录的
+  上下文整合留待 FU4。
+
 ## Minecraft Phase 8E Follow-up 2 — 非肯定木材路由的角色回合能力隔离与零副作用闭环
 
 * **性质**：Phase 8E Follow-up 的定向收口。**不新增** Minecraft 工具/动作/表/迁移；不改 `ACTION_RISK`、
