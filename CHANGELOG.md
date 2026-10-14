@@ -16,6 +16,10 @@
 * **剩余 11 处不一致如实归因**：约 5 处是**我的预冻结标签可争议**（「停下」「别动了」标 `atomic_action` 但模型给 `stop` 更合规；「算了别做了」「不用继续了」同理），
   约 5 处是真实语义边界（`chat ↔ narration` 4 处、缺数量/树种的 `task_proposal → clarify`），1 处 stop 样本 schema 失败。**标签按规则未修改。**
 * **裁决维持 PARTIAL**：§9 建议准确率 ≥90%，实测最好 73.8% **未达标**；但真实 Provider 验证已执行、两项缺陷有量化收益，且白名单/授权/执行链/安全不变量未改。
+* **发布 / CI**：提交 `532af40766b0ca4c74e7fa41dd82bd6cd060625d`（4 文件 +75/−4）；镜像 == `origin/main` == 该提交（298 commits，工作区干净）。
+  CI run [38617446028](https://github.com/rinsoraa/CatooBot/actions/runs/38617446028) **attempt 1** 中 `webui` success、`lint · format · types · tests` failure ——
+  唯一失败步骤是 `Minecraft runtime tests (ActionRuntime 单测 + E2E)`，失败点 `[e2e] FAILED: timeout waiting for: observer appears in snapshot players`（**已知环境敏感 flake**；本提交未改 `minecraft_runtime/`，同次 pytest **4204 passed, 3 skipped**、Browser E2E **7 passed**）→
+  按纪律**只重跑失败 job、未改任何断言/超时/阈值** → **attempt 2 两个 job 均 success**。
 
 ## Minecraft Phase 8E Follow-up 4 — Context-Grounded LLM Decision & Semantic Routing（上下文接地与语义路由）
 

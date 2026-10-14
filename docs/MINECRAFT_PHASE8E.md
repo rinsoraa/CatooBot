@@ -499,6 +499,19 @@ stop 3/4、narration 2/4、cancel 2/4。
 * 真实 Provider 语义验证**已执行**（不再是 SKIPPED），两个产品缺陷已修并有量化收益（0.429 → 0.738）；
 * 但按 §9 的阈值，**裁决维持 PARTIAL**：核心工程与安全目标全部达成、门禁全绿，语义准确率尚未达到任务书建议线。
 * 另有取证：本地 provider 的 P95 延迟 6.9s（推理模型），与解释器默认 8s 超时**贴近**；`attempts_gt1=4` 说明偶发重试仍存在。
+
+#### 17.12.7 发布与 CI（本次真实验证 + 两项修复）
+
+| 项 | 值 |
+| --- | --- |
+| 提交 | **`532af40766b0ca4c74e7fa41dd82bd6cd060625d`**（`Phase 8E Follow-up 4: real-provider semantic validation & two interpreter fixes`；4 文件 **+75/−4**：`app/tasks/turn_decision.py`、`app/tasks/wood_intent.py`、`docs/MINECRAFT_PHASE8E.md`、`CHANGELOG.md`） |
+| 远端 / 镜像 | 镜像 == `origin/main` == 该提交；**298 commits**；工作区干净；`scripts/` **0 tracked** |
+| CI run | **38617446028**（https://github.com/rinsoraa/CatooBot/actions/runs/38617446028） |
+| attempt 1 | `webui · typecheck · tests · build` **success**；`lint · format · types · tests` **failure** —— 唯一失败步骤是 `Minecraft runtime tests (ActionRuntime 单测 + E2E)`，失败点 `[e2e] FAILED: timeout waiting for: observer appears in snapshot players`（**已知环境敏感 flake**，同族见 `minecraft_runtime/test/e2e.js:110`；本提交**完全未改** `minecraft_runtime/`，同次运行 pytest **4204 passed, 3 skipped**、Browser E2E **7 passed**） |
+| 处置 | 按纪律**只重跑失败 job**（`POST …/rerun-failed-jobs`），**未改任何断言/超时/阈值** |
+| attempt 2 | **两个 job 均 success** |
+| 安全不变量 | `git diff --name-only` 对受保护文件（`agent.py`/`config/settings.py`/`database/database.py`/`tasks/runtime.py`/`tasks/validation.py`/`tasks/planner.py`/`tools/registry.py`/`tools/builtins/`）**零命中**；`git diff --check` exit 0 |
+| 裁决 | **PARTIAL**（真实 Provider 验证已执行且有量化收益，但 §9 建议的 ≥90% 未达标） |
 ### §17.11 发布与 CI（实测）
 
 | 项 | 值 |
