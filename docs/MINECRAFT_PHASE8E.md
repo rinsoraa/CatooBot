@@ -207,4 +207,24 @@ Minecraft chat（不可信输入）
 | CI 上 ruff format / mypy | 663 files already formatted（CI 只见镜像内文件）；Success: no issues found in **338** source files |
 | 实际 SKIPPED（全部为既有假服务器限制，与本阶段无关） | equip / inventory_move STOP；container STOP；craft 成功路径；craft STOP；3×3 craft 成功路径；dropped_items / pickup 成功路径 |
 | 裁决 | **PASS**（DoD 11 项全满足，见 §11） |
+
+## §13 已知限制与未验证事项（如实区分证据等级）
+
+**真实执行证据（自动化，可重复）**：48 项解释器/schema/失败关闭/注入测试、3 项 Step 1 复现与回归、
+183 项木材五套件、767 项较宽回归、4105 项全量 pytest、Ruff/format/Mypy/diff-check/凭据扫描、
+以及 CI run 38546626967 与 38547733231 的真实 job 结论。
+
+**静态审查**：§9 的 11 条安全不变量逐项比对（`git status --short` 改动清单 + 受保护文件未改 + `database.py` 未改）。
+
+**未验证事项（本阶段没有证据，不做任何断言）**：
+
+1. **未对真实 provider 运行解释器**：本阶段的评估全部使用脚本化 provider（按任务书要求「不依赖实时模型服务」）。
+   因此**没有**真实模型的准确率、误判分布、延迟或 token 成本数据；不得把「输出合法 JSON」当作「意图一定正确」。
+2. **未覆盖英文/其他语言**的木材意图表达；提示词与示例均为中文语境。
+3. **模型与确定性参数冲突的处置是刻意的 fail-closed**：`target_species` 或 `requested_count` 与 `parse_wood_request()`
+   不一致时一律澄清（可能对真实模型造成偏多的澄清，但绝不产生错误计划）。
+4. **真实 provider 故障模式**（限流、截断、超长响应）只在脚本化替身中覆盖（timeout/异常/空/非 JSON/截断），
+   真实服务端的分布未知。
+5. **多语句/长上下文**未做专门评估：`recent_context` 上限 4 条、每条 120 字，`message` 上限 240 字（截断而非报错）。
+6. **真机门禁不适用**：本阶段未触碰动作/授权/执行链，按任务书 §7 声明不适用；这**不等于**真机链路被本轮验证过。
 | 真机门禁 | **不适用**：本阶段只改意图判定与聊天路由，未触碰动作/授权/执行链（任务书 §7 允许按范围声明不适用） |
