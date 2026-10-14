@@ -1,6 +1,21 @@
 # Changelog
 
-# Changelog
+## Minecraft Phase 8E Follow-up 4 — 真实 Provider 语义验证与两项修复
+
+* **更正上一轮的错误结论**：FU4 曾以「无可用凭据」把真实 Provider 验证标为 SKIPPED —— 那是**方法错误**：我查的是 `ai.models[*].api_key`（按设计恒空），
+  而密钥由 **provider 的 `api_key_env`** 解析（`app/ai/engine.py:106`），`.env` 里 `WORKBUDDY_API_KEY` 已存在。按真实路径实测：
+  `engine.enabled=True`、`router.model_count=6`、真实 ping 成功（3.19s）。**该 SKIPPED 作废。**
+* **默认路由 = `primary`（已核实）**：`models.chat[0].name == primary`（Workbuddy2API → `127.0.0.1:7864/v1`，`cn:deepseek-v4.1-flash`）
+  既是故障转移链头也是未钉模型时的路由默认 → **只需配置 `primary` 即等同配置好语义验证模型**；42 个样本全部落在该模型。
+* **真实评测暴露并修掉两个产品缺陷**：① 解释器**硬编码 `max_tokens=256`**，而 `primary` 是推理模型 → reasoning 烧光预算、`finish=length`、
+  content 为空、被引擎判为瞬态失败重试（`engine.py:224-234` 只在 `max_tokens is None` 时套用 `ai.max_tokens`=2048）→ `turn_decision.py`/`wood_intent.py` 不再钉该值；
+  ② `SYSTEM_PROMPT` **未枚举允许的 capability_id** → 模型自造能力名（实测 `query_nearby_blocks`、`inventory.query`）被白名单 fail-closed 拒绝、查询 6/6 全 schema 失败 →
+  提示词改为**由白名单常量动态生成**的逐字清单（**白名单本身未改**）。
+* **42 样本预冻结标签真实评测（模型 = primary）**：accuracy **0.429 → 0.619 → 0.738**（无修 / 修 max_tokens / +提示词），成功率 0.786 → **0.976**，
+  均值/P95 延迟 4072/6887ms，重试>1 从 18 → **4**；第 3 轮 query **6/6**、clarify 4/4、unsupported 4/4、chat 4/5、task_proposal 3/6、narration 2/4。
+* **剩余 11 处不一致如实归因**：约 5 处是**我的预冻结标签可争议**（「停下」「别动了」标 `atomic_action` 但模型给 `stop` 更合规；「算了别做了」「不用继续了」同理），
+  约 5 处是真实语义边界（`chat ↔ narration` 4 处、缺数量/树种的 `task_proposal → clarify`），1 处 stop 样本 schema 失败。**标签按规则未修改。**
+* **裁决维持 PARTIAL**：§9 建议准确率 ≥90%，实测最好 73.8% **未达标**；但真实 Provider 验证已执行、两项缺陷有量化收益，且白名单/授权/执行链/安全不变量未改。
 
 ## Minecraft Phase 8E Follow-up 4 — Context-Grounded LLM Decision & Semantic Routing（上下文接地与语义路由）
 

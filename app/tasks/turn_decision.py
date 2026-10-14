@@ -224,6 +224,10 @@ SYSTEM_PROMPT = (
     "需要完成一个有限目标（例如采集木材）用 task_proposal 并给出 task_goal；"
     "信息不足或目标不明确用 clarify 并给出 clarification_question；"
     "当前能力做不到（建造、战斗、交付等）用 unsupported；取消用 cancel；立刻停止用 stop。"
+    "capability_id 只能从下面这份清单里**逐字照抄**，不要自造、不要翻译、不要加点号："
+    f"query 用：{'、'.join(sorted(READ_ONLY_CAPABILITIES))}；"
+    f"atomic_action 用：{'、'.join(sorted(ACTION_CAPABILITIES))}。"
+    "清单之外的能力一律用 unsupported（做不到）或 clarify（不确定），绝不允许瞎猜能力名。"
     "**禁止**输出 action_id、授权结论、风险等级、信任状态、执行结果或任何权限字段。"
     "你不决定权限：只表达意图，系统会自行校验。"
 )
@@ -290,7 +294,9 @@ class TurnDecisionInterpreter:
                     ChatMessage.user(prompt),
                 ],
                 temperature=0.0,
-                max_tokens=256,
+                # 不钉 max_tokens：推理模型会把固定的小预算全花在 reasoning 上并返回空
+                # content（finish=length / reasoning_chars>0）。交给引擎按 ai.max_tokens
+                # （默认 2048，reasoning 感知）决定（engine.py:_with_default_max_tokens）。
             )
             try:
                 response = await asyncio.wait_for(self.engine.chat(request), timeout=self.timeout)

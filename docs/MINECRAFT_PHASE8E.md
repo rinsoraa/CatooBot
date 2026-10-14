@@ -424,7 +424,7 @@ CANCEL/STOP → 既有控制路径。零副作用全部来自真实哨兵：`Too
 M1/M4/M5/M6/M7 沿用 FU3 的捕获记录；**M2/M3 缺口本轮闭合**：夹具让消息带真实工具候选且脚本化模型真的发工具调用，
 把 CHAT 分支改成 NORMAL 模式（M2）或让非法决策继续（M3）→ 目标用例各 **1 failed**，恢复后各 **1 passed**，驱动脚本 `residue: False`。
 
-### §17.8 真实 Provider：**SKIPPED**
+### §17.8 真实 Provider：**SKIPPED（该结论已作废 —— 见 §17.12）**
 
 用应用自身 `load_config()` 实测有效配置：**providers_total=6 / providers_with_key=0** —— 没有可用模型凭据。
 按 §9.4：不虚构准确率、不用脚本化替身冒充真实模型性能 → 本项 `SKIPPED`，**最终裁决 PARTIAL**。
@@ -449,6 +449,56 @@ M1/M4/M5/M6/M7 沿用 FU3 的捕获记录；**M2/M3 缺口本轮闭合**：夹�
 * 木材参数仍是**确定性**解析（`parse_wood_request`），关键词不再主导路由但参数仍由确定性代码校验（刻意取舍）。
 * 裁决：**PARTIAL**（核心工程任务完成并通过门禁；真实 Provider 验证缺失，按 §9.4 不得判 PASS）。
 
+
+### §17.12 真实 Provider 语义验证（补充：本地 workbuddy2api）
+
+#### 17.12.1 上一轮「无凭据」结论作废（方法错误，如实更正）
+
+上一轮我用 `ai.models[*].api_key` 判断可用性 —— 那是**错字段**：模型项的 `api_key` 按设计恒为空，
+密钥由 **provider 的 `api_key_env` 解析**（`app/ai/engine.py:106`：`os.environ.get(pcfg.api_key_env)`），
+而 `.env` 里 **`WORKBUDDY_API_KEY` 已存在**。按真实路径实测：**`engine.enabled=True`、`router.model_count=6`**、
+providers=`[SiliconFlow, Workbuddy2API]`，一次真实 ping 成功（3.19s，返回 `{"kind":"chat"}`）。
+**更正：Provider 一直可用，§17.8 的 SKIPPED 作废。**
+
+#### 17.12.2 默认路由 = `primary`（用户要求核实）
+
+`models.chat[0].name == "primary"`（provider `Workbuddy2API` → `http://127.0.0.1:7864/v1`，model `cn:deepseek-v4.1-flash`）
+既是故障转移链头，也是**未钉模型时的路由默认**；决策解释器的请求不钉模型（`AIRequest(... temperature=0.0)`），
+因此**只需配置 `primary` 即等同配置好语义验证所用的模型** ✓ —— 实测 ping 与全部 42 个样本都落在 `deepseek-v4.1-flash`。
+
+#### 17.12.3 真实评测暴露并修掉的两个**产品缺陷**
+
+| # | 缺陷（有证据） | 修复 |
+| --- | --- | --- |
+| 1 | 解释器**硬编码 `max_tokens=256`**，而 `primary` 是**推理模型**：预算被 reasoning 烧光 → `finish=length, reasoning_chars≈1000+`、content 为空、被引擎判为瞬态失败并重试。`engine.py:224-234` 只在 `max_tokens is None` 时才套用 `ai.max_tokens`（有效值 **2048**）。 | `turn_decision.py` 与 `wood_intent.py` 不再钉 `max_tokens`，交由引擎的 reasoning 感知默认值决定。 |
+| 2 | `SYSTEM_PROMPT` **未枚举允许的 capability_id** → 模型自造能力名（实测 `query_nearby_blocks`、`inventory.query`），被白名单 fail-closed 拒绝 → 6/6 查询全部 `decision_schema_invalid`。 | 提示词**逐字列出允许清单**（由 `READ_ONLY_CAPABILITIES`/`ACTION_CAPABILITIES` 动态生成，不会与白名单漂移），并要求清单之外一律 `unsupported`/`clarify`。**白名单本身未改**。 |
+
+#### 17.12.4 三次同一样本集的实测（预冻结标签，42 样本，模型 = primary `cn:deepseek-v4.1-flash`）
+
+| 轮次 | 修复 | accuracy | 成功率 | 均值/ P95 延迟 | 重试>1 |
+| --- | --- | --- | --- | --- | --- |
+| 1 | 无 | **0.429**（18/42） | 0.786 | — / 16015ms | 18 |
+| 2 | 修 max_tokens | **0.619**（26/42） | 0.786 | 5041 / 8842ms | 10 |
+| 3 | + 提示词白名单 | **0.738**（31/42） | **0.976** | 4072 / 6887ms | 4 |
+
+第 3 轮逐类：**query 6/6**、clarify 4/4、unsupported 4/4、chat 4/5、atomic_action 3/5、task_proposal 3/6、
+stop 3/4、narration 2/4、cancel 2/4。
+
+#### 17.12.5 剩余 11 处不一致的诚实归因
+
+* **标签可争议（约 5 处，非产品错误）**：「停下」「别动了」我标成 `atomic_action`，模型给 `stop`（契约里 `stop` 是独立类别，模型的答案更合规）；
+  「算了别做了」「不用继续了」我标 `cancel`，模型给 `stop`（同样可争）。**预冻结标签按规则未修改**，但必须承认其中若干标签由我写得不严谨。
+* **真实的语义边界（约 5 处）**：`chat ↔ narration`（4 处互相错分）——「我昨天砍了两根竹子」这类过去时叙述与闲聊的界线，模型并不稳定区分；
+  `task_proposal → clarify/unsupported`（3 处）——「帮我砍点木头回来」这类**缺数量/缺树种**的请求，模型倾向先澄清（与契约 §6「目标不明要澄清」并不冲突，是我标签把它算作 task_proposal）。
+* **1 处 schema 失败**：一个 stop 样本在两次尝试后仍被严格校验拒绝（fail-closed 正确，但说明提示词对 stop 的输出格式还可再收紧）。
+
+#### 17.12.6 结论（对 §9 的目标）
+
+§9 建议的准确率目标是 **≥90%**；实测最好一轮 **73.8%**，**未达标**。因此：
+
+* 真实 Provider 语义验证**已执行**（不再是 SKIPPED），两个产品缺陷已修并有量化收益（0.429 → 0.738）；
+* 但按 §9 的阈值，**裁决维持 PARTIAL**：核心工程与安全目标全部达成、门禁全绿，语义准确率尚未达到任务书建议线。
+* 另有取证：本地 provider 的 P95 延迟 6.9s（推理模型），与解释器默认 8s 超时**贴近**；`attempts_gt1=4` 说明偶发重试仍存在。
 ### §17.11 发布与 CI（实测）
 
 | 项 | 值 |

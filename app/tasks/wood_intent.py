@@ -257,7 +257,7 @@ class WoodIntentInterpreter:
         request = AIRequest(
             messages=[ChatMessage.system(SYSTEM_PROMPT), ChatMessage.user(prompt)],
             temperature=0.0,
-            max_tokens=256,
+            # 同 turn_decision：推理模型需由引擎给足 completion 预算。
         )
         try:
             response = await asyncio.wait_for(self._engine.chat(request), timeout=self._timeout)
