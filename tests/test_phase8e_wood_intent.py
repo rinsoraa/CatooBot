@@ -24,6 +24,7 @@ from app.tasks.wood_intent import (
     WoodIntentResult,
     safe_failure,
 )
+from app.tools.models import RouteTarget
 from tests.test_minecraft_chat_bridge import stack
 
 WOOD_ASK = "帮我砍两根橡木原木带回来"
@@ -366,7 +367,10 @@ def test_query_and_narration_fall_back_to_normal_chat(tmp_path: Any) -> None:
             await env.say("IdSmoke8E", "我昨天砍了两根竹子")
             assert plans.calls == []
             assert env.tools.executor.traces == []
-            assert turns.calls == 2, "查询/叙述必须交回既有入口"
+            # Phase 8E Follow-up §4.2/§12.4：查询与叙述都必须走普通对话语义，
+            # **绝不**经过可创建任务的旧入口（修复前这里断言 == 2，正是缺陷本身）。
+            assert turns.calls == 0, "查询/叙述绝不能落到旧任务入口"
+            assert env.runtime.routes.last.route_target == RouteTarget.CHAT_ONLY.value
 
     asyncio.run(run())
 

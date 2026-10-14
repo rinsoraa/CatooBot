@@ -22,6 +22,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from dataclasses import dataclass
+from enum import StrEnum
 from typing import TYPE_CHECKING, Any
 
 from app.character.turn import TurnOrigin
@@ -82,6 +84,30 @@ _WOOD_CONTROL_PREFIXES = (
     "不用继续",
     "不用找",
 )
+
+
+class _WoodRoute(StrEnum):
+    """木材消息的**显式**路由结果（Phase 8E Follow-up §4.1）。
+
+    修复前 ``None`` 同时表示「交回任务入口」和「由普通聊天处理」：模型把木材消息判成
+    QUERY / NARRATION / OTHER 后仍会落回旧 ``TaskTurnHandler._create()`` →
+    ``plan_resource_task()``。这里把语义分开，任何一种都不再靠 ``None`` 猜。
+    """
+
+    NOT_WOOD = "not_wood"
+    HANDLED = "handled"
+    NORMAL_CHAT = "normal_chat"
+    DELEGATE_CONTROL = "delegate_control"
+    WOOD_POSITIVE_REQUEST = "wood_positive_request"
+    SAFE_CLARIFY = "safe_clarify"
+
+
+@dataclass(frozen=True)
+class _WoodRouteDecision:
+    """一次木材路由的结论：``route`` 决定后续控制流，``reply`` 是已生成的回复。"""
+
+    route: _WoodRoute
+    reply: str | None = None
 
 
 class MinecraftChatBridge:
@@ -219,8 +245,8 @@ class MinecraftChatBridge:
             await bot.ai.conversations.append_user_message(session_id, message)
             await bot.ai.conversations.append_assistant_message(session_id, reply)
             await self._say(reply)
-        except Exception:  # noqa: BLE001 - 游戏内聊天故障绝不拖垮事件通道/世界感知
-            log.exception("[MC Chat] 处理 %s 的聊天失败", username)
+        except Exception as exc:  # noqa: BLE001 - 游戏内聊天故障绝不拖垮事件通道/世界感知
+            log.warning("[MC Chat] 处理 %s 的聊天失败：error_type=%s", username, type(exc).__name__)
 
     def _session_id(self, username: str) -> str:
         connection = self.service.snapshot().get("connection") or {}
@@ -240,16 +266,20 @@ class MinecraftChatBridge:
         # 冻结计划、预览、确认门、步骤授权、TaskRuntime 与最终库存验证全部不变，
         # 仍由既有确定性链路负责。控制命令 / 状态查询 / 活动任务 busy 的优先级保持
         # 不变（先交回任务入口）；解释器失败一律失败关闭，绝不回落旧单目标模板。
-        if mentions_wood(message) and await self._wood_intent_preempts(
-            handler, session_id, message
-        ):
-            reply = await self._wood_intent_reply(handler, username, session_id, message)
-            if reply is not None:
-                return reply
+        if mentions_wood(message):
+            decision = await self._wood_route(handler, username, session_id, message)
+            if decision.route is _WoodRoute.NORMAL_CHAT:
+                # §4.2：查询/叙述由普通角色对话处理 —— **不经过**可创建任务的旧入口。
+                return None
+            if decision.reply is not None:
+                return decision.reply
+            # _WoodRoute.DELEGATE_CONTROL：交回既有确定性控制/忙碌处理。
         try:
             outcome = await handler.handle(session_id=session_id, user_id=username, text=message)
-        except Exception:  # noqa: BLE001 - 任务入口坏了也不能让游戏内聊天没反应
-            log.exception("[MC Chat] 任务入口处理失败（%s）", username)
+        except Exception as exc:  # noqa: BLE001 - 任务入口坏了也不能让游戏内聊天没反应
+            log.warning(
+                "[MC Chat] 任务入口处理失败（%s）：error_type=%s", username, type(exc).__name__
+            )
             return None
         if not outcome.handled or not outcome.reply:
             # Phase 8C：任务入口没接管的，再看是不是一条**多步目标**（跟随/有界探索）；
@@ -315,42 +345,84 @@ class MinecraftChatBridge:
         self.wood_intent = WoodIntentInterpreter(engine)
         return self.wood_intent
 
-    async def _wood_intent_reply(
+    async def _wood_route(
         self, handler: Any, username: str, session_id: str, message: str
-    ) -> str | None:
-        """按解释器结论路由（§5 行为矩阵）；``None`` = 交回既有对话/控制路径。"""
+    ) -> _WoodRouteDecision:
+        """按解释器结论给出**显式**路由结果（§4.1/§4.2 行为矩阵）。
+
+        返回对象而不是 ``None``：调用方据此决定「终止任务路由走普通对话」还是
+        「交回确定性控制入口」，两者不再共用一种返回值。
+        """
+        if not await self._wood_intent_preempts(handler, session_id, message):
+            # 控制命令 / 状态查询 / 活动任务 busy —— 一律交回既有入口（§4.3）。
+            return _WoodRouteDecision(_WoodRoute.DELEGATE_CONTROL)
         interpreter = self._wood_interpreter()
         if interpreter is None:
-            return self._wood_intent_clarify(session_id, message, "wood_interpreter_unavailable")
+            return _WoodRouteDecision(
+                _WoodRoute.SAFE_CLARIFY,
+                self._wood_intent_clarify(session_id, message, "wood_interpreter_unavailable"),
+            )
         try:
             result = await interpreter.interpret(message=message)
-        except Exception:  # noqa: BLE001 - 解释器损坏也绝不让聊天没反应
-            log.exception("[MC Chat] 木材意图解释器失败（%s）", username)
-            return self._wood_intent_clarify(session_id, message, "wood_intent_error")
+        except Exception as exc:  # noqa: BLE001 - 解释器损坏也绝不让聊天没反应
+            # §5.3：只记异常**类型名**（异常正文可能夹带 provider 响应/请求上下文）。
+            log.warning(
+                "[MC Chat] 木材意图解释器失败：error_type=%s（%s）",
+                type(exc).__name__,
+                username,
+            )
+            return _WoodRouteDecision(
+                _WoodRoute.SAFE_CLARIFY,
+                self._wood_intent_clarify(session_id, message, "wood_intent_error"),
+            )
         if result is None:
-            return self._wood_intent_clarify(session_id, message, "wood_intent_invalid_result")
+            return _WoodRouteDecision(
+                _WoodRoute.SAFE_CLARIFY,
+                self._wood_intent_clarify(session_id, message, "wood_intent_invalid_result"),
+            )
         reason = str(getattr(result, "reason_code", "") or "")
         intent = str(getattr(result, "intent", "") or "")
         polarity = str(getattr(result, "polarity", "") or "")
         if intent == WoodIntent.AMBIGUOUS_INTENT.value:
             # 沿用 Phase 8D Follow-up 2 已确立的稳定原因码（审计连续性）。
-            return self._wood_intent_clarify(session_id, message, "wood_negation_ambiguous")
+            return _WoodRouteDecision(
+                _WoodRoute.SAFE_CLARIFY,
+                self._wood_intent_clarify(session_id, message, "wood_negation_ambiguous"),
+            )
         if bool(getattr(result, "needs_clarification", False)):
-            return self._wood_intent_clarify(session_id, message, reason or "clarify")
+            return _WoodRouteDecision(
+                _WoodRoute.SAFE_CLARIFY,
+                self._wood_intent_clarify(session_id, message, reason or "clarify"),
+            )
         if intent == WoodIntent.NEGATED_REQUEST.value:
-            return self._wood_negated_reply(session_id, message)
+            return _WoodRouteDecision(
+                _WoodRoute.HANDLED, self._wood_negated_reply(session_id, message)
+            )
         if intent == WoodIntent.WOOD_COLLECTION_REQUEST.value:
             if polarity != Polarity.POSITIVE.value:
-                return self._wood_intent_clarify(session_id, message, "conflict")
-            return await self._wood_positive_reply(username, session_id, message, result)
-        if intent in (
-            WoodIntent.TASK_CONTROL.value,
-            WoodIntent.QUERY.value,
-            WoodIntent.NARRATION.value,
-            WoodIntent.OTHER.value,
-        ):
-            return None
-        return self._wood_intent_clarify(session_id, message, "unknown")
+                return _WoodRouteDecision(
+                    _WoodRoute.SAFE_CLARIFY,
+                    self._wood_intent_clarify(session_id, message, "conflict"),
+                )
+            # 只有 schema + 矛盾校验都通过的肯定结果，且下一步仍过确定性参数校验。
+            return _WoodRouteDecision(
+                _WoodRoute.WOOD_POSITIVE_REQUEST,
+                await self._wood_positive_reply(username, session_id, message, result),
+            )
+        if intent in (WoodIntent.QUERY.value, WoodIntent.NARRATION.value):
+            # §4.2：查询/叙述 → 普通对话语义，**绝不**经过可创建任务的旧入口。
+            return _WoodRouteDecision(_WoodRoute.NORMAL_CHAT)
+        if intent == WoodIntent.TASK_CONTROL.value:
+            # §4.3：模型标签不构成控制权限；确定性检测器没认出来就必须澄清。
+            return _WoodRouteDecision(
+                _WoodRoute.SAFE_CLARIFY,
+                self._wood_intent_clarify(session_id, message, "wood_intent_task_control"),
+            )
+        # OTHER 或未知枚举：明确策略 = 安全澄清并终止任务创建路由（不猜任务、不回旧模板）。
+        return _WoodRouteDecision(
+            _WoodRoute.SAFE_CLARIFY,
+            self._wood_intent_clarify(session_id, message, reason or "wood_intent_other"),
+        )
 
     async def _wood_positive_reply(
         self, username: str, session_id: str, message: str, result: Any
@@ -441,8 +513,10 @@ class MinecraftChatBridge:
                 source="minecraft",
                 shape_hint="wood",
             )
-        except Exception:  # noqa: BLE001 - 计划层故障只影响这一条消息
-            log.exception("[MC Plan] 木材计划接线失败（%s）", username)
+        except Exception as exc:  # noqa: BLE001 - 计划层故障只影响这一条消息
+            log.warning(
+                "[MC Plan] 木材计划接线失败（%s）：error_type=%s", username, type(exc).__name__
+            )
             return self._plan_failure(
                 session_id,
                 message,
@@ -503,8 +577,10 @@ class MinecraftChatBridge:
                 target=target,
                 source="minecraft",
             )
-        except Exception:  # noqa: BLE001 - 计划层故障只影响这一条消息
-            log.exception("[MC Plan] 计划层接线失败（%s）", username)
+        except Exception as exc:  # noqa: BLE001 - 计划层故障只影响这一条消息
+            log.warning(
+                "[MC Plan] 计划层接线失败（%s）：error_type=%s", username, type(exc).__name__
+            )
             return self._plan_failure(
                 session_id,
                 message,
@@ -547,8 +623,8 @@ class MinecraftChatBridge:
                 user_name=str(username),
                 origin_metadata={PLAYER_KEY: username},
             )
-        except Exception:  # noqa: BLE001 - 身份解析故障只降级
-            log.exception("[MC Plan] 身份解析失败（%s）", username)
+        except Exception as exc:  # noqa: BLE001 - 身份解析故障只降级
+            log.warning("[MC Plan] 身份解析失败（%s）：error_type=%s", username, type(exc).__name__)
             return None
         if context.resolution is not IdentityResolution.VERIFIED:
             return None
@@ -560,8 +636,8 @@ class MinecraftChatBridge:
                 user_id=str(context.platform_user_id),
                 server_id=str(context.server_id),
             )
-        except Exception:  # noqa: BLE001
-            log.exception("[MC Plan] 目标解析失败（%s）", username)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("[MC Plan] 目标解析失败（%s）：error_type=%s", username, type(exc).__name__)
             return None
 
     def _plan_reply_text(
@@ -704,5 +780,5 @@ class MinecraftChatBridge:
             try:
                 await self.service.send_chat(text)
             except Exception as exc:  # noqa: BLE001 - 发不出去只记一笔（她还在世界里）
-                log.warning("[MC Chat] 回复发送失败：%s", exc)
+                log.warning("[MC Chat] 回复发送失败：error_type=%s", type(exc).__name__)
                 return

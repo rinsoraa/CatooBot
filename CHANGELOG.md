@@ -1,5 +1,34 @@
 # Changelog
 
+## Minecraft Phase 8E Follow-up — 木材意图路由闭环与异常日志隐私收口
+
+* **性质**：Phase 8E 的定向 Follow-up（路由闭环 + 日志隐私）。**不新增** Minecraft 工具/动作/表/迁移，不改
+  `ACTION_RISK`、`allow_medium` 默认、`TaskRuntime` 状态机、预算、步骤授权、冻结计划、确认门与执行链。
+  基线 `2b667b0127f97d9ed61c264aed5463757f223aba`。
+* **被修的缺陷（修复前用真实入口复现）**：`_wood_intent_reply()` 对 `QUERY` / `NARRATION` / `TASK_CONTROL` / `OTHER`
+  返回 `None`，而 `_task_reply()` 把 `None` 当成「交回任务入口」→ 真实 `TaskTurnHandler._create()`（`turn.py:503`）
+  仍可调用旧单目标 `plan_resource_task()`。修复前 `tests/test_phase8e_followup_routing_closure.py` → **4 failed, 11 passed**
+  （`PlanResourceSentinel: plan_resource_task 不该被调用`）。
+* **修复**：`app/integrations/minecraft/chat_bridge.py` 新增 `_WoodRoute`（StrEnum 六值：`NOT_WOOD` / `HANDLED` /
+  `NORMAL_CHAT` / `DELEGATE_CONTROL` / `WOOD_POSITIVE_REQUEST` / `SAFE_CLARIFY`）与 `_WoodRouteDecision`，
+  把 `_wood_intent_reply()` 重写为返回结论的 `_wood_route()`：查询/叙述 → `NORMAL_CHAT`（直接 `return None`，
+  **不经过**任务入口与 `_plan_reply()`）；否定 → `HANDLED`；只有 schema+矛盾校验通过的肯定请求才 → `WOOD_POSITIVE_REQUEST`
+  并继续过确定性参数校验；歧义/需澄清/模型自称控制/OTHER/未知/解释器缺失或失败 → `SAFE_CLARIFY`；
+  控制命令/状态查询/busy → `DELEGATE_CONTROL`（控制权仍在确定性检测器）。`None` 不再承担多种安全语义。
+* **日志隐私**：`chat_bridge.py` 的 **7 处** `log.exception` 与 1 处 `%s, exc`、`wood_intent.py` 的 **2 处** `%s, exc`
+  全部改为「异常类型名 + 稳定原因码」；schema 失败只记字段路径/错误类型摘要。异常正文、provider 响应、prompt、
+  用户完整消息一律不入日志。
+* **测试**：新增 `tests/test_phase8e_followup_routing_closure.py`（**15 项**，真实 `TaskRuntime` + 真实 `TaskTurnHandler`
+  + 真实 `MinecraftChatBridge`，`plan_resource_task` sentinel 与 `create_task` 计数）+ `tests/test_phase8e_followup_log_privacy.py`
+  （**4 项**，四个敏感标记 + `caplog` 断言）。3 处既有断言按新契约**收紧**（原先断言「查询/叙述必须交回既有入口」
+  = 本次修复的缺陷本身，现改为 `turns.calls == 0` 并新增 `route_target == CHAT_ONLY` 证据）。
+* **变异验证**：临时恢复旧回落语义 → 路由闭环测试 **2 failed**（sentinel 命中）；临时恢复 `str(exc)` 日志 →
+  隐私测试 **1 failed**（日志出现敏感标记）。恢复后无残留，`ruff check .` 通过。
+* **门禁**：木材全套 **202 passed**；较宽回归 **786 passed, 3338 deselected**；全量 `pytest tests -q` **4124 passed**
+  （= 基线 4105 + 19）；`ruff check .` All checks passed；`ruff format --check .` **686 files**；`mypy app` Success（338 files）。
+* **真机门禁**：**不适用**（本轮只改分类路由与日志，未触碰动作/授权/执行链 —— 任务书 §10.8 允许按范围声明，
+  但**不等于**真机链路经本轮验证）。真实 provider 仍未运行，未获准确率/延迟/token 成本数据。
+
 ## Minecraft Phase 8E — LLM Wood Intent Interpreter & Safe Routing（LLM 木材意图解释器与安全路由）
 
 * **核心原则**：LLM 只判断「用户想表达什么」，**永远不判断「程序是否有权执行」**。新增独立

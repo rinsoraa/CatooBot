@@ -232,7 +232,9 @@ async def test_chitchat_with_wood_words_is_not_hijacked(tmp_path: Any) -> None:
         turns, plans = WoodTurns(), WoodPlans()
         wire(env, turns=turns, plans=plans)
         await env.say("IdSmoke8D", "我昨天砍了两根竹子")
-        assert turns.calls == 1
+        # Phase 8E Follow-up §4.2/§12.4：叙述走普通对话语义 —— **不经过**
+        # 可创建任务的旧入口（此前断言 turns.calls == 1，那正是被修的回落路径）。
+        assert turns.calls == 0, "叙述绝不能落到旧任务入口"
         assert plans.calls == []
 
 
@@ -307,7 +309,8 @@ async def test_narration_with_imperative_marker_free_phrasing_stays_narration(
         turns, plans = WoodTurns(), WoodPlans()
         wire(env, turns=turns, plans=plans)
         await env.say("IdSmoke8D", "我刚刚砍了两根竹子")
-        assert turns.calls == 1
+        # Phase 8E Follow-up §4.2：同上 —— 叙述不进任务入口。
+        assert turns.calls == 0, "过去时叙述绝不能落到旧任务入口"
         assert plans.calls == []
 
 

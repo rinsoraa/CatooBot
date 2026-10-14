@@ -251,7 +251,8 @@ class WoodIntentInterpreter:
                 message=message, recent_context=recent_context, task_context=task_context
             )
         except Exception as exc:  # noqa: BLE001 - 上下文构造失败也必须安全
-            log.warning("[WoodIntent] context error: %s", exc)
+            # §5.3：只记异常类型名，绝不输出异常正文/请求上下文。
+            log.warning("[WoodIntent] context error: error_type=%s", type(exc).__name__)
             return safe_failure("context_error")
         request = AIRequest(
             messages=[ChatMessage.system(SYSTEM_PROMPT), ChatMessage.user(prompt)],
@@ -264,7 +265,8 @@ class WoodIntentInterpreter:
             log.warning("[WoodIntent] provider timeout (%.1fs)", self._timeout)
             return safe_failure("model_timeout")
         except Exception as exc:  # noqa: BLE001 - provider 故障绝不冒泡到聊天
-            log.warning("[WoodIntent] provider error: %s", exc)
+            # §5.3：provider 异常正文可能夹带响应体 —— 只记类型名。
+            log.warning("[WoodIntent] provider error: error_type=%s", type(exc).__name__)
             return safe_failure("model_error")
         content = str(getattr(response, "content", "") or "").strip()
         if not content:

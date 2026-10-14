@@ -228,3 +228,118 @@ Minecraft chat（不可信输入）
 5. **多语句/长上下文**未做专门评估：`recent_context` 上限 4 条、每条 120 字，`message` 上限 240 字（截断而非报错）。
 6. **真机门禁不适用**：本阶段未触碰动作/授权/执行链，按任务书 §7 声明不适用；这**不等于**真机链路被本轮验证过。
 | 真机门禁 | **不适用**：本阶段只改意图判定与聊天路由，未触碰动作/授权/执行链（任务书 §7 允许按范围声明不适用） |
+
+## §14 Phase 8E Follow-up — 路由闭环与日志隐私收口
+
+**基线**：`2b667b0127f97d9ed61c264aed5463757f223aba`（Phase 8E 最终证据提交；Step 0 只读审计实测镜像 `HEAD == origin/main == 基线`、工作区干净、289 commits）。
+
+**任务书归档**：`docs/specs/CatooBot Minecraft Phase 8E Follow-up — 木材意图路由闭环与异常日志隐私收口.md`（26886 bytes / 367 行，SHA256 `A399DA0B2DB06F406E9499F1D62CE31ECB205D39C8098F37EBD9F965C9669062`，逐字节一致）。
+
+### §14.1 缺陷（修复前，真实入口复现）
+
+`_wood_intent_reply()` 对 `QUERY` / `NARRATION` / `TASK_CONTROL` / `OTHER` 返回 `None`，而 `_task_reply()` 把 `None` 当成「交回任务入口」→ 真实 `TaskTurnHandler._create()`（`turn.py:503`）仍可调用旧单目标 `plan_resource_task()`。
+
+**修复前实测**：`pytest tests/test_phase8e_followup_routing_closure.py -q` → **4 failed, 11 passed**，失败点正是 `PlanResourceSentinel: plan_resource_task 不该被调用`（回溯落在 `turn.py:503`）。
+
+配套缺陷（日志）：`app/tasks/wood_intent.py` 的 context/provider 失败用 `log.warning(..., exc)` 输出**异常正文**；`chat_bridge.py` 有 7 处 `log.exception(...)`（自动附带 traceback 与异常字符串）；「回复发送失败」直接打 `exc`。
+
+### §14.2 修复：显式路由结果（不再用 `None` 承担多种安全语义）
+
+`app/integrations/minecraft/chat_bridge.py` 新增模块级 `_WoodRoute`（StrEnum，六值）与 `_WoodRouteDecision`（frozen dataclass：`route` + `reply`），并把 `_wood_intent_reply()` 重写为返回结论的 `_wood_route()`。
+
+| `_WoodRoute` | 语义 | 调用方行为 |
+| --- | --- | --- |
+| `NOT_WOOD` | 这条消息不归木材分支管 | 原样走既有入口 |
+| `HANDLED` | 木材分支已生成回复（否定） | 直接回复，**终止**任务路由 |
+| `NORMAL_CHAT` | 查询/叙述：普通角色对话 | `_task_reply()` 直接 `return None` —— **不经过**任务入口与 `_plan_reply()` |
+| `DELEGATE_CONTROL` | 控制命令 / 状态查询 / 活动任务 busy | 交回既有确定性控制入口（§4.3） |
+| `WOOD_POSITIVE_REQUEST` | 仅 `WOOD_COLLECTION_REQUEST + POSITIVE` | 进入木材专用计划链（仍过确定性参数校验） |
+| `SAFE_CLARIFY` | 歧义 / 需澄清 / 模型自称控制 / OTHER / 未知 / 解释器缺失或失败 | 澄清并**终止**任务路由 |
+
+`_task_reply()` 的木材块因此变成：`NORMAL_CHAT → return None`；有 `reply` → 直接返回；其余（仅 `DELEGATE_CONTROL`）才继续调用 `handler.handle()`。
+
+**控制命令优先级未变**：`_wood_intent_preempts()` 仍在解释器之前拦截控制词/状态查询/活动任务，控制权始终由确定性检测器给出。
+
+### §14.3 路由矩阵（每条分类 → 目标路由 → 副作用）
+
+| 模型/故障输入 | 目标路由 | 计划服务 | 旧 `plan_resource_task` | TaskRuntime 创建 | 工具 trace / action_id |
+| --- | --- | --- | --- | --- | --- |
+| `WOOD_COLLECTION_REQUEST + POSITIVE`（参数一致） | `WOOD_POSITIVE_REQUEST` → 既有木材计划链 | 1 次（正常链路） | 0 | 按既有语义创建待确认任务 | 确认前 0；确认后走既有授权链 |
+| `NEGATED_REQUEST + NEGATIVE` | `HANDLED`（明确不做） | 0 | 0 | 0 | 0 / 无 |
+| `QUERY` | `NORMAL_CHAT` | 0 | 0 | 0 | 0 / 无 |
+| `NARRATION` | `NORMAL_CHAT` | 0 | 0 | 0 | 0 / 无 |
+| `OTHER` | `SAFE_CLARIFY` | 0 | 0 | 0 | 0 / 无 |
+| `AMBIGUOUS_INTENT` / `needs_clarification=true` | `SAFE_CLARIFY` | 0 | 0 | 0 | 0 / 无 |
+| `TASK_CONTROL`（确定性检测器未识别） | `SAFE_CLARIFY` | 0 | 0 | 0 | 0 / 无 |
+| timeout / exception / 空 / 非 JSON / schema 失败 | `SAFE_CLARIFY` | 0 | 0 | 0 | 0 / 无 |
+| 确定性控制命令 / 状态查询 / busy | `DELEGATE_CONTROL` → 既有入口 | 0 | 0（控制路径不走 `_create`） | 0 | 0 / 无 |
+| 非木材消息 | 不进入木材分支 | 0 | 0 | 0 | 0 / 无 |
+
+### §14.4 真实入口测试证据（任务书 §6.1/§6.2）
+
+`tests/test_phase8e_followup_routing_closure.py`（**15 项**）：使用**真实** `TaskRuntime`（`InMemoryTaskStore`）+ **真实** `TaskTurnHandler`（复用 `tests/test_task_turn.py` 的既有装配 `make_runtime` / `observations`）+ **真实** `MinecraftChatBridge`（`tests/test_minecraft_chat_bridge.stack`）；只替换解释器与计划层替身。
+
+覆盖：非肯定矩阵（`OTHER` / `QUERY` / `NARRATION`，含表面肯定句与真查询，参数化 5 例）、澄清矩阵（`AMBIGUOUS_INTENT` / `needs_clarification=true` / 模型自称 `TASK_CONTROL`）、故障矩阵（`TimeoutError` / `RuntimeError` / `result=None`）、`NEGATED_REQUEST`、`QUERY` 走普通对话并断言 `route_target == CHAT_ONLY`、控制命令（「取消，别砍树了」）与非木材消息（解释器零调用）。
+
+**Sentinel 与副作用（§6.2 逐项）**：
+
+| 断言 | 实现方式 | 结果 |
+| --- | --- | --- |
+| `app.tasks.turn.plan_resource_task` sentinel | `monkeypatch.setattr(turn_module, "plan_resource_task", boom)`（抛 `PlanResourceSentinel`） | **0 次调用** |
+| 木材计划服务 | `PlansStub.plan_goal_from_user` 计数且被调用即失败 | **0 次调用** |
+| TaskRuntime 创建 | 包装 `runtime.create_task` 计数 | **0 次** |
+| 任务是否存在 | `await runtime.active(SESSION) is None` | **确认为 None** |
+| 工具 trace | `env.tools.executor.traces == []` | **空** |
+| 工具执行 | `invoke` 替身在**任何**工具调用时抛断言错误 | 从未触发（= 无 action_id 的前提） |
+
+### §14.5 日志隐私证据（任务书 §6.5）
+
+`tests/test_phase8e_followup_log_privacy.py`（**4 项**）。敏感标记：`SENSITIVE_SENTINEL_PROVIDER_BODY_8EFU`、`SENSITIVE_SENTINEL_CONTEXT_8EFU`、`SENSITIVE_SENTINEL_ROUTE_8EFU`、`SENSITIVE_SENTINEL_SCHEMA_8EFU`。
+
+| 注入点 | 断言 | 结果 |
+| --- | --- | --- |
+| provider 抛带标记异常 | 日志不含标记；含 `error_type=RuntimeError`；返回安全澄清 | **通过** |
+| 上下文构造故障（`__str__` 抛标记异常） | 日志不含标记；含 `error_type=RuntimeError` | **通过** |
+| schema 失败（标记在字段值里） | 日志不含标记；含 `schema rejected`（只字段路径与错误类型） | **通过** |
+| 入口层解释器抛带标记异常 | 日志不含标记；含 `error_type=RuntimeError`；玩家只收到澄清文案 | **通过** |
+
+**允许记录**：阶段/组件、**异常类型名**、稳定 `reason_code`、`text_chars`、schema 字段路径与错误类型摘要。
+**禁止**：`str(exc)`、`repr(exc)`、`log.exception` 的 traceback、provider 正文、prompt、用户完整消息。
+
+本轮把 `chat_bridge.py` 的 **7 处** `log.exception` 与 1 处 `%s, exc`、`wood_intent.py` 的 **2 处** `%s, exc` 全部改为类型名/稳定原因码。
+
+### §14.6 变异验证（任务书 §7）
+
+| 变异 | 做法 | 结果 | 恢复后 |
+| --- | --- | --- | --- |
+| 路由回退 | 把 `_wood_route()` 的 `QUERY/NARRATION` 分支改回 `DELEGATE_CONTROL`（旧回落语义） | **2 failed, 13 passed**，`PlanResourceSentinel` 命中（`plan_resource_task` 被调用） | **15 passed** |
+| 日志回退 | provider 日志改回 `log.warning("...: %s", exc)` | **1 failed, 3 passed**，捕获日志中出现 `SENSITIVE_SENTINEL_PROVIDER_BODY_8EFU` | **4 passed** |
+
+两次变异只在本工作树临时进行；恢复后 `Select-String -Pattern MUTATION` **无残留**，`ruff check .` 仍 All checks passed。
+
+### §14.7 门禁（命令与实测结果）
+
+| 命令 | 结果 |
+| --- | --- |
+| `pytest tests/test_phase8e_followup_routing_closure.py -q` | **15 passed**（修复前 4 failed / 11 passed） |
+| `pytest tests/test_phase8e_followup_log_privacy.py -q` | **4 passed** |
+| 木材全套（8D intent/plan/routing + 8E intent/repro + 本轮两套） | **202 passed** |
+| 较宽回归 `-k "wood or intent or turn or task_entry or agent_plan or skill or minecraft_chat or chat_bridge or phase8"` | **786 passed, 3338 deselected** |
+| 全量 `pytest tests -q` | **4124 passed**（568.54s；= 8E 基线 4105 + 本轮新增 19，精确吻合） |
+| `ruff check .` | All checks passed（exit 0） |
+| `ruff format --check .` | **686 files already formatted**（exit 0） |
+| `mypy app` | Success: no issues found in **338** source files（exit 0） |
+
+**被按新契约收紧的 3 处既有断言**（不是放宽）：`tests/test_phase8d_wood_routing.py` 两处与 `tests/test_phase8e_wood_intent.py` 一处原先断言「查询/叙述必须交回既有入口」（`turns.calls == 1 / == 2`），即本次修复的缺陷本身；现改为 `turns.calls == 0` 并新增 `route_target == CHAT_ONLY` 证据。
+
+### §14.8 安全不变量（逐项）
+
+未改动：`app/integrations/minecraft/agent.py`（`ACTION_RISK`）、`app/config/settings.py`（`allow_medium` 默认）、`app/database/database.py`（迁移）、`app/tasks/runtime.py`（状态机）、`app/tasks/validation.py`（预算）、`app/tasks/planner.py`（木材冻结目标/拾取引用/库存增量）、`app/tools/registry.py` 与 `builtins/` 工具 schema。
+
+`app/tasks/wood_intent.py` 本轮只改**日志**（schema/allowlist/validator/`SYSTEM_PROMPT` 未改）。未新增工具/动作/表/迁移/配置项；两道确认门、步骤授权、`trusted_players`、`TurnOrigin` 派生与 Action Runtime 生命周期未触碰。
+
+### §14.9 裁决与限制
+
+**本轮裁决：PASS（本节范围内）** —— §6.1 真实入口防回落、§6.2 副作用计数、§6.5 日志隐私与 §7 变异验证全部取得自动化证据；Phase 8E 的 PARTIAL 在本 Follow-up 关闭（发布与 CI 证据见 CHANGELOG 与提交链）。
+
+限制（不夸大）：真实 provider 仍未运行（解释器行为只在脚本化替身下验证）；查询/叙述改走普通对话后由角色回合回答，其**内容质量**不在本阶段范围；`OTHER → SAFE_CLARIFY` 是本轮选定的明确策略（§4.2 允许「普通对话或安全澄清」，此处选澄清以免对看似动作请求的消息静默忽略）。
