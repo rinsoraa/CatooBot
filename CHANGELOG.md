@@ -1,5 +1,18 @@
 # Changelog
 
+## Minecraft Phase 8E Follow-up 4 — 语义验证四项改进（准确率达标 90.5%）
+
+* 用户批准的四项全部实施：
+  **① 修正我的可争议标签**（预冻结集中「停下」「别动了」原标 `atomic_action`，按契约「立刻停止动作 = stop」改为 `stop`；同文件「别动了，停一下」本就标 `stop`，自相矛盾即错误证据）；
+  **② `narration ↔ chat` 判别规则**（叙述/回忆**已经发生**的事 → narration；**直接对我说话** → chat）；
+  **③ 收紧 `stop`/`cancel` 输出格式**（只填 kind 与 reply_text，其余必须 null）→ 消除原 1 处 stop schema 失败；
+  **④ 解释器默认超时 8s → 15s**（真实推理模型 P95 6887ms；控制类消息走确定性优先路径、不等待模型，放宽不影响停止）。
+* **第 4 轮实测（42 样本）**：accuracy **0.9048（38/42）**、成功率 **1.0**、均值/P95 延迟 **4237/5643ms**、**重试>1 = 0**；
+  逐类 query 6/6、clarify 4/4、unsupported 4/4、narration 4/4、stop 6/6、cancel 4/4、atomic_action 3/3、chat 4/5、task_proposal 3/6。
+* **如实披露**：①的标签修正贡献 +2 —— 沿用原冻结标签为 **36/42 = 0.857**，按修正后标签为 **38/42 = 0.905**；两种口径都已给出。
+  剩余 4 处不一致（`chat→narration` 1、缺数量/树种的 `task_proposal→query/narration/unsupported` 3）为真实残留缺口。
+* **裁决更新**：§9.3 建议准确率 ≥90%，本轮 **90.5% 达标** → **Phase 8E Follow-up 4 由 PARTIAL 更新为 PASS**；
+  边界声明：样本集与标签由我编写（非独立基准）、结论只代表模型在该样本集上的决策质量；**真实 Provider ≠ 真实 Minecraft 连接**，真实世界结论仍须来自既有执行链 + 服务器状态 + 独立结果验证。
 ## Minecraft Phase 8E Follow-up 4 — 真实 Provider 语义验证与两项修复
 
 * **更正上一轮的错误结论**：FU4 曾以「无可用凭据」把真实 Provider 验证标为 SKIPPED —— 那是**方法错误**：我查的是 `ai.models[*].api_key`（按设计恒空），

@@ -512,6 +512,31 @@ stop 3/4、narration 2/4、cancel 2/4。
 | attempt 2 | **两个 job 均 success** |
 | 安全不变量 | `git diff --name-only` 对受保护文件（`agent.py`/`config/settings.py`/`database/database.py`/`tasks/runtime.py`/`tasks/validation.py`/`tasks/planner.py`/`tools/registry.py`/`tools/builtins/`）**零命中**；`git diff --check` exit 0 |
 | 裁决 | **PARTIAL**（真实 Provider 验证已执行且有量化收益，但 §9 建议的 ≥90% 未达标） |
+
+#### 17.12.8 第 4 轮：四项改进（用户批准全部实施）与达标结果
+
+| # | 改进 | 落地 |
+| --- | --- | --- |
+| ① | **修正我的可争议标签** | 预冻结集中「停下」「别动了」原标 `atomic_action` → 按契约定义（`stop` = 立刻停止动作）改为 **`stop`**；同一文件里「别动了，停一下」本就标 `stop`，**自相矛盾即为我的标注错误证据**。「算了别做了」「不用继续了」维持 `cancel`（撤销未完成的请求）→ 模型的 `stop` 仍算分歧。 |
+| ② | **`narration ↔ chat` 判别规则** | 提示词新增：「只是叙述/感叹/回忆**已经发生**的事用 narration（不要对号入座成对话）；**直接对我说话**（问候、道谢、情绪、追问、闲聊）用 chat」。 |
+| ③ | **收紧 `stop`/`cancel` 输出格式** | 提示词新增：「cancel 与 stop 只填 kind 与 reply_text，其余字段必须是 null（不要给 capability_id、arguments 或 task_goal）」→ 第 3 轮那 1 处 stop schema 失败消失。 |
+| ④ | **解释器默认超时 8s → 15s** | 依据：真实 provider（推理模型）P95 延迟 **6887ms**、首字延迟更高，8s 会把健康调用判成超时。控制类消息（stop/cancel）走**确定性优先路径、不等待模型**，放宽该值不影响停止语义。 |
+
+**第 4 轮实测（同一 42 样本集）**：accuracy **0.9048（38/42）**，成功率 **1.0**（无失败/无超时），均值/P95 延迟 **4237 / 5643ms**，**重试>1 = 0**。
+逐类：**query 6/6、clarify 4/4、unsupported 4/4、narration 4/4、stop 6/6、cancel 4/4、atomic_action 3/3**、chat 4/5、task_proposal 3/6。
+
+**必须如实披露的两点**：
+* ①的标签修正**贡献 +2**：若沿用原冻结标签，第 4 轮为 **36/42 = 0.857**；按修正后标签为 **38/42 = 0.905**。修正依据是契约定义与同文件自相矛盾，不是迁就模型输出；但两种口径都如实给出，交由读者判断。
+* 剩余 **4 处**不一致：`chat → narration` 1 处；`task_proposal → query/narration/unsupported` 3 处（「帮我砍点木头回来」这类**缺数量/缺树种**的采集请求，模型倾向先查询或说做不到，而契约期望 `task_proposal` + `clarify` 语义）→ 这是**真实残留缺口**，下一轮可继续用示例强化。
+
+#### 17.12.9 裁决更新
+
+§9.3 建议的语义准确率目标 **≥90%**：第 4 轮 **90.5% 达标**（成功率 100%、零重试、P95 < 6s）。据此，
+**Phase 8E Follow-up 4 的裁决由 PARTIAL 更新为 PASS**，同时声明边界：
+
+* 样本集（42 条）与标签由我编写（已披露 2 处修正与两种口径），**不是独立第三方基准**；
+* 该结论只说明**模型在本样本集上的决策质量**；**真实 Provider ≠ 真实 Minecraft 连接** —— 真实世界动作的结论仍必须来自既有执行链 + 服务器状态 + 独立结果验证；
+* 真实世界侧本轮**未新增真机证据**（本轮只改提示词、超时与本地评测标签，未触碰动作/授权/执行链）。
 ### §17.11 发布与 CI（实测）
 
 | 项 | 值 |

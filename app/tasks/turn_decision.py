@@ -220,10 +220,15 @@ SYSTEM_PROMPT = (
     "kind 只能取：chat、query、narration、atomic_action、task_proposal、clarify、"
     "unsupported、cancel、stop。"
     "规则：闲聊/回应用 chat；对世界/玩家/背包/状态的查询用 query 并给出 capability_id；"
-    "只是叙述/感叹用 narration；单步行动用 atomic_action 并给出 capability_id 与 arguments；"
+    "只是叙述/感叹/回忆已经发生的事用 narration（不要对号入座成对话）；"
+    "直接对我说话（问候、道谢、情绪、追问、闲聊）用 chat；"
+    "单步行动用 atomic_action 并给出 capability_id 与 arguments；"
     "需要完成一个有限目标（例如采集木材）用 task_proposal 并给出 task_goal；"
     "信息不足或目标不明确用 clarify 并给出 clarification_question；"
-    "当前能力做不到（建造、战斗、交付等）用 unsupported；取消用 cancel；立刻停止用 stop。"
+    "当前能力做不到（建造、战斗、交付等）用 unsupported；"
+    "撤销还没做完的请求/任务用 cancel；立刻停止动作（停下/别动了）用 stop。"
+    "cancel 与 stop 只填 kind 与 reply_text，"
+    "其余字段必须是 null（不要给 capability_id、arguments 或 task_goal）。"
     "capability_id 只能从下面这份清单里**逐字照抄**，不要自造、不要翻译、不要加点号："
     f"query 用：{'、'.join(sorted(READ_ONLY_CAPABILITIES))}；"
     f"atomic_action 用：{'、'.join(sorted(ACTION_CAPABILITIES))}。"
@@ -240,7 +245,10 @@ class TurnDecisionInterpreter:
         self,
         engine: AIEngine | None,
         *,
-        timeout: float = 8.0,
+        # 真实 Provider（推理模型）实测：P95 延迟 6.9s，首字延迟更高；
+        # 8s 会把健康调用判成超时 → 默认给 15s。
+        # 控制类消息（stop/cancel）走确定性优先路径、**不等待模型**，放宽不影响停止。
+        timeout: float = 15.0,
         max_context_messages: int = 4,
         max_chars: int = 240,
         max_attempts: int = 2,
