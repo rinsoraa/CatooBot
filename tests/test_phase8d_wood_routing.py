@@ -14,7 +14,13 @@ from typing import Any
 
 import pytest
 
-from app.tasks.intent import TaskIntentDetector
+from app.tasks.intent import (
+    TaskIntentDetector,
+    WoodNegation,
+    classify_wood_negation,
+    is_wood_request,
+    parse_wood_request,
+)
 from app.tasks.turn import TaskTurnOutcome
 from app.tools.models import RouteTarget
 from tests.test_minecraft_chat_bridge import stack
@@ -80,10 +86,64 @@ def wood_created(
     }
 
 
+class WoodIntentStub:
+    """替身解释器：沿用 Phase 8D Follow-up 2 的确定性结论，映射成解释器结果形状。
+
+    Phase 8E 把「木材意图判定」收敛为**单一决策源**（解释器），所以这些既有契约
+    测试通过注入替身继续断言原来的端到端行为（零计划/澄清/计划层错误等）。
+    它只验证**路由契约**，不证明模型能力；旧判定失手的两种说法（`能不能别砍` /
+    `我不砍`）在 `test_phase8e_wood_intent.py` 里单独覆盖。
+    """
+
+    def __init__(self) -> None:
+        self.seen: list[str] = []
+
+    async def interpret(self, *, message: str, **_: Any) -> Any:
+        self.seen.append(message)
+        return _stub_result(message)
+
+
+def _result(intent: str, polarity: str, **extra: Any) -> Any:
+    fields: dict[str, Any] = {
+        "intent": intent,
+        "polarity": polarity,
+        "target_species": None,
+        "requested_count": None,
+        "task_control": None,
+        "needs_clarification": False,
+        "reason_code": intent,
+    }
+    fields.update(extra)
+    return SimpleNamespace(**fields)
+
+
+def _stub_result(message: str) -> Any:
+    verdict = classify_wood_negation(message)
+    if verdict is WoodNegation.NEGATED:
+        return _result("negated_request", "negative", reason_code="negated_request")
+    if verdict is WoodNegation.AMBIGUOUS:
+        return _result(
+            "ambiguous_intent", "mixed", needs_clarification=True, reason_code="ambiguous_intent"
+        )
+    if not is_wood_request(message):
+        # 叙述/回忆/纯查询不算指令（沿用 Follow-up 2 的确定性门槛）。
+        return _result("narration", "unknown", reason_code="narration")
+    wood = parse_wood_request(message)
+    if wood is not None and wood.problem:
+        return _result(
+            "wood_collection_request",
+            "positive",
+            requested_count=wood.requested,
+            reason_code="wood_collection_request",
+        )
+    return _result("wood_collection_request", "positive", reason_code="wood_collection_request")
+
+
 def wire(env: Any, *, turns: WoodTurns, plans: Any) -> None:
     bot = env.chat.bot
     bot.task_turns = turns
     bot.agent_plans = plans
+    env.chat.wood_intent = WoodIntentStub()
 
 
 def last_route(env: Any) -> Any:

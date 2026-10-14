@@ -1,5 +1,26 @@
 # Changelog
 
+## Minecraft Phase 8E — LLM Wood Intent Interpreter & Safe Routing（LLM 木材意图解释器与安全路由）
+
+* **核心原则**：LLM 只判断「用户想表达什么」，**永远不判断「程序是否有权执行」**。新增独立
+  `app/tasks/wood_intent.py`（`WoodIntentInterpreter`），只依赖既有 `AIEngine.chat`（不新建 provider/凭据），
+  不持有 MinecraftService、tool registry、executor 或任何任务创建 API。
+* **严格契约**：Pydantic `extra=forbid` + 枚举/原因码 allowlist + 矛盾组合拒绝；`requested_count` 只接受非 bool 整数
+  （显式 0 保留为 0）；模型不得输出坐标/工具名/block ID/授权字段（带这些字段的输出一律 schema 失败）。
+* **失败关闭**：超时/异常/空响应/非法 JSON/schema 失败/需澄清一律返回安全澄清结果 —— 零计划、零任务、零工具、
+  零 action_id，**绝不回落旧单目标 `plan_resource_task()` 模板**；失败不等于一律当否定（普通对话与查询仍走既有路径）。
+* **单一入口**：接线只发生在 `MinecraftChatBridge` 的木材路由边界（唯一决策源）；控制命令/状态查询/活动任务 busy
+  优先级不变（控制命令连解释器都不调用）；非木材消息**零额外模型调用**。
+* **Step 1 先复现**：`能不能别砍两根橡木原木带回来` 与 `我不砍两根橡木原木带回来` 在旧判定下会误建计划（复现文件
+  修复前 2 failed / 1 passed）→ 修复后 3 passed。
+* **测试**：新增 `tests/test_phase8e_wood_intent.py`（48 项：schema 严格性 / provider 故障 / 提示注入 / 入口级无动作）
+  与 `tests/test_phase8e_baseline_repro.py`（3 项复现与回归）；`tests/test_phase8d_wood_routing.py` 的既有契约测试
+  改为注入解释器替身（**断言逐条未变**）。
+* **本地门禁**：木材五套件 **183 passed**；较宽回归 **767 passed, 3338 deselected**；`ruff check .` All checks passed；
+  `ruff format --check .` **684 files**；`mypy app` Success（**338** source files）；`git diff --check` exit 0；凭据扫描 0 命中；
+  `app/database/database.py` 未改（无 schema/迁移变化）。
+* **真机门禁**：本阶段未触碰动作/授权/执行链 → 按任务书 §7 声明**不适用**（fake-provider 入口级无动作证据与 CI 必须通过）。
+
 ## Minecraft Phase 8D Follow-up 2 — Wood Negation Guard & No-Action Routing Closure（木材否定护栏与零动作路由收口）
 
 * **缺陷（已复现）**：`is_wood_request()` 只认肯定标记、不裁定否定；`_wood_preempts()` 在 `wood.problem` 为空时

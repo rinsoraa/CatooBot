@@ -31,13 +31,11 @@ from app.tasks.agent_plan import PlanTarget
 from app.tasks.agent_planner import detect_shape
 from app.tasks.intent import (
     TaskIntentDetector,
-    WoodNegation,
     WoodRequest,
-    classify_wood_negation,
-    is_wood_request,
     mentions_wood,
     parse_wood_request,
 )
+from app.tasks.wood_intent import Polarity, WoodIntent, WoodIntentInterpreter
 from app.tools.models import RouteTarget, RouteTrace, new_route_id
 
 if TYPE_CHECKING:  # pragma: no cover
@@ -93,6 +91,9 @@ class MinecraftChatBridge:
         self.bot = bot
         self.service = service
         self._inflight = 0
+        #: Phase 8E：木材意图解释器（**唯一决策源**）。可由装配/测试注入；
+        #: 未注入时用既有 AIEngine 惰性构造（不新建 provider 或凭据）。
+        self.wood_intent: Any = None
 
     # ------------------------------------------------------------ 配置/门禁
 
@@ -234,22 +235,17 @@ class MinecraftChatBridge:
         handler = getattr(self.bot, "task_turns", None)
         if handler is None:
             return None
-        # Phase 8D §7.4：木材采集必须在**任务入口之前**判定。旧单目标资源路径
-        # （TaskTurnHandler._create → plan_resource_task）会把「砍两棵树」当成一次
-        # 单方块挖掘接管：既绕开规划期策略闸，也不是有界木材计划（§3.1 点名）。
-        # Phase 8D Follow-up 2：否定/暂缓/冲突必须在**任何**肯定请求判断之前裁定，
-        # 并且在唯一入口**明确接管**（绝不 return None 落回旧单目标资源路径或角色
-        # 工具链 —— 那正是本次要修的缺陷）。
-        verdict = classify_wood_negation(message)
-        if (
-            verdict is not WoodNegation.NOT_NEGATED
-            and mentions_wood(message)
-            and await self._wood_negation_preempts(handler, session_id, message)
+        # Phase 8E：木材意图交给**独立 LLM 解释器**判定（它只说「用户想表达什么」）。
+        # 权限、参数校验（parse_wood_request + 支持树种矩阵）、SAFE 观察、Policy、
+        # 冻结计划、预览、确认门、步骤授权、TaskRuntime 与最终库存验证全部不变，
+        # 仍由既有确定性链路负责。控制命令 / 状态查询 / 活动任务 busy 的优先级保持
+        # 不变（先交回任务入口）；解释器失败一律失败关闭，绝不回落旧单目标模板。
+        if mentions_wood(message) and await self._wood_intent_preempts(
+            handler, session_id, message
         ):
-            return self._wood_negation_reply(session_id, message, verdict)
-        wood = parse_wood_request(message)
-        if wood is not None and await self._wood_preempts(handler, session_id, message, wood):
-            return await self._wood_reply(username, session_id, message, wood)
+            reply = await self._wood_intent_reply(handler, username, session_id, message)
+            if reply is not None:
+                return reply
         try:
             outcome = await handler.handle(session_id=session_id, user_id=username, text=message)
         except Exception:  # noqa: BLE001 - 任务入口坏了也不能让游戏内聊天没反应
@@ -278,11 +274,11 @@ class MinecraftChatBridge:
 
     # ---------------------------------------------------------- Phase 8D：木材采集
 
-    async def _wood_negation_preempts(self, handler: Any, session_id: str, message: str) -> bool:
-        """否定/冲突裁定是否在入口之前接管（§4.2 优先级 / §4.3 活动任务边界）。
+    async def _wood_intent_preempts(self, handler: Any, session_id: str, message: str) -> bool:
+        """木材意图解释是否在入口之前接管（§5 控制优先级 / §5 活动任务边界）。
 
         控制命令、有活动任务时的状态查询、以及会话里已有未终态任务（busy）都保持
-        既有顺序与文案，交回任务入口；其余一律由本分支**明确接管**并给出非执行结论。
+        既有顺序与文案，交回任务入口；其余木材相关消息交由解释器判定（唯一决策源）。
         """
         detector = getattr(handler, "detector", None)
         current_task = getattr(handler, "current_task", None)
@@ -298,19 +294,8 @@ class MinecraftChatBridge:
             return False
         return current is None or bool(current.state.terminal)
 
-    def _wood_negation_reply(self, session_id: str, message: str, verdict: str) -> str:
-        """否定/冲突的非执行结论：零计划、零任务、零工具，只留稳定原因码。"""
-        if verdict == WoodNegation.AMBIGUOUS:
-            self._route(
-                reason_code="wood_negation_ambiguous",
-                route_target=RouteTarget.CLARIFY.value,
-                session_id=session_id,
-                text_chars=len(message),
-            )
-            return (
-                "我有点拿不准你是要我砍、还是不要我砍 —— 你直接说「砍一根橡木原木」"
-                "或者「先不砍」；在那之前我什么都不会动。"
-            )
+    def _wood_negated_reply(self, session_id: str, message: str) -> str:
+        """否定结论：零计划、零任务、零工具，只留稳定原因码。"""
         self._route(
             reason_code="wood_negated_intent",
             route_target=RouteTarget.CHAT_ONLY.value,
@@ -319,37 +304,94 @@ class MinecraftChatBridge:
         )
         return "好，那我不砍了 —— 这次什么都没做。"
 
-    async def _wood_preempts(
-        self, handler: Any, session_id: str, message: str, wood: WoodRequest
-    ) -> bool:
-        """木材请求是否应当在**任务入口之前**接管（Phase 8D §7.4 唯一接管）。
+    def _wood_interpreter(self) -> Any:
+        """解释器实例：优先用注入的（测试/装配），否则用既有 AIEngine 惰性构造。"""
+        injected = getattr(self, "wood_intent", None)
+        if injected is not None:
+            return injected
+        engine = getattr(self.bot, "ai", None)
+        if engine is None or not callable(getattr(engine, "chat", None)):
+            return None
+        self.wood_intent = WoodIntentInterpreter(engine)
+        return self.wood_intent
 
-        只有「任务入口本来会把它交给 _create」的位置才替代它；其余一律交回既有入口，
-        保持控制命令、状态查询、活动任务 busy、闲聊与纯查询的既有行为与文案逐字不变：
+    async def _wood_intent_reply(
+        self, handler: Any, username: str, session_id: str, message: str
+    ) -> str | None:
+        """按解释器结论路由（§5 行为矩阵）；``None`` = 交回既有对话/控制路径。"""
+        interpreter = self._wood_interpreter()
+        if interpreter is None:
+            return self._wood_intent_clarify(session_id, message, "wood_interpreter_unavailable")
+        try:
+            result = await interpreter.interpret(message=message)
+        except Exception:  # noqa: BLE001 - 解释器损坏也绝不让聊天没反应
+            log.exception("[MC Chat] 木材意图解释器失败（%s）", username)
+            return self._wood_intent_clarify(session_id, message, "wood_intent_error")
+        if result is None:
+            return self._wood_intent_clarify(session_id, message, "wood_intent_invalid_result")
+        reason = str(getattr(result, "reason_code", "") or "")
+        intent = str(getattr(result, "intent", "") or "")
+        polarity = str(getattr(result, "polarity", "") or "")
+        if intent == WoodIntent.AMBIGUOUS_INTENT.value:
+            # 沿用 Phase 8D Follow-up 2 已确立的稳定原因码（审计连续性）。
+            return self._wood_intent_clarify(session_id, message, "wood_negation_ambiguous")
+        if bool(getattr(result, "needs_clarification", False)):
+            return self._wood_intent_clarify(session_id, message, reason or "clarify")
+        if intent == WoodIntent.NEGATED_REQUEST.value:
+            return self._wood_negated_reply(session_id, message)
+        if intent == WoodIntent.WOOD_COLLECTION_REQUEST.value:
+            if polarity != Polarity.POSITIVE.value:
+                return self._wood_intent_clarify(session_id, message, "conflict")
+            return await self._wood_positive_reply(username, session_id, message, result)
+        if intent in (
+            WoodIntent.TASK_CONTROL.value,
+            WoodIntent.QUERY.value,
+            WoodIntent.NARRATION.value,
+            WoodIntent.OTHER.value,
+        ):
+            return None
+        return self._wood_intent_clarify(session_id, message, "unknown")
 
-        * 控制命令（确认/取消/暂停/继续…）→ 交回；
-        * 有活动任务时的状态查询 → 交回；
-        * 会话里已有未终态任务 → 交回（由既有入口给出 busy 文案）；
-        * 正常请求（problem 为空）必须是既有检测器认可的**任务**；
-        * 明确拒绝（不支持/歧义）允许更宽的语气，但必须有请求词，避免把闲聊当指令。
-        """
-        detector = getattr(handler, "detector", None)
-        current_task = getattr(handler, "current_task", None)
-        if detector is None or not callable(current_task):
-            return False
-        if detector.control_command(message):
-            return False
-        current = await current_task(str(session_id))
-        if current is not None and detector.status_query(message):
-            return False
-        if current is not None and not current.state.terminal:
-            return False
-        if wood.problem:
-            # Phase 8D Follow-up §B：明确请求采集但目标不支持/树种歧义/数量非法时，
-            # 必须给出稳定的 BLOCKED/CLARIFY —— 绝不能因为缺少礼貌词就静默落回
-            # 旧单目标资源路径或普通工具链。叙述/回忆（"我昨天砍了两根竹子"）不算指令。
-            return is_wood_request(message)
-        return bool(detector.detect(message).is_task)
+    async def _wood_positive_reply(
+        self, username: str, session_id: str, message: str, result: Any
+    ) -> str:
+        """肯定请求：确定性解析 + 支持树种矩阵**校验参数**（冲突 → 澄清）。"""
+        wood = parse_wood_request(message)
+        if wood is None:
+            return self._wood_intent_clarify(session_id, message, "parameters_unresolved")
+        conflict = self._wood_parameter_conflict(wood, result)
+        if conflict:
+            return self._wood_intent_clarify(session_id, message, conflict)
+        return await self._wood_reply(username, session_id, message, wood)
+
+    def _wood_parameter_conflict(self, wood: WoodRequest, result: Any) -> str:
+        """§6.1：模型提取值与确定性解析**冲突时澄清**，不任选其一。"""
+        model_count = getattr(result, "requested_count", None)
+        if model_count is not None and int(model_count) != int(wood.requested):
+            return "count_conflict"
+        raw_species = str(getattr(result, "target_species", None) or "").strip()
+        if not raw_species or not wood.species:
+            return ""
+        probe = parse_wood_request("帮我砍一根" + raw_species)
+        if probe is None or not probe.species:
+            return "target_unverified"
+        if tuple(probe.candidates) != tuple(wood.candidates):
+            return "target_conflict"
+        return ""
+
+    def _wood_intent_clarify(self, session_id: str, message: str, reason_code: str) -> str:
+        """歧义/失败关闭的澄清回复（零计划、零任务、零工具；原因码稳定可审计）。"""
+        code = reason_code if reason_code.startswith("wood_") else "wood_intent_" + reason_code
+        self._route(
+            reason_code=code,
+            route_target=RouteTarget.CLARIFY.value,
+            session_id=session_id,
+            text_chars=len(message),
+        )
+        return (
+            "我先不动手：这件事我还判断不准（是不砍、砍什么、还是砍几根）。"
+            "你直接说「砍一根橡木原木」或者「先不砍」就行。"
+        )
 
     async def _wood_reply(
         self, username: str, session_id: str, message: str, wood: WoodRequest
