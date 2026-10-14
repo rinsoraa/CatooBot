@@ -482,8 +482,20 @@ minecraft.chat → MinecraftChatBridge._reply → _task_reply
 
 ### §16.9 裁决与发布
 
-* 实现提交：`Phase 8E Follow-up 3: general LLM turn decision contract & unified routing`（见 §16.9 的提交链）。
-* 提交纪律：实现提交与证据提交**分开**；M1–M7 变异只在工作树内临时进行并逐字节恢复；未 reset、未 force-push。
+| 项 | 值 |
+| --- | --- |
+| 实现提交 | **`2b46afe690e3b3ee980e09cdbd44549e425eb4da`**（`Phase 8E Follow-up 3: general LLM turn decision contract & unified routing`；13 文件 **+2286/−28**） |
+| 提交纪律 | 实现提交与证据提交**分开**；M1–M7 变异只在工作树内临时进行并逐字节恢复（`identical to original: True`，无 `MUTATION` 残留）；未 reset、未 force-push、未改写历史 |
+| 远端 / 镜像 | 镜像 == `origin/main` == 实现提交；**294 commits**；工作区干净；`scripts/` **0 tracked** |
+| CI run | **38590034819**（https://github.com/rinsoraa/CatooBot/actions/runs/38590034819） |
+| attempt | **1**（一次通过；**无 flake、无重跑**） |
+| 两个 job | `lint · format · types · tests` **success**；`webui · typecheck · tests · build` **success** |
+| CI 上 pytest | **4179 passed, 3 skipped in 365.95s**（= 本地 4182 − 3 条既有平台条件性 skip；本轮新增 **48 项无一被跳过**） |
+| CI 上 Browser E2E | **7 passed (22.3s)** |
+| CI 上 `minecraft_runtime` | find-blocks-test ALL CHECKS PASSED；e2e `bridge auth boundary + runtime instance ✓`；e2e ALL CHECKS PASSED |
+| CI 上 format / mypy | 670 files already formatted（CI 只见镜像内文件）；Success: no issues found in 339 source files |
+| 真机门禁 | **不适用**（本轮只改回合决策与聊天路由，未触碰动作/授权/执行链；不得据此宣称真机链路已验证） |
+| 裁决 | **PASS**（本阶段范围；真实 Provider 语义验证留待 FU4） |
 * 裁决：**PASS**（本阶段范围内：所有 MC 自然语言消息经统一决策入口、九类路由全部落到既有已审计路径、
   零副作用与真实哨兵断言齐备、本地与 CI 门禁全绿）。真实 Provider 语义验证列入 FU4。
 

@@ -28,7 +28,11 @@
   M7（回合决策被缓存复用）**均被自动测试捕获**；M2、M3 属「纵深防御仍然拦住」，已如实说明原因。
   每次变异后按原字节恢复（`identical to original: True`），无 `MUTATION` 残留。
 * **门禁**：`ruff check .` All checks passed；`ruff format --check .` 691 files；`mypy app` Success（339 files）；
-  全量 `pytest tests -q` 见发布记录。
+  全量 `pytest tests -q` **4182 passed in 613.86s**（= 基线 4134 + 本轮新增 48，精确吻合）；迁移演练 `version [36,36]`、
+  `integrity [ok,ok]`、`tables [83,83]`、`added_tables []`、`lost_rows {}`（预期 no-op，**无新表无新迁移**）。
+* **发布 / CI**：实现提交 `2b46afe690e3b3ee980e09cdbd44549e425eb4da`（13 文件 +2286/−28）；镜像 == `origin/main` == 该提交（294 commits）；
+  CI run [38590034819](https://github.com/rinsoraa/CatooBot/actions/runs/38590034819) **attempt 1 两个 job 均 success**（无 flake、无重跑）：
+  CI 上 pytest **4179 passed, 3 skipped**（= 本地 4182 − 3 条既有平台 skip，新增 48 项无一被跳过）、Browser E2E **7 passed**、`minecraft_runtime` 全绿。
 * **真实 Provider：SKIPPED**（环境不调用真实模型服务）——全部验证使用脚本化 provider，
   因此**没有**准确率/延迟/token 成本数据，不得用替身冒充准确率；记忆/世界观察/身份/背包/能力目录的
   上下文整合留待 FU4。
