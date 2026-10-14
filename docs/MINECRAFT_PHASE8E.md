@@ -194,7 +194,17 @@ Minecraft chat（不可信输入）
 
 | 项 | 值 |
 | --- | --- |
-| 全量 `pytest tests -q` | **4105 passed**（exit 0；= 4054 + 51） |
-| 实现提交 | 见下方「提交」行 |
-| CI | 见下方「CI」行 |
+| 全量 `pytest tests -q` | **4105 passed**（746.06s；exit 0；= 基线 4054 + 新增 51） |
+| 实现提交 | **`2622311ef0bb4e895faee37959e12d7ded417426`**（`Phase 8E: LLM wood intent interpreter & safe routing`；9 文件 **+1584/−65**） |
+| 提交纪律 | 单一独立实现提交；**未 reset、未改写** 8D 与 8D Follow-up 历史 |
+| 远端 / 镜像 | 镜像 == `origin/main` == `2622311`；**287 commits**；工作区干净；`scripts/` 仍 **0 tracked** |
+| CI run | **38546626967**（https://github.com/rinsoraa/CatooBot/actions/runs/38546626967） |
+| attempt | **1**（一次通过；**无 flake、无重跑**） |
+| 两个 job | `lint · format · types · tests` **success**；`webui · typecheck · tests · build` **success** |
+| CI 上 pytest | **4102 passed, 3 skipped in 338.35s**（= 本地 4105 − 3 条既有平台条件性 skip；新增 **51 项无一被跳过**） |
+| CI 上 Browser E2E | **7 passed (21.0s)** |
+| CI 上 `minecraft_runtime` | find-blocks-test **41/41** ALL CHECKS PASSED；e2e `bridge auth boundary + runtime instance ✓`；e2e ALL CHECKS PASSED |
+| CI 上 ruff format / mypy | 663 files already formatted（CI 只见镜像内文件）；Success: no issues found in **338** source files |
+| 实际 SKIPPED（全部为既有假服务器限制，与本阶段无关） | equip / inventory_move STOP；container STOP；craft 成功路径；craft STOP；3×3 craft 成功路径；dropped_items / pickup 成功路径 |
+| 裁决 | **PASS**（DoD 11 项全满足，见 §11） |
 | 真机门禁 | **不适用**：本阶段只改意图判定与聊天路由，未触碰动作/授权/执行链（任务书 §7 允许按范围声明不适用） |

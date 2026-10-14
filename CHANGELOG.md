@@ -20,6 +20,10 @@
   `ruff format --check .` **684 files**；`mypy app` Success（**338** source files）；`git diff --check` exit 0；凭据扫描 0 命中；
   `app/database/database.py` 未改（无 schema/迁移变化）。
 * **真机门禁**：本阶段未触碰动作/授权/执行链 → 按任务书 §7 声明**不适用**（fake-provider 入口级无动作证据与 CI 必须通过）。
+* **发布**：实现提交 `2622311ef0bb4e895faee37959e12d7ded417426`（9 文件 +1584/−65）；镜像 == `origin/main` == 该 SHA（**287 commits**，工作区干净）；
+  CI run [38546626967](https://github.com/rinsoraa/CatooBot/actions/runs/38546626967) **attempt 1 两个 job 均 success**（无 flake、无重跑）；
+  CI 上 pytest **4102 passed, 3 skipped**（= 本地 4105 − 3 条既有平台条件性 skip，新增 51 项无一被跳过）、Browser E2E 7 passed、`minecraft_runtime` 全绿；
+  `scripts/` 仍 0 tracked、凭据扫描 0 命中、`app/database/database.py` 未改（无 schema/迁移变化）。
 
 ## Minecraft Phase 8D Follow-up 2 — Wood Negation Guard & No-Action Routing Closure（木材否定护栏与零动作路由收口）
 
