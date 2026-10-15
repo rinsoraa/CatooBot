@@ -534,6 +534,268 @@ async def plan_wood_task(
     return PlannedTask(objective=objective, plan=plan, observations=observations)
 
 
+# ---------------------------------------------------------------- crafting（Phase 8F）
+
+#: 单个目标物品一次任务最多几个合成批次（1 批次 = 1 次真实的 ``minecraft_craft`` 调用）。
+CRAFT_MAX_BATCHES = 4
+
+#: 合成链最多几级（目标物品 + 最多一级前置，例如 原木 → 木板 → 木棍）。
+CRAFT_MAX_STAGES = 2
+
+#: 稳定原因码（回复层据此如实说明「为什么没做」，不解析自由文本）。
+CRAFT_REASON_INVENTORY = "inventory_unavailable"
+CRAFT_REASON_NO_RECIPE = "no_recipe"
+CRAFT_REASON_TABLE = "crafting_table_required"
+CRAFT_REASON_MATERIAL = "insufficient_material"
+CRAFT_REASON_BOUNDS = "count_out_of_bounds"
+
+
+@dataclass(frozen=True)
+class _CraftRecipe:
+    """一份**真实查询**得到的配方（只保留计算需要的字段）。"""
+
+    item: str
+    recipe_id: str
+    per_craft: int
+    ingredients: tuple[tuple[str, int], ...]
+
+
+@dataclass(frozen=True)
+class _CraftStage:
+    """一级合成：做 ``batches`` 次，产出 ``per_craft * batches``。"""
+
+    recipe: _CraftRecipe
+    batches: int
+
+    @property
+    def produced(self) -> int:
+        return self.recipe.per_craft * self.batches
+
+    def consumed(self) -> dict[str, int]:
+        return {name: qty * self.batches for name, qty in self.recipe.ingredients}
+
+
+def inventory_counts(result: Mapping[str, Any]) -> dict[str, int] | None:
+    """真实背包快照 → 物品计数（``None`` = 读不到 —— **绝不**当成空背包）。
+
+    快照形状与既有验证器 ``TaskRuntime._counts`` 同口径：``{"items": [{"name", "count"}…]}``。
+    """
+    items = result.get("items")
+    if not isinstance(items, list):
+        return None
+    counts: dict[str, int] = {}
+    for row in items:
+        if not isinstance(row, Mapping):
+            continue
+        name = canonical_item_name(row.get("name"))
+        if not name:
+            continue
+        try:
+            counts[name] = counts.get(name, 0) + int(row.get("count") or 0)
+        except (TypeError, ValueError):
+            continue
+    return counts
+
+
+def craft_recipe_of(result: Mapping[str, Any], item: str) -> tuple[_CraftRecipe | None, str]:
+    """从**真实** ``minecraft_recipe_lookup`` 结果里挑一份 2×2 配方。
+
+    ``recipe`` 为 ``None`` 时返回稳定原因码。选择规则（确定性、可复现）：
+    只接受**不需要工作台**的配方；有多份时按 ``recipe_id`` 排序取第一份 —— 绝不猜配方。
+    """
+    raw_recipes = result.get("recipes")
+    rows = [
+        row
+        for row in (raw_recipes if isinstance(raw_recipes, list) else [])
+        if isinstance(row, Mapping)
+    ]
+    if not rows:
+        return None, CRAFT_REASON_NO_RECIPE
+    usable = [row for row in rows if not bool(row.get("requires_table"))]
+    if not usable:
+        return None, CRAFT_REASON_TABLE
+    # 真实的 ``available`` = 运行时按**当前真实背包**判定「材料够做一次」（可信事实）。
+    # 同一物品可能有多个配方（木棍既能用木板也能用竹子）—— 必须先选真正做得成的那个，
+    # 否则会按字母序挑到竹子配方、然后如实报「材料不足」（真实门禁发现的缺陷）。
+    usable.sort(key=lambda row: (not bool(row.get("available")), str(row.get("recipe_id") or "")))
+    chosen = usable[0]
+    recipe_id = str(chosen.get("recipe_id") or "")
+    raw_result = chosen.get("result")
+    result_row = raw_result if isinstance(raw_result, Mapping) else {}
+    try:
+        per_craft = int(result_row.get("count_per_craft") or 1)
+    except (TypeError, ValueError):
+        per_craft = 1
+    per_craft = max(1, per_craft)
+    ingredients: list[tuple[str, int]] = []
+    raw_ingredients = chosen.get("ingredients")
+    for row in raw_ingredients if isinstance(raw_ingredients, list) else []:
+        if not isinstance(row, Mapping):
+            continue
+        name = canonical_item_name(row.get("name"))
+        try:
+            qty = int(row.get("count") or 0)
+        except (TypeError, ValueError):
+            qty = 0
+        if name and qty > 0:
+            ingredients.append((name, qty))
+    if not recipe_id or not ingredients:
+        return None, CRAFT_REASON_NO_RECIPE
+    return _CraftRecipe(
+        item=item, recipe_id=recipe_id, per_craft=per_craft, ingredients=tuple(ingredients)
+    ), ""
+
+
+async def plan_craft_task(
+    objective: str,
+    *,
+    observe: ObserveFn,
+    item: str,
+    count: int = 0,
+) -> PlannedTask:
+    """有界简易合成模板（Phase 8F §4/§5）。
+
+    流程：**真实读背包 → 真实查配方 → 算批次与材料 → 冻结有界合成步骤 → 末尾重读背包**。
+
+    硬约束（都在这里、不靠注释承诺）：
+
+    * 只用真实 ``recipe_lookup`` 给出的 ``recipe_id``，绝不猜配方/材料/产出量；
+    * 本阶段只用**玩家自身 2×2** 的配方；需要工作台的配方如实拒绝
+      （不自动找/走/放工作台 —— 那是 §11 之外的方块放置能力）；
+    * 批次数由可信代码算 ``batches = ceil(N / q)``，单个目标上限 ``CRAFT_MAX_BATCHES``；
+    * 产出超过用户要求时只多做**必要的整数刀**，并由回复层如实说明（绝不静默多耗材料）；
+    * 材料不足 → ``insufficient_material``（带上缺什么、缺多少），绝不自动补料/丢物品/开容器；
+    * 最多两级（目标 + 一级前置）：中间产物既是材料又是产物时按**净变化**写进后置条件；
+    * 成功证据 = 真实背包重读的 ``ExpectedFinalState``（产物净增 + 材料净耗）。
+    """
+    target = canonical_item_name(item)
+    if not target:
+        raise ObservationFailed(f"{CRAFT_REASON_NO_RECIPE}:empty_item")
+    observations: list[Observation] = []
+
+    inventory = await _safe_observe(observe, "minecraft_inventory", {})
+    inventory_result = _result_of(inventory)
+    observations.append(
+        Observation(
+            tool="minecraft_inventory",
+            arguments={},
+            result=inventory_result,
+            summary=getattr(inventory, "summary", ""),
+        )
+    )
+    counts = inventory_counts(inventory_result)
+    if counts is None:
+        raise ObservationFailed(f"{CRAFT_REASON_INVENTORY}:背包读不回来，无法确认材料")
+
+    async def lookup(name: str) -> _CraftRecipe:
+        args = {"item": name}
+        invocation = await _safe_observe(observe, "minecraft_recipe_lookup", args)
+        result = _result_of(invocation)
+        observations.append(
+            Observation(
+                tool="minecraft_recipe_lookup",
+                arguments=args,
+                result=result,
+                summary=getattr(invocation, "summary", ""),
+            )
+        )
+        if not result.get("ok", True):
+            raise ObservationFailed(f"{CRAFT_REASON_NO_RECIPE}:{name}")
+        recipe, reason = craft_recipe_of(result, name)
+        if recipe is None:
+            raise ObservationFailed(f"{reason}:{name}")
+        return recipe
+
+    target_recipe = await lookup(target)
+    requested = max(0, int(count or 0))
+    # 用户没给数量 → 采用**已定义的默认值**：一次真实合成（产出量来自真实配方）。
+    wanted_batches = 1 if requested <= 0 else -(-requested // target_recipe.per_craft)
+    target_batches = max(1, min(wanted_batches, CRAFT_MAX_BATCHES))
+    stage2 = _CraftStage(recipe=target_recipe, batches=target_batches)
+
+    # 目标级的材料需求：先用**真实背包**核对；不够时最多补一级前置合成（§5.1 第 3 项）。
+    available = dict(counts)
+    stage1: _CraftStage | None = None
+    needs = stage2.consumed()
+    shortage = {
+        name: required - available.get(name, 0)
+        for name, required in needs.items()
+        if required > available.get(name, 0)
+    }
+    if shortage:
+        missing = sorted(shortage)
+        if len(missing) != 1:
+            detail = "、".join(
+                f"{name}(需要 {needs[name]}，现有 {available.get(name, 0)})" for name in missing
+            )
+            raise ObservationFailed(f"{CRAFT_REASON_MATERIAL}:{detail}")
+        name = missing[0]
+        try:
+            prerequisite = await lookup(name)
+        except ObservationFailed:
+            # 缺的材料自己也做不出来（例如原木还没砍）→ 如实说「材料不足」，
+            # 不把配方问题冒充成材料问题，也不自动去采集/补料（§9.1 用例 5）。
+            raise ObservationFailed(
+                f"{CRAFT_REASON_MATERIAL}:{name}(需要 {needs[name]}，现有 {available.get(name, 0)})"
+            ) from None
+        stage1 = _CraftStage(
+            recipe=prerequisite,
+            batches=-(-shortage[name] // prerequisite.per_craft),
+        )
+        available[name] = available.get(name, 0) + stage1.produced
+        for ingredient, required in stage1.consumed().items():
+            if available.get(ingredient, 0) < required:
+                raise ObservationFailed(
+                    f"{CRAFT_REASON_MATERIAL}:"
+                    f"{ingredient}(需要 {required}，现有 {available.get(ingredient, 0)})"
+                )
+    total_batches = (stage1.batches if stage1 is not None else 0) + stage2.batches
+    if total_batches > CRAFT_MAX_BATCHES:
+        raise ObservationFailed(f"{CRAFT_REASON_BOUNDS}:{total_batches}>{CRAFT_MAX_BATCHES}")
+
+    steps: list[TaskStep] = []
+    index = 0
+
+    def add(tool: str, arguments: dict[str, Any], risk: str) -> TaskStep:
+        nonlocal index
+        index += 1
+        step = TaskStep(
+            step_id=f"step_{index}",
+            tool=tool,
+            arguments=arguments,
+            risk=risk,
+            references=collect_references(arguments),
+        )
+        steps.append(step)
+        return step
+
+    # 每批次一个**真实**动作步：参数只有冻结的 recipe_id（材料由服务器配方与真实背包决定）。
+    produced: dict[str, int] = {}
+    consumed: dict[str, int] = {}
+    for stage in ([stage1] if stage1 is not None else []) + [stage2]:
+        for _ in range(stage.batches):
+            add("minecraft_craft", {"recipe_id": stage.recipe.recipe_id}, "MEDIUM")
+        produced[stage.recipe.item] = produced.get(stage.recipe.item, 0) + stage.produced
+        for name, qty in stage.consumed().items():
+            consumed[name] = consumed.get(name, 0) + qty
+    add("minecraft_inventory", {}, "SAFE")
+
+    # 净变化：同一物品既产出又消耗时**只写净量**，方向由符号决定（§7.1）。
+    net = {
+        name: produced.get(name, 0) - consumed.get(name, 0)
+        for name in set(produced) | set(consumed)
+    }
+    delta = {name: value for name, value in net.items() if value > 0}
+    lost = {name: -value for name, value in net.items() if value < 0}
+    plan = TaskPlan(
+        objective=objective,
+        steps=steps,
+        expected_final_state=ExpectedFinalState(inventory_delta=delta, inventory_consumed=lost),
+        observations=[item_.to_payload() for item_ in observations],
+    )
+    return PlannedTask(objective=objective, plan=plan, observations=observations)
+
+
 # ---------------------------------------------------------------- exploration（Phase 7F.1）
 
 #: 有界探索的默认硬上限：**整条路线**的总长度不超过这个值（格）。

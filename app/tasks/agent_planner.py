@@ -20,11 +20,13 @@ from typing import Any
 
 from app.integrations.minecraft.agent import ACTION_RISK
 from app.tasks.agent_plan import PlanTarget
+from app.tasks.craft_intent import parse_craft_request
 from app.tasks.intent import parse_wood_request
 from app.tasks.planner import (
     EXPLORE_MAX_LEGS,
     ObservationFailed,
     PlannedTask,
+    plan_craft_task,
     plan_exploration_task,
     plan_resource_task,
     plan_wood_task,
@@ -170,6 +172,8 @@ class BoundedAgentPlanner:
             return self._plan_follow(objective, target or PlanTarget())
         if shape == "wood":
             return await self._plan_wood(objective, observe)
+        if shape == "craft":
+            return await self._plan_craft(objective, observe)
         if shape == "resource":
             return await self._plan_resource(objective, observe)
         if shape == "explore":
@@ -441,6 +445,78 @@ class BoundedAgentPlanner:
         return PlanningResult(
             outcome=PlanningOutcome.READY_FOR_APPROVAL,
             reason="wood_plan_ready",
+            plan=planned,
+            risk_summary=_risk_summary_of(planned, self.risk_table),
+            checks=({"check": "plan", "ok": True, "detail": detail},),
+        )
+
+    async def _plan_craft(self, objective: str, observe: ObserveFn | None) -> PlanningResult:
+        """有界简易合成（Phase 8F §4/§5）：配方与材料**必须**来自真实读取。
+
+        与 ``_plan_wood`` 同口径：**规划期就必须过 Policy 闸**（§6）—— 合成是 MEDIUM，
+        在 ``allow_medium=false``（生产默认）时直接 ``BLOCKED_BY_POLICY``，**不创建可执行任务**。
+        """
+        request = parse_craft_request(objective)
+        if request is None or request.problem or not request.item:
+            # 解析不出目标/数量，或命中歧义与否定 → 计划层**绝不猜**：交回既有澄清路径。
+            return self._plan_unknown(objective)
+        if observe is None:
+            return PlanningResult(
+                outcome=PlanningOutcome.BLOCKED_BY_PRECONDITION,
+                reason="observe_unavailable",
+                checks=({"check": "observe", "ok": False, "detail": {}},),
+            )
+        try:
+            planned = await plan_craft_task(
+                objective,
+                observe=observe,
+                item=request.item,
+                count=request.count,
+            )
+        except ObservationFailed as exc:
+            return PlanningResult(
+                outcome=PlanningOutcome.BLOCKED_BY_PRECONDITION,
+                reason=str(exc)[:200],
+                checks=({"check": "craft", "ok": False, "detail": {"error": str(exc)[:200]}},),
+            )
+        except Exception as exc:  # noqa: BLE001 - 规划失败绝不假装可执行
+            return PlanningResult(
+                outcome=PlanningOutcome.NEEDS_MORE_INFORMATION,
+                reason=f"planning_failed:{type(exc).__name__}",
+                checks=({"check": "plan", "ok": False, "detail": {"error": str(exc)[:200]}},),
+            )
+        blocked = self._policy_blocked(planned)
+        if blocked is not None:
+            return PlanningResult(
+                outcome=PlanningOutcome.BLOCKED_BY_POLICY,
+                reason=blocked,
+                plan=planned,
+                risk_summary=_risk_summary_of(planned, self.risk_table),
+                checks=(
+                    {
+                        "check": "risk_flags",
+                        "ok": False,
+                        "detail": {"reason": blocked, "requested": request.requested},
+                    },
+                ),
+            )
+        state = planned.plan.expected_final_state
+        produced = int(state.inventory_delta.get(request.item, 0))
+        batches = sum(1 for step in planned.plan.steps if step.tool == "minecraft_craft")
+        detail: dict[str, Any] = {
+            "steps": len(planned.plan.steps),
+            "batches": batches,
+            "produced": produced,
+            "requested": request.requested,
+            "item": request.item,
+            "materials": dict(state.inventory_consumed),
+            # 请求数超过本期上限时**如实标注**（由回复层说明，绝不假装做了那么多）。
+            "capped": bool(request.requested and produced < request.requested),
+            "default_batch": request.requested == 0,
+        }
+        return PlanningResult(
+            outcome=PlanningOutcome.READY_FOR_APPROVAL,
+            reason="craft_plan_ready",
             plan=planned,
             risk_summary=_risk_summary_of(planned, self.risk_table),
             checks=({"check": "plan", "ok": True, "detail": detail},),

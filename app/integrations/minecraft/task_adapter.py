@@ -213,6 +213,11 @@ async def _dropped_items(service: Any, args: Mapping[str, Any]) -> dict[str, Any
     return await service.dropped_items()
 
 
+async def _recipe_lookup(service: Any, args: Mapping[str, Any]) -> dict[str, Any]:
+    """Phase 8F：合成规划期的**只读**配方观察（SAFE，与既有 Tool 的 `_call` 同款）。"""
+    return await service.recipe_lookup(args.get("item"), args.get("crafting_table"))
+
+
 async def _look_at(service: Any, args: Mapping[str, Any]) -> dict[str, Any]:
     return await service.look_at(args.get("x"), args.get("y"), args.get("z"))
 
@@ -245,6 +250,11 @@ async def _pickup(service: Any, args: Mapping[str, Any]) -> dict[str, Any]:
     return await service.pickup_item(args.get("entity_id"), args.get("expected_item"))
 
 
+async def _craft(service: Any, args: Mapping[str, Any]) -> dict[str, Any]:
+    """Phase 8F：合成**执行**步骤（MEDIUM；仍必须过既有 Policy/授权/确认门，绝不旁路）。"""
+    return await service.craft(args.get("recipe_id"), args.get("crafting_table"))
+
+
 async def _stop(service: Any, args: Mapping[str, Any]) -> dict[str, Any]:
     return await service.stop_action()
 
@@ -255,12 +265,14 @@ _SERVICE_ROUTES: dict[str, Callable[[Any, Mapping[str, Any]], Awaitable[dict[str
     "minecraft_find_blocks": _find_blocks,
     "minecraft_dig_capability": _dig_capability,
     "minecraft_dropped_items": _dropped_items,
+    "minecraft_recipe_lookup": _recipe_lookup,
     "minecraft_look_at": _look_at,
     "minecraft_move_to": _move_to,
     "minecraft_follow_player": _follow_player,
     "minecraft_dig": _dig,
     "minecraft_equip": _equip,
     "minecraft_pickup_item": _pickup,
+    "minecraft_craft": _craft,
     "minecraft_stop": _stop,
 }
 

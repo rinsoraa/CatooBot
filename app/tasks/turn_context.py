@@ -19,12 +19,16 @@ from typing import Any
 
 from app.tasks.turn_decision import AUDITED_CAPABILITIES
 
-#: 本阶段明确**未开放**的世界修改能力（任务书 §11）——只作为事实告知模型，绝不可执行。
+#: 本阶段明确**未开放为自由能力调用**的世界修改能力（只作为事实告知模型，绝不可直接执行）。
+#:
+#: Phase 8F：``minecraft_craft`` **不在这张表里了** —— 基础合成已作为**受管任务**开放
+#: （计划 → 授权/确认 → 既有执行链 → 真实库存复核）。但它**没有**进入
+#: ``READ_ONLY_CAPABILITIES`` / ``ACTION_CAPABILITIES`` 自由调用白名单（§5.3：不得靠把工具
+#: 加进通用白名单来打通），所以模型依然不能把它当成原子能力直接点名执行。
 UNSUPPORTED_CAPABILITIES: tuple[str, ...] = (
     "minecraft_dig",
     "minecraft_place_block",
     "minecraft_attack",
-    "minecraft_craft",
     "minecraft_container",
     "minecraft_inventory_move",
 )

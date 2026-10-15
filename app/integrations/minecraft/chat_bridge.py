@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import Mapping
 from dataclasses import dataclass
 from enum import StrEnum
 from typing import TYPE_CHECKING, Any
@@ -32,6 +33,12 @@ from app.integrations.minecraft.agent import PLAYER_KEY
 from app.integrations.minecraft.identity_context import IdentityResolution
 from app.tasks.agent_plan import PlanTarget
 from app.tasks.agent_planner import detect_shape
+from app.tasks.craft_intent import (
+    CRAFT_MAX_BATCHES,
+    CraftRequest,
+    display_name_of,
+    parse_craft_request,
+)
 from app.tasks.intent import (
     TaskIntentDetector,
     WoodRequest,
@@ -109,6 +116,21 @@ class _WoodRoute(StrEnum):
     DELEGATE_CONTROL = "delegate_control"
     WOOD_POSITIVE_REQUEST = "wood_positive_request"
     SAFE_CLARIFY = "safe_clarify"
+
+
+def _item_counts(raw: Any) -> dict[str, int]:
+    """把冻结计划里的增量/消耗映射整理成「裸物品名 → 正整数」（只读、绝不猜）。"""
+    counts: dict[str, int] = {}
+    if not isinstance(raw, Mapping):
+        return counts
+    for key, value in raw.items():
+        try:
+            count = int(value or 0)
+        except (TypeError, ValueError):
+            continue
+        if count > 0:
+            counts[str(key)] = count
+    return counts
 
 
 @dataclass(frozen=True)
@@ -500,6 +522,11 @@ class MinecraftChatBridge:
         if kind in (TurnDecisionKind.QUERY, TurnDecisionKind.ATOMIC_ACTION):
             return await self._run_capability(username, session_id, message, kind, decision)
         if kind is TurnDecisionKind.TASK_PROPOSAL:
+            # Phase 8F §3.1：**合成解析先于木材解析** —— 「做成木板」含木材名词，木材入口
+            # 会把它当成「不支持的木材种类」直接拒掉（那是采集语义，不是合成语义）。
+            craft = parse_craft_request(message)
+            if craft is not None:
+                return await self._craft_turn(username, session_id, message, craft)
             # FU4 §5.2：木材解析**只在这里**参与 —— 作为目标解析 + 额外安全否决：
             #   HANDLED           → 否定请求，明确「不做」（绝不升级成行动）
             #   SAFE_CLARIFY      → 歧义/非法参数/解释器不可用 → 澄清
@@ -1049,6 +1076,11 @@ class MinecraftChatBridge:
                     self._wood_summary(record, plan)
                     + "\n需要你确认后我才会动手。\n回复「确认」开始。"
                 )
+            if shape == "craft":
+                return (
+                    self._craft_summary(record, plan)
+                    + "\n需要你确认后我才会动手。\n回复「确认」开始。"
+                )
             target_name = str(getattr(getattr(plan, "target", None), "player_name", "") or "")
             if shape == "follow" and target_name:
                 duration = dict(getattr(plan, "risk_summary", {}) or {}).get("duration_note")
@@ -1103,6 +1135,101 @@ class MinecraftChatBridge:
         text = f"罐头准备这样做：采集 {names or '原木'}（共 {total} 个，来自真实观察确认的目标）。"
         if detail.get("capped"):
             text += "你说的比这个多 —— 本期一次最多采 2 根，这一份计划只采上面这些。"
+        return text
+
+    async def _craft_turn(
+        self, username: str, session_id: str, message: str, request: CraftRequest
+    ) -> _TurnReply:
+        """Phase 8F §9.1：合成请求 → 澄清 / 安全拒绝 / 既有计划链（shape_hint=craft）。
+
+        澄清与拒绝分支**不建任务、不调工具**；肯定请求走既有计划链 + 既有两道确认门。
+        """
+        if request.problem == "negated":
+            self._turn_route(session_id, message, RouteTarget.CHAT_ONLY.value, "craft_negated")
+            return _TurnReply("好，那我不做这个了。")
+        if request.problem == "zero_count":
+            self._turn_route(session_id, message, RouteTarget.CLARIFY.value, "craft_zero_count")
+            return _TurnReply("「0 个」我没法当成一次合成请求 —— 你想要几个？")
+        if request.problem == "unknown_item":
+            self._turn_route(session_id, message, RouteTarget.CLARIFY.value, "craft_unknown_item")
+            return _TurnReply("你想让我做什么？我现在只会做木棍、木板这类基础物品。")
+        if request.problem:
+            names = request.detail or "这个"
+            self._turn_route(session_id, message, RouteTarget.CLARIFY.value, "craft_ambiguous_item")
+            return _TurnReply(f"「{names}」指的是哪一种？说清树种我才能算配方（我不替你挑）。")
+        plans = getattr(self.bot, "agent_plans", None)
+        plan_goal = getattr(plans, "plan_goal_from_user", None)
+        if not callable(plan_goal):
+            return _TurnReply(
+                self._plan_failure(
+                    session_id,
+                    message,
+                    reason_code="plan_service_unavailable",
+                    text="我这条合成计划现在排不了（计划服务没装配），所以我什么都没做。",
+                )
+            )
+        try:
+            out = await plan_goal(
+                objective=str(message),
+                user_id=str(username),
+                session_id=str(session_id),
+                target=PlanTarget(),
+                source="minecraft",
+                shape_hint="craft",
+            )
+        except Exception as exc:  # noqa: BLE001 - 计划层故障只影响这一条消息
+            log.warning(
+                "[MC Plan] 合成计划接线失败（%s）：error_type=%s", username, type(exc).__name__
+            )
+            return _TurnReply(
+                self._plan_failure(
+                    session_id,
+                    message,
+                    reason_code="plan_service_error",
+                    text="这条合成计划没排成功（计划层出错），我没有执行任何动作。",
+                )
+            )
+        return _TurnReply(self._plan_reply_text(username, session_id, message, "craft", out))
+
+    def _craft_summary(self, record: Any, plan: Any) -> str:
+        """如实说明这一份合成计划做什么、用多少材料（数字全部取自**冻结计划**）。"""
+        task_plan = getattr(record, "plan", None)
+        state = getattr(task_plan, "expected_final_state", None)
+        produced = _item_counts(getattr(state, "inventory_delta", None))
+        consumed = _item_counts(getattr(state, "inventory_consumed", None))
+        steps = list(getattr(task_plan, "steps", None) or [])
+        batches = sum(1 for step in steps if getattr(step, "tool", "") == "minecraft_craft")
+        detail: dict[str, Any] = {}
+        checks = getattr(plan, "checks", None) or ()
+        if checks and isinstance(checks[-1], dict):
+            raw_detail = checks[-1].get("detail")
+            if isinstance(raw_detail, dict):
+                detail = dict(raw_detail)
+        made = "、".join(
+            f"{display_name_of(name)} x{count}" for name, count in sorted(produced.items())
+        )
+        used = "、".join(
+            f"{display_name_of(name)} x{count}" for name, count in sorted(consumed.items())
+        )
+        target_name = made or "目标物品"
+        text = (
+            f"罐头准备这样做：用 {used or '现有材料'} 合成 {target_name}"
+            f"（一共 {batches} 刀，材料以服务器实际配方为准）。"
+        )
+        requested = int(detail.get("requested") or 0)
+        total = sum(produced.values())
+        if detail.get("default_batch"):
+            text += "\n你没说数量，我按**一次合成**算（就是上面的产出量）。"
+        if requested and total > requested:
+            extra = total - requested
+            text += (
+                f"\n合成是按整刀做的，所以这一份会产出 {total} 个，"
+                f"比你说的 {requested} 个多 {extra} 个（不会额外多做）。"
+            )
+        if detail.get("capped"):
+            text += (
+                f"\n你说的比这个多：本期一次最多 {CRAFT_MAX_BATCHES} 刀，这一份计划只做上面这些。"
+            )
         return text
 
     def _route(

@@ -2753,12 +2753,14 @@ class TaskRuntime:
         result: dict[str, Any] = {"checked": True}
         ok = True
         messages: list[str] = []
-        if expected.inventory_delta:
+        if expected.inventory_delta or expected.inventory_consumed:
             after = await self._inventory_snapshot()
             before = record.result.get("started_inventory")
             inventory = self._verify_inventory(expected, before, after)
             result["inventory_delta"] = inventory.get("inventory_delta", {})
+            result["inventory_consumed"] = inventory.get("inventory_consumed", {})
             result["expected"] = inventory.get("expected", {})
+            result["expected_consumed"] = inventory.get("expected_consumed", {})
             if not inventory.get("ok"):
                 ok = False
                 messages.append(str(inventory.get("message") or "背包最终状态与预期不符"))
@@ -2876,18 +2878,30 @@ class TaskRuntime:
         counts_before = self._counts(before)
         counts_after = self._counts(after)
         delta: dict[str, int] = {}
+        lost: dict[str, int] = {}
         ok = True
         for name, minimum in expected.inventory_delta.items():
             gained = counts_after.get(name, 0) - counts_before.get(name, 0)
             delta[name] = gained
             if gained < minimum:
                 ok = False
+        # Phase 8F §7.1：材料净消耗（至少少多少）—— 与产物增量用同一份真实前后快照判定。
+        for name, minimum in expected.inventory_consumed.items():
+            spent = counts_before.get(name, 0) - counts_after.get(name, 0)
+            lost[name] = spent
+            if spent < minimum:
+                ok = False
+        detail = ""
+        if not ok:
+            detail = f"背包最终状态与预期不符（产物 {delta}；材料消耗 {lost}）"
         return {
             "checked": True,
             "ok": ok,
             "inventory_delta": delta,
+            "inventory_consumed": lost,
             "expected": dict(expected.inventory_delta),
-            "message": "" if ok else f"背包最终状态与预期不符（{delta}）",
+            "expected_consumed": dict(expected.inventory_consumed),
+            "message": detail,
         }
 
     @staticmethod

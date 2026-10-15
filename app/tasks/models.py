@@ -713,6 +713,9 @@ class ExpectedFinalState:
 
     #: 物品名（裸名）→ 至少增加多少
     inventory_delta: dict[str, int] = field(default_factory=dict)
+    #: Phase 8F §7.1：物品名（裸名）→ **至少减少多少**（材料净消耗）。空则**不进**
+    #: payload，这样 8F 之前冻结的计划 plan_hash 逐字节不变。
+    inventory_consumed: dict[str, int] = field(default_factory=dict)
     #: Phase 7F.1：有界探索的后置条件 —— 用 SAFE 读（minecraft_world）确认
     #: "罐头最终在 (x,y,z) 的 radius 格内"。不是靠动作返回值自述，是重新读世界。
     position_within: dict[str, float] | None = None
@@ -725,6 +728,10 @@ class ExpectedFinalState:
         payload: dict[str, Any] = {
             "inventory_delta": {k: v for k, v in sorted(self.inventory_delta.items())}
         }
+        if self.inventory_consumed:
+            payload["inventory_consumed"] = {
+                key: value for key, value in sorted(self.inventory_consumed.items())
+            }
         if self.position_within:
             payload["position_within"] = {
                 "x": float(self.position_within["x"]),
@@ -769,15 +776,31 @@ class ExpectedFinalState:
                     delta[canonical_item_name(key)] = int(value)
                 except (TypeError, ValueError):  # pragma: no cover - 计划校验会先拦掉
                     continue
+        raw_spent = (
+            (payload or {}).get("inventory_consumed") if isinstance(payload, Mapping) else None
+        )
+        spent: dict[str, int] = {}
+        if isinstance(raw_spent, Mapping):
+            for key, value in raw_spent.items():
+                try:
+                    spent[canonical_item_name(key)] = int(value)
+                except (TypeError, ValueError):  # pragma: no cover - 计划校验会先拦掉
+                    continue
         return cls(
             inventory_delta=delta,
+            inventory_consumed=spent,
             position_within=_position_within_of(payload),
             route=_route_of(payload),
         )
 
     @property
     def empty(self) -> bool:
-        return not self.inventory_delta and self.position_within is None and self.route is None
+        return (
+            not self.inventory_delta
+            and not self.inventory_consumed
+            and self.position_within is None
+            and self.route is None
+        )
 
 
 @dataclass
