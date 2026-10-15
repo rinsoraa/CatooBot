@@ -12,6 +12,13 @@ from app.database.migration_report import (
     rehearsal_status,
 )
 
+#: 两个最小但**真实形态**的规范化快照（键 -> 规范化定义）。
+#: 测试显式声明「有没有 schema 变化」这份证据，而不是让实现去猜。
+SCHEMA_SAME = {
+    "table:t": "CREATE TABLE t (id INTEGER)",
+    "column:t.id": "cid=0;type=INTEGER;notnull=0;dflt=None;pk=1",
+}
+
 
 def _report(**overrides: Any) -> dict[str, Any]:
     base: dict[str, Any] = {
@@ -25,6 +32,8 @@ def _report(**overrides: Any) -> dict[str, Any]:
         "added_tables": [],
         "lost_rows": {},
         "log": [],
+        "schema_before": dict(SCHEMA_SAME),
+        "schema_after": dict(SCHEMA_SAME),
     }
     base.update(overrides)
     return rehearsal_report(**base)
@@ -72,6 +81,8 @@ def test_status_helper_is_pure_and_covers_the_three_states() -> None:
         "integrity_after": "ok",
         "added_tables": [],
         "lost_rows": {},
+        "schema_evidence_ok": True,
+        "schema_changed": False,
     }
     assert rehearsal_status(version_before=36, version_after=36, **base) == STATUS_NO_OP
     assert rehearsal_status(version_before=35, version_after=36, **base) == STATUS_MIGRATED
@@ -103,7 +114,7 @@ def test_report_keeps_the_legacy_fields() -> None:
 
 def test_schema_change_without_a_version_bump_is_not_a_legal_no_op() -> None:
     """H3 边界：版本没变却出现新表 = 未受托管的 schema 变化，必须 fail（不能当 no-op）。"""
-    report = _report(added_tables=["rogue_table"])
+    report = _report(schema_after={**SCHEMA_SAME, "table:rogue": "CREATE TABLE rogue (id INTEGER)"})
     assert report["status"] == STATUS_FAILED
     assert report["ok"] is False
     assert report["schema_changed_without_version_bump"] is True
