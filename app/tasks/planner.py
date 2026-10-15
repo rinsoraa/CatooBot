@@ -621,6 +621,10 @@ def craft_recipe_of(
         if isinstance(row, Mapping)
     ]
     if not rows:
+        # 运行时的四态语义：status=crafting_table_required 明确表示「这个配方需要 3x3 工作台」，
+        # 绝不能降级成 no_recipe（否则需要工作台的配方会被当成根本没有配方）。
+        if str(result.get("status") or "") == CRAFT_REASON_TABLE:
+            return None, CRAFT_REASON_TABLE
         return None, CRAFT_REASON_NO_RECIPE
     # Phase 8G：``allow_table=False``（8F 语义）时只认 2×2；``True`` 时也认工作台配方，
     # 但**优先**挑不需要工作台的（前置条件更少）。
@@ -669,6 +673,17 @@ def craft_recipe_of(
     ), ""
 
 
+def _recipe_spec(recipe: _CraftRecipe) -> RecipeSpec:
+    # 真实配方 -> DAG 需要的字段（只搬运，不改写）。
+    return RecipeSpec(
+        item=recipe.item,
+        recipe_id=recipe.recipe_id,
+        per_craft=recipe.per_craft,
+        ingredients=recipe.ingredients,
+        requires_table=recipe.requires_table,
+    )
+
+
 async def plan_craft_task(
     objective: str,
     *,
@@ -713,31 +728,67 @@ async def plan_craft_task(
     if counts is None:
         raise ObservationFailed(f"{CRAFT_REASON_INVENTORY}:背包读不回来，无法确认材料")
 
-    async def lookup(name: str) -> RecipeSpec | None:
-        """真实配方查询（记录观察）。查不到 → ``None``，由 DAG 给出稳定原因码。"""
-        args = {"item": name}
+    workbench: WorkbenchObservation | None = None
+
+    async def _query(item_name: str, table: dict[str, int] | None) -> dict[str, Any]:
+        # 一次真实配方查询（记录观察）。table 非空时带上工作台坐标。
+        args: dict[str, Any] = {"item": item_name}
+        if table:
+            args["crafting_table"] = dict(table)
         invocation = await _safe_observe(observe, "minecraft_recipe_lookup", args)
-        result = _result_of(invocation)
+        payload = _result_of(invocation)
         observations.append(
             Observation(
                 tool="minecraft_recipe_lookup",
                 arguments=args,
-                result=result,
+                result=payload,
                 summary=getattr(invocation, "summary", ""),
             )
         )
+        return payload
+
+    async def _workbench_once() -> WorkbenchObservation:
+        # 真实观察工作台（只做一次；六态原样返回，绝不假设存在）。
+        nonlocal workbench
+        if workbench is None:
+            workbench = await observe_workbench(
+                observe,
+                radius=budget.workbench_search_radius,
+                ttl_seconds=budget.workbench_ttl_seconds,
+            )
+            observations.append(
+                Observation(
+                    tool="craft_workbench",
+                    arguments={"radius": budget.workbench_search_radius},
+                    result=workbench.to_payload(),
+                    summary=workbench.explain(),
+                )
+            )
+        return workbench
+
+    async def lookup(name: str) -> RecipeSpec | None:
+        # 真实配方查询（记录观察）。查不到 -> None，由 DAG 给出稳定原因码。
+        # 3x3 配方在**不带工作台**时，运行时按设计只回 crafting_table_required 且不带配方；
+        # 所以这里必须先用真实观察确认一张工作台，再拿那张桌子的坐标重查一次。
+        result = await _query(name, None)
         if result.get("ok", True) is False:
             return None
-        recipe, _reason = craft_recipe_of(result, name, allow_table=True)
-        if recipe is None:
+        recipe, reason = craft_recipe_of(result, name, allow_table=True)
+        if recipe is not None:
+            return _recipe_spec(recipe)
+        if reason != CRAFT_REASON_TABLE:
             return None
-        return RecipeSpec(
-            item=recipe.item,
-            recipe_id=recipe.recipe_id,
-            per_craft=recipe.per_craft,
-            ingredients=recipe.ingredients,
-            requires_table=recipe.requires_table,
-        )
+        observed = await _workbench_once()
+        table = observed.crafting_table_argument()
+        if not observed.usable or table is None:
+            raise ObservationFailed(
+                f"{CRAFT_REASON_TABLE}:{observed.status}:{observed.reason}:{observed.explain()}"
+            )
+        recalled = await _query(name, table)
+        if recalled.get("ok", True) is False:
+            return None
+        recipe, _reason = craft_recipe_of(recalled, name, allow_table=True)
+        return _recipe_spec(recipe) if recipe is not None else None
 
     try:
         built = await build_craft_plan(
@@ -751,23 +802,10 @@ async def plan_craft_task(
     except CraftPlanError as exc:
         raise ObservationFailed(f"{exc.reason}:{exc.detail}") from None
 
-    workbench: WorkbenchObservation | None = None
     table_argument: dict[str, int] = {}
     approach_position: tuple[int, int, int] | None = None
     if built.requires_table:
-        workbench = await observe_workbench(
-            observe,
-            radius=budget.workbench_search_radius,
-            ttl_seconds=budget.workbench_ttl_seconds,
-        )
-        observations.append(
-            Observation(
-                tool="craft_workbench",
-                arguments={"radius": budget.workbench_search_radius},
-                result=workbench.to_payload(),
-                summary=workbench.explain(),
-            )
-        )
+        workbench = await _workbench_once()
         if workbench.usable:
             table_argument = dict(workbench.crafting_table_argument() or {})
         elif (
