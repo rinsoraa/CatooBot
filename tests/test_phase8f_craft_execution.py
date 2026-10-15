@@ -9,8 +9,6 @@ from __future__ import annotations
 
 from typing import Any
 
-import pytest
-
 from app.tasks.agent_planner import BoundedAgentPlanner, PlanningOutcome
 from app.tasks.models import TaskPlan, TaskState
 from app.tasks.runtime import TaskInvocation
@@ -151,7 +149,7 @@ async def _craft_plan(counts: dict[str, int], *, count: int = 4) -> TaskPlan:
         recipes={STICK: [STICK_RECIPE], PLANKS: [PLANKS_RECIPE]},
     )
     result = await BoundedAgentPlanner(allow_medium=True).plan(
-        "做 %d 根木棍" % count, observe=observe, shape_hint="craft"
+        f"做 {count} 根木棍", observe=observe, shape_hint="craft"
     )
     assert result.outcome is PlanningOutcome.READY_FOR_APPROVAL, result.reason
     assert result.plan is not None

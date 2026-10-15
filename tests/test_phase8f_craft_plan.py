@@ -150,9 +150,7 @@ async def test_table_only_recipe_is_refused_instead_of_being_faked() -> None:
 
 async def test_inventory_read_failure_is_fail_closed() -> None:
     """§9.1 用例 7：背包读不回来 ≠ 背包为空 —— 绝不继续。"""
-    observe = FakeObserve(
-        items=[], recipes={PLANKS: [PLANKS_RECIPE]}, inventory_ok=False
-    )
+    observe = FakeObserve(items=[], recipes={PLANKS: [PLANKS_RECIPE]}, inventory_ok=False)
     with pytest.raises(ObservationFailed, match="inventory_unavailable"):
         await plan_craft_task("做一块橡木木板", observe=observe, item=PLANKS, count=4)
 
