@@ -1,5 +1,27 @@
 # Changelog
 
+## Minecraft Phase 8G Follow-up — 真实工作台闭环补证与世界观测一致性调查
+
+* **F1 世界观测「find_blocks 返回 0」定性为门禁脚本缺陷**：服务/桥接回包是两层信封
+  `{ok, action_id, action, status, result: {ok, query, matches: [...]}}`，我的本地门禁/诊断脚本在**顶层**读
+  `matches` → 静默得到 0 → 误判「附近没有工作台」。T0–T5 时间序列（放置后 T1 起 `dig_capability` 即读到
+  `crafting_table`）+ 独立客户端实验（调色板随 block_change 正确更新、`findBlocks` 找得到）证明：服务器写入成功、
+  客户端立即收到更新、mineflayer/prismarine-chunk 无缺陷。门禁脚本改用既有 `_unwrap` 并新增 `_matches_of`（本地专用，不发布）。
+* **F3 修复两条真实产品缺陷（3×3 工作台合成原先不可达）**：运行时的 `recipe_lookup` 在**不带 `crafting_table`**
+  时按四态语义只回 `status: crafting_table_required` + `recipes: []`，而规划层只查 `{"item": name}` ——
+  现在 `plan_craft_task.lookup` 会**先用真实观察确认一张工作台**（`craft_workbench` 观察进计划），
+  不可用即按六态如实拒绝，可用则**用那张桌子的坐标重查**并冻结坐标；`craft_recipe_of` 识别该 status，
+  不再降级成 `no_recipe`。**真实闭环达成**：冻结 `!wooden_pickaxe*1=oak_planks*3+stick*2` + 观察到的桌子坐标
+  `{'x': -265, 'y': 69, 'z': -140}`，独立真实背包核验木镐 `0 → 1`、木板 `4 → 1`、木棍 `8 → 6`，逐步后置验证通过。
+* **F4 迁移演练 `ok:false` 根因 + 最小兼容修复**：`scripts/migrate_db.py` 的 `ok` 原先要求 schema 版本**必须上升**，
+  于是「没有待执行迁移」的合法 no-op 被报成失败（退出码 1）。新增**已发布**模块 `app/database/migration_report.py`
+  （`no_op` / `migrated` / `failed` 三态，`ok = status != failed`，全部字段来自真实快照），脚本改为调用它并打印 `status`；
+  真实库副本演练结果为 `status: "no_op"`、`ok: true`、退出码 0，新增 7 条测试。**无新增 schema/字段/迁移**。
+* **仍未解决（如实记录）**：当同一物品的所有配方变体都 `available: false` 时，排序退化到 `recipe_id` 字母序，
+  会选到**金合欢/竹子**变体而报材料不足（真实证据：`recipe_lookup("wooden_pickaxe", {x:-265,y:69,z:-140})` →
+  `status: insufficient_material`、`total: 11`，首个变体 `!wooden_pickaxe*1=acacia_planks*3+stick*2`）。
+  建议下一阶段按「库存可满足度」排序，且不得降低任何既有检查。
+
 ## Minecraft Phase 8G — 工作台感知与受限合成扩展
 
 * **工作台感知（只读，六态）**：新增 `app/tasks/workbench.py` —— 先读真实世界视图（`self` 键的位置/维度 + `age_seconds`），过期即 `STALE` 且**不再搜方块**；再用既有 `minecraft_find_blocks` 做**有界**搜索（半径上限 16），按运行时同口径（眼高 1.62 → 方块中心）算距离；`AVAILABLE`/`NOT_FOUND`/`UNREACHABLE`/`STALE`/`UNKNOWN`/`ERROR` 六态互不冒充，只有 `AVAILABLE` 能用于执行。

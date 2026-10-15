@@ -151,3 +151,66 @@ Minecraft Runtime（真实 Mineflayer 客户端，用户名 `Catodayo`）+ 真�
   外部状态改变的真实 fail-closed 证据）；全量测试与静态检查通过；无新增表/迁移；受保护文件未改。
 * 未达成：**真实工作台（3×3）单步合成的真实服务器闭环缺证据**（§5 场景 A BLOCKED）；
   据此不得记 PASS，也不得用「工作台相关的单测/规划测试通过」替代真实闭环。
+
+---
+
+## 10. Phase 8G Follow-up 结论（追加，**不改写上文 §5 的历史记录**）
+
+> 归档任务书：`docs/specs/CatooBot Minecraft Phase 8G Follow-up — Real Workbench Closure & World Observation Consistency.md`
+> （26354 bytes，SHA256 `89D63905561D67BD9E520945D8F02894568536BAE1742EFECD853CE0D04C1260`，547 行）
+
+### 10.1 关键更正：§5 场景 A 的 BLOCKED 是**门禁脚本缺陷**，产品从未失效
+
+§5 记录的「世界里没有工作台 / `/setblock` 被拒 / `minecraft_find_blocks` 半径 16 内 0 候选」经 F1 逐层追踪后定性为：
+**我的本地门禁脚本读错了回包层级** —— 不是产品缺陷，也不是服务器或客户端问题。**§5 原文原样保留**（历史真实性），以本节证据链为准。
+
+* **真实回包是两层信封**：`{ok, action_id, action, status, result: {ok, query, matches: [...]}}`；门禁脚本却在**顶层**读
+  `payload["matches"]` → 静默得到 0 → 误判「附近没有工作台」。产品的 `workbench._payload_of` 一直正确解包 `.result`。
+* **单一已知坐标 T0–T5 时间序列**（目标 `(-264, 67, -139)`，罐头 `(-266.3, 67.0, -139.77)`）：T0 放置前 `dig_capability`
+  读到 `birch_leaves`；op 客户端 `/setblock` 被服务器接受后，**T1（立即）～T5（+5s）`dig_capability` 全部读到 `crafting_table`**
+  —— 客户端确实立即收到了更新；而脚本打印的 `find_blocks` 计数一直是 0。把**原始返回**打出来后，`result.matches` 里是真实工作台。
+* **独立客户端实验**（新观察客户端先在场，再由 op 客户端放置）：`blockAt` 立即看到方块；section 的**调色板也随之新增
+  `crafting_table`**（`isBlockInSection` 预检通过）；`findBlocks` **找到 1 个**，`useExtraInfo: true` 结果相同
+  → mineflayer / prismarine-chunk **没有**缺陷。
+* **修复**（仅本地门禁脚本，绝不发布）：改用既有 `_unwrap()` 并新增 `_matches_of(payload)` —— 统一解包两层信封，
+  **不把未知形状静默当成 0**（正是任务书 §3.1 警告的失败模式）。复跑：`半径 16 内找到 8 个工作台候选` ✓。
+
+### 10.2 F3：真实工作台 3×3 合成闭环（新证据，达成）
+
+F1 修复后夹具成立，随即暴露出**两条真实产品缺陷**（这才是场景 A 原先真正卡住的地方）：
+
+1. 运行时 `recipe_lookup(item)` **不带 `crafting_table`** 时按设计只回 `status: crafting_table_required` + `recipes: []`（四态语义），
+   而产品规划层只查 `{"item": name}` → **3×3 配方永远拿不到** → G2「工作台合成」实际不可达。
+2. `craft_recipe_of` 在 `recipes` 为空时直接归 `no_recipe`，未识别 `status == "crafting_table_required"`。
+
+修复（`app/tasks/planner.py`，最小改动）：`lookup` 先不带桌子查，遇到 `crafting_table_required` 时**真实观察一张工作台**
+（`craft_workbench` 观察进计划），不可用即按六态如实拒绝（`crafting_table_required:<status>:<reason>:<explain>`），
+可用则**用那张桌子的坐标重查**并冻结坐标；`craft_recipe_of` 把该 status 映射为 `crafting_table_required`。
+
+**真实闭环证据**（`CatooBot_backups/_phase8gfu_gate1.log`，脚本 `scripts/phase8g_craft_smoke_real.py` 本地专用）：
+
+* 夹具：真实工作台 8 个候选，采用 `(-265, 69, -140)`（`goal_near 2.83` / `raw 2.01`）。
+* 请求（真实第二个 Mineflayer 客户端发言）：`在工作台上做一把木镐`；真实 Provider 判定 `kind=task_proposal`。
+* 冻结配方（**来自真实查询，未硬编码**）：`!wooden_pickaxe*1=oak_planks*3+stick*2`，工作台坐标 `{'x': -265, 'y': 69, 'z': -140}`。
+* 确认前零副作用；经既有确认门执行；逐步后置验证 `['step_1']` 全部 ok。
+* **独立真实背包核验**：`wooden_pickaxe 0 → 1`、`oak_planks 4 → 1`（−3，与配方一致）、`stick 8 → 6`（−2，与配方一致）。
+* 结论：**场景 A PASS** ✓ —— 8G 的 G2 由此才真正闭环。
+
+### 10.3 F4：迁移演练 `ok:false` 根因与最小修复
+
+* 根因：`scripts/migrate_db.py` 的 `main()` 用 `ok = (integrity == "ok" and after.version > before.version and not lost)`
+  —— 要求**版本必须上升**；真实库已是最新（v36），migrate 无可执行迁移 → 版本不变 → 合法 no-op 被报成失败，且**退出码 1**。
+  属于「状态表达缺陷」，不是迁移失败。
+* 修复：新增已发布模块 `app/database/migration_report.py`（`no_op` / `migrated` / `failed` 三态；`ok = status != failed`，
+  全部字段来自真实快照，无固定成功值；integrity 异常、丢行、版本**倒退**才是 failed）；`scripts/migrate_db.py` 改为调用它并打印 `status`。
+* 真实证据（同一份真实库副本 `catoobot-20261015-184006.db`）：`version [36,36]`、`integrity [ok,ok]`、`tables [83,83]`、
+  `added_tables []`、`lost_rows {}`、**`status: "no_op"` / `ok: true` / 退出码 0** ✓。
+* 无新增 schema / 字段 / 迁移；调用方审计：CI 无引用，仅本地门禁与文档曾消费 `ok`。
+
+### 10.4 仍未解决（如实列出）
+
+* **配方变体选择**：当同一物品的所有变体都 `available: false` 时（例：罐头只有橡木原木、没有木板时查木镐），
+  排序退化到 `recipe_id` 字母序 → 会选到**金合欢/竹子**变体 → 计划层如实报材料不足。真实证据：
+  `recipe_lookup("wooden_pickaxe", {x:-265,y:69,z:-140})` → `status: insufficient_material`、`total: 11`，
+  首个变体 `!wooden_pickaxe*1=acacia_planks*3+stick*2`。建议下一阶段按「库存可满足度」排序（不得降低任何检查）。
+* 3×3 仍只覆盖基础合成（不自动备料、不连锁替代配方、不做跨维度）。
