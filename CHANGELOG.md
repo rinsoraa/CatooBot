@@ -1,5 +1,20 @@
 # Changelog
 
+## Minecraft Phase 8E Follow-up 4 — (b) 补完：真机门禁 4/4 PASS，裁决更新为 PASS
+
+* **(b) 真机门禁补完（用户批准）**：`scripts/turn_decision_smoke_real.py` 两处装配修复 —— ① `wood._make_plans` 把
+  `bot.task_turns`/`bot.agent_plans` 装到 Stack 的 FakeBot（与木材门禁同构）；② 注入**真实引擎**给第二层 `wood_intent` 解释器
+  （此前惰性回退到 FakeBot 的 mock → `invalid_json`）。
+* **一处真实产品发现并修复**：真实 Provider 下 `wood_intent` 的 `reason_code` 被白名单拒绝（模型自造 `explicit_wood_request`，
+  实测 `schema rejected: reason_code:value_error`）—— 与 `turn_decision` 当初问题同构：提示词未枚举允许值。
+  修复：`app/tasks/wood_intent.py` 的 `SYSTEM_PROMPT` **逐字枚举 `REASON_CODES` 允许清单**；**白名单/校验规则本身未改**。
+* **真机结果（4/4 PASS，断言失败总数=0）**：场景 1 世界查询（`kind=query` → `minecraft_find_blocks` 真实执行，产品对模型错误参数
+  正确 fail-closed）；场景 2 背包查询（`minecraft_inventory` 执行 `action_succeeded`）；场景 3 闲聊（`CHAT_ONLY` 零工具零任务）；
+  场景 4 多步目标（`kind=task_proposal` → 木材意图 `wood_collection_request positive` → `plan_created/TASK` →
+  `PENDING_CONFIRMATION` → **确认前零真实动作（无 action_id）**、零世界修改）。
+* **裁决由 PARTIAL 更新为 PASS**：(a) 语义评测 0.9524（≥90%）+ (b) 真机门禁 4/4 —— 真实 Provider 决策质量与真实服务器上的
+  路由/执行链两侧都有独立证据。
+
 ## Minecraft Phase 8E Follow-up 4 — 语义验证第 5 轮（task_proposal 达标）与真机侧 BLOCKED
 
 * **(a) 达标**：提示词新增通用规则「需要完成一个有限目标用 task_proposal 并给出 task_goal；例如采集木材（砍点木头/砍两根橡木）、

@@ -570,6 +570,42 @@ stop 3/4、narration 2/4、cancel 2/4。
 
 * (a) **达标**（0.9524 ≥ 0.90，成功率 1.0、零重试）；(b) **未达标**（真机侧未取得通过证据，已定位到具体属性）。
 * 综合**维持 PARTIAL**；重申 **真实 Provider ≠ 真实 Minecraft 连接** —— 真实世界结论必须来自既有执行链 + 服务器状态 + 独立结果验证。
+
+#### 17.12.12 (b) 补完：真机门禁 4/4 PASS（用户批准）
+
+**两处装配修复（脚本侧）**：① 在 `main` 里统一调用 `wood._make_plans(env, allow_medium=False)` 把 `bot.task_turns`/`bot.agent_plans` 装到
+`route_trace_smoke_real.Stack` 的 FakeBot 上（与木材门禁同构；场景 4 自己再以 `allow_medium=True` 重建）；② 注入
+`stack.chat.wood_intent = WoodIntentInterpreter(engine, timeout=15.0)` —— **第二层木材意图解释器此前惰性回退到 FakeBot 的 mock 引擎**，
+返回非 JSON 的 "ok" → `invalid_json`；注入真实引擎后才走真实 Provider。
+
+**一处真实产品发现并修复（有证据）**：注入真实引擎后，`wood_intent` 从真实模型拿到合法 JSON，但
+`reason_code` 被白名单拒绝（模型自造 `explicit_wood_request`，实测 `[WoodIntent] schema rejected: reason_code:value_error`）——
+与 `turn_decision` 当初的问题**同构**：`SYSTEM_PROMPT` 只说「简短稳定英文原因码」而**未枚举允许值**。
+修复：提示词改为**逐字枚举 `REASON_CODES` 允许清单**（wood_collection_request、negated_request、ambiguous_intent、query、
+narration、task_control、other、needs_clarification、conflicting_signals、unsupported_target）。
+**`REASON_CODES` 白名单本身未改**（校验规则不变，只是让模型知道契约）。
+
+**每回合打印决策结论本身**（区分产品决策 vs 脚本接线）：`[turn][decision] ok/kind/cap/reason` + `[turn][route] reason/target/task`。
+
+**最终真机结果（第 9 轮运行，前 8 轮的脚本迭代如实保留在 `_turn8e_gate{,2..9}.log`）**：
+
+| 场景 | 决策（真实 Provider） | 路由 | 结果 |
+| --- | --- | --- | --- |
+| 1 世界查询 | `kind=query cap=minecraft_find_blocks` | `MINECRAFT_TOOL`；只读工具真的执行（产品对模型的错误参数 `block_names is required` 正确 fail-closed 拒绝 —— 独立验证其拒绝行为） | **PASS** |
+| 2 背包查询 | `kind=query cap=minecraft_inventory` | `MINECRAFT_TOOL action_succeeded`，背包只读执行 | **PASS** |
+| 3 闲聊 | `kind=chat` | `CHAT_ONLY chat_only_turn`，零工具零任务 | **PASS** |
+| 4 多步目标（缺数量/树种） | `kind=task_proposal` → 木材意图 `wood_collection_request positive` | `plan_created target=TASK task=<id>` → `PENDING_CONFIRMATION` → **确认前零真实动作（无 action_id）**、零世界修改 | **PASS** |
+
+断言失败总数=0 → `REAL SERVER: PASS`。环境：真实 Java 1.21.1 + Fabric（25565）+ 真实 Node/Mineflayer（空闲端口）+
+真实第二客户端发言 + 真实 Provider（primary `cn:deepseek-v4.1-flash`）+ 临时 SQLite；门禁期间 CatooBot 已停（用户名冲突），
+跑完以**可见窗口**重启。
+
+#### 17.12.13 最终裁决更新
+
+* (a) 语义评测 **0.9524**（≥90%）、成功率 1.0、零重试 —— **达标**。
+* (b) 真机门禁 **4/4 PASS** —— 真实 Provider 决策 → 真实路由 → 真实工具执行/任务创建 → 独立验证 —— **达标**。
+* **Phase 8E Follow-up 4 的裁决由 PARTIAL 更新为 PASS**。
+* 原则重申：**真实 Provider ≠ 真实 Minecraft 连接** —— 但现在**两侧都有独立证据**：(a) 证明决策质量，(b) 证明路由/执行链在真实服务器上按契约工作。
 ### §17.11 发布与 CI（实测）
 
 | 项 | 值 |

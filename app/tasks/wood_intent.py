@@ -207,7 +207,10 @@ SYSTEM_PROMPT = "\n".join(
         '  "requested_count": 整数或 null,',
         '  "task_control": 控制动词或 null,',
         '  "needs_clarification": true|false,',
-        '  "reason_code": 简短稳定英文原因码',
+        '  "reason_code": 只能从下面的允许清单里逐字选择'
+        "reason_code 允许清单（逐字照抄，不要自造）：wood_collection_request、negated_request、",
+        "ambiguous_intent、query、narration、task_control、other、",
+        "needs_clarification、conflicting_signals、unsupported_target。",
         "}",
         "",
         "判定要点：",
