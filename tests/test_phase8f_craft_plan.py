@@ -176,14 +176,39 @@ async def test_count_over_cap_is_disclosed_before_confirmation() -> None:
     assert detail["capped"] is True
 
 
-async def test_two_stage_count_beyond_the_batch_budget_is_refused() -> None:
-    """两级加起来超过批次预算时**不硬凑**：如实报告越界（稳定原因码）。"""
+async def test_two_stage_count_is_clamped_and_disclosed() -> None:
+    """§5.2.8：两级链在预算内就按夹取后的数量做，并**明确披露**被夹取（不静默少做）。"""
     observe = FakeObserve(
         items=_items(oak_log=64),
         recipes={STICK: [STICK_RECIPE], PLANKS: [PLANKS_RECIPE]},
     )
-    with pytest.raises(ObservationFailed, match="count_out_of_bounds"):
-        await plan_craft_task("做 100 根木棍", observe=observe, item=STICK, count=100)
+    planned = await plan_craft_task("做 100 根木棍", observe=observe, item=STICK, count=100)
+    crafts = [step for step in planned.plan.steps if step.tool == "minecraft_craft"]
+    assert len(crafts) == 6, "4 刀木棍（16 根）+ 2 刀木板（8 块）"
+    state = planned.plan.expected_final_state
+    assert state.inventory_delta == {STICK: 16}
+    assert state.inventory_consumed == {OAK_LOG: 2}
+
+
+async def test_wide_chain_beyond_the_step_budget_is_refused() -> None:
+    """§5.3：DAG 总刀数超过动作步预算时**不硬凑**（稳定原因码如实报告）。"""
+    wide = {
+        "recipe_id": "widget*1=oak_planks*4",
+        "result": {"name": "widget", "count_per_craft": 1},
+        "requires_table": False,
+        "available": True,
+        "ingredients": [{"name": PLANKS, "count": 4}],
+    }
+    thin = {
+        "recipe_id": "oak_planks*1=oak_log*1",
+        "result": {"name": PLANKS, "count_per_craft": 1},
+        "requires_table": False,
+        "available": True,
+        "ingredients": [{"name": OAK_LOG, "count": 1}],
+    }
+    observe = FakeObserve(items=_items(oak_log=64), recipes={"widget": [wide], PLANKS: [thin]})
+    with pytest.raises(ObservationFailed, match="step_budget_exceeded"):
+        await plan_craft_task("做 4 个 widget", observe=observe, item="widget", count=4)
 
 
 async def test_medium_craft_is_blocked_by_policy_when_allow_medium_is_false() -> None:

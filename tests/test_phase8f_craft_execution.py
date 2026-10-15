@@ -208,7 +208,10 @@ async def test_tool_success_without_an_inventory_change_is_never_a_success(
     record = await create_confirmed(runtime, plan=plan)
     assert record.state is not TaskState.SUCCEEDED
     assert record.verification.get("ok") is False
-    assert record.verification["inventory_delta"][STICK] == 0
+    # Phase 8G：逐步后置验证在**那一步**就抓住（证据指向 step_1 = 木板刀），不再等到终态
+    assert record.verification["step_id"] == "step_1"
+    assert record.verification["inventory_delta"].get(PLANKS, 0) == 0
+    assert record.verification["expected"] == {PLANKS: 4}
     assert world.counts == {OAK_LOG: 1}, "世界确实没变（所以不能报成功）"
 
 

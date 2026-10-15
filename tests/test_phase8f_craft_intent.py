@@ -24,6 +24,10 @@ from app.tasks.craft_intent import (
         ("做 100 个橡木木板", "oak_planks", 100, ""),
         # 点名材料（材料名本身也是可合成物品）时，目标必须取**动词之后**那一个
         ("用橡木木板做一根木棍", "stick", 1, "oak_planks"),
+        # Phase 8G：基础 3×3 / 工作台配方的路由识别（能不能做仍由真实配方与材料决定）
+        ("做一把木镐", "wooden_pickaxe", 1, ""),
+        ("在工作台上做一把木镐", "wooden_pickaxe", 1, ""),
+        ("用橡木木板做工作台", "crafting_table", 0, "oak_planks"),
     ],
 )
 def test_positive_requests_are_parsed_deterministically(
@@ -115,3 +119,9 @@ def test_helpers_and_display_names() -> None:
     assert display_name_of("oak_log") == "橡木原木"
     # 拿不到映射就原样返回，绝不编造用户语言名
     assert display_name_of("mystery_item") == "mystery_item"
+
+
+def test_unsupported_tools_are_still_not_craft_targets() -> None:
+    """8G 只扩展了基础木制/3×3 物品：钻石镐这种仍然不可识别（交给澄清）。"""
+    assert parse_craft_request("帮我做一把钻石镐") is None, "不可识别 → 交给澄清/拒绝，绝不猜"
+    assert parse_craft_request("在工作台上做木棍").item == "stick"

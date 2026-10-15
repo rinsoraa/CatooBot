@@ -26,6 +26,7 @@ from app.tasks.planner import (
     EXPLORE_MAX_LEGS,
     ObservationFailed,
     PlannedTask,
+    craft_plan_summary,
     plan_craft_task,
     plan_exploration_task,
     plan_resource_task,
@@ -514,6 +515,17 @@ class BoundedAgentPlanner:
             "capped": bool(request.requested and produced < request.requested),
             "default_batch": request.requested == 0,
         }
+        summary = craft_plan_summary(planned)
+        if summary:
+            # Phase 8G：DAG 与工作台事实**全部来自计划里记录的观察**，不重新推导。
+            detail["planned_amount"] = int(summary.get("planned_amount") or produced)
+            detail["depth"] = int(summary.get("depth") or 0)
+            detail["craft_steps"] = int(summary.get("craft_steps") or batches)
+            detail["requires_table"] = bool(summary.get("requires_table"))
+            if isinstance(summary.get("workbench"), dict):
+                detail["workbench"] = summary["workbench"]
+            if isinstance(summary.get("nodes"), list):
+                detail["nodes"] = summary["nodes"]
         return PlanningResult(
             outcome=PlanningOutcome.READY_FOR_APPROVAL,
             reason="craft_plan_ready",

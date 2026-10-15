@@ -811,6 +811,10 @@ class TaskRuntime:
             # 若不在这里补验证，下一段就会在**没有上一段到达证据**的情况下开始走。
             if not await self._ensure_legs_verified(record, before_step=step):
                 return record
+            # Phase 8G §5.4：同样在派发前，把前面**已成功但未验证**的逐步后置条件验证掉
+            # （并在需要时为本步采集派发前的真实背包基线）。
+            if not await self._ensure_steps_verified(record, before_step=step):
+                return record
             if step.dispatch_unresolved:
                 # Phase 7F.4：这一步的**派发结果未知**（已落盘意图但无法确认外部是否接受）
                 # -> 绝不重新派发（fail-closed）。这是最后一道防线：即使有人绕过
@@ -2652,6 +2656,135 @@ class TaskRuntime:
         await self._save(record, event=TASK_FAILED)
         await self._publish(TASK_FAILED, self._event_payload(record))
 
+    @staticmethod
+    def _step_needs_baseline(step: TaskStep) -> bool:
+        """这一步是否需要**派发前**的真实背包基线（只有带库存预期的步需要）。"""
+        expected = step.expected_state
+        if expected is None:
+            return False
+        return bool(expected.inventory_delta or expected.inventory_consumed)
+
+    async def _verify_step_state(
+        self, expected: ExpectedFinalState, before: Mapping[str, Any] | None
+    ) -> dict[str, Any]:
+        """逐步后置验证：**真实重读**背包（以及可选的位置）后与冻结预期比对。
+
+        与终态校验同一套口径：任何一项不满足 → ``ok=False``（绝不靠动作返回值自述成功）。
+        """
+        result: dict[str, Any] = {"checked": True}
+        ok = True
+        messages: list[str] = []
+        if expected.inventory_delta or expected.inventory_consumed:
+            if before is None:
+                return {
+                    "checked": True,
+                    "ok": False,
+                    "message": "缺少派发前的真实背包基线，无法确认这一步的库存变化",
+                }
+            after = await self._inventory_snapshot()
+            inventory = self._verify_inventory(expected, before, after)
+            result["inventory_delta"] = inventory.get("inventory_delta", {})
+            result["inventory_consumed"] = inventory.get("inventory_consumed", {})
+            result["expected"] = inventory.get("expected", {})
+            result["expected_consumed"] = inventory.get("expected_consumed", {})
+            if not inventory.get("ok"):
+                ok = False
+                messages.append(str(inventory.get("message") or "背包与预期不符"))
+        if expected.position_within:
+            position = await self._verify_position_within(expected.position_within)
+            result["position_within"] = position.get("position_within")
+            result["expected_position"] = position.get("expected_position")
+            if not position.get("ok"):
+                ok = False
+                messages.append(str(position.get("message") or "位置与预期不符"))
+        result["ok"] = ok
+        result["message"] = "" if ok else "；".join(messages)
+        return result
+
+    async def _fail_step_verification(
+        self, record: TaskRecord, step: TaskStep, verdict: Mapping[str, Any]
+    ) -> None:
+        """某一步的库存后置条件没过 → 任务 FAILED(VERIFICATION)，后面的步骤一步都不许走。
+
+        证据写进**这一步**（``step.result``）与任务（``record.result["step_verifications"]``）：
+        工具可能已经真的改了背包，所以只记"验证失败"，绝不自动重试（避免重复制作）。
+        """
+        evidence = dict(verdict)
+        evidence["step_id"] = step.step_id
+        step.result["step_verification"] = evidence
+        record.result.setdefault("step_verifications", {})[step.step_id] = evidence
+        # 任务级也留一份（与终态校验同一形状："verification.ok" 一眼可见）
+        record.verification = evidence
+        record.state = TaskState.FAILED
+        record.failure = TaskFailure.VERIFICATION.value
+        record.failed_step = step.step_id
+        record.message = str(evidence.get("message") or "这一步的库存后置条件没通过")
+        await self._save(record, event=TASK_FAILED)
+        await self._publish(TASK_FAILED, self._event_payload(record))
+
+    async def _ensure_steps_verified(
+        self, record: TaskRecord, *, before_step: TaskStep | None
+    ) -> bool:
+        """派发 ``before_step`` 之前，把前面**已成功但未验证**的逐步后置条件验证掉。
+
+        返回 True = 可以继续；False = 已经因此终止。
+
+        * "已成功"的判据是**持久化的** ``StepState.SUCCEEDED``（不是动作返回值）；
+        * 每一步的基线是该步派发**之前**的真实背包快照（派发前落盘 → 崩溃恢复后仍可用）；
+        * 验证用一份**新鲜的真实背包读**，判据来自冻结计划里的 ``TaskStep.expected_state``；
+        * 已记录过的步不重复验证（幂等：恢复/重放不会重复写证据、也不会重复执行动作）；
+        * 前面的步没成功、或缺少基线 → fail-closed（绝不"跳过验证"继续派发）；
+        * 计划里没有逐步后置条件时是纯粹 no-op —— 8G 之前的计划行为一字不改。
+        """
+        baselines = record.result.setdefault("inventory_baselines", {})
+        if not isinstance(baselines, dict):  # pragma: no cover - 旧记录格式兜底
+            baselines = {}
+            record.result["inventory_baselines"] = baselines
+        verifications = record.result.setdefault("step_verifications", {})
+        if not isinstance(verifications, dict):  # pragma: no cover - 旧记录格式兜底
+            verifications = {}
+            record.result["step_verifications"] = verifications
+        if (
+            before_step is not None
+            and self._step_needs_baseline(before_step)
+            and before_step.step_id not in baselines
+        ):
+            baselines[before_step.step_id] = await self._inventory_snapshot()
+            await self._save(record)
+        if not any(step.expected_state is not None for step in record.steps):
+            return True  # 没有逐步后置条件：完全保持 8G 之前的行为
+        for step in record.steps:
+            if before_step is not None and step.step_id == before_step.step_id:
+                break
+            expected = step.expected_state
+            if expected is None or expected.empty:
+                continue
+            if step.step_id in verifications:
+                continue
+            if step.state is not StepState.SUCCEEDED:
+                await self._fail_step_verification(
+                    record,
+                    step,
+                    {
+                        "checked": True,
+                        "ok": False,
+                        "reason": "prerequisite_not_succeeded",
+                        "message": (
+                            f"前置步骤 {step.step_id} 没有成功（{step.state.value}），"
+                            "后面的步骤一律不派发"
+                        ),
+                    },
+                )
+                return False
+            verdict = await self._verify_step_state(expected, baselines.get(step.step_id))
+            verifications[step.step_id] = verdict
+            step.result["step_verification"] = verdict
+            if not verdict.get("ok"):
+                await self._fail_step_verification(record, step, verdict)
+                return False
+            await self._save(record)
+        return True
+
     async def _ensure_legs_verified(self, record: TaskRecord, *, before_step: TaskStep) -> bool:
         """执行 before_step 之前，把所有**已走完但未验证**的段验证掉（Phase 7F.3）。
 
@@ -2721,6 +2854,9 @@ class TaskRuntime:
 
     async def _finish(self, record: TaskRecord) -> TaskRecord:
         """所有 required 步骤完成后：用 SAFE 读**重新验证**最终状态（§八十二/§八十三）。"""
+        # Phase 8G：最后一步的逐步后置条件也必须先验证（否则"最后一步没验证"会被漏掉）。
+        if not await self._ensure_steps_verified(record, before_step=None):
+            return record
         expected = record.plan.expected_final_state
         verification: dict[str, Any] = {"checked": False}
         if not expected.empty:

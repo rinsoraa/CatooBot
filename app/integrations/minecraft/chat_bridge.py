@@ -34,7 +34,6 @@ from app.integrations.minecraft.identity_context import IdentityResolution
 from app.tasks.agent_plan import PlanTarget
 from app.tasks.agent_planner import detect_shape
 from app.tasks.craft_intent import (
-    CRAFT_MAX_BATCHES,
     CraftRequest,
     display_name_of,
     parse_craft_request,
@@ -1108,7 +1107,36 @@ class MinecraftChatBridge:
             (out or {}).get("outcome") or "-",
             username,
         )
-        return str(out.get("reply") or "这件事现在做不了。")
+        text = str(out.get("reply") or "这件事现在做不了。")
+        if shape == "craft":
+            hint = self._craft_failure_hint(text)
+            if hint:
+                text = f"{text}\n{hint}"
+        return text
+
+    def _craft_failure_hint(self, raw: str) -> str:
+        """把合成失败的稳定原因码翻译成玩家能懂的一句话（工作台状态如实说明）。"""
+        if "crafting_table_required" in raw:
+            if "NOT_FOUND" in raw:
+                return (
+                    "这个配方要工作台，但罐头附近没有找到工作台 —— 你可以在罐头旁边放一个，"
+                    "再说一次；罐头不会自己放、也不会去挖方块。"
+                )
+            if "UNREACHABLE" in raw:
+                return "这个配方要工作台，罐头看到了但过不去（本阶段不会自己绕路）。"
+            if "STALE" in raw:
+                return "这个配方要工作台：上一次的定位已经过期，重说一次我再重新确认。"
+            return (
+                "这个配方要工作台，但罐头现在确认不了工作台状态（世界观察不可用或结果不确定），"
+                "所以我什么都没做。"
+            )
+        if "insufficient_material" in raw:
+            return "材料不够 —— 罐头不会自己去开箱、挖矿，也不会用别的东西顶替。"
+        if "count_out_of_bounds" in raw or "step_budget_exceeded" in raw:
+            return "这个数量超出本阶段一次能安全做完的范围，缩小一点我再排。"
+        if "no_recipe" in raw:
+            return "罐头没有这个物品的可信配方（配方只来自真实查询，不会猜）。"
+        return ""
 
     def _wood_summary(self, record: Any, plan: Any) -> str:
         """如实说明这一份木材计划采几根、什么木头（数字来自冻结计划，不是用户说的数）。"""
@@ -1227,9 +1255,21 @@ class MinecraftChatBridge:
                 f"比你说的 {requested} 个多 {extra} 个（不会额外多做）。"
             )
         if detail.get("capped"):
+            planned_amount = int(detail.get("planned_amount") or total)
             text += (
-                f"\n你说的比这个多：本期一次最多 {CRAFT_MAX_BATCHES} 刀，这一份计划只做上面这些。"
+                "\n你说的比这个多：为了避免一次堆太多操作，"
+                f"这一份计划先做上面这些（{planned_amount} 个）。你可以分几次让我做。"
             )
+        workbench = detail.get("workbench")
+        if isinstance(workbench, dict):
+            wb_status = str(workbench.get("status") or "")
+            if wb_status == "AVAILABLE":
+                text += "\n这次要用工作台（3x3）：罐头已经确认附近有可用的工作台。"
+            elif wb_status == "UNREACHABLE":
+                text += (
+                    "\n这次要用工作台：罐头会先走到你确认过的那个工作台旁边，"
+                    "再开始合成（到位后由运行时再复核一次真实方块）。"
+                )
         return text
 
     def _route(

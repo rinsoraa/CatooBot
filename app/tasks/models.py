@@ -423,6 +423,9 @@ class TaskStep:
     #: Phase 7F.5.1 §四：这次关联**走过旧格式回退路径**（记录里没有实例、只能按 action_id
     #: 兼容结算）。纯粹是审计标记 —— 人工核对时能看出"这一条为什么没有实例校验"。
     dispatch_legacy_fallback: bool = False
+    #: Phase 8G §5.4：这一步的**真实**后置条件（产物净增 + 材料净耗）。
+    #: 空（``None``）则**不进** payload —— 没有逐步后置条件的旧计划序列化与 plan_hash 逐字节不变。
+    expected_state: ExpectedFinalState | None = None
 
     @property
     def dispatch_unresolved(self) -> bool:
@@ -455,7 +458,7 @@ class TaskStep:
         return arguments_hash(self.effective_arguments)
 
     def to_payload(self) -> dict[str, Any]:
-        return {
+        payload: dict[str, Any] = {
             "step_id": self.step_id,
             "tool": self.tool,
             "risk": self.risk,
@@ -486,10 +489,14 @@ class TaskStep:
             "dispatch_identity_tracked": self.dispatch_identity_tracked,
             "dispatch_legacy_fallback": self.dispatch_legacy_fallback,
         }
+        if self.expected_state is not None:
+            payload["expected_state"] = self.expected_state.to_payload()
+        return payload
 
     @classmethod
     def from_payload(cls, payload: Mapping[str, Any]) -> TaskStep:
         raw_resolved = payload.get("resolved_arguments")
+        raw_expected = payload.get("expected_state")
         references: dict[str, ArgumentReference] = {}
         raw_references = payload.get("references")
         if isinstance(raw_references, Mapping):
@@ -525,6 +532,11 @@ class TaskStep:
             dispatch_runtime_instance=str(payload.get("dispatch_runtime_instance") or ""),
             dispatch_identity_tracked=bool(payload.get("dispatch_identity_tracked", False)),
             dispatch_legacy_fallback=bool(payload.get("dispatch_legacy_fallback", False)),
+            expected_state=(
+                ExpectedFinalState.from_payload(raw_expected)
+                if isinstance(raw_expected, Mapping)
+                else None
+            ),
         )
 
 
@@ -826,17 +838,23 @@ class TaskPlan:
         观察结果与逐步的运行状态不进 hash（否则"再查一次世界"就会让授权失效），
         但每一步的 tool + **最终参数** 都进（参数变了 = 另一个计划，§十二/§四十七）。
         """
+        steps: list[dict[str, Any]] = []
+        for step in self.steps:
+            entry: dict[str, Any] = {
+                "step_id": step.step_id,
+                "tool": step.tool,
+                "arguments": canonical_arguments(step.arguments),
+                "depends_on": list(step.depends_on),
+            }
+            # Phase 8G：逐步后置条件决定「什么算这一步成功」，改它就必须重新确认 ——
+            # 所以它进 plan_hash。没有逐步后置条件的旧计划**不加这个键**，
+            # 哈希与序列化因此逐字节不变（§12 兼容要求）。
+            if step.expected_state is not None:
+                entry["expected_state"] = step.expected_state.to_payload()
+            steps.append(entry)
         return {
             "objective": self.objective,
-            "steps": [
-                {
-                    "step_id": step.step_id,
-                    "tool": step.tool,
-                    "arguments": canonical_arguments(step.arguments),
-                    "depends_on": list(step.depends_on),
-                }
-                for step in self.steps
-            ],
+            "steps": steps,
             "expected_final_state": self.expected_final_state.to_payload(),
         }
 

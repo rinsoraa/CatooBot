@@ -71,8 +71,21 @@ CRAFT_TARGETS: tuple[tuple[tuple[str, ...], str, str], ...] = (
     (("丛林木板", "丛林板", "jungle_planks"), "jungle_planks", "丛林木板"),
     (("金合欢木板", "相思木板", "acacia_planks"), "acacia_planks", "金合欢木板"),
     (("深色橡木木板", "深色橡木板", "dark_oak_planks"), "dark_oak_planks", "深色橡木木板"),
+    # Phase 8G：基础 3×3 / 工作台配方的**路由**识别（能不能做仍由真实配方 + 真实背包决定）。
+    (("工作台", "crafting_table", "crafting table"), "crafting_table", "工作台"),
+    (("木镐", "wooden_pickaxe"), "wooden_pickaxe", "木镐"),
+    (("木斧", "wooden_axe"), "wooden_axe", "木斧"),
+    (("木锹", "木铲", "wooden_shovel"), "wooden_shovel", "木锹"),
+    (("木锄", "wooden_hoe"), "wooden_hoe", "木锄"),
+    (("木剑", "wooden_sword"), "wooden_sword", "木剑"),
+    (("箱子", "chest"), "chest", "箱子"),
+    (("梯子", "ladder"), "ladder", "梯子"),
     (("木板", "planks"), "", "木板"),
 )
+
+#: **工位**（不是材料）：出现这些词只表示「在哪儿做」，绝不当作材料（Phase 8G）。
+_STATION_ITEMS: frozenset[str] = frozenset({"crafting_table", "furnace", "anvil"})
+
 
 #: 材料别名（**只用于审计与回话**：真实材料由服务器配方 + 真实背包决定）。
 CRAFT_MATERIALS: tuple[tuple[tuple[str, ...], str, str], ...] = (
@@ -241,7 +254,7 @@ def parse_craft_request(text: str) -> CraftRequest | None:
     if not item:
         # 泛称「木板」：树种歧义，必须澄清（不替用户挑树种）。
         return CraftRequest(problem="ambiguous_item", detail=display)
-    if not material_item and before:
+    if not material_item and before and before[0][2] not in _STATION_ITEMS:
         # 动词之前点名的物品 = 用户说的材料（真实材料仍由服务器配方与真实背包决定）。
         material_item, material_display = before[0][2], before[0][3]
     explicit = parse_count(raw)

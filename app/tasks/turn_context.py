@@ -214,7 +214,12 @@ def _capability_fact(character: Any) -> ContextFact:
     return _fact(
         "capabilities",
         ContextState.OK,
-        summary=f"available=[{inside}] disabled=[{outside}] unsupported=[{unsupported}]",
+        summary=(
+            f"available=[{inside}] disabled=[{outside}] unsupported=[{unsupported}] "
+            # Phase 8G：合成**已实现**（2×2 与 3×3 工作台），但工作台必须**已经存在且可达** ——
+            # 这是能力事实，不是世界断言（有没有工作台由真实观察在计划期判定）。
+            "crafting=task(2x2_and_workbench_3x3,table_must_exist_and_be_reachable)"
+        ),
     )
 
 
