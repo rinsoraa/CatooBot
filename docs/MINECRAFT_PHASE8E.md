@@ -879,3 +879,11 @@ Phase 8F 开工审计对 FU4 真实评测产物做了**只读**复算（`CatooBo
 
 42 条样本与逐类分布（atomic_action 3、cancel 4、chat 5、clarify 4、narration 4、query 6、stop 6、task_proposal 6、
 unsupported 4）由复算脚本从源文件重新读出核对；**样本与标签未做任何修改**。
+
+## 17.14 与 Phase 8G 的衔接（工作台感知与受限合成扩展）
+
+Phase 8G 在**不改动**本文件结论的前提下扩展了合成：新增工作台六态感知（`app/tasks/workbench.py`）、
+受限多步 DAG（`app/tasks/craft_plan.py`）、逐步后置验证（`TaskStep.expected_state` + `runtime._ensure_steps_verified`）与工作台坐标冻结。
+8E 的统一决策契约与上下文可信度**未改**（`turn_decision`/`turn_context` 只补了能力事实与「世界/位置类问句 -> query」的示例）；
+需要工作台的合成仍是**受管任务**，`minecraft_craft` 依旧**不在**自然语言能力白名单里。
+详见 `docs/MINECRAFT_PHASE8G.md`。

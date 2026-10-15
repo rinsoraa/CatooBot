@@ -1,5 +1,14 @@
 # Changelog
 
+## Minecraft Phase 8G — 工作台感知与受限合成扩展
+
+* **工作台感知（只读，六态）**：新增 `app/tasks/workbench.py` —— 先读真实世界视图（`self` 键的位置/维度 + `age_seconds`），过期即 `STALE` 且**不再搜方块**；再用既有 `minecraft_find_blocks` 做**有界**搜索（半径上限 16），按运行时同口径（眼高 1.62 → 方块中心）算距离；`AVAILABLE`/`NOT_FOUND`/`UNREACHABLE`/`STALE`/`UNKNOWN`/`ERROR` 六态互不冒充，只有 `AVAILABLE` 能用于执行。
+* **工作台合成（3x3）**：`minecraft_craft` 的 `crafting_table` 坐标由**真实观察**冻结进计划；够不到且原因恰为 `workbench_too_far` 时允许**一个显式** `minecraft_move_to`（LOW，到达半径 2.0），其余情形如实拒绝（原因码前缀仍是 `crafting_table_required`）；产品**绝不**放置/破坏/搬动工作台。
+* **受限多步 DAG**：新增 `app/tasks/craft_plan.py` + `app/tasks/craft_budget.py` —— 深度优先需求求解、同名需求合并、成环检测、四道预算（深度 <=4、合成步 <=7（12 与既有 8 步动作上限取更严并预留接近步）、单目标 <=16、总输入 <=256）；净值按「相对初始库存」算；请求超数量上限时**夹取 + `capped` 披露**，超刀数预算则**明确拒绝**。
+* **逐步后置验证**：`TaskStep.expected_state`（空则不进 payload）在派发前记录**真实背包基线**，派发下一步之前用新鲜真实读取核对产物净增与材料净耗；失败即 `FAILED(VERIFICATION)`、**不自动重试**、后续步骤不派发；缺基线/前置未成功 -> fail-closed。`plan_hash` 在有逐步后置条件时把它纳入（授权缺口修复）。
+* **路由与回话**：`CRAFT_TARGETS` 补齐基础 3x3 物品（工作台/木镐/木斧/木锹/木锄/木剑/箱子/梯子），`_STATION_ITEMS` 让「在工作台上做 X」不再把工位当材料；合成摘要披露夹取数量与工作台状态，失败回话把工作台/材料/数量/配方原因码翻译成玩家能懂的话。
+* **验证与裁决**：真实 Provider 语义验证 28 条独立预冻结样本（14 类）-> 26/28（0.9286）-> **27/28（0.9643）**，违禁能力命中 0、重试 0；真实 Java 服务器门禁 8 个场景 **7 PASS**，场景 A（真实工作台单步合成）因环境 **BLOCKED**（世界内无工作台、op 客户端 `/setblock` 被服务器拒绝），**真实服务器闭环 PARTIAL**；全量 `pytest tests -q` **4308 passed**、ruff/format/mypy 全绿。
+
 ## Minecraft Phase 8F — 基础背包管理与简易合成闭环
 
 * **新增合成规划（复用既有工具与既有安全链）**：`app/tasks/craft_intent.py`（确定性合成请求解析：合成动词 + 目标物品；
