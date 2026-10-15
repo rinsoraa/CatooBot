@@ -214,3 +214,11 @@ F1 修复后夹具成立，随即暴露出**两条真实产品缺陷**（这才�
   `recipe_lookup("wooden_pickaxe", {x:-265,y:69,z:-140})` → `status: insufficient_material`、`total: 11`，
   首个变体 `!wooden_pickaxe*1=acacia_planks*3+stick*2`。建议下一阶段按「库存可满足度」排序（不得降低任何检查）。
 * 3×3 仍只覆盖基础合成（不自动备料、不连锁替代配方、不做跨维度）。
+
+---
+
+## 11. 与 Phase 8H 的衔接
+
+§10.4 列出的「所有配方变体都 available=false 时按字母序选到金合欢/竹子」这一遗留缺口，
+已在 Phase 8H 修复：候选集合完整保留、按完整 DAG 可行性做**有界确定性搜索**，只有完整可行才产出计划。
+详见 `docs/MINECRAFT_PHASE8H.md`。§5 与 §10 的历史记录**不改写**。

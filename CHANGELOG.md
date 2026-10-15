@@ -1,5 +1,29 @@
 # Changelog
 
+## Minecraft Phase 8H — 库存感知配方变体解析与有界计划搜索
+
+* **修掉真实缺陷：`available: false` 时按 `recipe_id` 字母序选变体**。旧排序三元组在所有变体都不可立即制作时全部相等，
+  于是先选到 `!wooden_pickaxe*1=acacia_planks*3+stick*2`，即使背包里的橡木原木本可以按真实配方做成木板。
+  关键认知：**`available: false` 只说明「当前不能直接满足这一份配方的即时材料」，不等于在受限 DAG 内不可实现**。
+* **候选来源只来自真实查询**：`app/tasks/planner.py` 新增 `craft_candidates()` —— 从真实 `minecraft_recipe_lookup`
+  返回里取出**全部**可用候选（2×2 与 3×3 都保留），`craft_recipe_of()` 保留为兼容包装；工作台四态语义沿用 8G Follow-up
+  的「先真实观察、再用那张桌子重查」路径。
+* **有界、确定性的候选搜索**（`app/tasks/craft_plan.py`）：每个物品的候选按固定顺序尝试，配合库存/节点快照与回滚，
+  只有**完整可行**的路径才产出计划；根目标的多份候选各自完整求值后按 §2.5 优先级排序选一份
+  （能完成全部目标 → 刀数更少 → 输入更少 → 前置更少 → 规范化 recipe_id 序列）。全部不可行时上报**真实**原因
+  （材料不足优先，带缺什么缺多少），绝不用字母序候选伪造可执行 DAG。
+* **集中搜索预算**：`CraftBudget.max_recipe_search_states`（默认 256；一个搜索状态 = 对某个物品的某一刀配方的一次候选尝试，
+  含根候选）；超限抛稳定原因码 `search_budget_exceeded`，**绝不静默退化**。循环用展开栈检测，与库存无关的失败按
+  `(item, amount)` 记忆化剪枝；同输入 + 同候选 + 同库存 = 同计划。
+* **H3 迁移三态契约收紧**（`app/database/migration_report.py`）：`integrity_before` 参与判定（在损坏的库上「演练成功」
+  不算健康结论）；**版本没变却观察到表结构变化**判为 `failed`（未经迁移的 schema 变更不是合法 no-op），
+  报告新增 `schema_changed_without_version_bump` 标志。无新增 schema/字段/迁移。
+* **验证**：真实 Provider + 真实服务器门禁 **7 场景全 PASS**（`通过=7 失败=0 BLOCKED=0`）：场景 A 中真实第二客户端发出
+  `在工作台上做一把木镐`，冻结计划同时含 `oak_planks*4=oak_log*1`（2×2 前置）与
+  `!wooden_pickaxe*1=oak_planks*3+stick*2`（3×3，工作台坐标来自真实观察）；
+  独立真实背包核验 `oak_log 18→17`、`oak_planks 0→1`（整数刀数余量）、`stick 18→16`、`wooden_pickaxe 3→4`；
+  全量 `pytest tests -q` **4329 passed**、ruff/format/mypy 全绿。
+
 ## Minecraft Phase 8G Follow-up — 真实工作台闭环补证与世界观测一致性调查
 
 * **F1 世界观测「find_blocks 返回 0」定性为门禁脚本缺陷**：服务/桥接回包是两层信封
