@@ -606,13 +606,48 @@ def inventory_counts(result: Mapping[str, Any]) -> dict[str, int] | None:
     return counts
 
 
-def craft_recipe_of(
-    result: Mapping[str, Any], item: str, *, allow_table: bool = False
-) -> tuple[_CraftRecipe | None, str]:
-    """从**真实** ``minecraft_recipe_lookup`` 结果里挑一份 2×2 配方。
+def _craft_recipe_from_row(row: Mapping[str, Any], item: str) -> _CraftRecipe | None:
+    """单行真实配方 -> _CraftRecipe（缺字段就返回 None，绝不猜）。"""
+    recipe_id = str(row.get("recipe_id") or "")
+    raw_result = row.get("result")
+    result_row = raw_result if isinstance(raw_result, Mapping) else {}
+    try:
+        per_craft = int(result_row.get("count_per_craft") or 1)
+    except (TypeError, ValueError):
+        per_craft = 1
+    per_craft = max(1, per_craft)
+    ingredients: list[tuple[str, int]] = []
+    raw_ingredients = row.get("ingredients")
+    for ingredient in raw_ingredients if isinstance(raw_ingredients, list) else []:
+        if not isinstance(ingredient, Mapping):
+            continue
+        name = canonical_item_name(ingredient.get("name"))
+        try:
+            qty = int(ingredient.get("count") or 0)
+        except (TypeError, ValueError):
+            qty = 0
+        if name and qty > 0:
+            ingredients.append((name, qty))
+    if not recipe_id or not ingredients:
+        return None
+    return _CraftRecipe(
+        item=item,
+        recipe_id=recipe_id,
+        per_craft=per_craft,
+        ingredients=tuple(ingredients),
+        requires_table=bool(row.get("requires_table")),
+    )
 
-    ``recipe`` 为 ``None`` 时返回稳定原因码。选择规则（确定性、可复现）：
-    只接受**不需要工作台**的配方；有多份时按 ``recipe_id`` 排序取第一份 —— 绝不猜配方。
+
+def craft_candidates(
+    result: Mapping[str, Any], item: str, *, allow_table: bool = False
+) -> tuple[tuple[_CraftRecipe, ...], str]:
+    """从**真实** minecraft_recipe_lookup 结果里取出**全部**可用候选配方。
+
+    返回 (候选, 原因码)：候选非空时原因码为空串；候选为空时给稳定原因码。
+    候选顺序是确定性的（真实 available -> 不需要工作台 -> recipe_id），但它**只是尝试顺序**：
+    最终选哪一份由 build_craft_plan 用完整 DAG 可行性 + 任务书 §2.5 优先级决定，
+    绝不在候选集合上提前锁定（8H H1 修复的真实缺陷）。
     """
     raw_recipes = result.get("recipes")
     rows = [
@@ -624,16 +659,14 @@ def craft_recipe_of(
         # 运行时的四态语义：status=crafting_table_required 明确表示「这个配方需要 3x3 工作台」，
         # 绝不能降级成 no_recipe（否则需要工作台的配方会被当成根本没有配方）。
         if str(result.get("status") or "") == CRAFT_REASON_TABLE:
-            return None, CRAFT_REASON_TABLE
-        return None, CRAFT_REASON_NO_RECIPE
-    # Phase 8G：``allow_table=False``（8F 语义）时只认 2×2；``True`` 时也认工作台配方，
-    # 但**优先**挑不需要工作台的（前置条件更少）。
+            return (), CRAFT_REASON_TABLE
+        return (), CRAFT_REASON_NO_RECIPE
+    # Phase 8G：allow_table=False（8F 语义）时只认 2x2；True 时也认工作台配方。
     usable = [row for row in rows if allow_table or not bool(row.get("requires_table"))]
     if not usable:
-        return None, CRAFT_REASON_TABLE
-    # 真实的 ``available`` = 运行时按**当前真实背包**判定「材料够做一次」（可信事实）。
-    # 同一物品可能有多个配方（木棍既能用木板也能用竹子）—— 必须先选真正做得成的那个，
-    # 否则会按字母序挑到竹子配方、然后如实报「材料不足」（真实门禁发现的缺陷）。
+        return (), CRAFT_REASON_TABLE
+    # 真实的 available = 运行时按**当前真实背包**判定「材料够做一次」（可信事实，但**不等于**
+    # 「在受限 DAG 内不可实现」—— 前置材料还能由真实子配方做出来）。
     usable.sort(
         key=lambda row: (
             not bool(row.get("available")),
@@ -641,36 +674,27 @@ def craft_recipe_of(
             str(row.get("recipe_id") or ""),
         )
     )
-    chosen = usable[0]
-    recipe_id = str(chosen.get("recipe_id") or "")
-    raw_result = chosen.get("result")
-    result_row = raw_result if isinstance(raw_result, Mapping) else {}
-    try:
-        per_craft = int(result_row.get("count_per_craft") or 1)
-    except (TypeError, ValueError):
-        per_craft = 1
-    per_craft = max(1, per_craft)
-    ingredients: list[tuple[str, int]] = []
-    raw_ingredients = chosen.get("ingredients")
-    for row in raw_ingredients if isinstance(raw_ingredients, list) else []:
-        if not isinstance(row, Mapping):
+    candidates: list[_CraftRecipe] = []
+    seen: set[str] = set()
+    for row in usable:
+        recipe = _craft_recipe_from_row(row, item)
+        if recipe is None or recipe.recipe_id in seen:
             continue
-        name = canonical_item_name(row.get("name"))
-        try:
-            qty = int(row.get("count") or 0)
-        except (TypeError, ValueError):
-            qty = 0
-        if name and qty > 0:
-            ingredients.append((name, qty))
-    if not recipe_id or not ingredients:
-        return None, CRAFT_REASON_NO_RECIPE
-    return _CraftRecipe(
-        item=item,
-        recipe_id=recipe_id,
-        per_craft=per_craft,
-        ingredients=tuple(ingredients),
-        requires_table=bool(chosen.get("requires_table")),
-    ), ""
+        seen.add(recipe.recipe_id)
+        candidates.append(recipe)
+    if not candidates:
+        return (), CRAFT_REASON_NO_RECIPE
+    return tuple(candidates), ""
+
+
+def craft_recipe_of(
+    result: Mapping[str, Any], item: str, *, allow_table: bool = False
+) -> tuple[_CraftRecipe | None, str]:
+    """兼容包装（8F/8G 调用方与既有测试）：只取候选集合里的第一份。"""
+    candidates, reason = craft_candidates(result, item, allow_table=allow_table)
+    if not candidates:
+        return None, reason
+    return candidates[0], ""
 
 
 def _recipe_spec(recipe: _CraftRecipe) -> RecipeSpec:
@@ -766,18 +790,18 @@ async def plan_craft_task(
             )
         return workbench
 
-    async def lookup(name: str) -> RecipeSpec | None:
-        # 真实配方查询（记录观察）。查不到 -> None，由 DAG 给出稳定原因码。
+    async def candidates(name: str) -> tuple[RecipeSpec, ...]:
+        # 真实配方查询（记录观察），返回**全部**可用候选（2x2 与 3x3 都保留，绝不提前锁定一份）。
         # 3x3 配方在**不带工作台**时，运行时按设计只回 crafting_table_required 且不带配方；
         # 所以这里必须先用真实观察确认一张工作台，再拿那张桌子的坐标重查一次。
         result = await _query(name, None)
         if result.get("ok", True) is False:
-            return None
-        recipe, reason = craft_recipe_of(result, name, allow_table=True)
-        if recipe is not None:
-            return _recipe_spec(recipe)
+            return ()
+        found, reason = craft_candidates(result, name, allow_table=True)
+        if found:
+            return tuple(_recipe_spec(recipe) for recipe in found)
         if reason != CRAFT_REASON_TABLE:
-            return None
+            return ()
         observed = await _workbench_once()
         table = observed.crafting_table_argument()
         if not observed.usable or table is None:
@@ -786,16 +810,16 @@ async def plan_craft_task(
             )
         recalled = await _query(name, table)
         if recalled.get("ok", True) is False:
-            return None
-        recipe, _reason = craft_recipe_of(recalled, name, allow_table=True)
-        return _recipe_spec(recipe) if recipe is not None else None
+            return ()
+        found, _reason = craft_candidates(recalled, name, allow_table=True)
+        return tuple(_recipe_spec(recipe) for recipe in found)
 
     try:
         built = await build_craft_plan(
             target,
             requested=count,
             inventory=counts,
-            lookup=lookup,
+            lookup=candidates,
             budget=budget,
             canonicalize=canonical_item_name,
         )

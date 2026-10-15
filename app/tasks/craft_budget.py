@@ -26,6 +26,10 @@ class CraftBudget:
     max_target_batches: int = 4
     #: 整个计划的总输入材料数量（所有步骤实际消耗的材料总量）。
     max_total_inputs: int = 256
+    #: Phase 8H H1：候选搜索的**集中**状态上限。一个搜索状态 =
+    #: 对某个物品的某一刀配方的一次候选尝试；
+    #: 超限一律明确拒绝（search_budget_exceeded），绝不静默退化成按 recipe_id 字母序选择后继续制作。
+    max_recipe_search_states: int = 256
     #: 工作台搜索半径（方块，真实世界查询用）。
     workbench_search_radius: int = 16
     #: 工作台观测的最大有效期（秒）：超过 → ``STALE``，绝不当成当前状态。

@@ -67,16 +67,20 @@ def test_version_regression_is_a_real_failure() -> None:
 
 
 def test_status_helper_is_pure_and_covers_the_three_states() -> None:
+    base = {
+        "integrity_before": "ok",
+        "integrity_after": "ok",
+        "added_tables": [],
+        "lost_rows": {},
+    }
+    assert rehearsal_status(version_before=36, version_after=36, **base) == STATUS_NO_OP
+    assert rehearsal_status(version_before=35, version_after=36, **base) == STATUS_MIGRATED
     assert (
-        rehearsal_status(integrity_ok=True, version_before=36, version_after=36, lost_rows={})
-        == STATUS_NO_OP
-    )
-    assert (
-        rehearsal_status(integrity_ok=True, version_before=35, version_after=36, lost_rows={})
-        == STATUS_MIGRATED
-    )
-    assert (
-        rehearsal_status(integrity_ok=False, version_before=36, version_after=36, lost_rows={})
+        rehearsal_status(
+            **{**base, "integrity_after": "corrupt"},
+            version_before=36,
+            version_after=36,
+        )
         == STATUS_FAILED
     )
 
@@ -95,3 +99,26 @@ def test_report_keeps_the_legacy_fields() -> None:
         "ok",
         "status",
     }
+
+
+def test_schema_change_without_a_version_bump_is_not_a_legal_no_op() -> None:
+    """H3 边界：版本没变却出现新表 = 未受托管的 schema 变化，必须 fail（不能当 no-op）。"""
+    report = _report(added_tables=["rogue_table"])
+    assert report["status"] == STATUS_FAILED
+    assert report["ok"] is False
+    assert report["schema_changed_without_version_bump"] is True
+
+
+def test_broken_database_before_the_run_is_not_a_healthy_conclusion() -> None:
+    """H3 边界：入口库本来就不完整时，演练不能给出健康结论。"""
+    report = _report(integrity_before="malformed")
+    assert report["status"] == STATUS_FAILED
+    assert report["ok"] is False
+
+
+def test_version_bump_with_new_tables_is_a_normal_migration() -> None:
+    """正常迁移路径不受 H3 收紧影响：版本上升 + 新表 = migrated。"""
+    report = _report(version_before=35, version_after=36, added_tables=["new_table"])
+    assert report["status"] == STATUS_MIGRATED
+    assert report["ok"] is True
+    assert report["schema_changed_without_version_bump"] is False

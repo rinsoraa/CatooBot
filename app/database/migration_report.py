@@ -26,15 +26,30 @@ STATUS_NO_OP = "no_op"
 
 def rehearsal_status(
     *,
-    integrity_ok: bool,
+    integrity_before: str,
+    integrity_after: str,
     version_before: int,
     version_after: int,
+    added_tables: Sequence[str],
     lost_rows: Mapping[str, Any],
 ) -> str:
-    """三态判定（纯函数，无 I/O）。"""
-    if not integrity_ok or lost_rows or version_after < version_before:
+    """三态判定（纯函数，无 I/O）。**契约**（Phase 8H H3 收紧）：
+
+    * failed —— 迁移**前或后**完整性不是 ok；行数减少；版本**倒退**；
+      或者**版本没变却观察到表结构变化**（未受托管的 schema 变更不能当成合法 no-op）；
+    * migrated —— 版本上升（真的执行了迁移），且前后完整性 ok、没有丢行；
+    * no_op —— 以上都不是且版本未变（没有待执行迁移，**合法 no-op**）。
+
+    integrity_before 参与判定：在一份**本来就损坏**的库上"演练成功"不能算健康结论；
+    added_tables / lost_rows 参与判定：表结构与行数保真是可观察的事实，不是只给报告看的装饰。
+    """
+    if integrity_before != "ok" or integrity_after != "ok":
         return STATUS_FAILED
-    if version_after > version_before:
+    if lost_rows or int(version_after) < int(version_before):
+        return STATUS_FAILED
+    if int(version_after) == int(version_before) and added_tables:
+        return STATUS_FAILED
+    if int(version_after) > int(version_before):
         return STATUS_MIGRATED
     return STATUS_NO_OP
 
@@ -52,13 +67,20 @@ def rehearsal_report(
     lost_rows: Mapping[str, Any],
     log: Sequence[str],
 ) -> dict[str, Any]:
-    """与既有 JSON 字段**兼容**的报告（新增 ``status``；``ok`` 语义修正为「演练健康」）。"""
+    """与既有 JSON 字段**兼容**的报告（新增 status 与 schema_changed_without_version_bump）。
+
+    ok 只回答"演练本身是否健康结束"（status != failed），不再要求版本必须上升；
+    版本不变但表结构变化会被如实标成 failed，并给出可诊断的标志位。
+    """
     status = rehearsal_status(
-        integrity_ok=integrity_after == "ok",
+        integrity_before=integrity_before,
+        integrity_after=integrity_after,
         version_before=int(version_before),
         version_after=int(version_after),
+        added_tables=added_tables,
         lost_rows=lost_rows,
     )
+    schema_drift = int(version_after) == int(version_before) and bool(added_tables)
     return {
         "db": db,
         "version": [int(version_before), int(version_after)],
@@ -67,6 +89,7 @@ def rehearsal_report(
         "added_tables": list(added_tables),
         "lost_rows": dict(lost_rows),
         "log": list(log),
+        "schema_changed_without_version_bump": schema_drift,
         "status": status,
         "ok": status != STATUS_FAILED,
     }
