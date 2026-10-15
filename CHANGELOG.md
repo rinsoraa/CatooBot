@@ -1,5 +1,27 @@
 # Changelog
 
+## Minecraft Phase 8H Follow-up — 迁移 schema 漂移检测与搜索记忆化契约补齐
+
+* **F1 完整 schema 漂移检测**：旧实现只能检测「版本不变 + 新增表」，删掉**空表**时连 `lost_rows` 都抓不到。
+  新增 `app/database/migration_report.py` 的真实快照 API：`schema_snapshot` / `schema_snapshot_of` /
+  `schema_fingerprint` / `schema_diff` —— 数据只来自真实 SQLite 元数据（`sqlite_master` + `PRAGMA table_info`），
+  覆盖 table / index / trigger / view 与每张表的列定义；规范化 = 折叠空白 + 去尾分号（确定性）；明确排除
+  `sqlite_%` 内部对象与自动索引；快照为空/读取失败抛 `SchemaSnapshotError`，**绝不静默降级成 no_op**。
+  三态契约收紧：`no_op` 要求 schema 证据可用且无变化；`failed` 包括「版本未变却出现 schema 变化」与
+  「必需证据采集失败」；报告新增 `schema_evidence_ok`、`schema_changed`、`schema_changed_without_version_bump`、
+  `schema_diff`（既有字段保持兼容）。
+* **真实证据**：真实库副本（83 表、v36）no-op 演练 → `schema_evidence_ok: true`、`schema_changed: false`、
+  `status: no_op`、`ok: true`、**退出码 0**；在同一真实副本上给 `activity_episodes` 加一列（版本保持 36）→
+  `changed_count=2`、`schema_changed_without_version_bump: true`、`status: failed`、`ok: false`。
+* **F2 搜索记忆化契约对齐**：审计确认 `craft_plan.py` 的实现本身有界且正确（缓存只在「该物品没有候选配方」
+  时写入；成环/超深是路径相关的、在候选尝试之前抛出、不吃搜索预算），但文档把三者都写成会记忆化 ——
+  **只改文档**使之与实现一致，并补 7 条针对性测试（无配方子问题只查一次、成环/超深不吃预算、
+  不同库存不共享可行性结论、候选失败后完整回滚、预算按候选尝试计数、超限绝不返回部分计划）。
+  未增加复杂度、未放宽预算、未改变计划正确性；`craft_plan.py` 的**代码未改**。
+* 测试：新增 `tests/test_phase8h_followup_schema_drift.py`（11 条，全部操作隔离的真实临时 SQLite 库）、
+  `tests/test_phase8h_followup_search_memoization.py`（7 条）；既有迁移状态测试更新到新契约。
+* 本阶段**没有**改动任何影响正式合成执行的代码，故真实 Minecraft 服务器门禁未重跑（引用历史证据）。
+
 ## Minecraft Phase 8H — 库存感知配方变体解析与有界计划搜索
 
 * **修掉真实缺陷：`available: false` 时按 `recipe_id` 字母序选变体**。旧排序三元组在所有变体都不可立即制作时全部相等，

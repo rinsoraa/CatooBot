@@ -45,8 +45,11 @@
 * **一个搜索状态 = 对某个物品的某一刀配方的一次候选尝试**（含根候选）；
 * 超限 → `CraftPlanError(CRAFT_PLAN_SEARCH = search_budget_exceeded)`，**明确拒绝**，
   绝不静默退化成字母序选择后继续制作；
-* 循环用「正在展开栈」检测（`recipe_cycle`）；与库存无关的失败（没有候选 / 成环 / 超深）会
-  按 `(item, amount)` 记忆化剪枝，重复子问题不再重复展开；
+* 循环用「正在展开栈」检测（`recipe_cycle`）—— **按当前递归路径**判定，绝不用全局 visited；
+* 记忆化的**真实范围**（Phase 8H Follow-up 对齐）：只有「这个物品**根本没有候选配方**」会按
+  `(item, amount)` 缓存 —— 它的结论不依赖库存、跨分支复用安全；**成环与超深是路径相关的、
+  不跨分支缓存**，但它们在候选尝试**之前**抛出，所以不消耗搜索预算；候选尝试次数由集中上限
+  `max_recipe_search_states` 硬性约束（超限即 `search_budget_exceeded`）；
 * 候选顺序、根候选求值顺序与排序键都是纯函数式确定的 → 同输入 + 同候选 + 同库存 = 同计划
   （`test_identical_inputs_produce_identical_plans`）。
 
@@ -122,3 +125,69 @@
 * 场景 E（材料被外部消耗）：任务 `PAUSED` / `ACTION_FAILED`，不宣告成功、不重试 ✓
 * 场景 1/2/3（真实世界查询、真实背包与配方读取、既有 2×2 合成闭环）：PASS ✓
 * 整体：`通过=7 失败=0 BLOCKED=0`，**`REAL SERVER: PASS`** ✓
+
+---
+
+## 8. Phase 8H Follow-up 结论（追加，**不改写上文历史**）
+
+> 归档任务书：`docs/specs/CatooBot Minecraft Phase 8H Follow-up — Complete Schema Drift Detection & Search Memoization Contract.md`
+> （13024 bytes，SHA256 `763445588E702BFF9A44DA6F730CCE1C65474CCECB998AD8093E128371C9AED0`，265 行，逐字节归档核验）
+
+### 8.1 F1：完整、可信的 SQLite schema 漂移检测
+
+**旧实现的真实检测范围**（先承认）：只有「版本不变 + `added_tables` 非空」这一条 —— 它**证明不了**没有别的
+schema 变化，而且删掉一张**空表**时连 `lost_rows` 都抓不到。
+
+**新增**（`app/database/migration_report.py`）：`schema_snapshot(connection)` / `schema_snapshot_of(path)` /
+`schema_fingerprint(snapshot)` / `schema_diff(before, after)`：
+
+* 数据**只来自真实 SQLite 元数据**（`sqlite_master` + `PRAGMA table_info`），覆盖 table / index / trigger / view
+  四类对象，外加每张表每一列的类型/非空/默认值/主键位；
+* 规范化 = 折叠空白 + 去结尾分号（确定性，且不做会制造假阴性的过度改写）；
+* 明确排除 SQLite 内部对象：`sqlite_%` 名字与 `sqlite_autoindex_%` 自动索引（它们跟着 UNIQUE/PRIMARY KEY
+  约束走，正常变化不算产品漂移）；`schema_diff` 只记对象名/方向，不写整库内容；
+* 快照为空或读取失败 → `SchemaSnapshotError`：**绝不静默降级成合法 `no_op`**；**绝不只比表数量**。
+
+**三态契约收紧**（实现/文档/测试一致）：`no_op` = 版本不变 + 前后完整性 ok + 无丢行 + **schema 证据可用且无变化**；
+`migrated` = 版本上升（**预期内的 schema 变化不算错**）；`failed` = 完整性异常 / 丢行 / 版本倒退 /
+**版本未变却出现 schema 变化** / **必需证据采集失败**。报告字段保持兼容，并新增 `schema_evidence_ok`、
+`schema_changed`、`schema_changed_without_version_bump`、`schema_diff`。
+
+本地演练脚本（`scripts/migrate_db.py`，**不发布**）在迁移前后各采集一次真实快照并传给三态判定；采集失败即
+`schema_evidence_ok=False` → `failed`。
+
+**真实证据**（真实库副本 `catoobot-20261015-184006.db`，83 表、v36）：
+
+* no-op 演练：`schema_evidence_ok: true`、`schema_changed: false`、`status: "no_op"`、`ok: true`、**退出码 0** ✓
+* 同一真实副本上给 `activity_episodes` 加一列（版本保持 36）：`changed_count=2`、
+  `schema_changed_without_version_bump: true`、`status: "failed"`、`ok: false` ✓
+
+**测试**：`tests/test_phase8h_followup_schema_drift.py`（11 条，全部操作**隔离的真实临时 SQLite 库**：
+no_op / 版本上升 + 预期变化 / 新增表 / 新增列 / 表定义变化 / 删除空表 / 索引变化 / 视图与触发器变化 /
+证据缺失 → failed / 内部对象不误报 / 文件快照确定性）+ 既有迁移状态测试更新到新契约（10 条）。
+
+**检测范围与已知边界**（如实声明，不宣称「完整」）：本实现比较的是 SQLite **可观察的 schema 元数据**
+（对象定义 + 表列信息），覆盖表/列/索引/触发器/视图的新增、删除与定义变化；**不**声称能发现
+「定义文本完全等价但页级/物理布局不同」的情形（例如 `VACUUM` 后的物理差异、纯数据内容变化）——
+那些不属于 schema 漂移，也不在本阶段范围内。
+
+### 8.2 F2：搜索记忆化与文档对齐
+
+**审计结论**（真实代码为准）：`craft_plan.py` 里 `impossible` 缓存**只在「这个物品根本没有候选配方」时写入**；
+成环与超深在**候选尝试之前**抛出，因此**不消耗搜索预算**，也不跨分支缓存（它们本质是路径相关的）；
+候选尝试次数由集中上限 `max_recipe_search_states` 硬性约束。结论：**实现本身是有界且正确的**，
+但 §2.3 的文档把「没有候选 / 成环 / 超深」都写成会记忆化 —— 与实际不符。
+
+**最小处理**（任务书 §3.2 允许）：**只改文档**使之与实现一致（明确记忆化的真实范围、路径相关的失败不缓存、
+预算是按候选尝试计数），并补针对性测试证明：同一无配方子问题只查一次且失败稳定（候选集合缓存）；
+成环/超深不吃搜索预算；不同库存下可行性结论不共享（绝不把「库存不足」缓存成永久结论）；
+候选失败后库存/节点/`requires_table`/累计输入**完整回滚**（成功计划与只给可行候选时逐字段一致）；
+预算按每一次候选尝试计数，超限只给稳定原因码 `search_budget_exceeded` 且**绝不返回部分计划**。
+**没有为改代码而增加复杂度，也没有放宽预算或改变计划正确性。**
+
+### 8.3 本阶段重新执行的检查
+
+* 重新执行：`pytest tests -q`（全量）、`ruff check .`、`ruff format --check .`、`mypy app`、`git diff --check`、
+  真实库副本 no-op 演练、真实副本漂移模拟、CI 两个 Job。
+* 仅引用历史证据（未重跑）：真实 Minecraft 服务器合成门禁 —— 本阶段**没有改动**任何影响正式合成执行的代码
+  （改动只在迁移报告模块与测试；`craft_plan.py` 只改了文档，代码未动），故不重跑真机门禁。
