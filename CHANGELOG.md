@@ -1,5 +1,33 @@
 # Changelog
 
+## Minecraft Phase 8F — 基础背包管理与简易合成闭环
+
+* **新增合成规划（复用既有工具与既有安全链）**：`app/tasks/craft_intent.py`（确定性合成请求解析：合成动词 + 目标物品；
+  动词之前点名的物品视为**材料**；多目标/树种缺省/未知物品/否定/「0 个」→ 稳定原因码、零副作用）、
+  `app/tasks/planner.py` 的 `plan_craft_task()`（**真实**背包 + **真实**配方 → `batches = ceil(N/q)` → 冻结 `recipe_id`
+  → 末尾 SAFE 背包复核）。需要工作台的配方如实拒绝（本阶段只做自身 2×2）；最多 `CRAFT_MAX_BATCHES=4` 刀、最多两级
+  （原木→木板→木棍）；材料不足报「缺什么、缺多少」，绝不自动补料/丢物品/开容器。
+* **后置验证扩展**：`ExpectedFinalState` 新增可选 `inventory_consumed`（材料净消耗），**空则不进 payload** ——
+  8F 之前冻结计划的 `plan_hash` 逐字节不变；`TaskRuntime._verify_inventory` 用同一份真实前后快照同时校验**产物净增**与
+  **材料净耗**；同一物品既是材料又是产物时只写**净变化**。
+* **任务链接入（§5.3）**：`app/integrations/minecraft/task_adapter.py` 把既有的 `minecraft_recipe_lookup`（SAFE 观察）与
+  `minecraft_craft`（MEDIUM 执行步）接入任务服务路由 —— 合成**只能**经既有任务/授权/Policy/确认门/Action Runtime 执行，
+  **没有**进入 `READ_ONLY_CAPABILITIES`/`ACTION_CAPABILITIES` 自由能力白名单。
+* **决策层事实更新**：合成作为**受管任务**告知模型（`task_proposal`）；`minecraft_craft` 移出「本阶段未开放」事实清单，
+  但仍不在自由能力白名单里；`chat_bridge` 的 TASK_PROPOSAL 分支里**合成解析先于木材解析**（「做成木板」含木材名词），
+  回话数量一律取自冻结计划并如实披露默认刀数与超出量。
+* **测试**：新增 4 个 8F 测试文件（解析/计划/执行闭环/路由，共 46 条）；全量 `pytest tests -q` **4253 passed**；
+  `ruff check .`、`ruff format --check .`、`mypy app` 全绿。
+* **真实 Provider 语义验证**：新增**独立**预冻结合成样本 16 条（FU4 的 42 样本集未改），三轮 0.5625 → 0.8125 → **0.875**（14/16），
+  零违禁能力命中、零伪造授权，4/4 明确合成请求识别为 `task_proposal`。
+* **真实服务器合成闭环（§10.2）**：`scripts/phase8f_craft_smoke_real.py`（本地专用，不发布）3/3 PASS、断言失败总数=0 ——
+  ① 有效参数世界查询取回真实方块结果（8 个 `oak_log`）；② 真实背包与真实配方读取（`oak_planks*4=oak_log*1`）；
+  ③ **真实第二个 Mineflayer 客户端**在游戏内发出自然语言请求 → 真实 Provider `task_proposal` → 冻结 `stick*4=oak_planks*2`
+  → `PENDING_CONFIRMATION`（确认前零 action_id、零世界修改）→ 既有确认门 → 真实合成（`action_id=act_mv964gtx_b`）
+  → 独立重读背包：木板 4→2、木棍 2→6，运行时后置验证 `ok=true`。
+* **门禁期间发现并修复的真实缺陷**：① 任务适配器缺 `minecraft_recipe_lookup`/`minecraft_craft` 服务路由（合成根本走不通）；
+  ② 配方按字母序选中**竹子**配方（改为优先真实 `available`）；③ 请求里点名材料被误判成目标歧义（改为取合成动词**之后**的目标）；
+  ④ 决策层把明确合成请求答成 `unsupported`（事实清单未随能力更新）。
 ## Minecraft Phase 8E Follow-up 4 — (b) 补完：真机门禁 4/4 PASS，裁决更新为 PASS
 
 * **(b) 真机门禁补完（用户批准）**：`scripts/turn_decision_smoke_real.py` 两处装配修复 —— ① `wood._make_plans` 把

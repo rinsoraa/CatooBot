@@ -865,3 +865,17 @@ CHAT_ONLY **不是**策略或授权通道（它只关闭本回合的 Agent/Tool 
 | 受保护文件 | `git diff --name-only` 对 `agent.py`（`ACTION_RISK`）、`config/settings.py`（`allow_medium`）、`database/database.py`（迁移）、`tasks/runtime.py`、`tasks/validation.py`、`tasks/planner.py`、`tools/registry.py`、`tools/builtins/` **全部零命中**；凭据扫描 **0 命中** |
 | 真机门禁 | **不适用**（本轮只改单回合能力模式接缝，未触碰动作/授权/执行链） |
 | 裁决 | **PASS**（本节范围） |
+
+## §17.13 Follow-up 4 统计复核与更正（Phase 8F §2.3A）
+
+Phase 8F 开工审计对 FU4 真实评测产物做了**只读**复算（`CatooBot_backups/_fu4_stats_recompute.py`）：
+
+| 项 | 上一版报告 | 产物实测 | 说明 |
+| --- | --- | --- | --- |
+| 第 5 轮 `correct` | 40/42 | **40/42** | 一致 |
+| 第 5 轮逐类 `clarify` | 4/4（合计 41） | **3/4**（合计 40） | **上一版报告转写错误**：`_fu4_provider_eval_report.json` 里是 3/4 |
+| 五轮「逐类分子合计 ?= `correct`」 | — | 18/26/31/38/40 **全部自洽** | `by_kind` 与 `correct` 同源于同一字段（脚本 112–125 行），结构上不可能不一致 |
+| 第 5 轮延迟 | 4237 / 5643 ms | **3856.1 / 4963.0 ms** | 上一版误用了第 4 轮（0.9048）的延迟 |
+
+42 条样本与逐类分布（atomic_action 3、cancel 4、chat 5、clarify 4、narration 4、query 6、stop 6、task_proposal 6、
+unsupported 4）由复算脚本从源文件重新读出核对；**样本与标签未做任何修改**。
