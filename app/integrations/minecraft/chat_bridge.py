@@ -44,6 +44,7 @@ from app.tasks.intent import (
     TaskIntentDetector,
     WoodRequest,
     explicit_log_count,
+    has_compound_connector,
     mentions_wood,
     parse_wood_request,
 )
@@ -294,6 +295,25 @@ def _is_pure_acceptance_tail(rest: str) -> bool:
     return any(rest.startswith(head) for head in _ACCEPT_HEADS)
 
 
+def _has_extra_intent(rest: str) -> bool:
+    """FU5 Follow-up §实现原则：accept 之后的剩余内容里是否还有**别的可执行意图**。
+
+    复用既有、已审计的解析器（不新增内容黑名单）：
+      * ``_DETECTOR.detect_follow`` —— 跟随意图（既有 ``FOLLOW_INTENT_KEYWORDS``，含「跟我」）；
+      * ``parse_craft_request``   —— 合成意图；
+      * ``has_compound_connector`` —— 既有并列/顺承连接词（「并/然后/再/接着/顺便」等）。
+
+    任一命中就说明这条消息**不止一个意图片段**：保守地不消费待决提案，把消息交回它自己的
+    既有路由（用户明确说的额外意图必须由它自己的授权链处理，绝不被静默丢弃）。
+    """
+    if _DETECTOR.detect_follow(rest):
+        return True
+    craft = parse_craft_request(rest)
+    if craft is not None and not craft.problem and craft.item:
+        return True
+    return has_compound_connector(rest)
+
+
 def _normalized_block(name: Any) -> str:
     """方块/物品名规范化（只处理大小写与 ``minecraft:`` 前缀，不做任何猜测映射）。"""
     return str(name or "").strip().lower().removeprefix("minecraft:")
@@ -342,6 +362,10 @@ def handoff_target_verdict(message: str, pending: dict[str, Any] | None) -> str:
     explicit = explicit_log_count(rest)
     if explicit is not None and pending_amount and explicit != pending_amount:
         return NEW_GOAL
+    # FU5 Follow-up：目标相容也还不够 —— 整条消息只能有**这一个**意图才会消费提案。
+    # 残留的跟随/合成/并列内容（例：「好，去砍橡木原木并跟我走」）一律 fail closed。
+    if _has_extra_intent(rest):
+        return NOT_ACCEPT
     return ACCEPT_PROPOSAL
 
 

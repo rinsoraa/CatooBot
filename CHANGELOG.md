@@ -1,4 +1,24 @@
 # Changelog
+### Phase 8I Follow-up 5 Follow-up — 复合意图接受门（Compound Intent Acceptance Gate）
+
+- **缺陷**：FU5 的 `handoff_target_verdict()` 只比对树种与明确数量，而 `parse_wood_request` 只抽取动作 + 树种 +
+  数量、忽略其余从句；于是「好，去砍橡木原木并跟我走」「好，去砍橡木原木，然后探索附近」在目标上与待决
+  `oak_log × 2` 提案一致 → 被当成接受并消费旧提案，用户当轮明确说出的第二个意图被静默丢弃。
+- **修复（复用既有解析器，不新增内容黑名单）**：`app/tasks/intent.py` 新增 `_COMPOUND_CONNECTORS`（只取既有多阶段
+  词表中的并列/顺承连接词，不含「回来/带回来」这类单任务收尾语）与 `has_compound_connector()`；`chat_bridge.py`
+  新增 `_has_extra_intent()`（复用 `_DETECTOR.detect_follow`、`parse_craft_request` 与连接词判定），并在
+  `handoff_target_verdict()` 的冲突检查之后、返回 `ACCEPT_PROPOSAL` 之前改为 `NOT_ACCEPT`（fail closed：保留提案，
+  消息交回自己的既有路由）。冲突仍是 `NEW_GOAL`；未改权限/工具白名单/`ACTION_RISK`/`allow_medium`/双确认门/
+  `plan_hash`/STOP-CANCEL 权威/schema。
+- **测试**：`tests/test_phase8i_handoff_route_matrix.py` 89 → **99 条**（原 89 条零删除）：契约表 +2 行；复合消息在
+  真实 `_route_turn()` 与真实仲裁下零消费、零 `_accept_pending_handoff()` 调用、提案保留且额外意图仍进自己的路由；
+  跨 QUERY/ATOMIC_ACTION 类别同样成立；复合消息之后的纯接受仍必须恰好消费一次。
+- **真实服务器验证**（本地门禁脚本，不发布）：新增场景 I，最终一轮 `通过=1 失败=0 BLOCKED=0` → `REAL SERVER: PASS`。
+  真实第二个 Mineflayer 客户端（`IdCraft8G`，自动化客户端）投递的两条复合消息都触发一致性门（`handoff_not_accept`），
+  既有资源入口**从未**收到旧提案目标，待决提案保留，真实背包不变；对照的纯接受仍被消费一次（证明提案有效、
+  门不是一刀切）。全程零世界修改。
+- **验证**：`pytest tests -q` 全量通过；`ruff check .`、`ruff format --check .`、`mypy app`、`git diff --check`。
+
 ### Phase 8I Follow-up 5 — 接受表达的目标一致性门（Handoff Acceptance Target Consistency Gate）
 
 - **缺陷**：`classify_handoff_reply()` 的判定顺序把「接受」放在「新采集目标」之前，且只看消息**开头**是否有接受词，

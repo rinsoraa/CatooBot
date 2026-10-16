@@ -284,6 +284,25 @@ def explicit_log_count(text: str) -> int | None:
     return _parse_log_count(text)
 
 
+#: FU5 Follow-up：判定「一条消息是否只有一个意图」时使用的**并列/顺承连接词**。
+#: 只取既有多阶段词表（``_MULTI_STEP_MARKERS``）里的连接词 —— 不含「回来/带回来/捡起来/挖掉」
+#: 这类**单任务收尾语**：它们本来就是既有采集计划的一部分，不是第二个意图。
+#: 另外补几个同义连接词，仍然只表达「有连接结构」，不做语义判断。
+_COMPOUND_CONNECTORS = tuple(
+    marker for marker in _MULTI_STEP_MARKERS if marker in ("并", "然后", "再", "接着", "顺便")
+) + ("之后", "以后", "同时", "另外", "而且", "以及", "and then")
+
+
+def has_compound_connector(text: str) -> bool:
+    """FU5 Follow-up：这句话是否含并列/顺承连接词（复合意图的确定性信号之一）。
+
+    调用方在无法确认「整条消息只有一个相容意图」时一律 fail closed；这里只提供
+    「存在连接结构」这一条真实、可测试的信号，不猜测用户愿意放弃后半句。
+    """
+    raw = str(text or "")
+    return any(marker in raw or marker in raw.lower() for marker in _COMPOUND_CONNECTORS)
+
+
 #: 明确**请求**标记（命令式语气）。Phase 8D Follow-up §B：不能只认礼貌词，否则
 #: 「去砍两根竹子带回来」这种命令句会绕过木材入口、静默落回旧单目标资源路径。
 _WOOD_REQUEST_MARKERS = (

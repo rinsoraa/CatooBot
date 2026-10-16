@@ -385,3 +385,95 @@
 * 接受词后若既不是新目标也不是确认说法，一律**不消费**（fail closed），可能让用户需要重述；
   这是刻意的安全取向，未引入任何猜测式匹配。
 * 导航可达性、配方变体排序、真实成功迁移演练、`test_social.py` 时段抖动仍为独立后续事项。
+
+
+## 11. Follow-up 5 Follow-up：复合意图接受门（Compound Intent Acceptance Gate）
+
+阶段任务书：`docs/specs/CatooBot Minecraft Phase 8I FU5 Follow-up — Compound Intent Acceptance Gate.md`
+（来源 `E:\UserData\Downloads\writing-block(16).md`，3149 bytes，SHA256
+`1F4552A6386C826513A5BD977988827D38882A6A00A1904D3E64663712226FCD`，逐字节归档）。
+开工基线：`6002264c64f2bd2872961f69b3ef1b2ad4181436`（= Phase 8I FU5 收尾）。
+
+### 11.1 缺陷根因（§必测场景 3/4，真实代码）
+
+FU5 的 `handoff_target_verdict()` 只比对**木材目标与数量**（`parse_wood_request(rest)` 的树种与
+`explicit_log_count(rest)` 的明确数量），而 `parse_wood_request` **只抽取动作 + 树种 + 数量、忽略其余从句**。
+因此「好，去砍橡木原木并跟我走」与「好，去砍橡木原木，然后探索附近」在目标上与待决 `oak_log × 2`
+提案**一致** → 判为 `ACCEPT_PROPOSAL` → 消费旧提案，用户当轮明确说出的第二个意图（跟随 / 探索）被静默丢弃。
+
+### 11.2 修复（§实现原则：复用既有解析器，不新增内容黑名单）
+
+* `app/tasks/intent.py`：新增模块级 `_COMPOUND_CONNECTORS`（**只**取既有多阶段词表 `_MULTI_STEP_MARKERS`
+  里的并列/顺承连接词「并/然后/再/接着/顺便」，再补「之后/以后/同时/另外/而且/以及/and then」，**不含**
+  「回来/带回来/捡起来」这类单任务收尾语 —— 它们本来就是既有采集计划的一部分）与公共函数
+  `has_compound_connector(text)`（只表达「有连接结构」，不做语义判断）。
+* `app/integrations/minecraft/chat_bridge.py`：新增 `_has_extra_intent(rest)` —— 复用
+  `_DETECTOR.detect_follow(rest)`（既有 `FOLLOW_INTENT_KEYWORDS`，含「跟我」）、`parse_craft_request(rest)`
+  （合成意图）与 `has_compound_connector(rest)`；`handoff_target_verdict()` 在**冲突检查之后、返回
+  `ACCEPT_PROPOSAL` 之前**加 `if _has_extra_intent(rest): return NOT_ACCEPT`。
+* 判定顺序刻意保持：树种/数量**冲突**仍是 `NEW_GOAL`（作废 + 走自己的路由，FU5 既有断言不变）；只有
+  「目标相容但整条消息还有别的意图」才落到 `NOT_ACCEPT`（fail closed：**保留**提案，消息交回自己的既有路由）。
+* 边界未改：不新增工具/权限/授权机制/平行状态机；未动 `ACTION_RISK`/`TOOL_ACTION`/`allow_medium` 默认值/
+  Policy/两道确认门/冻结计划与 `plan_hash`/STOP-CANCEL 权威/schema；未放宽任何预算或断言。
+
+判定表（真实函数输出，§必测场景 1–8）：
+
+| 消息 | 待决提案 `oak_log × 2` | 判定 |
+| --- | --- | --- |
+| `同意` / `好，就按这个方案来` | 保留 | `ACCEPT_PROPOSAL` |
+| `好，去砍橡木原木` / `好，去砍原木` / `好，去砍两根橡木原木` | 消费 | `ACCEPT_PROPOSAL` |
+| `好，去砍橡木原木带回来` | 消费（单任务收尾语不算复合） | `ACCEPT_PROPOSAL` |
+| `好，去砍橡木原木并跟我走` | **保留** | `NOT_ACCEPT` |
+| `好，去砍橡木原木，然后探索附近` | **保留** | `NOT_ACCEPT` |
+| `好，去砍五根白桦原木` / `同意，改砍白桦` | 作废 | `NEW_GOAL` |
+| `可以，不过这次砍五根橡木原木` | 作废 | `NEW_GOAL` |
+| `好，给我做 64 块橡木木板` / `好，先跟我去另一个地方` | 保留 | `NOT_ACCEPT` |
+
+### 11.3 自动化回归（§验收门禁：驱动真实 `_route_turn()` 与真实仲裁）
+
+`tests/test_phase8i_handoff_route_matrix.py` 由 89 条扩到 **99 条**（原 89 条零删除、零放宽）：
+
+* 契约表新增 2 行（两条复合消息 → `NOT_ACCEPT`）；
+* `test_fu5fu_compound_intent_never_consumes`（parametrize 2 条复合消息）：断言 `_accept_pending_handoff()`
+  （Harness 新增 `accept_calls` 计数包装）**零调用**、资源入口 `wood_replies == []`、待决提案**仍在**
+  `_pending_handoffs`、`handoff_not_accept` 出现而 `handoff_accepted` 不出现、消息仍进入**自己的**既有路由
+  （`wood_routes == [message]`、`delegate_calls == [message]`，即额外意图不被吞掉）、`plans.calls == []`；
+* `test_fu5fu_compound_holds_across_decision_kinds`（QUERY/ATOMIC_ACTION × 2 条）：非 `TASK_PROPOSAL`
+  类别下同样不消费，证明一致性修复未重新引入 FU4 的跨路由问题；
+* `test_fu5fu_pure_acceptance_still_works_after_compound`：先发复合消息（不消费）再发纯接受
+  `好，去砍橡木原木`，必须**恰好消费一次**并进入既有资源入口 —— 证明门不是一刀切。
+
+### 11.4 真实服务器验证（§验收门禁：至少一次复合意图负向场景）
+
+本地门禁脚本 `scripts/phase8i_handoff_smoke_real.py`（**不发布**）新增自包含场景 **I**；最终一轮
+`CatooBot_backups/_phase8i_fu5fu_gateI4.log`：`通过=1 失败=0 BLOCKED=0` → `REAL SERVER: PASS`。
+真实链路（真实 Java 1.21.1 + 真实 CatooBot Minecraft Runtime + 真实 Provider + **真实第二个 Mineflayer
+客户端** `IdCraft8G`，如实标注为自动化客户端，不是真人）：
+
+| 子用例 | 消息 | 上游 | 一致性门 | 资源入口 | 待决提案 | 真实背包 |
+| --- | --- | --- | --- | --- | --- | --- |
+| I1 | `好，去砍橡木原木并跟我走` | `task_proposal`（第二客户端投递） | **触发**（`handoff_not_accept`） | `targets=[]`（未收到旧目标） | **保留** | 不变 |
+| I2 | `好，去砍橡木原木，然后探索附近` | `task_proposal`（第二客户端投递） | **触发** | `targets=[]` | **保留** | 不变 |
+| I3（对照） | `好，去砍橡木原木` | `task_proposal`（第二客户端投递） | 消费一次 | 收到 `砍橡木原木 2 根` | 已消费 | 不变 |
+
+* I1/I2 均以真实待决提案（`{'item': 'oak_log', 'block': 'oak_log', 'amount': 2, 'requested': 2}`，
+  `craft_goal` 为当轮真实合成请求）为前提，且**全程零世界修改**（提案阶段无采集、无合成、无 `action_id`）。
+* I3 的作用是反证：同一份待决提案在复合消息之后**仍然有效且可被纯接受消费**，因此 I1/I2 的「未消费」
+  是**门**的确定性结果，不是提案已失效。
+* 中间迭代如实保留：`_phase8i_fu5fu_gateI1.log`（I1 通过、I2 上游 `model_no_tool_call` 未建新提案、
+  I3 对照 3 次 `no_effect`）、`_gateI2.log`、`_gateI3.log`。这些迭代暴露的是**夹具/上游抖动**：
+  ① 前一条消息自身路由留下的待确认任务会消费后续请求 → 夹具新增 `_cancel_user_tasks()`（按用户名取消
+  **所有**未终态任务，走既有 `runtime.cancel`）并对待决提案建立做有界重试；② 上游决策层对纯接受偶尔
+  不产出可用决策（`model_no_tool_call`）→ 对照改为依次尝试**多种等价纯接受说法**（`好，去砍橡木原木` /
+  `同意` / `好，就按这个方案来` / `可以`，均为 FU5 契约表中的纯接受）。两处都只改**本地夹具**，
+  未改产品、未放宽任何断言或阈值。
+
+### 11.5 保留边界（如实）
+
+* 判定是**确定性纯函数 + 既有解析器复用**，不做语义理解：`并/然后/再/接着/顺便/之后/…` 这类连接结构
+  一律按「可能不止一个意图」fail closed，用户可能需要重述（刻意的安全取向）。
+* 复合消息的**额外意图**（跟随 / 探索）不会被吞进待决提案，而是走消息自己的既有路由；**跟随/探索本身
+  的能力域不属于本阶段**，本阶段只保证它不被静默丢弃。
+* 上游决策层偶尔不产出可用决策（`model_no_tool_call`）时，桥接走既有澄清路径，仲裁不介入；此时
+  「不消费」由 fail-closed 澄清保证，属替代证据（已在 §11.4 说明）。
+* 导航可达性、配方变体排序、真实成功迁移演练、`test_social.py` 时段抖动仍为独立后续事项。

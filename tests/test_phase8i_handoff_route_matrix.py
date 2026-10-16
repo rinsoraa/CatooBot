@@ -117,6 +117,14 @@ class Harness:
         bridge._wood_route = _wood_route  # type: ignore[method-assign]
         bridge._craft_turn = _craft_turn  # type: ignore[method-assign]
         bridge._run_capability = _run_capability  # type: ignore[method-assign]
+        bridge.accept_calls = []  # type: ignore[attr-defined]
+        original_accept = MinecraftChatBridge._accept_pending_handoff
+
+        async def _accept_pending(username: str, session_id: str, message: str) -> Any:
+            bridge.accept_calls.append((username, session_id, message))  # type: ignore[attr-defined]
+            return await original_accept(bridge, username, session_id, message)
+
+        bridge._accept_pending_handoff = _accept_pending  # type: ignore[method-assign]
         bridge._delegate_task = _delegate_task  # type: ignore[method-assign]
         bridge._plan_reply = _plan_reply  # type: ignore[method-assign]
 
@@ -528,6 +536,8 @@ async def test_fu5_conflict_holds_across_decision_kinds(
         ("好，去砍五根白桦原木", NEW_GOAL),
         ("同意，改砍白桦", NEW_GOAL),
         ("可以，不过这次砍五根橡木原木", NEW_GOAL),
+        ("好，去砍橡木原木并跟我走", NOT_ACCEPT),
+        ("好，去砍橡木原木，然后探索附近", NOT_ACCEPT),
         ("好，先跟我去另一个地方", NOT_ACCEPT),
         ("好，去砍竹子", NOT_ACCEPT),
         ("好，给我做 64 块橡木木板", NOT_ACCEPT),
@@ -536,3 +546,55 @@ async def test_fu5_conflict_holds_across_decision_kinds(
 def test_fu5_target_consistency_contract(message: str, expected: str) -> None:
     """§3 契约表（纯函数、无模型、无任务）：接受表达的目标一致性判定。"""
     assert handoff_target_verdict(message, PENDING) == expected
+
+
+# ---- Phase 8I FU5 Follow-up：复合意图不得消费待决提案（§必测场景 3、4）----
+
+COMPOUND_MESSAGES = (
+    "好，去砍橡木原木并跟我走",
+    "好，去砍橡木原木，然后探索附近",
+)
+
+
+@pytest.mark.parametrize("message", COMPOUND_MESSAGES)
+async def test_fu5fu_compound_intent_never_consumes(message: str) -> None:
+    """§必测 3/4：目标相容但整条消息还有别的意图 → 保留提案、绝不消费、不吞额外意图。"""
+    h = Harness(pending=PENDING)
+    await h.send(message)
+    assert h.bridge.accept_calls == []  # type: ignore[attr-defined]
+    assert h.bridge.wood_replies == []  # type: ignore[attr-defined]
+    assert ("IdCraft", "s") in h.bridge._pending_handoffs  # type: ignore[attr-defined]
+    assert "handoff_not_accept" in h.reasons
+    assert "handoff_accepted" not in h.reasons
+    # 额外意图没有被吞掉：消息仍进入自己的既有路由（木材入口 + 既有任务入口）
+    assert h.bridge.wood_routes == [message]  # type: ignore[attr-defined]
+    assert h.bridge.delegate_calls == [message]  # type: ignore[attr-defined]
+    assert h.plans.calls == []
+
+
+@pytest.mark.parametrize("kind", [TurnDecisionKind.QUERY, TurnDecisionKind.ATOMIC_ACTION])
+@pytest.mark.parametrize("message", COMPOUND_MESSAGES)
+async def test_fu5fu_compound_holds_across_decision_kinds(
+    message: str,
+    kind: TurnDecisionKind,
+) -> None:
+    """§验收门禁：非 task_proposal 类别下复合意图同样不得消费（不重新引入 FU4 问题）。"""
+    h = Harness(pending=PENDING)
+    await h.send(message, kind=kind)
+    assert h.bridge.accept_calls == []  # type: ignore[attr-defined]
+    assert h.bridge.wood_replies == []  # type: ignore[attr-defined]
+    assert ("IdCraft", "s") in h.bridge._pending_handoffs  # type: ignore[attr-defined]
+    assert h.bridge.craft_calls == []  # type: ignore[attr-defined]
+    assert h.plans.calls == []
+
+
+@pytest.mark.parametrize("message", COMPOUND_MESSAGES)
+async def test_fu5fu_pure_acceptance_still_works_after_compound(message: str) -> None:
+    """对照：复合消息之后，同一提案的**纯**接受仍必须正常消费（门不是一刀切）。"""
+    h = Harness(pending=PENDING)
+    await h.send(message)
+    assert h.bridge.accept_calls == []  # type: ignore[attr-defined]
+    await h.send("好，去砍橡木原木")
+    assert len(h.bridge.accept_calls) == 1  # type: ignore[attr-defined]
+    assert h.bridge.wood_replies == [("IdCraft", "s", "砍橡木原木 2 根")]  # type: ignore[attr-defined]
+    assert h.bridge._pending_handoffs == {}  # type: ignore[attr-defined]
