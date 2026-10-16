@@ -183,8 +183,9 @@ MinecraftService + 真实 Provider（`enabled=True`）+ 真实第二个 Mineflay
 ## 10. 最终一致性
 
 * 实现/测试提交：`5d3f8e14c3b1309646ebb5eca6f72ab146d8f958`（10 文件 +1343/−14）；
-  证据提交：`6773b2d67467d06bfe2b6bcc2e179996d41dd969`；收尾文档提交（填写 CI/镜像状态）：@FINAL_SHA@。
-  镜像 HEAD == `origin/main` == @FINAL_SHA@；工作区 dirty=0，`scripts/` 0 tracked。
+  证据提交：`6773b2d67467d06bfe2b6bcc2e179996d41dd969`；收尾文档提交 = **本文件所在提交**（`git log -1`，
+  只填写本报告的 CI/镜像状态，不含代码改动）。
+  镜像 HEAD == `origin/main`（= 本文件所在提交）；工作区 dirty=0，`scripts/` 0 tracked。
 * CI（证据提交）：run [38967120493](https://github.com/rinsoraa/CatooBot/actions/runs/38967120493) **attempt 1 两个 job 均 success、零非成功步骤**。
 
 ## 11. 路线图 v2.0 状态更新文本（可直接复制）
