@@ -622,6 +622,50 @@ class MinecraftChatBridge:
             log.warning("[MC Turn] 决策异常：error_type=%s", type(exc).__name__)
             return TurnDecisionOutcome(None, REASON_ENGINE_MISSING, 0, 0.0, {})
 
+    async def _arbitrate_pending_handoff(
+        self, username: str, session_id: str, message: str, kind: Any
+    ) -> _TurnReply | None:
+        """Phase 8I FU4 §3：待决提案的**确定性仲裁点** —— 早于所有 kind 分支执行。
+
+        ``None`` = 不接管，消息继续走它自己的既有路由。只有「明确接受 + 同用户同
+        session 的有效待决提案」才消费提案并交**既有**资源入口（仍过既有批准门与执行
+        确认门）。本方法从不创建任务，因此普通聊天不会因此获得任何执行能力。
+        CANCEL/STOP 类由既有控制路径保持权威：即便措辞命中接受词也不消费提案。
+        """
+        key = (str(username), str(session_id))
+        verdict = classify_handoff_reply(message)
+        if verdict == REJECT_PROPOSAL:
+            if self._pending_handoffs.pop(key, None) is not None:
+                self._route(
+                    reason_code="handoff_reject_proposal",
+                    route_target=RouteTarget.CHAT_ONLY.value,
+                    session_id=session_id,
+                    text_chars=len(message),
+                )
+            return None
+        if verdict == NEW_GOAL:
+            if self._pending_handoffs.pop(key, None) is not None:
+                self._route(
+                    reason_code="handoff_new_goal",
+                    route_target=RouteTarget.TASK.value,
+                    session_id=session_id,
+                    text_chars=len(message),
+                )
+            return None
+        if verdict == ACCEPT_PROPOSAL:
+            control = (TurnDecisionKind.CANCEL, TurnDecisionKind.STOP)
+            if kind not in control and key in self._pending_handoffs:
+                return await self._accept_pending_handoff(username, session_id, message)
+            return None
+        if key in self._pending_handoffs:
+            self._route(
+                reason_code=f"handoff_{verdict}",
+                route_target=RouteTarget.CHAT_ONLY.value,
+                session_id=session_id,
+                text_chars=len(message),
+            )
+        return None
+
     async def _route_turn(
         self,
         handler: Any,
@@ -633,6 +677,12 @@ class MinecraftChatBridge:
     ) -> _TurnReply | None:
         """九类决策 → 既有路径（``None`` = 交回既有任务入口）。"""
         decision = outcome.decision
+        # Phase 8I FU4 §3：待决提案的含义必须在这里判定 —— 早于 CHAT/CLARIFY/
+        # UNSUPPORTED/QUERY/ATOMIC_ACTION 等所有提前返回分支，绝不依赖上游是否恰好
+        # 判成 task_proposal（FU3 的真实缺陷：接受门只在 TASK_PROPOSAL 分支内）。
+        arbitrated = await self._arbitrate_pending_handoff(username, session_id, message, kind)
+        if arbitrated is not None:
+            return arbitrated
         if kind in (TurnDecisionKind.CHAT, TurnDecisionKind.NARRATION):
             self._turn_route(
                 session_id, message, RouteTarget.CHAT_ONLY.value, f"decision_{kind.value}"
@@ -650,34 +700,9 @@ class MinecraftChatBridge:
         if kind is TurnDecisionKind.TASK_PROPOSAL:
             # Phase 8F §3.1：**合成解析先于木材解析** —— 「做成木板」含木材名词，木材入口
             # 会把它当成「不支持的木材种类」直接拒掉（那是采集语义，不是合成语义）。
+            # Phase 8I FU4 §3：接受/拒绝/新目标的仲裁已在 `_route_turn` 入口统一完成
+            # （早于所有 kind 分支）；本分支只负责「这句话本身要做什么」的路由。
             craft = parse_craft_request(message)
-            # Phase 8I H3：这句话本身就是一次新的合成请求时，它是新请求、不是接受 ——
-            # 作废上一轮提案，并按新请求重新评估（提案绝不会被静默变成任务）。
-            # Phase 8I H3/FU3 §4：**显式接受门**。决策层把「给我做 64 块橡木木板」和
-            # 「好，去砍橡木原木」都判成 task_proposal，所以「判成 task_proposal」本身
-            # **不是**接受证据；只有本门判为接受才允许消费待决提案。
-            verdict = classify_handoff_reply(message)
-            handoff_key = (str(username), str(session_id))
-            if verdict in (NEW_GOAL, REJECT_PROPOSAL):
-                # 新目标取代旧提案 / 用户明确拒绝：立即作废，绝不复活、绝不复用旧目标与数量。
-                self._pending_handoffs.pop(handoff_key, None)
-            elif verdict == ACCEPT_PROPOSAL and handoff_key in self._pending_handoffs:
-                # 明确接受：走**既有**木材/资源入口 —— 合成计划的授权绝不外溢到资源操作。
-                accepted = await self._accept_pending_handoff(username, session_id, message)
-                if accepted is not None:
-                    return accepted
-            if verdict != ACCEPT_PROPOSAL:
-                # §7：接受门的判定结果与原因必须可诊断（提案是否被消费一目了然）。
-                self._route(
-                    reason_code=f"handoff_{verdict}",
-                    route_target=(
-                        RouteTarget.TASK.value
-                        if verdict == NEW_GOAL
-                        else RouteTarget.CHAT_ONLY.value
-                    ),
-                    session_id=session_id,
-                    text_chars=len(message),
-                )
             if craft is not None:
                 return await self._craft_turn(username, session_id, message, craft)
             # FU4 §5.2：木材解析**只在这里**参与 —— 作为目标解析 + 额外安全否决：

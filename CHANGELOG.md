@@ -1,4 +1,24 @@
 # Changelog
+### Phase 8I Follow-up 4 — 待决提案仲裁跨决策路由（Pending Handoff Arbitration Across Decision Routes）
+
+- **缺陷（真实代码审计 + 真实服务器证据）**：FU3 的显式接受门只存在于 `_route_turn` 的 `TASK_PROPOSAL` 分支内，
+  而 `_route_turn` 在它之前就已提前返回 `CHAT/NARRATION`、`CLARIFY`、`UNSUPPORTED`、`QUERY/ATOMIC_ACTION`、`CANCEL/STOP`。
+  于是明确接受语一旦被上游判成非 `task_proposal` 就**到不了接受门**（FU3 run 2/3 的 E6：日志只有 `model_no_tool_call`/
+  `task_handled`），甚至被既有任务入口消费并推进了先前的白桦任务。E6 原始记录保留、未改写。
+- **修复**：新增 `MinecraftChatBridge._arbitrate_pending_handoff()` —— **确定性仲裁点**，在 `_route_turn` 最顶部
+  （任何 kind 分支之前）执行：`REJECT_PROPOSAL` 作废并放行；`NEW_GOAL` 作废旧提案并放行（消息仍走自己的路由）；
+  `ACCEPT_PROPOSAL` 且同用户同 session 存在有效提案时消费**恰好一次**并交**既有** `_accept_pending_handoff`
+  （仍过既有批准门与执行确认门）；其余不消费。`CANCEL/STOP` 保持既有控制权威（措辞命中接受词也不消费）。
+  仲裁从不创建任务；没有有效待决提案时接受词单独不建任何资源任务。`TASK_PROPOSAL` 分支内的旧接受门已移除。
+- **测试**：`tests/test_phase8i_handoff_route_matrix.py` 原 27 条**全部保留**，新增 25 条至 **52 条**：同一句接受语在
+  `TASK_PROPOSAL`/`QUERY`/`ATOMIC_ACTION`/`CHAT`/`NARRATION`/`CLARIFY`/`UNSUPPORTED` 七类下仲裁结果必须一致，
+  且接受消息不得落入 `_run_capability`/`_delegate_task`（E6 同构）；另有新目标不被吞掉、询问不消费、控制类不消费、
+  无提案零任务、跨 session/跨用户隔离等用例。
+- **真实服务器验证**（本地门禁脚本，不发布）：新增场景 F，用 `_RouteKindSpy` 独立记录 `_route_turn` 真实收到的类别；
+  run F2 证明「接受语以 `atomic_action` 到达路由，提案仍被恰好消费一次」，先前任务状态与 `action_id` 不变、
+  只建立一个资源任务、接受动作本身不改变真实背包；run F1 的同一路径由**真实第二个 Mineflayer 客户端**发出。
+- **验证**：`pytest tests -q` 全量通过；`ruff check .`、`ruff format --check .`、`mypy app`、`git diff --check` 全绿。
+
 
 ### Phase 8I Follow-up 3 — 显式接受门（Explicit Handoff Acceptance Gate）
 

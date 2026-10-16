@@ -228,3 +228,78 @@
   与接受门改动无关；隔离重跑（run 2/3）未再出现该污染。
 * 既有未决事项仍然独立：导航可达性（§7.5）、配方变体排序（全部 `available: false` 时退化为 `recipe_id` 字母序）、
   真实成功数据库迁移演练（真实库始终最新版，`migrated` 仅有单元级证据）。
+
+## 9. Follow-up 4：待决提案仲裁跨决策路由（Pending Handoff Arbitration）
+
+### 9.1 缺陷根因（§3 调用链审计，真实代码）
+
+* FU3 的接受门**只存在于 `_route_turn` 的 `TASK_PROPOSAL` 分支内**（`app/integrations/minecraft/chat_bridge.py` 原 650–680 行）；
+  而 `_route_turn` 在它**之前**就已提前返回：`CHAT/NARRATION` → CHAT_ONLY、`CLARIFY` → 澄清、`UNSUPPORTED` → BLOCKED、
+  `QUERY/ATOMIC_ACTION` → `_run_capability()`、`CANCEL/STOP` → 交回既有控制路径。
+* 真实后果（FU3 run 2/3 的 E6）：明确接受语被判成非 `task_proposal` 时**根本到不了接受门**（日志只有
+  `model_no_tool_call`/`task_handled`），且 run 3 中该消息被既有任务入口消费、推进了先前的白桦任务（出现 action_id）。
+  **E6 原始记录保留在 §8.5，未被删除或改写为 PASS。**
+* 第二个缺陷在**测试**里：`tests/test_phase8i_handoff_route_matrix.py` 的 Harness 把 kind 固定为 `TASK_PROPOSAL`，
+  因此 FU3 的 27 条矩阵**不能代表**非 `TASK_PROPOSAL` 的真实路由。
+
+### 9.2 修复：确定性仲裁点（§3，最小实现）
+
+* 新增 `MinecraftChatBridge._arbitrate_pending_handoff(username, session_id, message, kind)`，在 `_route_turn`
+  **最顶部**（`decision = outcome.decision` 之后、任何 kind 分支之前）调用；返回非 `None` 即接管本回合。
+* 契约（判定顺序固定）：`REJECT_PROPOSAL` → 作废提案并放行；`NEW_GOAL` → 作废旧提案并放行（消息仍走自己的路由）；
+  `ACCEPT_PROPOSAL` → **同用户同 session 的有效提案**存在则消费**恰好一次**并交**既有** `_accept_pending_handoff`
+  （仍过既有批准门与执行确认门），否则放行；`NOT_ACCEPT` → 仅在存在待决提案时记一条 `handoff_not_accept`，不消费、不改路由。
+* 安全边界：`CANCEL/STOP` **保持既有控制权威** —— 即便措辞命中接受词也不消费提案；仲裁**从不创建任务**，
+  普通聊天不会因此获得任何执行能力；没有有效待决提案时接受词单独**不建任何资源任务**。
+* `TASK_PROPOSAL` 分支内的旧接受门已移除，该分支只保留「合成解析先于木材解析」与自身路由；
+  `classify_handoff_reply()` 与 `_is_new_craft_request()` 未改（分类器契约与白名单不变）。
+
+### 9.3 回归测试（§4A/§4B）
+
+* `tests/test_phase8i_handoff_route_matrix.py`：**原 27 条全部保留 + 新增 25 条 = 52 条**；Harness 新增 `kind` 形参、
+  `_run_capability`/`_delegate_task` 记录桩（`send()` 默认仍为 `TASK_PROPOSAL`，旧断言零改动）。
+* §4B 跨 kind 一致性：同一句接受语在 `TASK_PROPOSAL`/`QUERY`/`ATOMIC_ACTION`/`CHAT`/`NARRATION`/`CLARIFY`/`UNSUPPORTED`
+  **七类**下都必须消费提案恰好一次，且 `_run_capability`、`_delegate_task`、计划/观察调用**全部为空**。
+* E6 同构用例：接受语以 `ATOMIC_ACTION` 送达时提案被消费，且**同一条消息**不得进入既有任务入口；
+  随后无关消息仍能正常进入该入口（证明仲裁只接管那一句）。
+* 其余覆盖：新采集目标不被吞掉（按自身 kind 继续）、询问不消费且查询行为不变、`CANCEL/STOP` 不消费、
+  无待决提案时接受词零任务、拒绝在 QUERY 类下仍作废且不复活、跨 session/跨用户隔离跨 kind 成立。
+* 8I 套件 + 依赖套件合跑 **134 passed**（矩阵 52 + 交接 9 + 桥接 13 + 分类规则 5 + 缺口数量 3 + 8G/8H 规划 51 + 1）。
+
+### 9.4 真实服务器验证（§5 第 3 项，本地门禁脚本，不发布）
+
+* 新增场景 F（`scripts/phase8i_handoff_smoke_real.py`，`MC_SMOKE_SCENES=F`）—— **受控回放**：真实解释器
+  （真实 Provider + 真实上下文）照常运行，只把**这一句**的 kind 改写；并用 `_RouteKindSpy` 包住 `_route_turn`
+  记录**真实收到**的类别，避免「自说自话」。
+* run F1（`CatooBot_backups/_phase8i_fu4_gateF1.log`）：提案与接受语均由**真实第二个 Mineflayer 客户端** `IdCraft8G`
+  发出（`how=second_client`）→ 提案被消费、`handoff_accepted`、资源任务 `task_fe1b725d4297`
+  （`objective=砍橡木原木 1 根`、`plan_hash=64a3ffcd22a26a26c043`、确认前零 `action_id`）。
+* run F2（`_phase8i_fu4_gateF2.log`，**PASS**）：`F3 受控回放原类别=['task_proposal'] 到达路由的类别=['atomic_action']
+  接受路由=True` —— 独立证明「接受语以 `atomic_action` 到达 `_route_turn`，提案仍被恰好消费一次（消费后剩余键 `{}`）」。
+  同轮：先前任务 `task_479e5d5dc2ac` 前后 `PENDING_CONFIRMATION → PENDING_CONFIRMATION` 且**无新 `action_id`**；
+  新任务 `task_c9319b4991bf`（`objective=砍橡木原木 1 根`、无合成步骤、确认前零 `action_id`）；
+  **同一句话未建立第二个任务**；接受动作本身**未改变真实背包**（`{}` → `{}`）。
+* 替代证据（如实标注）：run F2 的提案与接受均走**真实聊天桥事件注入**（身份 `IdTurn8E`），非第二个真实客户端
+  （日志逐条打印 DEVIATION）；同一路径在 run F1 用的是**真实第二个客户端**。
+### 9.5 §5 第 1/2/4/5/6 项与自然误分类下的接受（场景 E 重跑）
+
+* 场景 E 重跑（`_phase8i_fu4_gateE3.log`）：**通过=1 失败=0 BLOCKED=0，REAL SERVER: PASS**，12 项检查全部 `[ok]`。
+* **自然误分类（无强制回放）下的 E6**：该轮真实模型把接受语两次判成 `model_no_tool_call`（**非** `task_proposal`），
+  路由日志随后仍出现 `handoff_accepted` 并建立资源任务 `task_84a7be4e50dd` —— 即 FU3 的 E6 失败原因（接受门到不了）
+  在本阶段被真实链路直接消除（不是靠夹具把类别改成 `task_proposal`）。
+* §5 第 1 项（建立提案）E1 `handoff_proposed`（`how=second_client`）；第 4 项（存在橡木提案时提交「砍两根白桦原木」）
+  E3 `handoff_new_goal`、无 `handoff_accepted`、旧提案被取代、新任务目标不含橡木（本轮附近无白桦 → 安全拒绝，符合 fail-closed）；
+  第 5 项（另一 session 重复合成请求）E2 待决键并存 `['IdCraft8G','IdCraft8G2']`、本会话提案未被消费；
+  第 6 项（拒绝后再发接受词）E4 无 `handoff_accepted`、提案不复活；第 2 项（明确接受）见 E6 与 §9.4 的 run F1/F2。
+* 夹具修正（本地脚本，不发布）：场景 E 的接受语原先由**另一个身份**（真实第二客户端 `IdCraft8G`）发出，
+  而提案是在注入身份下建立 → 按 session 隔离设计**本就不该被消费**（安全属性），随后该消息被**既有**任务入口
+  消费并推进了先前任务（属既有控制路径语义，不在本阶段范围）。修正为「用提案自身的会话键发言」后 E6 通过。
+* 夹具缺陷（本地脚本，不发布）：插入场景 F 时误把场景 E 的收尾 `_dump_routes_tail`/`return bool(ok)` 挤到 F 之后，
+  导致 E 返回 `None` 而显示 FAIL（其 12 项检查当时其实全是 `[ok]`）。已修正并重跑；**未放宽任何断言**。
+
+### 9.6 保留边界（如实）
+
+* 仲裁只处理**待决资源提案**；`CANCEL/STOP` 与既有任务入口仍是控制语义的权威（本阶段未改其行为）。
+* FU4 不扩展导航可达性、配方变体选择、容器/丢弃、真实成功迁移演练等其他自主能力。
+* FU3 场景 D 的跨场景污染、`test_social.py::test_direct_mention_not_blocked_by_sleeping` 的时段抖动
+  仍为独立既有事项，未在本阶段顺手修改。

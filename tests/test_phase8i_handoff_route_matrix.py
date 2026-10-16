@@ -69,6 +69,8 @@ class Harness:
         bridge.wood_replies = []  # type: ignore[attr-defined]
         bridge.wood_routes = []  # type: ignore[attr-defined]
         bridge.craft_calls = []  # type: ignore[attr-defined]
+        bridge.capability_calls = []  # type: ignore[attr-defined]
+        bridge.delegate_calls = []  # type: ignore[attr-defined]
         bridge._route = lambda **kw: bridge.routes.append(kw)  # type: ignore[method-assign,attr-defined]
         bridge._turn_route = (  # type: ignore[method-assign]
             lambda session_id, message, target, reason: bridge.turn_routes.append((target, reason))
@@ -93,9 +95,16 @@ class Harness:
             bridge.craft_calls.append(request)  # type: ignore[attr-defined]
             return _TurnReply("合成入口（桩）")
 
+        async def _run_capability(
+            username: str, session_id: str, message: str, kind: Any, decision: Any
+        ) -> _TurnReply:
+            bridge.capability_calls.append((kind, message))  # type: ignore[attr-defined]
+            return _TurnReply("能力入口（桩）")
+
         async def _delegate_task(
             handler: Any, username: str, session_id: str, message: str
         ) -> _TurnReply:
+            bridge.delegate_calls.append(message)  # type: ignore[attr-defined]
             return _TurnReply(None)
 
         async def _plan_reply(username: str, session_id: str, message: str) -> Any:
@@ -104,6 +113,7 @@ class Harness:
         bridge._wood_reply = _wood_reply  # type: ignore[method-assign]
         bridge._wood_route = _wood_route  # type: ignore[method-assign]
         bridge._craft_turn = _craft_turn  # type: ignore[method-assign]
+        bridge._run_capability = _run_capability  # type: ignore[method-assign]
         bridge._delegate_task = _delegate_task  # type: ignore[method-assign]
         bridge._plan_reply = _plan_reply  # type: ignore[method-assign]
 
@@ -115,12 +125,15 @@ class Harness:
             bridge._pending_handoffs[("IdCraft", "s")] = item
 
     async def send(
-        self, message: str, *, user: str = "IdCraft", session: str = "s"
+        self,
+        message: str,
+        *,
+        user: str = "IdCraft",
+        session: str = "s",
+        kind: TurnDecisionKind = TurnDecisionKind.TASK_PROPOSAL,
     ) -> _TurnReply | None:
         outcome = TurnDecisionOutcome(None, "test", 0, 0.0, {})
-        return await self.bridge._route_turn(
-            None, user, session, message, TurnDecisionKind.TASK_PROPOSAL, outcome
-        )
+        return await self.bridge._route_turn(None, user, session, message, kind, outcome)
 
     @property
     def reasons(self) -> list[str]:
@@ -250,3 +263,123 @@ async def test_row10_new_request_does_not_reuse_old_target_or_amount() -> None:
     assert h.bridge.wood_routes == ["砍五根白桦原木"]  # type: ignore[attr-defined]
     assert "砍橡木原木 2 根" not in "".join(h.bridge.wood_routes)  # type: ignore[attr-defined]
     assert h.bridge._pending_handoffs == {}  # type: ignore[attr-defined]
+
+
+# ---- Phase 8I FU4 §4B：跨上游 TurnDecisionKind 的完整路由矩阵 ----
+
+ALL_KINDS = [
+    TurnDecisionKind.TASK_PROPOSAL,
+    TurnDecisionKind.QUERY,
+    TurnDecisionKind.ATOMIC_ACTION,
+    TurnDecisionKind.CHAT,
+    TurnDecisionKind.NARRATION,
+    TurnDecisionKind.CLARIFY,
+    TurnDecisionKind.UNSUPPORTED,
+]
+
+
+@pytest.mark.parametrize("kind", ALL_KINDS)
+async def test_fu4_accept_is_kind_independent(kind: TurnDecisionKind) -> None:
+    """E6 同构：上游判成任何 kind，明确接受都必须消费有效提案一次并交既有资源入口。
+
+    FU3 的真实缺陷：接受门只在 TASK_PROPOSAL 分支内，QUERY/ATOMIC_ACTION 等提前
+    返回的分支根本到不了接受门。
+    """
+    h = Harness(pending=PENDING)
+    reply = await h.send("好，去砍橡木原木", kind=kind)
+    assert reply is not None
+    assert h.bridge._pending_handoffs == {}  # type: ignore[attr-defined]
+    assert h.bridge.wood_replies == [("IdCraft", "s", "砍橡木原木 2 根")]  # type: ignore[attr-defined]
+    assert "handoff_accepted" in h.reasons
+    assert len(h.bridge.wood_replies) == 1, "提案必须恰好消费一次"  # type: ignore[attr-defined]
+    assert h.bridge.craft_calls == []  # type: ignore[attr-defined]
+    assert h.bridge.capability_calls == [], "接受消息不得继续进 _run_capability"  # type: ignore[attr-defined]
+    assert h.bridge.delegate_calls == [], "接受消息不得继续进既有任务入口"  # type: ignore[attr-defined]
+    assert h.plans.calls == []
+
+
+@pytest.mark.parametrize(
+    "kind",
+    [TurnDecisionKind.TASK_PROPOSAL, TurnDecisionKind.QUERY, TurnDecisionKind.ATOMIC_ACTION],
+)
+async def test_fu4_new_gather_goal_not_swallowed(kind: TurnDecisionKind) -> None:
+    """§3.3：新采集目标既不消费旧提案，也不被仲裁吞掉（仍进自己的既有路由）。"""
+    h = Harness(pending=PENDING)
+    await h.send("砍五根白桦原木", kind=kind)
+    assert h.bridge.wood_replies == []  # type: ignore[attr-defined]
+    assert h.bridge._pending_handoffs == {}  # type: ignore[attr-defined]
+    assert "handoff_new_goal" in h.reasons
+    assert h.bridge.delegate_calls != [] or h.bridge.capability_calls != []
+    assert "砍橡木原木 2 根" not in "".join(h.bridge.wood_routes)  # type: ignore[attr-defined]
+
+
+@pytest.mark.parametrize(
+    "kind",
+    [TurnDecisionKind.CHAT, TurnDecisionKind.NARRATION, TurnDecisionKind.TASK_PROPOSAL],
+)
+async def test_fu4_question_query_behaviour_preserved(kind: TurnDecisionKind) -> None:
+    """§3.4：询问不消费提案，且按其自身 kind 继续得到既有行为。"""
+    h = Harness(pending=PENDING)
+    await h.send("这个要多久？", kind=kind)
+    assert h.bridge.wood_replies == []  # type: ignore[attr-defined]
+    assert ("IdCraft", "s") in h.bridge._pending_handoffs  # type: ignore[attr-defined]
+    assert h.plans.calls == []
+    if kind in (TurnDecisionKind.CHAT, TurnDecisionKind.NARRATION):
+        expected = f"decision_{kind.value}"
+        assert any(reason == expected for _t, reason in h.bridge.turn_routes)  # type: ignore[attr-defined]
+
+
+@pytest.mark.parametrize("kind", [TurnDecisionKind.CANCEL, TurnDecisionKind.STOP])
+async def test_fu4_control_kind_stays_authoritative(kind: TurnDecisionKind) -> None:
+    """§3.2/§2：CANCEL/STOP 的既有控制语义优先 —— 即便措辞命中接受词也不消费提案。"""
+    h = Harness(pending=PENDING)
+    reply = await h.send("同意", kind=kind)
+    assert reply is None, "控制类必须交回既有控制路径"
+    assert ("IdCraft", "s") in h.bridge._pending_handoffs  # type: ignore[attr-defined]
+    assert h.bridge.wood_replies == []  # type: ignore[attr-defined]
+    assert h.plans.calls == []
+
+
+@pytest.mark.parametrize("kind", ALL_KINDS)
+async def test_fu4_accept_word_without_pending_creates_no_resource_task(
+    kind: TurnDecisionKind,
+) -> None:
+    """§3.1：没有有效待决提案时，接受词单独绝不创建资源任务。"""
+    h = Harness(pending=None)
+    await h.send("同意", kind=kind)
+    assert h.bridge.wood_replies == []  # type: ignore[attr-defined]
+    assert h.plans.calls == []
+    assert h.bridge.craft_calls == []  # type: ignore[attr-defined]
+
+
+async def test_fu4_reject_voids_even_when_kind_is_query() -> None:
+    """§3.2 + §3.4：拒绝作废提案（不复活），消息仍按自身 kind 走既有查询行为。"""
+    h = Harness(pending=PENDING)
+    await h.send("算了别做了", kind=TurnDecisionKind.QUERY)
+    assert h.bridge._pending_handoffs == {}  # type: ignore[attr-defined]
+    assert "handoff_reject_proposal" in h.reasons
+    assert h.bridge.capability_calls == [(TurnDecisionKind.QUERY, "算了别做了")]  # type: ignore[attr-defined]
+    assert h.bridge.wood_replies == []  # type: ignore[attr-defined]
+    await h.send("同意", kind=TurnDecisionKind.ATOMIC_ACTION)  # 已作废 → 不复活
+    assert h.bridge.wood_replies == []  # type: ignore[attr-defined]
+
+
+async def test_fu4_cross_session_isolation_holds_across_kinds() -> None:
+    """§3.4：同用户不同 session、不同用户都不得消费他人提案（跨 kind 亦然）。"""
+    h = Harness(pending=PENDING)
+    await h.send("好，去砍橡木原木", session="s2", kind=TurnDecisionKind.ATOMIC_ACTION)
+    await h.send("好，去砍橡木原木", user="SomeoneElse", kind=TurnDecisionKind.QUERY)
+    assert h.bridge.wood_replies == []  # type: ignore[attr-defined]
+    assert ("IdCraft", "s") in h.bridge._pending_handoffs  # type: ignore[attr-defined]
+    assert h.plans.calls == []
+
+
+async def test_fu4_prior_task_entry_not_advanced_by_accept() -> None:
+    """E6 同构（run 3 现场）：有先前任务时，接受语被误判成 ATOMIC_ACTION 也不得推进它。"""
+    h = Harness(pending=PENDING)
+    await h.send("好，去砍橡木原木", kind=TurnDecisionKind.ATOMIC_ACTION)
+    assert h.bridge.delegate_calls == []  # type: ignore[attr-defined]
+    assert h.bridge.capability_calls == []  # type: ignore[attr-defined]
+    # 仲裁只接管这一条消息：随后无关消息仍能正常进入既有任务入口
+    await h.send("跟我去那边", kind=TurnDecisionKind.TASK_PROPOSAL)
+    assert h.bridge.delegate_calls == ["跟我去那边"]  # type: ignore[attr-defined]
