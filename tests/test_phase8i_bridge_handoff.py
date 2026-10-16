@@ -171,3 +171,49 @@ def test_remember_craft_goal_keeps_the_original_request_for_replanning() -> None
     stored = bridge._pending_craft_goals[("IdCraft", "s")]
     assert stored["objective"] == "做一把木镐"
     assert REASON_MATERIAL == "insufficient_material"
+
+
+#: 真实 plan_rejected 的结果形态（真机门禁实测，**没有 checks 字段**）。
+REAL_REJECTED = {
+    "action": "plan_rejected",
+    "reply": "现在排不了这件事：insufficient_material:oak_log(缺 4)",
+    "outcome": "blocked_by_precondition",
+    "plan": None,
+    "record": None,
+}
+
+
+def test_gap_detail_reads_the_real_plan_rejected_shape() -> None:
+    """真机门禁暴露：真实 plan_rejected 没有 checks，只能从 reply 的原因码里取 detail。"""
+    assert (
+        MinecraftChatBridge._gap_detail_of(REAL_REJECTED) == "insufficient_material:oak_log(缺 4)"
+    )
+    # 既有 checks 形态保持兼容（不回归）。
+    assert (
+        MinecraftChatBridge._gap_detail_of({"checks": [{"detail": "no_recipe:x"}]}) == "no_recipe:x"
+    )
+    assert (
+        MinecraftChatBridge._gap_detail_of(
+            {"checks": [{"detail": {"reason": "no_recipe", "detail": "y"}}]}
+        )
+        == "no_recipe:y"
+    )
+    assert MinecraftChatBridge._gap_detail_of({}) == ""
+    assert MinecraftChatBridge._gap_detail_of({"reply": "材料不够"}) == ""
+
+
+async def test_real_plan_rejected_shape_produces_a_handoff_proposal() -> None:
+    """真实形态（无 checks）下，缺料回话也必须接上资源交接提案（H2 在真机可达）。"""
+    plans = FakePlans()
+    bridge = _bridge(plans)
+    text = await bridge._craft_handoff("IdCraft", "s", "给我做 4 块橡木木板", REAL_REJECTED)
+    assert text, "真实形态下必须产出提案文本"
+    assert "提案" in text
+    assert "oak_log" in text
+    assert "真实观察" in text
+    stored = bridge._pending_handoffs[("IdCraft", "s")]
+    assert stored["item"] == "oak_log" and stored["amount"] >= 1
+    assert stored["craft_goal"] == "给我做 4 块橡木木板"
+    assert [call for call in plans.calls if call.get("tool") == "minecraft_find_blocks"], (
+        "必须真的观察过"
+    )

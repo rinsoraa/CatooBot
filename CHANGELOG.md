@@ -4,6 +4,16 @@
 
 * **H1 缺料诊断**：新增 `app/tasks/resource_handoff.py` 的 `craft_gap_from_detail()` —— 按规划层的**稳定原因码**分类，
   **只有** `insufficient_material` 才解析缺什么缺多少；`crafting_table_required`/`inventory_unavailable`/`no_recipe`/
+
+### Phase 8I Follow-up — 真机门禁与两条真实缺陷修复
+
+- 真机门禁（本地脚本）暴露并修复两条会让 H1/H2 **在生产上完全不可达**的缺陷：
+  `app/tasks/craft_plan.py` 的记忆化缓存复述缺料时丢掉真实数量；`app/integrations/minecraft/chat_bridge.py`
+  的 `_gap_detail_of` 只读 `checks`，而真实 `plan_rejected` 形态没有该字段（detail 只能从 reply 的原因码取）。
+- 真机证据：真实第二个 Mineflayer 客户端在游戏内请求 → 路由 `handoff_proposed`、提案含真实观察证据（8 个候选、最近 1.41 格）
+  与「确认前不会有采集动作」，提案阶段零任务/零轨迹/零库存变化；接受后建立真实资源任务并停在既有确认门；
+  真实观察不到目标时如实拒绝。完整合成闭环与场景 C/D 仍缺证据 → 本阶段 **PARTIAL**。
+- 回归：`tests/test_phase8i_craft_gap_amount.py`（3 条）+ 桥接真实形态用例 2 条；既有测试零删除、断言零放宽。
   `search_budget_exceeded` **绝不**被翻译成「材料不足」。
 * **H2 资源提案**：`propose_handoff()` 只在拿到**真实 `minecraft_find_blocks` 观察**（`ok != False` 且 ≥1 候选）时才产出提案；
   目标映射**只**来自已审计的木材支持矩阵（`WOOD_SPECIES`），不支持的物品连观察都不做；数量按既有 `WOOD_MAX_TARGETS` 夹取并披露；

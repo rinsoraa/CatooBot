@@ -57,3 +57,44 @@
 * **真实服务器门禁场景 A–D 未执行**（需要停可见窗口 Bot + 第二个真实 Mineflayer 客户端跑完整「缺料 → 提案 → 接受 →
   资源任务 → 重新规划 → 合成」链路）。按任务书裁决规则，本阶段因此判 **PARTIAL**。
 * 未新增数据库 schema/字段/迁移；未触及受保护区域（风险映射、Policy、授权、确认门、Action Runtime）。
+* 真机门禁已在 Follow-up 执行（见 §7）：H1/H2 提案与安全拒绝已取得真机证据，完整合成闭环与 C/D 场景仍缺证据。
+
+## 7. Follow-up：真实服务器门禁（本地脚本，不发布）
+
+脚本 `scripts/phase8i_handoff_smoke_real.py`：真实 Java 1.21.1 + 真实 `MinecraftService` + 真实 Provider +
+**第二个真实 Mineflayer 客户端** `IdCraft8G` 在游戏内发自然语言（自动化客户端，不是真人）。
+
+### 7.1 真机门禁暴露并修复的两条**真实产品缺陷**（否则 H1/H2 在生产上不可达）
+
+1. `app/tasks/craft_plan.py` 的记忆化缓存只存原因码：写入 `impossible[(item, amount)] = CRAFT_PLAN_MATERIAL`、
+   复述时 `raise CraftPlanError(memo, item)` → 丢掉 `(缺 N)`。真机实测 detail 变成 `insufficient_material:acacia_log`，
+   `craft_gap_from_detail` 解析不出缺什么缺多少 → **资源交接提案永不触发**。修复：缓存 `(reason, detail)` 两元组并原样复述
+   （原因码、计划结果、fail-closed 语义全部不变）。
+2. `app/integrations/minecraft/chat_bridge.py` 的 `_gap_detail_of` 只读 `out["checks"][-1]["detail"]`，而
+   `AgentService.plan_goal_from_user` 的真实失败形态是 `{"action": "plan_rejected",
+   "reply": "现在排不了这件事：<reason>:<detail>", "outcome": ..., "plan": None, "record": None}` —— **没有 checks 字段**
+   → detail 永远取空 → H2 提案在真机上永远不出现。修复：先读 checks（兼容既有），再从真实 reply 里按**稳定原因码前缀**取 detail。
+
+回归测试：`tests/test_phase8i_craft_gap_amount.py`（3 条，真实 `build_craft_plan` 触发 memo 复述路径）
++ `tests/test_phase8i_bridge_handoff.py` 新增 2 条真实形态用例（`REAL_REJECTED` 夹具）。既有测试零删除、断言零放宽。
+
+### 7.2 已取得的真机证据（attempt 4，`CatooBot_backups/_phase8i_gate4.log`）
+
+* A1：真实规划结论 `insufficient_material:oak_log(缺 1)`（修复后带真实数量）。
+* A2：**H2 提案在真机首次完整触发** —— 第二个真实客户端在游戏内说「给我做 4 块橡木木板」→ 路由 `handoff_proposed`；
+  回话含「这只是一个提案」「资源目标来自真实观察：附近确认到可处理的 oak_log（真实查询到 8 个候选，最近 1.41 格）」
+  「确认之前不会有任何采集动作」「预计步骤：… 挖掘目标方块（既有 minecraft_dig）…」；提案阶段**零任务、零工具轨迹、零库存变化**。
+* A3：用户明确接受 → 建立**真实资源任务**（user=IdCraft8G、session=minecraft:127.0.0.1:25565:IdCraft8G、停既有确认门、
+  计划含真实挖掘步骤且无合成步骤、**确认前零 action_id**）。
+* A5（负向路径）：当真实观察半径 16 内**没有**可处理橡木时，回话如实拒绝 ——「缺的 oak_log 理论上可以采（oak_log），
+  但罐头在附近真实观察不到可处理的目标，所以现在建立不了可执行的资源计划（不会假设附近一定有）」（`_no_target_note`）。
+* 场景 B：真实观察不到目标（acacia_log）→ **不产出提案、不建任务、零执行、零库存变化**（attempt 4/5 均 PASS）。
+
+### 7.3 未完成（如实记录，因此本阶段裁定 PARTIAL）
+
+* 场景 A 的**完整闭环**（提案 → 采集成功 → 重新规划 → 新确认 → 合成 → 独立核验产物与净耗）未达成：既有 8D 采集链
+  在本轮世界条件下未收敛（attempt 4 停在 `REPLANNING`、原木净增 0；attempt 5 时半径 16 内已无可观察橡木 → 产品走
+  **如实拒绝**分支，行为正确但不构成闭环证据）。
+* 场景 C（一轮后仍不足）、D（中途取消 / 外部改料）未取得真机完整证据。
+* 因此真机门禁**不判 PASS**：核心实现与两条真实缺陷修复已交付，真机证据覆盖「提案 + 安全拒绝 + 接受建任务」，
+  但「至少一个真实合成闭环」与 C/D 场景缺证据。

@@ -256,7 +256,7 @@ async def build_craft_plan(
     search_states = 0
     candidate_cache: dict[str, tuple[RecipeSpec, ...]] = {}
     #: 与库存无关的失败（没有候选 / 成环 / 超深）可以安全记忆化剪枝。
-    impossible: dict[tuple[str, int], str] = {}
+    impossible: dict[tuple[str, int], tuple[str, str]] = {}
 
     async def candidates_for(item: str) -> tuple[RecipeSpec, ...]:
         if item not in candidate_cache:
@@ -299,13 +299,17 @@ async def build_craft_plan(
             raise CraftPlanError(CRAFT_PLAN_CYCLE, item)
         memo = impossible.get((item, amount))
         if memo is not None:
-            raise CraftPlanError(memo, item)
+            # Phase 8I：缓存里必须连**真实缺失数量**一起复述 —— 只缓存原因会让
+            # 复述路径丢掉 (缺 N)，而缺料诊断与资源交接提案正是靠它工作的。
+            memo_reason, memo_detail = memo
+            raise CraftPlanError(memo_reason, memo_detail)
         candidates = await candidates_for(item)
         if not candidates:
             # 基础材料（没有配方）在**需求求解**语境里就是「缺这个」—— 旧语义如此，
             # 用户要看到的是缺什么、缺多少（no_recipe 只用于**目标本身**没有配方）。
-            impossible[(item, amount)] = CRAFT_PLAN_MATERIAL
-            raise CraftPlanError(CRAFT_PLAN_MATERIAL, f"{item}(缺 {amount})")
+            detail = f"{item}(缺 {amount})"
+            impossible[(item, amount)] = (CRAFT_PLAN_MATERIAL, detail)
+            raise CraftPlanError(CRAFT_PLAN_MATERIAL, detail)
         errors: list[CraftPlanError] = []
         for recipe in candidates:
             if recipe.requires_table and not allow_table:

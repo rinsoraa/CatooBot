@@ -1193,13 +1193,33 @@ class MinecraftChatBridge:
             "at": time.monotonic(),
         }
 
-    @staticmethod
-    def _gap_detail_of(out: Any) -> str:
-        """从计划层结论里取出**稳定原因码 detail**（合成 checks 的最后一条）。"""
-        checks = (out or {}).get("checks") or ()
+    #: 规划层稳定原因码前缀（Phase 8F/8H/8I 的 craft_plan 原因码）。
+    _CRAFT_REASON_PREFIXES = (
+        "insufficient_material",
+        "crafting_table_required",
+        "inventory_unavailable",
+        "search_budget_exceeded",
+        "count_out_of_bounds",
+        "step_budget_exceeded",
+        "workbench_unavailable",
+        "no_recipe",
+        "recipe_cycle",
+    )
+
+    @classmethod
+    def _gap_detail_of(cls, out: Any) -> str:
+        """从计划层结论里取出**稳定原因码 detail**。
+
+        Phase 8I 真机门禁暴露：真实 plan_rejected 的结果形态是
+        ``{"action": "plan_rejected", "reply": "现在排不了这件事：<reason>:<detail>"}``，
+        **没有** checks 字段 —— 只读 checks 会让缺料诊断与资源交接提案在真机上永不触发。
+        所以先读 checks（保留既有兼容），再从真实 reply 里按**稳定原因码前缀**取出 detail。
+        """
+        data = out if isinstance(out, dict) else {}
+        checks = data.get("checks") or ()
         if checks and isinstance(checks[-1], dict):
             detail = checks[-1].get("detail")
-            if isinstance(detail, str):
+            if isinstance(detail, str) and detail:
                 return detail
             if isinstance(detail, dict):
                 reason = str(detail.get("reason") or "")
@@ -1208,6 +1228,13 @@ class MinecraftChatBridge:
                     return f"{reason}:{raw}"
                 if reason:
                     return reason
+        reply = str(data.get("reply") or "")
+        for line in reply.splitlines():
+            text = line.strip()
+            for prefix in cls._CRAFT_REASON_PREFIXES:
+                index = text.find(prefix)
+                if index >= 0:
+                    return text[index:].strip()
         return ""
 
     def _no_target_note(self, detail: str) -> str:
