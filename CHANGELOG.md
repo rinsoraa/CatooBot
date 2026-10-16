@@ -1,5 +1,23 @@
 # Changelog
 
+## Minecraft Phase 8I — 合成目标的资源任务交接与验证后续规划
+
+* **H1 缺料诊断**：新增 `app/tasks/resource_handoff.py` 的 `craft_gap_from_detail()` —— 按规划层的**稳定原因码**分类，
+  **只有** `insufficient_material` 才解析缺什么缺多少；`crafting_table_required`/`inventory_unavailable`/`no_recipe`/
+  `search_budget_exceeded` **绝不**被翻译成「材料不足」。
+* **H2 资源提案**：`propose_handoff()` 只在拿到**真实 `minecraft_find_blocks` 观察**（`ok != False` 且 ≥1 候选）时才产出提案；
+  目标映射**只**来自已审计的木材支持矩阵（`WOOD_SPECIES`），不支持的物品连观察都不做；数量按既有 `WOOD_MAX_TARGETS` 夹取并披露；
+  提案文本覆盖任务书 §4.1 全部要素，并明确「这只是提案、确认前不会有采集动作」。没有确认到目标时如实回话「建立不了可执行的资源计划」。
+* **H3 独立授权**：`chat_bridge` 把待决交接存内存（TTL 600s）；决策层把用户回复判为 `task_proposal` 时，
+  `_accept_pending_handoff()` 转成**既有木材入口**能解析的规范说法（如 `砍橡木原木 2 根`）并走 **既有** `_wood_reply`
+  （`shape_hint="wood"`）→ 既有 AgentPlan 批准 + 执行确认两道门；合成计划的授权绝不用来授权采集；接受是**一次性**的。
+* **H4 重新规划**：记住原始合成目标；资源任务之后的下一次合成请求**总是**由规划器按**现在的真实背包**重算
+  （配方/预算/工作台/逐步后置条件，绝不复用旧 DAG），并明确回话这是**新**计划需要重新确认。
+* **H5 有界交接**：一次交接即消费掉，过期（600s）要求重新观察；不做无人值守连续采集。
+* **测试**：`tests/test_phase8i_resource_handoff.py`（9 条）+ `tests/test_phase8i_bridge_handoff.py`（13 条）。
+* **未验证**：真实服务器门禁场景 A–D 未执行，故本阶段裁决 **PARTIAL**（任务书要求真实闭环才算 PASS）。
+* 未新增工具/权限/schema/迁移；未触及受保护区域。
+
 ## Minecraft Phase 8H Follow-up 2 — SQL 字面量安全的 Schema 指纹比较
 
 * **修掉真实漏报**：上一版 `_normalize_sql()` 用全局空白折叠 `re.sub(r"\s+", " ", text)`，会把引号内的空白一起吃掉。
