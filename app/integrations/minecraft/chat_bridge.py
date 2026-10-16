@@ -43,6 +43,7 @@ from app.tasks.intent import (
     WOOD_SPECIES,
     TaskIntentDetector,
     WoodRequest,
+    explicit_log_count,
     mentions_wood,
     parse_wood_request,
 )
@@ -271,6 +272,77 @@ def classify_handoff_reply(message: str) -> str:
     if parse_wood_request(text) is not None:
         return NEW_GOAL
     return NOT_ACCEPT
+
+
+def _acceptance_remainder(text: str) -> str:
+    """接受词**之后**剩下的内容（``""`` = 纯接受，或整句不是接受表达）。"""
+    for head in _ACCEPT_HEADS:
+        if not text.startswith(head):
+            continue
+        rest = text[len(head) :]
+        if not rest or rest[0] in _ACCEPT_BOUNDARY:
+            return rest.lstrip(_ACCEPT_BOUNDARY).strip()
+    return ""
+
+
+def _is_pure_acceptance_tail(rest: str) -> bool:
+    """剩余内容本身还是接受/确认说法（例：「好，就按这个方案来」→「就按这个方案来」）。
+
+    只认「以另一个接受词开头」这种确认说法；不含新目标、也不是确认说法的内容一律
+    交由调用方 fail closed（不消费提案）。
+    """
+    return any(rest.startswith(head) for head in _ACCEPT_HEADS)
+
+
+def _normalized_block(name: Any) -> str:
+    """方块/物品名规范化（只处理大小写与 ``minecraft:`` 前缀，不做任何猜测映射）。"""
+    return str(name or "").strip().lower().removeprefix("minecraft:")
+
+
+def handoff_target_verdict(message: str, pending: dict[str, Any] | None) -> str:
+    """Phase 8I Follow-up 5 §3：把「接受表达」按**目标一致性**细分成三态。
+
+    FU3 的接受门只看「开头是不是接受词」，于是「好，去砍五根白桦原木」被当成对当前橡木
+    提案的接受，用户当轮明确的白桦目标被静默丢弃。这里补上确定性的一致性校验：
+
+    * ``ACCEPT_PROPOSAL`` —— 纯接受，或描述与待决提案**一致**（同树种且没有给出不同的
+      明确数量）；此时目标**只能**来自待决提案，调用方继续走既有接受路径；
+    * ``NEW_GOAL``        —— 消息自身给出与提案冲突的新目标（不同树种 / 不同的明确数量）：
+      新目标优先，旧提案不得被消费；
+    * ``NOT_ACCEPT``      —— 接受词后跟的是与提案无关的内容，或无法无歧义判定（fail closed）。
+
+    只读消息与待决提案；不调用模型、不创建任务、不新增授权机制。
+    """
+    text = str(message or "").strip()
+    rest = _acceptance_remainder(text)
+    if not rest:
+        return ACCEPT_PROPOSAL
+    wood = parse_wood_request(rest)
+    if wood is None:
+        # 接受词之后没有新采集目标：是确认说法就仍是纯接受，否则不消费（fail closed）。
+        return ACCEPT_PROPOSAL if _is_pure_acceptance_tail(rest) else NOT_ACCEPT
+    if wood.problem:
+        return NOT_ACCEPT
+    pending_block = ""
+    pending_amount = 0
+    if pending:
+        pending_block = _normalized_block(pending.get("block") or pending.get("item"))
+        try:
+            pending_amount = int(pending.get("amount") or 0)
+        except (TypeError, ValueError):
+            pending_amount = 0
+    # 只有消息**点名**了树种时才比对；泛称「原木」不构成冲突（沿用提案目标）。
+    if (
+        pending_block
+        and wood.species
+        and wood.candidates
+        and _normalized_block(wood.candidates[0]) != pending_block
+    ):
+        return NEW_GOAL
+    explicit = explicit_log_count(rest)
+    if explicit is not None and pending_amount and explicit != pending_amount:
+        return NEW_GOAL
+    return ACCEPT_PROPOSAL
 
 
 class MinecraftChatBridge:
@@ -654,9 +726,32 @@ class MinecraftChatBridge:
             return None
         if verdict == ACCEPT_PROPOSAL:
             control = (TurnDecisionKind.CANCEL, TurnDecisionKind.STOP)
-            if kind not in control and key in self._pending_handoffs:
-                return await self._accept_pending_handoff(username, session_id, message)
-            return None
+            if kind in control:
+                return None
+            pending = self._pending_handoffs.get(key)
+            if pending is None:
+                return None
+            # FU5 §3：只有与待决提案**目标一致**的明确接受才能消费它；冲突的新目标
+            # 一律作废旧提案并继续走自己的路由（绝不复用旧目标或旧数量）。
+            target = handoff_target_verdict(message, pending)
+            if target == NEW_GOAL:
+                self._pending_handoffs.pop(key, None)
+                self._route(
+                    reason_code="handoff_new_goal",
+                    route_target=RouteTarget.TASK.value,
+                    session_id=session_id,
+                    text_chars=len(message),
+                )
+                return None
+            if target != ACCEPT_PROPOSAL:
+                self._route(
+                    reason_code=f"handoff_{target}",
+                    route_target=RouteTarget.CHAT_ONLY.value,
+                    session_id=session_id,
+                    text_chars=len(message),
+                )
+                return None
+            return await self._accept_pending_handoff(username, session_id, message)
         if key in self._pending_handoffs:
             self._route(
                 reason_code=f"handoff_{verdict}",

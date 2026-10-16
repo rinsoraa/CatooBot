@@ -1,4 +1,22 @@
 # Changelog
+### Phase 8I Follow-up 5 — 接受表达的目标一致性门（Handoff Acceptance Target Consistency Gate）
+
+- **缺陷**：`classify_handoff_reply()` 的判定顺序把「接受」放在「新采集目标」之前，且只看消息**开头**是否有接受词，
+  于是「好，去砍五根白桦原木」被判成对当前**橡木**提案的接受 —— 旧提案按旧目标/旧数量被消费，
+  用户当轮明确的白桦目标被静默丢弃（FU4 验收遗留边界）。
+- **修复**：新增确定性一致性校验。`app/tasks/intent.py` 增加公共封装 `explicit_log_count()`（复用既有 `_parse_log_count`，
+  区分「明确写了数量」与「没写」）；`chat_bridge.py` 新增 `_acceptance_remainder()` / `_is_pure_acceptance_tail()` /
+  `handoff_target_verdict()`，并在 `_arbitrate_pending_handoff()` 的接受分支先做目标一致性判定：
+  冲突的新树种或**明确不同的数量** → 作废旧提案并按消息自身目标路由；与提案无关的内容 → 保留提案（fail closed）；
+  只有与提案一致的明确接受才调用既有 `_accept_pending_handoff()`（目标只能来自提案）。
+  `CANCEL/STOP` 权威、分类器契约、权限模型与 schema 均未改动。
+- **测试**：`tests/test_phase8i_handoff_route_matrix.py` 原 52 条保留并新增 37 条至 **89 条**，全部驱动真实 `_route_turn()`
+  与真实仲裁；覆盖 §4.1 全部行、目标/数量冲突、跨决策类别、拒绝后不复活、无提案零任务。
+- **真实服务器验证**（本地门禁脚本，不发布）：新增场景 G —— 匹配接受按提案进入既有资源入口并停在确认门；
+  「好，去砍五根白桦原木」「可以，不过这次砍五根橡木原木」「好，给我做 64 块橡木木板」均不消费旧提案，
+  且既有资源入口从未收到旧提案的目标/数量；跨身份与拒绝后不复活边界仍然成立。
+- **验证**：`pytest tests -q` 全量通过；`ruff check .`、`ruff format --check .`、`mypy app`、`git diff --check` 全绿。
+
 ### Phase 8I Follow-up 4 — 待决提案仲裁跨决策路由（Pending Handoff Arbitration Across Decision Routes）
 
 - **缺陷（真实代码审计 + 真实服务器证据）**：FU3 的显式接受门只存在于 `_route_turn` 的 `TASK_PROPOSAL` 分支内，

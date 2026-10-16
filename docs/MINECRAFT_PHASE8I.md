@@ -303,3 +303,85 @@
 * FU4 不扩展导航可达性、配方变体选择、容器/丢弃、真实成功迁移演练等其他自主能力。
 * FU3 场景 D 的跨场景污染、`test_social.py::test_direct_mention_not_blocked_by_sleeping` 的时段抖动
   仍为独立既有事项，未在本阶段顺手修改。
+
+## 10. Follow-up 5：接受表达的目标一致性门（Handoff Acceptance Target Consistency Gate）
+
+### 10.1 缺陷根因（§1，真实代码）
+
+* `classify_handoff_reply()`（`app/integrations/minecraft/chat_bridge.py`）的判定顺序是
+  「拒绝 → 新**合成**目标 → 询问 → **接受** → 新**采集**目标 → 兜底」，而 `_is_acceptance()` 只要求
+  **消息开头**出现接受词且紧跟标点。于是「好，去砍五根白桦原木」在「新采集目标」分支**之前**
+  就被判成 `ACCEPT_PROPOSAL`，随后按**旧**橡木提案的目标与数量消费提案，用户当轮明确的白桦目标被静默丢弃。
+* 这正是 FU4 验收条件「新目标不能静默使用旧提案的目标与数量」未关闭的边界：分类器是**纯消息函数**，
+  看不到待决提案，因此「这句接受是否与当前提案相容」必须在**有上下文**的地方判定。
+
+### 10.2 修复（§3，最小实现，不引入第二套授权机制）
+
+* `app/tasks/intent.py` 新增公共薄封装 `explicit_log_count(text) -> int | None`：复用既有 `_parse_log_count`，
+  让调用方能区分「**明确**写了数量」与「没写（默认 1 根）」—— 缺了它就无法判断「同树种但数量不同」。
+* `chat_bridge.py` 新增两个纯函数与一个判定入口，全部复用既有解析器：
+  * `_acceptance_remainder(text)` —— 接受词之后的剩余内容（`""` = 纯接受）；
+  * `_is_pure_acceptance_tail(rest)` —— 剩余内容本身仍是确认说法（例：「好，**就按这个方案来**」）；
+  * `handoff_target_verdict(message, pending)` —— 三态判定：
+    `ACCEPT_PROPOSAL`（纯接受，或同树种且未给出不同数量）/ `NEW_GOAL`（不同树种或不同的明确数量）/
+    `NOT_ACCEPT`（接受词后是与提案无关的内容，或无法无歧义判定 → fail closed）。
+* `_arbitrate_pending_handoff()` 的接受分支改为**先做目标一致性校验**：
+  `NEW_GOAL` → 作废旧提案并记 `handoff_new_goal`，消息继续走自己的既有路由；
+  `NOT_ACCEPT` → 记 `handoff_not_accept` 且**保留**提案（fail closed）；
+  只有 `ACCEPT_PROPOSAL` 才调用既有 `_accept_pending_handoff()`（目标仍**只能**来自待决提案）。
+* `CANCEL/STOP` 仍保持既有控制权威（不消费）；未新增工具、权限、状态机、schema 或迁移；
+  `classify_handoff_reply()` 的既有契约未改写（四种返回值不变），一致性判定是**额外的确定性校验**。
+
+### 10.3 契约表（§3，纯函数、无模型、无任务）
+
+| 当前消息（待决提案 = `oak_log × 2`） | `classify_handoff_reply` | `handoff_target_verdict` | 仲裁结果 |
+|---|---|---|---|
+| `同意` / `可以` / `好，就按这个方案来` | `accept_proposal` | `accept_proposal` | 消费一次（目标来自提案） |
+| `好，去砍橡木原木` / `好，去砍原木` / `好，去砍两根橡木原木` | `accept_proposal` | `accept_proposal` | 消费一次；**不得重复建任务** |
+| `好，去砍五根白桦原木` | `accept_proposal` | **`new_goal`** | 作废旧提案 + 按白桦路由 |
+| `同意，改砍白桦` | `accept_proposal` | **`new_goal`** | 作废旧提案 + 按新目标路由/澄清 |
+| `可以，不过这次砍五根橡木原木` | `accept_proposal` | **`new_goal`** | 作废旧提案；**不静默采用旧数量** |
+| `好，给我做 64 块橡木木板` | `new_goal`（合成分支更早命中） | `not_accept`（不参与） | 作废旧提案 + 重新评估合成 |
+| `好，先跟我去另一个地方` | `accept_proposal` | **`not_accept`** | 保留提案 + 消息走自己的意图处理 |
+| `好难` / `可以吗？` / `嗯？` | `not_accept` | 不参与 | 不消费、保留提案 |
+| `好，去砍竹子` | `accept_proposal` | `not_accept` | 不消费（解析器报不支持 → fail closed） |
+
+### 10.4 回归测试（§4）
+
+* `tests/test_phase8i_handoff_route_matrix.py`：原 52 条**全部保留** + 新增 **37 条 = 89 条**；
+  新用例全部驱动**真实** `_route_turn()` 与**真实** `_arbitrate_pending_handoff()`（只把既有资源/合成入口换成记录桩）。
+* §4.2 断言覆盖：`_pending_handoffs` 保留/消费/作废、`_accept_pending_handoff()` 未被意外调用
+  （资源入口的目标记录为空）、资源入口收到的目标与数量、消息仍进入自身路由、无真实观察/计划调用；
+  合法新任务**不**以「任务数为零」阻止（只断言旧提案目标未被代入）。
+* 跨决策类别（§4.2 末段）：三类冲突消息在 `QUERY`/`ATOMIC_ACTION` 下同样不消费提案（防止重新引入 FU4 的跨路由问题）。
+### 10.5 真实服务器验证（§5，本地门禁脚本，不发布）
+
+* 新增场景 G（`scripts/phase8i_handoff_smoke_real.py`，`MC_SMOKE_SCENES=G`），用 `_wood_reply` spy 记录
+  **既有资源入口真正收到**的目标（objective + 候选方块）：
+  * **G1/G2 —— 匹配接受（§5 第 1、2 项，PASS）**：真实第二个 Mineflayer 客户端（`IdCraft8G`）请求「给我做 8 块橡木木板」
+    → 真实缺料 `oak_log(缺 2)` → 待决提案 `{item: oak_log, block: oak_log, amount: 2, requested: 2}`；
+    发送「好，去砍橡木原木」→ `handoff_accepted`、提案被消费一次、
+    资源入口收到 `('砍橡木原木 2 根', 'minecraft:oak_log')`（**目标来自提案**）→
+    任务 `PENDING_CONFIRMATION`、确认前零 `action_id`、`plan_hash` 由 `_dump_steps` 打印、真实背包不变。
+  * **G3 —— 不同树种的新目标（§5 第 3 项，PASS）**：新提案（`requested=3`，`amount` 仍为 2）后发送
+    「好，去砍五根白桦原木」→ `handoff_new_goal`、**无** `handoff_accepted`、旧提案被作废、
+    资源入口收到 `('好，去砍五根白桦原木', 'minecraft:birch_log')` —— **白桦目标生效、旧橡木目标从未被代入**。
+  * **G5 —— 新合成目标（§5 第 5 项，PASS）**：「好，给我做 64 块橡木木板」→ `handoff_new_goal`、
+    spy 记录为空（**没有触发任何旧资源采集**）、无 `handoff_accepted`、背包不变。
+* 新增场景 H（`MC_SMOKE_SCENES=H`，自包含隔离进程）覆盖 §5 第 4、6 项；
+  **H PASS 的关键不变量**：H2「可以，不过这次砍五根橡木原木」→ **无** `handoff_accepted`、
+  资源入口从未收到旧提案的 `2 根` 目标、背包不变（**旧数量没有被静默套用**）；
+  H4 另一身份（`IdCraft8G9`）的接受词 **未消费**本会话提案、提案仍然存在。
+* **如实标注的替代证据与边界**：H2/H5（以及整场景 G 中的 G4）这些措辞在**上游决策层**未产出可用决策
+  （`model_no_tool_call` → 既有澄清路径，不再进入 `_route_turn`），因此桥接按契约**澄清**并
+  **保留**提案（fail-closed）。此时「新数量进入自己的路由」与「拒绝作废提案」这两步在真实服务器上
+  未被观察到；核心不变量（**绝不消费旧提案、绝不套用旧数量**）仍然成立且被断言。
+  「拒绝后不复活」另有既有真实证据（FU3 场景 E4）与自动化矩阵覆盖。
+
+### 10.6 保留边界（如实）
+
+* 一致性判定是**纯函数**（消息 + 待决提案），不调用模型；上游决策层失败时桥接走既有澄清，
+  仲裁不介入（因此该轮不会消费提案，符合 §3.2 的 fail-closed 要求）。
+* 接受词后若既不是新目标也不是确认说法，一律**不消费**（fail closed），可能让用户需要重述；
+  这是刻意的安全取向，未引入任何猜测式匹配。
+* 导航可达性、配方变体排序、真实成功迁移演练、`test_social.py` 时段抖动仍为独立后续事项。

@@ -275,6 +275,15 @@ def _parse_log_count(text: str) -> int | None:
     return None
 
 
+def explicit_log_count(text: str) -> int | None:
+    """Phase 8I Follow-up 5：这句话**明确**写了要几根原木（``None`` = 没写数量）。
+
+    必须与 ``parse_wood_request`` 的默认值区分开：用户没写数量时这里是 ``None``，
+    调用方才能判断「同树种且未给出不同数量」，而不是把默认 1 根误当成明确的新数量。
+    """
+    return _parse_log_count(text)
+
+
 #: 明确**请求**标记（命令式语气）。Phase 8D Follow-up §B：不能只认礼貌词，否则
 #: 「去砍两根竹子带回来」这种命令句会绕过木材入口、静默落回旧单目标资源路径。
 _WOOD_REQUEST_MARKERS = (

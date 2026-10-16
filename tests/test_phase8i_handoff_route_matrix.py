@@ -22,12 +22,15 @@ from app.integrations.minecraft.chat_bridge import (
     _TurnReply,
     _WoodRoute,
     classify_handoff_reply,
+    handoff_target_verdict,
 )
 from app.tasks.turn_decision import TurnDecisionKind, TurnDecisionOutcome
 
 PENDING: dict[str, Any] = {
+    "item": "oak_log",
     "block": "oak_log",
     "amount": 2,
+    "requested": 2,
     "at": 0.0,
     "craft_goal": "给我做 4 块橡木木板",
 }
@@ -383,3 +386,153 @@ async def test_fu4_prior_task_entry_not_advanced_by_accept() -> None:
     # 仲裁只接管这一条消息：随后无关消息仍能正常进入既有任务入口
     await h.send("跟我去那边", kind=TurnDecisionKind.TASK_PROPOSAL)
     assert h.bridge.delegate_calls == ["跟我去那边"]  # type: ignore[attr-defined]
+
+
+# ---- Phase 8I FU5 §4：接受表达与待决提案目标一致性（真实 _route_turn + 真实仲裁） ----
+
+PENDING_OBJECTIVE = "砍橡木原木 2 根"
+
+
+def _fu5_negative(h: Harness) -> None:
+    """§4.2 负向公共断言：没消费、没把消息喂给资源入口、没有真实观察/计划调用。"""
+    assert h.bridge.wood_replies == [], "冲突的新目标不得消费旧提案"  # type: ignore[attr-defined]
+    assert h.plans.calls == []
+
+
+@pytest.mark.parametrize("message", ["同意", "可以", "好，就按这个方案来"])
+async def test_fu5_pure_accept_consumes_once(message: str) -> None:
+    """§3.1：纯接受可以消费当前提案（目标只能来自提案）。"""
+    h = Harness(pending=PENDING)
+    await h.send(message)
+    assert h.bridge._pending_handoffs == {}  # type: ignore[attr-defined]
+    assert h.bridge.wood_replies == [("IdCraft", "s", PENDING_OBJECTIVE)]  # type: ignore[attr-defined]
+    assert "handoff_accepted" in h.reasons
+    assert h.bridge.craft_calls == []  # type: ignore[attr-defined]
+
+
+@pytest.mark.parametrize("message", ["好，去砍橡木原木", "好，去砍原木", "好，去砍两根橡木原木"])
+async def test_fu5_matching_description_uses_pending_target(message: str) -> None:
+    """§3.3：接受 + 与提案一致的描述 → 可接受，目标只能来自待决提案且不得重复建任务。"""
+    h = Harness(pending=PENDING)
+    await h.send(message)
+    assert h.bridge.wood_replies == [("IdCraft", "s", PENDING_OBJECTIVE)]  # type: ignore[attr-defined]
+    await h.send(message)  # 提案已被消费 → 第二次不得再建
+    assert len(h.bridge.wood_replies) == 1  # type: ignore[attr-defined]
+    assert "handoff_accepted" in h.reasons
+
+
+@pytest.mark.parametrize(
+    "message",
+    ["好，去砍五根白桦原木", "同意，改砍白桦", "可以，不过这次砍五根橡木原木"],
+)
+async def test_fu5_conflicting_new_target_never_consumes(message: str) -> None:
+    """§3.2：与提案冲突的新目标优先 —— 不消费旧提案，消息仍走自己的既有路由。"""
+    h = Harness(pending=PENDING)
+    await h.send(message)
+    _fu5_negative(h)
+    assert h.bridge._pending_handoffs == {}, "冲突的新目标必须作废旧提案"  # type: ignore[attr-defined]
+    assert "handoff_new_goal" in h.reasons
+    assert "handoff_accepted" not in h.reasons
+    # 消息没有被吞掉：仍进入既有木材/任务路由（其自身授权链负责后续）
+    assert h.bridge.wood_routes == [message] or h.bridge.delegate_calls == [message]  # type: ignore[attr-defined]
+
+
+async def test_fu5_same_species_new_amount_not_silently_reused() -> None:
+    """§3.2：同树种但明确新数量不得静默套用提案数量。"""
+    h = Harness(pending=PENDING)
+    await h.send("可以，不过这次砍五根橡木原木")
+    _fu5_negative(h)
+    assert h.bridge._pending_handoffs == {}  # type: ignore[attr-defined]
+    assert "handoff_accepted" not in h.reasons
+    assert "2 根" not in str(h.bridge.wood_routes)  # type: ignore[attr-defined]
+
+
+async def test_fu5_new_craft_goal_re_evaluated_not_consumed() -> None:
+    """§3.2：「好，给我做 64 块橡木木板」是新的合成目标 —— 不消费旧提案，重新评估合成。"""
+    h = Harness(pending=PENDING)
+    await h.send("好，给我做 64 块橡木木板")
+    assert h.bridge.wood_replies == []  # type: ignore[attr-defined]
+    assert h.bridge._pending_handoffs == {}  # type: ignore[attr-defined]
+    assert h.bridge.craft_calls != []  # type: ignore[attr-defined]
+    assert "handoff_accepted" not in h.reasons
+
+
+async def test_fu5_unrelated_new_task_keeps_pending_and_own_route() -> None:
+    """§3.2：接受词后跟无关内容 → 不消费、提案保留、原有任务意图照常处理。"""
+    h = Harness(pending=PENDING)
+    await h.send("好，先跟我去另一个地方")
+    _fu5_negative(h)
+    assert ("IdCraft", "s") in h.bridge._pending_handoffs  # type: ignore[attr-defined]
+    assert "handoff_accepted" not in h.reasons
+    assert "handoff_not_accept" in h.reasons
+    assert h.bridge.delegate_calls == ["好，先跟我去另一个地方"]  # type: ignore[attr-defined]
+
+
+@pytest.mark.parametrize("message", ["好难", "可以吗？", "嗯？"])
+async def test_fu5_ambiguous_never_consumes(message: str) -> None:
+    """§4.1：不确定/询问一律 fail closed，提案保留。"""
+    h = Harness(pending=PENDING)
+    await h.send(message)
+    _fu5_negative(h)
+    assert ("IdCraft", "s") in h.bridge._pending_handoffs  # type: ignore[attr-defined]
+
+
+async def test_fu5_reject_then_accept_never_revives() -> None:
+    """§4.1：明确拒绝作废后，随后的接受词不得复活。"""
+    h = Harness(pending=PENDING)
+    await h.send("算了别做了")
+    assert h.bridge._pending_handoffs == {}  # type: ignore[attr-defined]
+    await h.send("同意")
+    _fu5_negative(h)
+    assert "handoff_accepted" not in h.reasons
+
+
+@pytest.mark.parametrize(
+    "message",
+    ["同意", "好，去砍五根白桦原木", "可以，不过这次砍五根橡木原木"],
+)
+async def test_fu5_no_pending_creates_no_resource_task(message: str) -> None:
+    """§4.1：不存在待决提案时，接受词（含带新目标的说法）都不创建资源任务。"""
+    h = Harness(pending=None)
+    await h.send(message)
+    _fu5_negative(h)
+    assert "handoff_accepted" not in h.reasons
+
+
+@pytest.mark.parametrize("kind", [TurnDecisionKind.QUERY, TurnDecisionKind.ATOMIC_ACTION])
+@pytest.mark.parametrize(
+    "message",
+    ["好，去砍五根白桦原木", "可以，不过这次砍五根橡木原木", "同意，改砍白桦"],
+)
+async def test_fu5_conflict_holds_across_decision_kinds(
+    message: str,
+    kind: TurnDecisionKind,
+) -> None:
+    """§4.2：一致性修复不得重新引入 FU4 的跨路由问题（非 task_proposal 也要守住）。"""
+    h = Harness(pending=PENDING)
+    await h.send(message, kind=kind)
+    _fu5_negative(h)
+    assert h.bridge._pending_handoffs == {}  # type: ignore[attr-defined]
+    assert h.bridge.craft_calls == []  # type: ignore[attr-defined]
+
+
+@pytest.mark.parametrize(
+    ("message", "expected"),
+    [
+        ("同意", ACCEPT_PROPOSAL),
+        ("可以", ACCEPT_PROPOSAL),
+        ("好，就按这个方案来", ACCEPT_PROPOSAL),
+        ("好，去砍橡木原木", ACCEPT_PROPOSAL),
+        ("好，去砍原木", ACCEPT_PROPOSAL),
+        ("好，去砍两根橡木原木", ACCEPT_PROPOSAL),
+        ("好，去砍五根白桦原木", NEW_GOAL),
+        ("同意，改砍白桦", NEW_GOAL),
+        ("可以，不过这次砍五根橡木原木", NEW_GOAL),
+        ("好，先跟我去另一个地方", NOT_ACCEPT),
+        ("好，去砍竹子", NOT_ACCEPT),
+        ("好，给我做 64 块橡木木板", NOT_ACCEPT),
+    ],
+)
+def test_fu5_target_consistency_contract(message: str, expected: str) -> None:
+    """§3 契约表（纯函数、无模型、无任务）：接受表达的目标一致性判定。"""
+    assert handoff_target_verdict(message, PENDING) == expected
