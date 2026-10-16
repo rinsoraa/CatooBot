@@ -426,10 +426,143 @@ def unexplained_acceptance_tail(text: str) -> str | None:
     return _consume_acceptance_phrase(raw).strip()
 
 
+#: 词元类别（单目标结构门用）。**全部由既有词表派生**，不新增第二套词表。
+_ACCEPTANCE_KIND_ACTION = "action"
+_ACCEPTANCE_KIND_SPECIES = "species"
+_ACCEPTANCE_KIND_GENERIC = "generic"
+_ACCEPTANCE_KIND_TAIL = "tail"
+_ACCEPTANCE_KIND_FILLER = "filler"
+_ACCEPTANCE_KIND_COUNT = "count"
+
+#: 通用木材名词（与 parse_wood_request 的判定保持一致）。
+_GENERIC_WOOD_NOUNS = ("原木", "木头", "树", "log", "wood")
+
+#: 词元 → 类别（最长优先），供结构校验使用。
+_ACCEPTANCE_TOKEN_KINDS: tuple[tuple[str, str], ...] = tuple(
+    sorted(
+        (
+            *((action.lower(), _ACCEPTANCE_KIND_ACTION) for action in _WOOD_ACTIONS),
+            *((alias, _ACCEPTANCE_KIND_SPECIES) for alias, _block in _WOOD_ALIASES),
+            *((noun, _ACCEPTANCE_KIND_GENERIC) for noun in _GENERIC_WOOD_NOUNS),
+            *((tail, _ACCEPTANCE_KIND_TAIL) for tail in _ACCEPTANCE_TAILS),
+            *((filler, _ACCEPTANCE_KIND_FILLER) for filler in _ACCEPTANCE_FILLERS),
+        ),
+        key=lambda item: (-len(item[0]), item[0]),
+    )
+)
+
+
+def _acceptance_token_kinds(text: str) -> list[str] | None:
+    """把文本切成**类别序列**；出现无法解释的字符时返回 ``None``。
+
+    与 ``_consume_acceptance_phrase`` 用同一套词表与同一套忽略规则（标点/空白/数量短语），
+    区别是这里保留「每个词元属于哪一类」，结构校验才有依据。
+    """
+    lowered = str(text or "").lower()
+    kinds: list[str] = []
+    cursor = 0
+    while cursor < len(lowered):
+        for token, kind in _ACCEPTANCE_TOKEN_KINDS:
+            if lowered.startswith(token, cursor):
+                kinds.append(kind)
+                cursor += len(token)
+                break
+        else:
+            if lowered[cursor] in _ACCEPTANCE_IGNORED:
+                cursor += 1
+                continue
+            match = _ACCEPTANCE_COUNT_RE.match(lowered, cursor)
+            if match is not None and match.end() > cursor:
+                kinds.append(_ACCEPTANCE_KIND_COUNT)
+                cursor = match.end()
+                continue
+            return None
+    return kinds
+
+
+def _acceptance_structure_error(kinds: list[str]) -> str:
+    """按**单目标结构**校验类别序列，返回违反原因码（``""`` = 通过）。
+
+    许可结构（确定性、可审计）：
+
+      ``填充词* 动作 填充词* [数量] (树种? 通用名词? 且至少其一) 填充词* [数量] 填充词* [收尾语] 填充词*``
+
+    关键约束：**恰好一个动作**、**恰好一个目标短语**（树种+通用名词算同一个目标）、
+    数量与收尾语各至多一次且必须落在结构位置上。任何第二个动作/目标都判为结构违反 ——
+    「每个词元都在词表里」不等于「只有一个动作目标」。
+    """
+    action = _ACCEPTANCE_KIND_ACTION
+    species = _ACCEPTANCE_KIND_SPECIES
+    generic = _ACCEPTANCE_KIND_GENERIC
+    tail = _ACCEPTANCE_KIND_TAIL
+    count = _ACCEPTANCE_KIND_COUNT
+    state = "prefix"
+    target = ""
+    seen_count = False
+    seen_tail = False
+    for kind in kinds:
+        if kind == action:
+            if state != "prefix":
+                return "second_action"
+            state = "action"
+            continue
+        if kind == species:
+            if state in ("prefix", "action", "count"):
+                state = "target"
+                target = "species"
+                continue
+            return "second_target"
+        if kind == generic:
+            if state in ("prefix", "action", "count"):
+                state = "target"
+                target = "generic"
+                continue
+            if state == "target" and target == "species":
+                target = "species_generic"
+                continue
+            return "second_target"
+        if kind == count:
+            if state in ("prefix", "action", "target", "after") and not seen_count:
+                seen_count = True
+                continue
+            return "count_repeated" if seen_count else "count_misplaced"
+        if kind == tail:
+            if state in ("target", "after") and not seen_tail:
+                seen_tail = True
+                state = "after"
+                continue
+            return "tail_misplaced"
+        if state in ("prefix", "action", "count", "target", "after"):
+            continue
+        return "unexpected_filler"
+    if state in ("prefix", "action", "count"):
+        return "target_missing"
+    return ""
+
+
+def acceptance_structure_violation(text: str) -> str:
+    """整段接受描述是否符合**单目标结构**（``""`` = 通过；``not_wood`` = 不适用）。
+
+    完整消费只证明「每个字符都在许可词表里」，不能证明「只有一个动作目标」：
+    `去砍橡木原木去砍橡木原木` 的每个词元都合法，却是两个目标。这里把判定升级为
+    「整段必须符合一个受限的单目标描述结构」，违反时给出稳定原因码供审计。
+    """
+    raw = str(text or "").strip()
+    if not raw:
+        return "not_wood"
+    request = parse_wood_request(raw)
+    if request is None or request.problem:
+        return "not_wood"
+    kinds = _acceptance_token_kinds(raw)
+    if kinds is None:
+        return "unexplained"
+    return _acceptance_structure_error(kinds)
+
+
 def is_permissive_wood_acceptance(text: str) -> bool:
-    """整段文本能否被许可接受语法**完整消费**（且本身是一条可执行的木材描述）。"""
+    """整段文本能否被许可语法**完整消费**，且符合**单目标结构**。"""
     tail = unexplained_acceptance_tail(text)
-    return tail is not None and not tail
+    return tail == "" and acceptance_structure_violation(text) == ""
 
 
 #: 叙述/回忆标记（过去时）：出现任意一个就不当作**新的采集指令**。

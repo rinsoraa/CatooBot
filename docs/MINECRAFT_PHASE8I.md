@@ -652,3 +652,111 @@ FU5 的 `handoff_target_verdict()` 只比对**木材目标与数量**（`parse_w
 才消费；未知尾部不被静默忽略；纯接受、相容单目标描述与已审计收尾语继续通过；树种/数量冲突与新合成
 目标保持既有 `NEW_GOAL` 行为；复合输入保留提案、不调用接受或执行入口并返回澄清；跨决策类别、
 用户/session、过期、拒绝、STOP/CANCEL 与双确认契约无回归；权限模型与受保护区域未修改。
+
+## 14. FU5 Follow-up 4：完整消费 ≠ 单一意图 —— 单目标结构门（Single Intent Structure Gate）
+
+### 14.1 静态审计候选的实测复现（基线 `0c527bf`，**未改生产逻辑**）
+
+§13 的完整消费判定**被证实是必要但不足的**：下列消息的每个词元都在许可词表里、未解释尾部为空，
+却包含第二个动作目标 —— 修复前实测（真实函数输出）：
+
+| 消息（待决提案 `oak_log × 2`） | `classify_handoff_reply` | `handoff_target_verdict` | 未解释尾部 | `_has_extra_intent` | 判定 |
+| --- | --- | --- | --- | --- | --- |
+| `好，去砍橡木原木去砍橡木原木` | `accept_proposal` | **`accept_proposal`** | `''` | `False` | 误当成单目标接受 |
+| `好，去砍橡木原木砍橡木原木` | `accept_proposal` | **`accept_proposal`** | `''` | `False` | 同上 |
+| `好，去砍橡木原木去采集木头` | `accept_proposal` | **`accept_proposal`** | `''` | `False` | 同上 |
+| `好，去砍橡木原木再砍橡木原木` | `accept_proposal` | `not_accept` | `''` | **`True`** | 仅被「再 + 新目标」护栏拦下（语法本身**通过**） |
+| `好，去砍橡木原木去挖原木` | `accept_proposal` | **`accept_proposal`** | `''` | `False` | 误当成单目标接受 |
+
+机制分别记录（任务书 §3 要求）：第 4 条**只有**既有护栏命中，许可语法对它判「完整消费通过」；
+前 3 条与第 5 条**两个机制都不拦**。因此缺口不在词表，而在「词元可识别」被当成了「只有一个目标」。
+
+### 14.2 修复：单目标结构门（`app/tasks/intent.py`）
+
+新增（**全部由既有词表派生**，不新增第二套词表）：`_GENERIC_WOOD_NOUNS`（与 `parse_wood_request` 一致）、
+`_ACCEPTANCE_TOKEN_KINDS`（词元 → 类别：`_WOOD_ACTIONS` / `_WOOD_ALIASES` / 通用名词 / `_ACCEPTANCE_TAILS` /
+`_ACCEPTANCE_FILLERS`，最长优先）、`_acceptance_token_kinds()`（切成**类别序列**，有无法解释的字符则 `None`）、
+`_acceptance_structure_error()`（确定性结构自动机）、`acceptance_structure_violation()`（稳定原因码）；
+`is_permissive_wood_acceptance()` 语义升级为「完整消费 **且** 符合单目标结构」。
+
+许可结构（确定性、可审计）：
+
+```
+填充词* 动作 填充词* [数量] (树种? 通用名词? 且至少其一) 填充词* [数量] 填充词* [收尾语] 填充词*
+```
+
+关键约束：**恰好一个动作**、**恰好一个目标短语**（树种+通用名词算同一个目标）、数量与收尾语各至多一次
+且必须落在结构位置；任何第二个动作/目标都给出原因码。`chat_bridge.handoff_target_verdict()` 末门改为
+`tail or structure or _has_extra_intent(rest)` → `NOT_ACCEPT`（既有关键词护栏保留为**只增不减**的附加层），
+`is_compound_acceptance()` 同步纳入结构违反 → 走既有 `handoff_compound_clarify` 澄清路径。
+
+修复后实测（同一批消息，全部 `second_action`）：
+
+| 消息 | 结构原因码 | 未解释尾部 | `_has_extra_intent` | `handoff_target_verdict` |
+| --- | --- | --- | --- | --- |
+| `好，去砍橡木原木去砍橡木原木` | `second_action` | `''` | `False` | `not_accept` |
+| `好，去砍橡木原木砍橡木原木` | `second_action` | `''` | `False` | `not_accept` |
+| `好，去砍橡木原木去采集木头` | `second_action` | `''` | `False` | `not_accept` |
+| `好，去砍橡木原木再砍橡木原木` | `second_action` | `''` | `True` | `not_accept` |
+| `好，去砍橡木原木去挖原木` | `second_action` | `''` | `False` | `not_accept` |
+
+合法单目标与冲突语义**零变化**：`同意`/`可以`/`好，就按这个方案来`/`好，去砍橡木原木`/`好，去砍原木`/
+`好，去砍两根橡木原木`/`好，去砍橡木原木带回来`/`好，去砍橡木原木再回来` 仍 `accept_proposal`；
+`好，去砍五根白桦原木` 等冲突目标仍 `new_goal`；`好，给我做 64 块橡木木板` 仍 `not_accept`。
+
+### 14.3 自动化验收矩阵（§5 逐项）
+
+`tests/test_phase8i_handoff_route_matrix.py` **165 → 191 条**（+26，原断言零删除、零放宽）：
+
+1. `STRUCTURAL_COMPOUND_MESSAGES`（5 条）逐条断言 `unexplained_acceptance_tail == ""`、
+   `acceptance_structure_violation == "second_action"`、`is_permissive_wood_acceptance is False`、
+   `handoff_target_verdict == NOT_ACCEPT`；
+2. 每条驱动真实 `_route_turn()` + 真实 `_arbitrate_pending_handoff()`：`accept_calls == []`、提案仍在
+   `_pending_handoffs`、`handoff_not_accept` 有而 `handoff_accepted` 无、`handoff_compound_clarify` + 非空
+   澄清话术（含「一件」）、`wood_routes`/`delegate_calls`/`capability_calls`/`craft_calls` 全空、`plans.calls == []`；
+3. 至少三种入口类别：`TASK_PROPOSAL`（上一项）+ `QUERY`/`ATOMIC_ACTION`（参数化 10 条）均不得绕过；
+4. 结构澄清之后用户再发纯接受 → 提案仍可且**只可**消费一次（5 条）；
+5. 机制分别记录的专项断言（结构门单独即可拦下 `去砍橡木原木去砍橡木原木`；`再砍橡木原木` 同时命中两个机制）；
+6. §5.8 无回归：Follow-up 3 的许可集、冲突集、九条已知复合例、三条未知尾部例、11 条尾部单测**原样保留**并全部通过。
+
+### 14.4 真实服务器验证（§6；本地脚本 `scripts/phase8i_handoff_smoke_real.py`，不发布）
+
+新增场景 **J**（复用场景 I 实现，仅换消息集/标签/请求下标）：`CatooBot_backups/_phase8i_fu5fu4_gateJ1.log` →
+**`通过=1 失败=0 BLOCKED=0` / `REAL SERVER: PASS`**。真实 Java 1.21.1、真实 Runtime/MinecraftService、真实 Provider。
+
+| 子用例 | 消息 | 投递路径 | 判定/证据 |
+| --- | --- | --- | --- |
+| J1 | `好，去砍橡木原木去砍橡木原木` | **真实第二客户端 `IdCraft8G`** | `handoff_compound_clarify`、`targets=[]`、提案保留、澄清话术送达、目标物品无变化 |
+| J2 | `好，去砍橡木原木砍橡木原木` | **真实第二客户端** | 同上 |
+| J3 | `好，去砍橡木原木去采集木头` | **真实第二客户端** | 同上 |
+| J4 | `好，去砍橡木原木再砍橡木原木` | **真实第二客户端** | 同上（此例同时命中「再 + 新目标」护栏） |
+| J5 | `好，去砍橡木原木去挖原木` | 第二客户端不可用 → **真实聊天桥事件注入**（日志 `DEVIATION`，替代证据） | 同上 |
+| J-对照 | `好，去砍橡木原木`（纯接受） | 同上 | 提案**恰好消费一次**（门不是一刀切） |
+
+每条子用例均打印：真实接收/仲裁 trace、判定与 `handoff_compound_clarify`、游戏内实际送达回复、
+提案前后快照、目标相关物品前后快照、`targets=[]`。未使用 `/give`、数据库写入、直接 Mineflayer 旁路或
+假客户端结果；环境噪声照旧全量记录（全程 `{'rotten_flesh': 1}`，断言只针对目标相关物品）。
+
+### 14.5 质量门禁
+
+* `pytest tests -q` → **4571 passed, 1 failed**；唯一失败是任务书 §10 **明确排除**的既有**时段相关**抖动
+  `tests/test_social.py::TestCognitionEngine::test_direct_mention_not_blocked_by_sleeping`
+  （夹具自身断言 `PresenceResolver.is_sleeping()` 在 `sleep_start=00:00 / sleep_end=23:59` 的当天最后一分钟为 True）；
+  **未改其断言、未放宽任何检查**，与本阶段改动无关（算术自洽：4546 + 新增 26 = 4572 = 4571 + 1）。
+* `ruff check .`、`ruff format --check .`、`mypy app`、`git diff --check`、凭据扫描、受保护区域审计见交付报告；
+  本地门禁脚本与日志保持 untracked（`scripts/` 0 tracked）。
+
+### 14.6 保留边界（如实）
+
+* 结构门是**闭集文法**：它证明「整段只匹配一个动作 + 一个目标短语」，不声称理解任意自然语言；
+  因此**过度拒绝是可能的**（更迂回的说法会被澄清而非接受），这是刻意选择的 fail-closed 取向。
+* 被澄清的第二个目标**不解析、不执行**，也不新增任何能力（任务书 §2.3）。
+* J5 目前只有注入替代证据（第二客户端在那一刻不可用）；J1–J4 有关键类真实客户端证据。
+* 本阶段范围外（不变）：8D 导航可达性、配方变体按库存可排序性、真实成功迁移演练、
+  `test_social.py` 时段抖动。
+
+### 14.7 裁决
+
+**PASS**。静态审计候选全部被实际测试（4 条确为反例、1 条仅被既有护栏拦下，均给出真实输出）；修复后所有
+结构不唯一的输入都不消费旧提案、不触发任何执行入口，并走既有澄清路径；合法单任务（含已审计收尾语）
+继续通过；完全回归、静态检查与 CI 通过；权限与执行安全边界未发生变化。

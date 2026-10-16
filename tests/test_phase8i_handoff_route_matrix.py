@@ -20,12 +20,17 @@ from app.integrations.minecraft.chat_bridge import (
     REJECT_PROPOSAL,
     MinecraftChatBridge,
     _acceptance_remainder,
+    _has_extra_intent,
     _TurnReply,
     _WoodRoute,
     classify_handoff_reply,
     handoff_target_verdict,
 )
-from app.tasks.intent import is_permissive_wood_acceptance, unexplained_acceptance_tail
+from app.tasks.intent import (
+    acceptance_structure_violation,
+    is_permissive_wood_acceptance,
+    unexplained_acceptance_tail,
+)
 from app.tasks.turn_decision import TurnDecisionKind, TurnDecisionOutcome
 
 PENDING: dict[str, Any] = {
@@ -687,3 +692,89 @@ def test_fu5fu3_non_wood_text_is_not_applicable() -> None:
     """不是木材描述的文本 → ``None``（交给既有语义，不由许可语法裁定）。"""
     assert unexplained_acceptance_tail("去挖石头") is None
     assert unexplained_acceptance_tail("就按这个方案来") is None
+
+
+# ---- Phase 8I FU5 Follow-up 4 §3/§5：单目标结构门 ----
+
+#: §3 静态审计候选：**全部由已许可词元构成**（未解释尾部为空），但含重复/连续的第二动作目标。
+STRUCTURAL_COMPOUND_MESSAGES = (
+    "好，去砍橡木原木去砍橡木原木",
+    "好，去砍橡木原木砍橡木原木",
+    "好，去砍橡木原木去采集木头",
+    "好，去砍橡木原木再砍橡木原木",
+    "好，去砍橡木原木去挖原木",
+)
+
+#: §4 结构违反的稳定原因码（供审计与报告引用）。
+STRUCTURAL_REASON = "second_action"
+
+
+@pytest.mark.parametrize("message", STRUCTURAL_COMPOUND_MESSAGES)
+def test_fu5fu4_structure_violation_reason_codes(message: str) -> None:
+    """§3：完整消费为空**也**必须被结构门拦下，并给出稳定原因码。"""
+    rest = _acceptance_remainder(message)
+    assert rest, message
+    assert unexplained_acceptance_tail(rest) == ""  # 每个词元都合法…
+    assert acceptance_structure_violation(rest) == STRUCTURAL_REASON  # …但有第二个动作目标
+    assert is_permissive_wood_acceptance(rest) is False
+    assert handoff_target_verdict(message, PENDING) == NOT_ACCEPT
+
+
+def test_fu5fu4_mechanisms_recorded_separately() -> None:
+    """§3：各机制单独与联合判定都要记录，不能只看最终结果。"""
+    only_structure = _acceptance_remainder("好，去砍橡木原木去砍橡木原木")
+    assert acceptance_structure_violation(only_structure) == STRUCTURAL_REASON
+    assert _has_extra_intent(only_structure) is False  # 结构门单独即可拦下
+    also_extra = _acceptance_remainder("好，去砍橡木原木再砍橡木原木")
+    assert acceptance_structure_violation(also_extra) == STRUCTURAL_REASON  # 结构门
+    assert _has_extra_intent(also_extra) is True  # 且「再 + 新目标」护栏也会命中
+
+
+@pytest.mark.parametrize("message", STRUCTURAL_COMPOUND_MESSAGES)
+async def test_fu5fu4_structural_compound_never_consumes(message: str) -> None:
+    """§5.1–§5.5：结构不唯一的描述绝不消费提案、绝不触发任何执行入口。"""
+    h = Harness(pending=PENDING)
+    reply = await h.send(message)
+    assert h.bridge.accept_calls == []  # type: ignore[attr-defined]
+    assert ("IdCraft", "s") in h.bridge._pending_handoffs  # type: ignore[attr-defined]
+    assert "handoff_not_accept" in h.reasons
+    assert "handoff_accepted" not in h.reasons
+    assert "handoff_compound_clarify" in h.reasons
+    assert reply is not None and reply.reply
+    assert "一件" in (reply.reply or "")
+    assert h.bridge.wood_routes == []  # type: ignore[attr-defined]
+    assert h.bridge.delegate_calls == []  # type: ignore[attr-defined]
+    assert h.bridge.capability_calls == []  # type: ignore[attr-defined]
+    assert h.bridge.craft_calls == []  # type: ignore[attr-defined]
+    assert h.plans.calls == []
+
+
+@pytest.mark.parametrize("kind", [TurnDecisionKind.QUERY, TurnDecisionKind.ATOMIC_ACTION])
+@pytest.mark.parametrize("message", STRUCTURAL_COMPOUND_MESSAGES)
+async def test_fu5fu4_structure_holds_across_decision_kinds(
+    message: str,
+    kind: TurnDecisionKind,
+) -> None:
+    """§5.6：三种入口类别（TASK_PROPOSAL 见上一用例）都不得绕过结构门。"""
+    h = Harness(pending=PENDING)
+    reply = await h.send(message, kind=kind)
+    assert h.bridge.accept_calls == []  # type: ignore[attr-defined]
+    assert h.bridge.wood_replies == []  # type: ignore[attr-defined]
+    assert ("IdCraft", "s") in h.bridge._pending_handoffs  # type: ignore[attr-defined]
+    assert h.bridge.craft_calls == []  # type: ignore[attr-defined]
+    assert h.bridge.capability_calls == []  # type: ignore[attr-defined]
+    assert "handoff_compound_clarify" in h.reasons
+    assert reply is not None and reply.reply
+    assert h.plans.calls == []
+
+
+@pytest.mark.parametrize("message", STRUCTURAL_COMPOUND_MESSAGES)
+async def test_fu5fu4_pure_acceptance_still_works_after_structure(message: str) -> None:
+    """§5.7：结构门澄清之后，用户再发纯接受 → 提案仍可且只可消费一次。"""
+    h = Harness(pending=PENDING)
+    await h.send(message)
+    assert h.bridge.accept_calls == []  # type: ignore[attr-defined]
+    await h.send("好，去砍橡木原木")
+    assert len(h.bridge.accept_calls) == 1  # type: ignore[attr-defined]
+    assert h.bridge.wood_replies == [("IdCraft", "s", "砍橡木原木 2 根")]  # type: ignore[attr-defined]
+    assert h.bridge._pending_handoffs == {}  # type: ignore[attr-defined]

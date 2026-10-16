@@ -48,6 +48,7 @@ from app.tasks.intent import (
     has_compound_connector,
     mentions_wood,
     parse_wood_request,
+    acceptance_structure_violation,
     unexplained_acceptance_tail,
 )
 from app.tasks.resource_handoff import (
@@ -357,8 +358,11 @@ def is_compound_acceptance(message: str) -> bool:
         return False
     # FU5 Follow-up 3：除了既有信号，整段描述**未被许可语法解释**的部分同样算复合 ——
     # 这样「未知尾部」也走同一条澄清路径，不再依赖关键词是否恰好命中。
+    # FU5 Follow-up 4：**结构违反**（词元都合法、却含第二个动作/目标）同样必须走澄清路径，
+    # 否则它会被当成「没有额外意图」而放行并消费旧提案。
     tail = unexplained_acceptance_tail(rest)
-    return _has_extra_intent(rest) or tail is None or bool(tail)
+    structure = acceptance_structure_violation(rest)
+    return _has_extra_intent(rest) or tail is None or bool(tail) or bool(structure)
 
 
 def compound_clarify_text(pending: dict[str, Any] | None) -> str:
@@ -449,10 +453,13 @@ def handoff_target_verdict(message: str, pending: dict[str, Any] | None) -> str:
     if explicit is not None and pending_amount and explicit != pending_amount:
         return NEW_GOAL
     # FU5 Follow-up 3 §4：目标相容还不够 —— 整段接受描述必须被**许可语法完整消费**。
-    # 任何未解释的剩余文本（第二个目标、未知尾部、无连接词的连续动作）一律 fail closed。
+    # FU5 Follow-up 4 §4：完整消费是**必要但不足**的 —— 还必须符合**单目标结构**：
+    # `去砍橡木原木去砍橡木原木` 的每个词元都合法，却是两个动作目标。
+    # 任何未解释的剩余文本、任何结构违反（第二动作/第二目标/数量或收尾语错位）一律 fail closed。
     # 既有关键词信号保留为**附加**护栏：它只会增加拒绝，不会放宽接受。
     tail = unexplained_acceptance_tail(rest)
-    if tail is None or tail or _has_extra_intent(rest):
+    structure = acceptance_structure_violation(rest)
+    if tail is None or tail or structure or _has_extra_intent(rest):
         return NOT_ACCEPT
     return ACCEPT_PROPOSAL
 

@@ -1,4 +1,28 @@
 # Changelog
+### Phase 8I FU5 Follow-up 4 — 单目标结构门（Single Intent Structure Gate）
+
+- **缺陷（任务书 §3 + 基线实测）**：完整消费是**必要但不足**的 —— `好，去砍橡木原木去砍橡木原木`、
+  `…砍橡木原木`、`…去采集木头`、`…去挖原木` 的每个词元都在许可词表里、未解释尾部为空，却被当成单目标
+  接受；`…再砍橡木原木` 仅被既有「再 + 新目标」护栏拦下（许可语法本身也通过）。
+- **修复**：`app/tasks/intent.py` 新增单目标**结构文法**（全部由既有词表派生：`_GENERIC_WOOD_NOUNS`、
+  `_ACCEPTANCE_TOKEN_KINDS`、`_acceptance_token_kinds()`、`_acceptance_structure_error()`、
+  `acceptance_structure_violation()`）：`填充词* 动作 填充词* [数量] (树种? 通用名词? 至少其一) 填充词*
+  [数量] 填充词* [收尾语] 填充词*` —— **恰好一个动作、恰好一个目标短语**，数量与收尾语各至多一次且
+  必须落在结构位置；`is_permissive_wood_acceptance()` 升级为「完整消费 **且** 结构合法」。
+  `chat_bridge.handoff_target_verdict()` 末门加入结构判定（`tail or structure or _has_extra_intent`），
+  `is_compound_acceptance()` 纳入结构违反 → 走既有 `handoff_compound_clarify` 澄清路径。
+- **语义**：冲突树种/数量与新合成目标仍 `NEW_GOAL`；结构不唯一 → `NOT_ACCEPT` + 澄清（保留提案、不消费、
+  不执行、不解析第二个目标）；纯接受与合法单任务收尾语继续通过；权限/确认/授权/冻结计划未改。
+- **测试**：`tests/test_phase8i_handoff_route_matrix.py` 165 → **191 条**（结构原因码 5、机制分离 1、
+  真实路由负向 5、跨决策类别 10、结构澄清后纯接受 5）；Follow-up 3 的许可集、冲突集、九条已知复合例、
+  三条未知尾部例、11 条尾部单测**原样保留**并全部通过。
+- **真实服务器门禁**（本地脚本，不发布）：新增场景 J → `通过=1 失败=0 BLOCKED=0` / `REAL SERVER: PASS`；
+  J1–J4 由**真实第二个 Mineflayer 客户端** `IdCraft8G` 投递，J5 因客户端不可用回退真实聊天桥事件注入
+  （日志 `DEVIATION`，替代证据）；提案保留、`targets=[]`、澄清话术送达、目标相关物品无变化。
+- **验证**：`pytest tests -q` → 4571 passed, 1 failed（唯一失败为任务书 §10 明确排除的既有 `test_social.py`
+  时段抖动，未改其断言）；`ruff check .`、`ruff format --check .`、`mypy app`、`git diff --check`、凭据扫描 0；
+  CI 两个 Job。**范围声明**：结构门是闭集文法，不声称理解任意自然语言，过度拒绝是刻意选择。
+
 ### Phase 8I FU5 Follow-up 3 — 完整消费的正向许可接受语法（Compound Acceptance Gate Closure）
 
 - **缺陷（任务书 §1 + 生产代码实测）**：`好，去砍橡木原木去挖石头` / `…探索附近` / `…挖附近的石头` 这类
