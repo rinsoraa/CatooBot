@@ -162,6 +162,17 @@ class _WoodRouteDecision:
     reply: str | None = None
 
 
+def _is_new_craft_request(message: str) -> bool:
+    """message 本身是不是一次新的、可执行的**合成请求**（Phase 8I H3 判定）。
+
+    决策层会把「给我做 64 块橡木木板」和「好，去砍橡木原木」都判成 task_proposal。
+    前者是**新请求**，绝不是对上一轮资源提案的接受 —— 否则重复或无关的合成请求会在
+    没人接受的情况下把提案静默变成采集任务（真机门禁里真实发生过）。
+    """
+    craft = parse_craft_request(message)
+    return craft is not None and not craft.problem and bool(craft.item)
+
+
 class MinecraftChatBridge:
     """``minecraft.chat`` 事件 → USER 回合 → 游戏内回复。"""
 
@@ -537,14 +548,19 @@ class MinecraftChatBridge:
         if kind in (TurnDecisionKind.QUERY, TurnDecisionKind.ATOMIC_ACTION):
             return await self._run_capability(username, session_id, message, kind, decision)
         if kind is TurnDecisionKind.TASK_PROPOSAL:
-            # Phase 8I H3：有待决资源交接且用户明确接受（决策层判为 task_proposal）时，
-            # 走**既有**木材/资源入口 —— 合成计划的授权绝不外溢到资源操作。
-            accepted = await self._accept_pending_handoff(username, session_id, message)
-            if accepted is not None:
-                return accepted
             # Phase 8F §3.1：**合成解析先于木材解析** —— 「做成木板」含木材名词，木材入口
             # 会把它当成「不支持的木材种类」直接拒掉（那是采集语义，不是合成语义）。
             craft = parse_craft_request(message)
+            # Phase 8I H3：这句话本身就是一次新的合成请求时，它是新请求、不是接受 ——
+            # 作废上一轮提案，并按新请求重新评估（提案绝不会被静默变成任务）。
+            if _is_new_craft_request(message):
+                self._pending_handoffs.pop((str(username), str(session_id)), None)
+            else:
+                # 有待决资源交接且用户明确接受（决策层判为 task_proposal）时，走**既有**
+                # 木材/资源入口 —— 合成计划的授权绝不外溢到资源操作。
+                accepted = await self._accept_pending_handoff(username, session_id, message)
+                if accepted is not None:
+                    return accepted
             if craft is not None:
                 return await self._craft_turn(username, session_id, message, craft)
             # FU4 §5.2：木材解析**只在这里**参与 —— 作为目标解析 + 额外安全否决：

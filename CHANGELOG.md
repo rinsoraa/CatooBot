@@ -1,5 +1,17 @@
 # Changelog
 
+### Phase 8I Follow-up 2 — 真机门禁 4/4 PASS（完整合成闭环 + 第三条真实缺陷）
+
+- 真机门禁（本地脚本 `scripts/phase8i_handoff_smoke_real.py`，不发布）最终 **4/4 PASS**：场景 A 完成**完整闭环** ——
+  真实第二个 Mineflayer 客户端在游戏内请求 → `handoff_proposed`（真实观察证据、提案阶段零副作用）→ 明确接受 →
+  真实资源任务 `task_2662bdaf41a3`（确认门、零 `action_id`）→ `SUCCEEDED`、独立核验 `oak_log 0→1` → **重新规划**为
+  新任务 `task_f066819a14ce`（冻结 `oak_planks*4=oak_log*1`）→ 新确认 → `SUCCEEDED`、独立核验 `oak_planks 0→4`、`oak_log 1→0`。
+- 第三条真实缺陷：`chat_bridge._route_turn` 的 `TASK_PROPOSAL` 分支先接受待决提案，而决策层对重复/无关的合成请求同样判
+  `task_proposal` → **提案会在无人接受时变成采集任务**（违背 H3）。修复：新增 `_is_new_craft_request()`，本身是新的可执行
+  合成请求时**作废**上一轮提案并按新请求重评，只有非合成请求才尝试接受；回归 `tests/test_phase8i_handoff_acceptance_rule.py`。
+- 采集链未收敛的真实根因（如实记录）：既有 `minecraft_move_to` 的 `goal_near` 半径语义在 6.8 格外路径不通时任务停在非终态；
+  门禁改用 **op 客户端 `/tp` 夹具**把自动化客户端送到冻结目标旁（与产品链分离），**不放宽任何距离/超时/阈值**。
+- 文档：`docs/MINECRAFT_PHASE8I.md` 追加 §7.4–§7.6（§7.3 的 PARTIAL 历史原文保留）。
 ### Phase 8I Follow-up — 真机门禁与两条真实缺陷修复
 
 - 真机门禁（本地脚本）暴露并修复两条会让 H1/H2 **在生产上完全不可达**的缺陷：

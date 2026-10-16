@@ -98,3 +98,42 @@
 * 场景 C（一轮后仍不足）、D（中途取消 / 外部改料）未取得真机完整证据。
 * 因此真机门禁**不判 PASS**：核心实现与两条真实缺陷修复已交付，真机证据覆盖「提案 + 安全拒绝 + 接受建任务」，
   但「至少一个真实合成闭环」与 C/D 场景缺证据。
+
+### 7.4 第三条真实缺陷：资源提案被**静默接受**（违背 H3）与最小修复
+
+* 现象（attempt 6，`_phase8i_gate6.log`）：场景 C4 的**重复**合成请求先产出 `handoff_proposed`、随后又 `plan_created`
+  （`task_9324aa95caf5`）；场景 D1 的合成请求也直接 `plan_created`（`task_31f9f57c5719`）——**没人接受，却建了采集任务**。
+* 根因：`_route_turn` 的 `TASK_PROPOSAL` 分支**先**调用 `_accept_pending_handoff`，只要存在待决提案就把它当作接受；
+  而决策层对「给我做 64 块橡木木板」与「好，去砍橡木原木」**都**判 `task_proposal`。于是重复或无关的合成请求会在
+  无人接受时把上一轮提案变成任务，违背 §4「提案≠已建任务」与 H3「资源获取必须用户明确接受」。
+* 修复（`app/integrations/minecraft/chat_bridge.py`）：新增 `_is_new_craft_request(message)`（`parse_craft_request` 命中、
+  `problem` 为空且 `item` 非空）；该分支先解析 `craft`，若这句话**本身就是一次可执行的新合成请求** → 作废上一轮提案
+  （`_pending_handoffs.pop`）并按新请求重新评估；只有**不是**合成请求时（如「好，去砍橡木原木」「可以」）才尝试接受。
+* 测试：`tests/test_phase8i_handoff_acceptance_rule.py`（5 条）固定该判定 —— 有效/重复合成请求都不是接受，纯接受语不是合成请求。
+
+### 7.5 采集链未收敛的真实根因：冻结目标的**可达性**（环境夹具说明，不放宽阈值）
+
+* 现象（attempt 6）：场景 A4 的 `step_1 minecraft_move_to` **FAILED**（`act_mvakseat_s`），后续步骤停在 `PENDING`，任务 `PAUSED`；
+  冻结目标 `(-272, 64, -133)` 距罐头 ≈ **6.8 格**。
+* 定性：既有导航的到达判定是 `goal_near` **半径语义**（既有安全行为），真实世界里路径走不通时任务按既有语义停在非终态 ——
+  产品行为正确，**不放宽任何距离/超时/阈值**。挖矿步骤本身在可达时可用（attempt 6 场景 C 已真实采到 2 个原木、`verification.ok=True`）。
+* 门禁做法：新增环境夹具 `_stand_near_target` —— 由 **op 客户端**（`CatodayoMate`）用 `/tp` 把自动化客户端送到冻结目标旁
+  （等价于真人自己走过去），**与产品执行链完全分离**，每次 `_run_resource` 前执行并打印真实坐标作为证据。
+  attempt 7 的 `/tp` 回执出现 `PartialReadError`（op 客户端读包抖动），但真实自身坐标 `{'x': -277.5, 'y': 65.0, 'z': -135.5}` 证明传送生效。
+* **仍未验证的边界（如实记录）**：本闭环**不**证明 6.8 格以外的导航能走通 —— 那属于既有 8D 导航能力的问题域，不在 8I 范围；
+  夹具不改变产品任何距离/路径判定，产品自身**没有**任何放置、破坏或传送能力。
+
+### 7.6 最终真机门禁（attempt 7，`_phase8i_gate7.log`）：**4/4 PASS**
+
+* 总判定：`通过=4 失败=0 BLOCKED=0` → `REAL SERVER: PASS`。
+* 场景 A **完整闭环**（§7.3 未完成项已达成）：A1 真实规划 `insufficient_material:oak_log(缺 1)`；A2 **真实第二个** Mineflayer 客户端
+  在游戏内请求 → `handoff_proposed`（真实观察 8 个候选、最近 2.24 格）+ 提案阶段零任务/零轨迹/零库存变化；A3 明确接受 →
+  真实资源任务 `task_2662bdaf41a3`（`PENDING_CONFIRMATION`、`user=IdCraft8G`、含挖掘步骤与**无**合成步骤、确认前零 `action_id`）；
+  A4 `SUCCEEDED` → **独立重读背包 `oak_log 0→1`**；A5 重新规划 → **新**任务 `task_f066819a14ce`（不复用旧资源任务）、
+  冻结 `oak_planks*4=oak_log*1`、预期产出 `{'oak_planks': 4}` / 预期耗料 `{'oak_log': 1}`、确认前零 `action_id`；
+  A6 `SUCCEEDED` → **独立核验 `oak_planks 0→4`、`oak_log 1→0`**，运行时逐步后置验证 `['step_1']` 全过。
+* 场景 B（无可确认目标 → 拒绝且零执行）、场景 C（一轮后仍不足 → 如实报缺口、不自作主张开第二轮）、
+  场景 D（D1 计划阶段取消 `CANCELLED`、零执行、库存不变、不复活不迟到重试；D2 外部改料后不得宣告成功）全部 PASS。
+* **DEVIATION（如实）**：场景 C/D 期间第二个真实 Mineflayer 客户端不可用 → 回退**真实聊天桥事件注入**
+  （同一 `MinecraftChatBridge` → 同一真实决策层 → 同一真实任务链），脚本逐条打印该偏差；**场景 A 使用的是第二个真实客户端**。
+* 结论：§7.3 的 PARTIAL 记录**保留为历史**，本条为后续补充证据；真机门禁最终裁定 **PASS**（导航可达性边界见 §7.5）。
