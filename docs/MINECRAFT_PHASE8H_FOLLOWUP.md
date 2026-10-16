@@ -100,3 +100,52 @@ schema 证据缺失 → failed（绝不 ok=true）；内部对象（AUTOINCREMEN
 * **真实成功迁移未演练**：真实库已是最新版本，本阶段没有可执行的迁移；继续推进条件：出现真实待执行迁移时用真实副本演练并核对 `migrated` + 预期 schema 变化。
 * **既有测试的时段相关抖动**属于本阶段范围之外；如需根治应单独提案把「当前时间」注入为可控输入，而**不是**放宽断言。
 * 3×3 合成仍只覆盖基础合成（不自动备料、不连锁替代配方、不做容器配方链）—— 与 8H 一致的遗留边界。
+
+---
+
+## Follow-up 2 — SQL 字面量安全的 schema 指纹比较
+
+> 归档任务书：`docs/specs/CatooBot Minecraft Phase 8H Follow-up 2 — SQL-Literal-Safe Schema Fingerprinting.md`
+> （10331 bytes，SHA256 `4F7A9610DF9E6267B222CB2710BDAE56716AD4E0EF45E9163F7DB48F2D38E7AC`，225 行，逐字节归档核验）
+> 开工基线：`de78187d16abf0b921ed8b499ffc7110026451f1`
+
+### 原规范化方法的实际失败案例（真实 SQLite 元数据复现）
+
+上一版 `_normalize_sql()` 用全局空白折叠 `re.sub(r"\s+", " ", text)`。用隔离的真实临时库复现：
+
+* **场景 A（同名触发器）**：`CREATE TRIGGER items_guard ... WHEN NEW.name = 'a  b'` 改成 `'a b'` ——
+  SQLite 存储的两份定义**确实不同** ✓；旧折叠把它们抹成**同一份**（真实漏报）✗；旧快照因此**识别不到**变化 ✗。
+* **场景 B（同名表的 CHECK 约束）**：`CHECK (name <> 'x  y')` 改成 `'x y'` —— `sqlite_master.sql` 不同 ✓，
+  而 `PRAGMA table_info` **完全没变**（列信息看不出 CHECK）✓，旧折叠同样把它们抹成同一份 ✗。
+
+### 修复后的比较策略（任务书推荐的方案 A：保守比较原始定义）
+
+`_normalize_sql()` 现在**只做两件能证明不改变语义的事**：去掉首尾空白、去掉结尾分号；
+**绝不折叠引号内的内容**（单引号字符串字面量、双引号/反引号/方括号标识符、CHECK 约束表达式、触发器正文）。
+`re` 依赖随之移除。
+
+* 设计依据：规范化**不能消除 SQL 中具有语义的差异**。当无法证明两份定义等价时，**保留差异**，
+  交给原有 fail-closed 演练策略处理 —— 宁可让带格式差异的库多报一次失败，也不放过真实 schema 变化。
+* **如实声明的代价**：纯格式差异（同一份语义、不同空白）现在会被当成变化。本模块**不**声称能判定 SQL 语义等价，
+  也没有引入未经验证的 SQL parser。
+* 兼容性：`schema_snapshot()` / `schema_fingerprint()` / `schema_diff()` 的公开契约、三态业务语义、JSON 字段与
+  差异摘要结构、SQLite 内部对象排除规则、no-op 与 migrated 行为**全部保持不变**。
+
+### 新增回归测试（`tests/test_phase8h_followup_schema_drift.py`，14 条）
+
+* 触发器字符串字面量变化：断言 SQLite 存储定义确实不同、**旧折叠会抹平**（把缺陷固定在测试里）、
+  新快照保留差异并识别 `trigger:<name>` 变化，最后 `rehearsal_report` 给出 `schema_changed=True`、
+  `schema_changed_without_version_bump=True`、`status=failed`、`ok=False`；
+* CHECK 约束字面量变化：断言 `PRAGMA table_info` 前后完全一致（列比较发现不了），仍识别 `table:<name>` 变化并判 `failed`；
+* 保守策略边界：快照值等于「去首尾空白 + 去尾分号」后的原文，且字面量内部的双空格**原样保留**；
+* 既有 11 条（no_op / 版本上升+预期变化 / 新增表 / 新增列 / 表定义变化 / 删除空表 / 索引 / 视图与触发器 /
+  证据缺失 / 内部对象不误报 / 文件快照确定性）继续全部通过。
+
+### 真实库副本演练（F4）
+
+* **合法 no-op**（`_g8hfu2_clean_copy.db`，真实副本）：`version [36,36]`、`integrity ['ok','ok']`、`tables [83,83]`、
+  `schema_evidence_ok: true`、`schema_changed: false`、`status: no_op`、`ok: true`、**退出码 0** ✓
+* **同名对象定义变化（版本不变）**：在副本上建立 `g8hfu2_guard` 触发器（`'a  b'`）后改成 `'a b'` →
+  `changed=['trigger:g8hfu2_guard']`、`changed_count=1`、`status: failed`、`ok: false`、
+  `schema_changed_without_version_bump: true` ✓
+* 没有真实待执行迁移，**不伪造**真实成功迁移的证据；`migrated` 仍只有真实临时库的单元级证据（如实区分）。

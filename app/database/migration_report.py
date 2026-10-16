@@ -6,7 +6,8 @@ Phase 8G Follow-up 引入三态（no_op / migrated / failed）；Phase 8H Follow
 **Schema 快照**全部来自真实 SQLite 元数据（`sqlite_master` + `PRAGMA table_info`），规范化后比较：
 
 * 覆盖 table / index / trigger / view 四类对象，外加每张表的列定义；
-* 规范化 = 折叠空白、去掉结尾分号（确定性；不做会制造假阴性的过度改写）；
+* 规范化 = **只去首尾空白与结尾分号**（保守策略，Phase 8H Follow-up 2 收紧）：引号内的空白
+  （字符串字面量、带引号标识符、CHECK 约束表达式、触发器正文）都是**语义的一部分**，绝不折叠；
 * 明确排除 SQLite 内部对象：`sqlite_%` 名字与 `sqlite_autoindex_%` 自动索引
   （它们跟着 UNIQUE/PRIMARY KEY
   约束走，正常变化不是产品 schema 漂移）；
@@ -27,7 +28,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import re
 import sqlite3
 from collections.abc import Mapping, Sequence
 from pathlib import Path
@@ -47,13 +47,19 @@ class SchemaSnapshotError(RuntimeError):
 
 
 def _normalize_sql(sql: object) -> str:
-    """把对象定义规范化成可比较的字符串（确定性）。
+    r"""把对象定义规范化成可比较的字符串（**保守**策略，Phase 8H Follow-up 2 收紧）。
 
-    只做两件不会制造假阴性的事：折叠所有空白、去掉结尾分号。
-    不改变大小写、不改写标识符 —— 过度规范化会把真实变化吃掉。
+    只做两件**能证明不改变语义**的事：去掉首尾空白、去掉结尾分号。
+
+    绝不折叠引号内的内容 —— 单引号字符串字面量、双引号/反引号/方括号标识符、CHECK 约束表达式与触发器
+    正文里的空白都是语义的一部分。上一版用 `re.sub(r"\s+", " ", text)` 全局折叠，会把
+    `WHEN NEW.name = 'a  b'` 与 `WHEN NEW.name = 'a b'` 判成同一份定义（真实漏报，
+    回归测试见 tests/test_phase8h_followup_schema_drift.py）。
+
+    代价：纯格式差异现在会被当成变化 —— 这是**刻意选择的 fail-closed**：宁可让带格式差异的库多报一次
+    失败，也不放过真实 schema 变化。本模块**不**声称能判定 SQL 语义等价。
     """
-    text = str(sql or "")
-    text = re.sub(r"\s+", " ", text).strip()
+    text = str(sql or "").strip()
     return text.rstrip(";").strip()
 
 

@@ -1,5 +1,23 @@
 # Changelog
 
+## Minecraft Phase 8H Follow-up 2 — SQL 字面量安全的 Schema 指纹比较
+
+* **修掉真实漏报**：上一版 `_normalize_sql()` 用全局空白折叠 `re.sub(r"\s+", " ", text)`，会把引号内的空白一起吃掉。
+  真实 SQLite 复现：同名触发器 `WHEN NEW.name = 'a  b'` 改成 `'a b'`（SQLite 存储的定义确实不同），旧折叠把它们抹成
+  同一份 → 快照识别不到变化；同名表的 `CHECK (name <> 'x  y')` 改成 `'x y'` 同理，而 `PRAGMA table_info` **完全没变**
+  （列信息看不出 CHECK）。
+* **修复（任务书推荐的方案 A：保守比较原始定义）**：`_normalize_sql()` 现在**只**去首尾空白与结尾分号，
+  **绝不折叠引号内的内容**（字符串字面量、带引号标识符、CHECK 约束表达式、触发器正文）；`re` 依赖移除。
+  规范化不能消除 SQL 中具有语义的差异 —— 无法证明等价时**保留差异**，交给原有 fail-closed 策略。
+  **如实声明代价**：纯格式差异现在会被当成变化；本模块**不**声称能判定 SQL 语义等价，也未引入 SQL parser。
+* **兼容性不变**：`schema_snapshot` / `schema_fingerprint` / `schema_diff` 契约、三态语义、JSON 字段与差异摘要结构、
+  内部对象排除、no-op 与 migrated 行为全部保持。
+* **测试**：`tests/test_phase8h_followup_schema_drift.py` 扩到 **14 条**（新增：触发器字面量变化并固定旧折叠会抹平这一缺陷、
+  CHECK 字面量变化且列信息不变、保守策略边界——字面量内部双空格原样保留）。
+* **真实副本演练**：no-op → `schema_evidence_ok: true`、`status: no_op`、`ok: true`、退出码 0；同名触发器字面量变化（版本不变）→
+  `changed=['trigger:g8hfu2_guard']`、`status: failed`、`ok: false`、`schema_changed_without_version_bump: true`。
+* 未新增业务 schema/字段/迁移；未触及 Minecraft 正式合成执行链与受保护区域。
+
 ## Minecraft Phase 8H Follow-up — 迁移 schema 漂移检测与搜索记忆化契约补齐
 
 * **F1 完整 schema 漂移检测**：旧实现只能检测「版本不变 + 新增表」，删掉**空表**时连 `lost_rows` 都抓不到。

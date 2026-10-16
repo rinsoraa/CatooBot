@@ -215,3 +215,130 @@ def test_snapshot_of_a_real_file_is_deterministic(tmp_path: Path) -> None:
     assert first == second
     assert schema_fingerprint(first) == schema_fingerprint(second)
     assert schema_diff(first, second)["changed_count"] == 0
+
+
+def _stored_sql(conn: sqlite3.Connection, kind: str, name: str) -> str:
+    row = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type=? AND name=?", (kind, name)
+    ).fetchone()
+    return str(row[0]) if row else ""
+
+
+def _folds_to_same_text(before: str, after: str) -> bool:
+    """上一版的「全局空白折叠」会不会把两份定义抹成同一份（用来固定这个真实漏报）。"""
+    import re
+
+    return re.sub(r"\s+", " ", before).strip() == re.sub(r"\s+", " ", after).strip()
+
+
+def test_trigger_string_literal_change_is_detected_and_fails(tmp_path: Path) -> None:
+    """同名触发器只改字符串字面量里的空白：SQLite 存的是不同定义，快照必须识别并判 failed。"""
+    path = tmp_path / "trigger_literal.db"
+    conn = sqlite3.connect(path)
+    conn.execute("CREATE TABLE items (id INTEGER PRIMARY KEY, name TEXT)")
+    conn.execute(
+        "CREATE TRIGGER items_guard AFTER UPDATE ON items"
+        " WHEN NEW.name = 'a  b' BEGIN SELECT 1; END"
+    )
+    conn.commit()
+    before = schema_snapshot(conn)
+    before_sql = _stored_sql(conn, "trigger", "items_guard")
+
+    conn.execute("DROP TRIGGER items_guard")
+    conn.execute(
+        "CREATE TRIGGER items_guard AFTER UPDATE ON items WHEN NEW.name = 'a b' BEGIN SELECT 1; END"
+    )
+    conn.commit()
+    after_sql = _stored_sql(conn, "trigger", "items_guard")
+    after = schema_snapshot(conn)
+
+    assert before_sql != after_sql, "前提：SQLite 确实存储了两份不同的定义"
+    assert _folds_to_same_text(before_sql, after_sql), "前提：旧策略会把它们抹成同一份"
+    assert before["trigger:items_guard"] != after["trigger:items_guard"], "新策略必须保留差异"
+
+    diff = schema_diff(before, after)
+    assert "trigger:items_guard" in diff["changed"]
+
+    report = rehearsal_report(
+        db=str(path),
+        version_before=36,
+        version_after=36,
+        integrity_before="ok",
+        integrity_after="ok",
+        tables_before=1,
+        tables_after=1,
+        added_tables=[],
+        lost_rows={},
+        log=[],
+        schema_before=before,
+        schema_after=after,
+    )
+    assert report["schema_changed"] is True
+    assert report["schema_changed_without_version_bump"] is True
+    assert report["status"] == STATUS_FAILED
+    assert report["ok"] is False
+    conn.close()
+
+
+def test_check_constraint_literal_change_is_detected_even_when_columns_match(
+    tmp_path: Path,
+) -> None:
+    """同名表的 CHECK 约束只改字面量：列信息完全没变，仍必须判为表定义变化。"""
+    path = tmp_path / "check_literal.db"
+    conn = sqlite3.connect(path)
+    conn.execute("CREATE TABLE t (id INTEGER, name TEXT, CHECK (name <> 'x  y'))")
+    conn.commit()
+    before = schema_snapshot(conn)
+    info_before = list(conn.execute("PRAGMA table_info(t)"))
+    before_sql = _stored_sql(conn, "table", "t")
+
+    conn.execute("ALTER TABLE t RENAME TO t_old")
+    conn.execute("CREATE TABLE t (id INTEGER, name TEXT, CHECK (name <> 'x y'))")
+    conn.execute("INSERT INTO t SELECT * FROM t_old")
+    conn.execute("DROP TABLE t_old")
+    conn.commit()
+
+    info_after = list(conn.execute("PRAGMA table_info(t)"))
+    after_sql = _stored_sql(conn, "table", "t")
+    after = schema_snapshot(conn)
+
+    assert info_before == info_after, "前提：列信息看不出 CHECK 表达式的差异"
+    assert before_sql != after_sql
+    assert _folds_to_same_text(before_sql, after_sql)
+    diff = schema_diff(before, after)
+    assert "table:t" in diff["changed"]
+    assert not any(item.startswith("column:t.") for item in diff["added"] + diff["removed"])
+
+    report = rehearsal_report(
+        db=str(path),
+        version_before=36,
+        version_after=36,
+        integrity_before="ok",
+        integrity_after="ok",
+        tables_before=1,
+        tables_after=1,
+        added_tables=[],
+        lost_rows={},
+        log=[],
+        schema_before=before,
+        schema_after=after,
+    )
+    assert report["status"] == STATUS_FAILED
+    assert report["ok"] is False
+    conn.close()
+
+
+def test_literal_internal_whitespace_is_preserved_in_the_snapshot(tmp_path: Path) -> None:
+    """保守策略：只去掉首尾空白与结尾分号，**不动**字面量内部的空白。"""
+    path = tmp_path / "literal_preserved.db"
+    conn = sqlite3.connect(path)
+    conn.execute("CREATE TABLE items (id INTEGER, name TEXT)")
+    conn.execute(
+        "CREATE TRIGGER g AFTER UPDATE ON items WHEN NEW.name = 'p  q' BEGIN SELECT 1; END"
+    )
+    conn.commit()
+    snapshot = schema_snapshot(conn)
+    stored = _stored_sql(conn, "trigger", "g")
+    assert snapshot["trigger:g"] == stored.strip().rstrip(";").strip()
+    assert "p  q" in snapshot["trigger:g"], "字面量里的双空格必须原样保留"
+    conn.close()
