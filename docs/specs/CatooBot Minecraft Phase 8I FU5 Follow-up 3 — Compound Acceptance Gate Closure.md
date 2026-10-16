@@ -1,13 +1,13 @@
 # CatooBot Phase 8I — Compound Acceptance Gate Closure
 
-**阶段编号：** Phase 8I FU5 Follow-up 3  
+**阶段编号：** Phase 8I FU5 Follow-up 3
 **目标裁决：** 将“通用复合意图接受门”从 `PARTIAL` 收敛为范围明确、可审计的 `PASS`。若仍存在已知的静默消费反例，必须保留 `PARTIAL`。
 
-**仓库：** `rinsoraa/CatooBot`  
-**基线提交：** `94187cafbdf4fd535a85b9c0fe9970760c448d70`  
+**仓库：** `rinsoraa/CatooBot`
+**基线提交：** `94187cafbdf4fd535a85b9c0fe9970760c448d70`
 **基线链接：** https://github.com/rinsoraa/CatooBot/commit/94187cafbdf4fd535a85b9c0fe9970760c448d70
 
-**权威开发目录：** `E:\WorkSpace ZCode\CatooBot`  
+**权威开发目录：** `E:\WorkSpace ZCode\CatooBot`
 **发布镜像：** `E:\WorkSpace Zcode\CatooBot_github`
 
 **核心文件：**
