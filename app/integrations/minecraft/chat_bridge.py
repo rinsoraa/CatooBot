@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from collections.abc import Mapping
 from dataclasses import dataclass
 from enum import StrEnum
@@ -39,10 +40,18 @@ from app.tasks.craft_intent import (
     parse_craft_request,
 )
 from app.tasks.intent import (
+    WOOD_SPECIES,
     TaskIntentDetector,
     WoodRequest,
     mentions_wood,
     parse_wood_request,
+)
+from app.tasks.resource_handoff import (
+    REASON_MATERIAL,
+    craft_gap_from_detail,
+    handoff_block_for,
+    propose_handoff,
+    unsupported_reason_for,
 )
 from app.tasks.turn_context import build_turn_context
 from app.tasks.turn_decision import (
@@ -156,9 +165,16 @@ class _WoodRouteDecision:
 class MinecraftChatBridge:
     """``minecraft.chat`` 事件 → USER 回合 → 游戏内回复。"""
 
+    #: Phase 8I：待用户决定的资源交接（H2）与已建立的合成目标（H4 关联）。
+    #: 只放内存：进程重启后丢失即要求重新确认，绝不自动恢复旧授权（任务书 §6）。
+    _HANDOFF_TTL_SECONDS = 600.0
+
     def __init__(self, bot: Bot, service: MinecraftService) -> None:
         self.bot = bot
         self.service = service
+        #: (username, session_id) -> 待决资源交接 / 待续合成目标（Phase 8I）。
+        self._pending_handoffs: dict[tuple[str, str], dict[str, Any]] = {}
+        self._pending_craft_goals: dict[tuple[str, str], dict[str, Any]] = {}
         self._inflight = 0
         #: Phase 8E：木材意图解释器（**唯一决策源**）。可由装配/测试注入；
         #: 未注入时用既有 AIEngine 惰性构造（不新建 provider 或凭据）。
@@ -521,6 +537,11 @@ class MinecraftChatBridge:
         if kind in (TurnDecisionKind.QUERY, TurnDecisionKind.ATOMIC_ACTION):
             return await self._run_capability(username, session_id, message, kind, decision)
         if kind is TurnDecisionKind.TASK_PROPOSAL:
+            # Phase 8I H3：有待决资源交接且用户明确接受（决策层判为 task_proposal）时，
+            # 走**既有**木材/资源入口 —— 合成计划的授权绝不外溢到资源操作。
+            accepted = await self._accept_pending_handoff(username, session_id, message)
+            if accepted is not None:
+                return accepted
             # Phase 8F §3.1：**合成解析先于木材解析** —— 「做成木板」含木材名词，木材入口
             # 会把它当成「不支持的木材种类」直接拒掉（那是采集语义，不是合成语义）。
             craft = parse_craft_request(message)
@@ -1165,6 +1186,133 @@ class MinecraftChatBridge:
             text += "你说的比这个多 —— 本期一次最多采 2 根，这一份计划只采上面这些。"
         return text
 
+    def _remember_craft_goal(self, username: str, session_id: str, message: str) -> None:
+        """Phase 8I H4：记住**原始合成目标**（资源任务完成后据此重新规划，绝不复用旧 DAG）。"""
+        self._pending_craft_goals[(str(username), str(session_id))] = {
+            "objective": str(message),
+            "at": time.monotonic(),
+        }
+
+    @staticmethod
+    def _gap_detail_of(out: Any) -> str:
+        """从计划层结论里取出**稳定原因码 detail**（合成 checks 的最后一条）。"""
+        checks = (out or {}).get("checks") or ()
+        if checks and isinstance(checks[-1], dict):
+            detail = checks[-1].get("detail")
+            if isinstance(detail, str):
+                return detail
+            if isinstance(detail, dict):
+                reason = str(detail.get("reason") or "")
+                raw = str(detail.get("detail") or "")
+                if reason and raw:
+                    return f"{reason}:{raw}"
+                if reason:
+                    return reason
+        return ""
+
+    def _no_target_note(self, detail: str) -> str:
+        """H2：确认不到目标或不在既有能力里时如实说明（绝不假设附近一定有）。"""
+        gap = craft_gap_from_detail(detail)
+        if gap.reason != REASON_MATERIAL or not gap.missing:
+            return ""
+        item = gap.missing[0][0]
+        if handoff_block_for(item) is None:
+            code = unsupported_reason_for(item) or "unsupported"
+            return (
+                f"缺的 {item} 不在罐头现有的资源能力里（原因码 {code}）—— 罐头不会把它包装成"
+                "已有能力，也不会自己去开箱或拿别的东西顶替。"
+            )
+        block = handoff_block_for(item) or item
+        return (
+            f"缺的 {item} 理论上可以采（{block}），但罐头在附近真实观察不到可处理的目标，"
+            "所以现在建立不了可执行的资源计划（不会假设附近一定有）。"
+        )
+
+    async def _craft_handoff(self, username: str, session_id: str, message: str, out: Any) -> str:
+        """H1/H2：缺料诊断 + 经**真实观察**确认的资源提案；只提案，绝不执行。"""
+        detail = self._gap_detail_of(out)
+        if not detail:
+            return ""
+        note = self._no_target_note(detail)
+        plans = getattr(self.bot, "agent_plans", None)
+        observe = getattr(plans, "observe", None)
+        if not callable(observe):
+            return note
+        try:
+            proposal = await propose_handoff(
+                detail=detail, observe=observe, craft_goal=str(message)
+            )
+        except Exception as exc:  # noqa: BLE001 - 观察故障只影响这条回话
+            log.warning(
+                "[MC Plan] 资源交接提案失败（%s）：error_type=%s", username, type(exc).__name__
+            )
+            return note
+        if proposal is None:
+            return note
+        self._pending_handoffs[(str(username), str(session_id))] = {
+            "item": proposal.item,
+            "block": proposal.block,
+            "amount": proposal.amount,
+            "requested": proposal.requested_amount,
+            "craft_goal": str(message),
+            "at": time.monotonic(),
+        }
+        self._route(
+            reason_code="handoff_proposed",
+            route_target=RouteTarget.TASK.value,
+            session_id=session_id,
+            text_chars=len(message),
+        )
+        log.info(
+            "[MC Plan] 资源交接提案 item=%s amount=%s（%s）",
+            proposal.item,
+            proposal.amount,
+            username,
+        )
+        return (
+            proposal.to_text()
+            + "如果你要我去采，明确说一声（例如「好，去砍」）；罐头会按既有批准与确认流程排计划。"
+        )
+
+    def _canonical_wood_objective(self, block: str, amount: int) -> str:
+        """把交接目标转成**既有木材入口**能解析的规范说法（不新增入口）。"""
+        target = block if block.startswith("minecraft:") else f"minecraft:{block}"
+        for aliases, species in WOOD_SPECIES:
+            if species == target:
+                return f"砍{aliases[0]}原木 {max(1, int(amount))} 根"
+        return ""
+
+    async def _accept_pending_handoff(
+        self, username: str, session_id: str, message: str
+    ) -> _TurnReply | None:
+        """H3：用户明确接受（决策层已判为 task_proposal）→ 走**既有**木材/资源入口与两道门。"""
+        key = (str(username), str(session_id))
+        pending = self._pending_handoffs.pop(key, None)
+        if not pending:
+            return None
+        if time.monotonic() - float(pending.get("at") or 0.0) > self._HANDOFF_TTL_SECONDS:
+            return _TurnReply(
+                "那份资源方案已经过期了 —— 你再说一次要什么，罐头重新看一遍现在的真实情况。"
+            )
+        objective = self._canonical_wood_objective(
+            str(pending.get("block") or ""), int(pending.get("amount") or 1)
+        )
+        wood = parse_wood_request(objective) if objective else None
+        if wood is None:
+            return _TurnReply("这份资源方案没法接进既有采集入口，所以罐头什么都没做。")
+        self._pending_craft_goals[key] = {
+            "objective": str(pending.get("craft_goal") or ""),
+            "handoff_item": str(pending.get("item") or ""),
+            "at": time.monotonic(),
+        }
+        self._route(
+            reason_code="handoff_accepted",
+            route_target=RouteTarget.TASK.value,
+            session_id=session_id,
+            text_chars=len(message),
+        )
+        return _TurnReply(await self._wood_reply(username, session_id, objective, wood))
+
     async def _craft_turn(
         self, username: str, session_id: str, message: str, request: CraftRequest
     ) -> _TurnReply:
@@ -1217,7 +1365,24 @@ class MinecraftChatBridge:
                     text="这条合成计划没排成功（计划层出错），我没有执行任何动作。",
                 )
             )
-        return _TurnReply(self._plan_reply_text(username, session_id, message, "craft", out))
+        reply = self._plan_reply_text(username, session_id, message, "craft", out)
+        if str(out.get("action") or "") == "created":
+            # Phase 8I H4：上一轮资源任务之后**重新**规划（配方/预算/工作台/后置条件全部按
+            # 现在的真实背包重算，绝不复用旧 DAG；新计划仍要重新确认）。
+            key = (str(username), str(session_id))
+            prior = self._pending_craft_goals.pop(key, None)
+            self._remember_craft_goal(username, session_id, message)
+            if prior and prior.get("handoff_item"):
+                reply = (
+                    f"（上一轮采到手的 {prior['handoff_item']} 已经按现在的真实背包重新算过，"
+                    "下面这份是**新**计划，需要你重新确认。）" + "\n" + reply
+                )
+            return _TurnReply(reply)
+        # Phase 8I H1/H2：缺料时给出可解释诊断 + 经真实观察确认的资源提案（**只提案**）。
+        extra = await self._craft_handoff(username, session_id, message, out)
+        if extra:
+            return _TurnReply(f"{reply}\n{extra}")
+        return _TurnReply(reply)
 
     def _craft_summary(self, record: Any, plan: Any) -> str:
         """如实说明这一份合成计划做什么、用多少材料（数字全部取自**冻结计划**）。"""
