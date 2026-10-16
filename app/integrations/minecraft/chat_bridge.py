@@ -41,6 +41,8 @@ from app.tasks.craft_intent import (
     parse_craft_request,
 )
 from app.tasks.intent import (
+    _ACTION_VERBS,
+    _RESOURCE_WORDS,
     WOOD_SPECIES,
     TaskIntentDetector,
     WoodRequest,
@@ -367,15 +369,65 @@ def is_compound_acceptance(message: str) -> bool:
 
 def compound_clarify_text(pending: dict[str, Any] | None) -> str:
     """复合接受表达的澄清话术（不猜测、不执行、明确提案仍在等）。"""
+    target = _handoff_pending_label(pending)
+    return (
+        "这句话里不止一件事，罐头一次只做一件，怕替你猜错就先不动手。"
+        "刚才的采集提案还留着（" + target + "）：你回一句只做哪一件，我就按那一件走既有流程。"
+    )
+
+
+def _handoff_pending_label(pending: dict[str, Any] | None) -> str:
+    """待决提案的展示标签（无则用中性措辞，绝不编造目标）。"""
     item = str((pending or {}).get("item") or (pending or {}).get("block") or "").strip()
     try:
         amount = int((pending or {}).get("amount") or 0)
     except (TypeError, ValueError):
         amount = 0
-    target = (item + " ×" + str(amount)) if item and amount else (item or "刚才那个目标")
+    return (item + " ×" + str(amount)) if item and amount else (item or "刚才那个目标")
+
+
+def handoff_mixed_intent(message: str) -> bool:
+    """R0 §3.1(5)：整条消息是否含**第二个动作/目标**或结构不唯一（冲突混合语义）。
+
+    与 ``is_compound_acceptance`` 的分工：后者只在「消息确实描述了提案目标」时成立，
+    用于**相容**的混合接受；本函数服务**新目标**路径 —— 那里消息已经与提案冲突，但可能
+    同时含第二个子目标，绝不能让第一个子目标被它自己的解析器静默执行。
+
+    复用既有确定性助手（不新增关键词表）：
+      * ``has_compound_connector``    —— 明确的并列/顺承连接词；
+      * ``_has_second_clause_goal``   —— 标点切分后第二个从句本身就是目标（**无连接词**）；
+      * ``_has_trailing_goal``        —— 「再」后面确实跟着新目标（「再回来」不算）；
+      * ``acceptance_structure_violation`` ∈ (``second_action``, ``second_target``)
+        —— 结构门已经证明存在第二个动作/目标；
+      * 未解释尾部含**目标词**（资源名词/动作动词）—— 覆盖既无标点也无连接词的第二目标
+        （例如「…去挖石头」残留的「石头」）。**只有**未知填充词（例如「改砍白桦」
+        里的「改」）不算第二个目标，因此干净的新目标仍走自己的路由而不被降级成澄清。
+    """
+    rest = _acceptance_remainder(str(message or "").strip())
+    if not rest:
+        return False
+    if has_compound_connector(rest) or _has_second_clause_goal(rest):
+        return True
+    if any(_has_trailing_goal(rest, marker) for marker in _TRAILING_MARKERS):
+        return True
+    if acceptance_structure_violation(rest) in ("second_action", "second_target"):
+        return True
+    tail = unexplained_acceptance_tail(rest)
+    if not tail:
+        return False
+    return any(word in tail for word in _RESOURCE_WORDS) or any(
+        word in tail for word in _ACTION_VERBS
+    )
+
+
+def conflict_compound_clarify_text(pending: dict[str, Any] | None) -> str:
+    """「冲突新目标 + 第二动作/目标」的澄清话术（旧提案已按用户新说法作废）。"""
     return (
         "这句话里不止一件事，罐头一次只做一件，怕替你猜错就先不动手。"
-        "刚才的采集提案还留着（" + target + "）：你回一句只做哪一件，我就按那一件走既有流程。"
+        "你说的目标跟刚才那份提案不一致，那份提案（"
+        + _handoff_pending_label(pending)
+        + "）已按你的新说法作废："
+        "你回一句只做哪一件，我就按那一件走既有流程。"
     )
 
 
@@ -643,6 +695,16 @@ class MinecraftChatBridge:
             session_id, message, handler=handler, username=username
         )
         if not decision_outcome.ok:
+            # R0 §3.1：待决提案的**确定性仲裁不依赖模型**。FU4 把仲裁点放在 _route_turn
+            # 顶部，但这条「模型输出无效」的早退路径根本不经过它 —— 于是「同意」这种
+            # 最基础的接受会被一起丢掉（提案留着、用户的话被当成无法理解的闲聊）。
+            # 先跑真实仲裁（CANCEL/STOP 已由第 1 步确定性控制处理，不会走到这里），
+            # 再决定是否安全澄清。
+            arbitrated = await self._arbitrate_pending_handoff(
+                username, session_id, message, TurnDecisionKind.CHAT
+            )
+            if arbitrated is not None:
+                return arbitrated
             # §3.3：无效输出/超时/未知能力等一律**安全澄清**，绝不降级进执行路径。
             return _TurnReply(
                 self._decision_clarify(session_id, message, decision_outcome.reason_code)
@@ -712,22 +774,42 @@ class MinecraftChatBridge:
         stripped = str(message or "").strip()
         prefix_control = any(stripped.startswith(item) for item in _WOOD_CONTROL_PREFIXES)
         try:
-            if prefix_control or detector.control_command(message):
-                return await self._delegate_task(handler, username, session_id, message)
-            if active and detector.status_query(message):
-                return await self._delegate_task(handler, username, session_id, message)
+            command = detector.control_command(message)
+            if prefix_control or (command and command != "confirm"):
+                # 停止/取消/暂停/继续：**绝不回落给模型**（§7.1），也绝不因为任务入口
+                # 没处理就沉默 —— 既有语义是这里直接收尾。
+                delegated = await self._delegate_task(handler, username, session_id, message)
+                return delegated if delegated is not None else _TurnReply()
+            if command == "confirm":
+                delegated = await self._delegate_task(handler, username, session_id, message)
+                if delegated is not None:
+                    return delegated
+                # R0 §3.1：命中「确认」词、但任务入口明确**没有**待确认事项时（handled=False）
+                # 绝不能吞掉这一回合：「同意」也可能是在接受待决的采集提案，必须继续走
+                # 待决仲裁与统一决策。
+            if current is not None and detector.status_query(message):
+                # 状态查询由既有入口回答（含**已结束**的任务）—— 这条既有语义不变，
+                # 也绝不因为入口「没处理」就把状态问句丢给模型。
+                delegated = await self._delegate_task(handler, username, session_id, message)
+                return delegated if delegated is not None else _TurnReply()
         except Exception as exc:  # noqa: BLE001
             log.warning("[MC Chat] 控制判定失败：error_type=%s", type(exc).__name__)
             return None
         if active:
             # 活动任务期间保持既有 busy 语义（不因等模型而延迟或叠加新工作）。
-            return await self._delegate_task(handler, username, session_id, message)
+            delegated = await self._delegate_task(handler, username, session_id, message)
+            return delegated if delegated is not None else _TurnReply()
         return None
 
     async def _delegate_task(
         self, handler: Any, username: str, session_id: str, message: str
-    ) -> _TurnReply:
-        """交回既有任务入口（控制/状态/忙碌的唯一权威）。"""
+    ) -> _TurnReply | None:
+        """交回既有任务入口（控制/状态/忙碌的唯一权威）。
+
+        R0 §3.1：``None`` = 任务入口**明确没处理**这条消息（例如「同意」命中了确认词、但当前
+        没有待确认事项）—— 调用方据此继续走待决仲裁 + 统一决策，绝不吞掉整回合；
+        ``_TurnReply()``（空回复）= 已处理但没有话要说，保持既有静默语义。
+        """
         try:
             outcome = await handler.handle(session_id=session_id, user_id=username, text=message)
         except Exception as exc:  # noqa: BLE001
@@ -735,7 +817,9 @@ class MinecraftChatBridge:
                 "[MC Chat] 任务入口处理失败（%s）：error_type=%s", username, type(exc).__name__
             )
             return _TurnReply()
-        if not outcome.handled or not outcome.reply:
+        if not outcome.handled:
+            return None
+        if not outcome.reply:
             return _TurnReply()
         self._turn_route(
             session_id,
@@ -835,7 +919,19 @@ class MinecraftChatBridge:
                 )
             return None
         if verdict == NEW_GOAL:
-            if self._pending_handoffs.pop(key, None) is not None:
+            # R0 §3.1(5)：明确冲突的新目标 → 旧提案作废（不复活）。但若整条消息还含
+            # 第二个动作/目标，绝不能把它未经结构校验地交给第一个解析器执行 —— 那会
+            # 静默丢掉用户说的另一件事。此时作废 + 澄清。
+            voided = self._pending_handoffs.pop(key, None)
+            if voided is not None:
+                if handoff_mixed_intent(message):
+                    self._route(
+                        reason_code="handoff_conflict_compound_clarify",
+                        route_target=RouteTarget.CHAT_ONLY.value,
+                        session_id=session_id,
+                        text_chars=len(message),
+                    )
+                    return _TurnReply(conflict_compound_clarify_text(voided))
                 self._route(
                     reason_code="handoff_new_goal",
                     route_target=RouteTarget.TASK.value,
@@ -854,7 +950,17 @@ class MinecraftChatBridge:
             # 一律作废旧提案并继续走自己的路由（绝不复用旧目标或旧数量）。
             target = handoff_target_verdict(message, pending)
             if target == NEW_GOAL:
-                self._pending_handoffs.pop(key, None)
+                voided = self._pending_handoffs.pop(key, None)
+                # R0 §3.1(5)：旧提案作废（用户已明确表达不同目标）；若整条消息还含
+                # 第二个动作/目标，同样不得放它去执行第一个子目标 → 澄清。
+                if handoff_mixed_intent(message):
+                    self._route(
+                        reason_code="handoff_conflict_compound_clarify",
+                        route_target=RouteTarget.CHAT_ONLY.value,
+                        session_id=session_id,
+                        text_chars=len(message),
+                    )
+                    return _TurnReply(conflict_compound_clarify_text(voided or pending))
                 self._route(
                     reason_code="handoff_new_goal",
                     route_target=RouteTarget.TASK.value,
@@ -957,7 +1063,7 @@ class MinecraftChatBridge:
             # 先给**既有任务入口**一次机会：资源任务/控制/状态的既有权威路径就是它
             # （8D 的单目标资源模板），跳过它会直接砍掉既有能力。
             delegated = await self._delegate_task(handler, username, session_id, message)
-            if delegated.reply is not None:
+            if delegated is not None and delegated.reply is not None:
                 return delegated
             # 再走 follow/explore 计划层；两者都不认 → 安全澄清（绝不回落工具执行）。
             planned = await self._plan_reply(username, session_id, message)

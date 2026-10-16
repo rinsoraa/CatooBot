@@ -1,4 +1,36 @@
 # Changelog
+### R0 最终闭环：交接仲裁、导航证据链与真实迁移演练
+
+- **R0.1 两条真实缺陷（真机门禁直接暴露，已修）**：
+  ① `_task_reply` 在「模型输出无效」时提前返回澄清，**根本不进 `_route_turn`** → FU4 的确定性
+  待决仲裁被跳过：待决采集提案 + `同意` 无法被消费（接受语义被模型可用性绑架）。已改为**先跑真实
+  仲裁**再决定是否澄清。② `_control_turn` 命中「确认」词但没有待确认事项时返回**空 `_TurnReply()`**
+  （`reply=None`）→ 整个回合并吞，用户只看到角色闲聊。已改为 `_delegate_task()` 在任务入口**明确
+  未处理**时返回 `None`，`_control_turn` 对「只是 confirm 命中」回落继续走仲裁与统一决策；
+  **stop/cancel/pause/resume 依旧绝不回落给模型**（既有挂起 Provider 测试继续通过）。
+- **R0.1 冲突混合语义**：新增确定性 `handoff_mixed_intent()`（复用既有连接词/第二从句/「再」+新目标/
+  结构 `second_action|second_target`/未解释尾部含目标词），并在**两条 `NEW_GOAL` 路径**
+  （分类器早退与接受分支冲突）先作废旧提案、再返回**稳定原因码 `handoff_conflict_compound_clarify`**
+  澄清 —— 修复前这两条路径都会把整条混合消息交给第一个解析器**静默执行子目标**。
+- **R0.2 导航证据链缺陷（已修）**：JS 运行时把结构化失败 `detail`（目标/实际坐标/距离/半径/`reason`）
+  放进 `minecraft.action.*` 事件，但 `MinecraftTaskCoordinator._handle_terminal` **只转发
+  `result`/`error`/`code`**，`TaskRuntime.on_action_event` 也没有该参数 → 任务记录无法区分
+  `no_path`/`path_search_timeout`/`goal_reached_without_arrival` 等状态。已补 `detail` 转发并写入
+  `step.result['detail']`（纯新增键，无 schema/迁移）。
+- **真实服务器门禁（本地脚本，不发布）**：R1 四类仲裁 **4/4 PASS**（纯接受真实第二客户端恰好消费一次；
+  同目标复合澄清并保留提案；冲突复合作废 + 新原因码澄清且不执行任何子目标；干净冲突走既有新目标路径）；
+  R2 N1 真实可达移动 **PASS**（位移 7.77 格、终态 `SUCCEEDED`、独立核验原木净增 1、**不传送**）；
+  N3/N5 真实路径失败 **PASS**（`reason=path_search_timeout`、距离 2.83、半径 1.5、任务 `PAUSED`、
+  后续步骤全 `PENDING`、库存不变）；N6 移动中 STOP **PASS**（`WAITING_ACTION → CANCELLED`、
+  6 秒后不复活、无在途动作）。
+- **R0.4 真实迁移演练 PASS**：真实旧版本样本（`catoobot-pre-v18-20261001.db`，SHA256
+  `44DAB4F8…9AAF`，隔离副本）**version 13 → 36**、tables **58 → 83**、`integrity ['ok','ok']`、
+  `lost_rows {}`、`status "migrated"` → 第二次运行合法 `no_op`（生产库全程只读）。
+- **测试**：新增 `tests/test_r0_handoff_arbitration_priority.py`（4）与
+  `tests/test_r0_navigation_evidence.py`（6）；`tests/test_phase8i_handoff_route_matrix.py` 191 → 217。
+  旧断言零删除、零放宽。全量 `pytest`、`ruff check`/`ruff format --check`/`mypy app`/`git diff --check`
+  与 CI 结果见 `docs/specs/CatooBot R0 Final Closure Report.md`。
+
 ### Phase 8I FU5 Follow-up 5 — 接受语法的数量 token 与既有数量契约一致性
 
 - **实测候选（基线实测，4 条全部为真实缺陷）**：数量 token **位置约束未被真正执行** ——

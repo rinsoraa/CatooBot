@@ -24,12 +24,15 @@ from app.integrations.minecraft.chat_bridge import (
     _TurnReply,
     _WoodRoute,
     classify_handoff_reply,
+    handoff_mixed_intent,
     handoff_target_verdict,
 )
+from app.tasks.craft_intent import parse_craft_request
 from app.tasks.intent import (
     acceptance_structure_violation,
     explicit_log_count,
     is_permissive_wood_acceptance,
+    parse_wood_request,
     unexplained_acceptance_tail,
 )
 from app.tasks.turn_decision import TurnDecisionKind, TurnDecisionOutcome
@@ -894,3 +897,125 @@ async def test_fu5fu5_conflict_count_keeps_new_goal_semantics() -> None:
     assert "handoff_accepted" not in h.reasons
     assert "handoff_new_goal" in h.reasons
     assert ("IdCraft", "s") not in h.bridge._pending_handoffs  # type: ignore[attr-defined]
+
+
+# ---- R0 最终闭环 §3.2：NEW_GOAL + 复合动作候选（冲突混合语义） ----
+
+#: §3.2 混合冲突消息：旧提案必须作废，且整条消息**不得**执行任何一个子目标 → 澄清。
+R0_MIXED_CONFLICT_MESSAGES: tuple[tuple[str, str], ...] = (
+    ("好，去砍三根橡木原木再砍橡木原木", "count_conflict_plus_repeat"),
+    ("好，去砍五根白桦原木，然后去挖石头", "species_conflict_plus_second_goal"),
+    ("好，给我做 64 块橡木木板，然后去砍橡木原木", "craft_goal_plus_second_action"),
+    ("好，去砍五根白桦原木去挖石头", "new_wood_goal_plus_second_action"),
+)
+
+#: §3.2 干净单一冲突新目标：旧提案作废，消息按自身既有路径正常评估（**不**澄清）。
+R0_CLEAN_NEW_GOAL_MESSAGES = (
+    "好，去砍五根白桦原木",
+    "好，去砍三根橡木原木",
+    "好，给我做 64 块橡木木板",
+)
+
+#: 冲突混合语义的稳定原因码（与相容混合接受的 handoff_compound_clarify 区分）。
+R0_MIXED_REASON = "handoff_conflict_compound_clarify"
+
+
+def test_r0_mixed_intent_classifier_separates_clean_from_mixed() -> None:
+    """§3.2 机制分离：干净冲突 vs 混合冲突必须由确定性判定分开。"""
+    for message, label in R0_MIXED_CONFLICT_MESSAGES:
+        assert handoff_mixed_intent(message) is True, label
+    for message in R0_CLEAN_NEW_GOAL_MESSAGES:
+        assert handoff_mixed_intent(message) is False, message
+    for message in ("同意", "可以", "好，去砍橡木原木", "好，去砍橡木原木再回来"):
+        assert handoff_mixed_intent(message) is False, message
+
+
+#: §3.2 机制分离表（修复前审计结论，防止回归）：(消息, classify, handoff_target_verdict)。
+R0_NEW_GOAL_PATHS: tuple[tuple[str, str, str], ...] = (
+    ("好，去砍三根橡木原木再砍橡木原木", ACCEPT_PROPOSAL, NEW_GOAL),
+    ("好，去砍五根白桦原木，然后去挖石头", ACCEPT_PROPOSAL, NEW_GOAL),
+    ("好，给我做 64 块橡木木板，然后去砍橡木原木", NEW_GOAL, NOT_ACCEPT),
+    ("好，去砍五根白桦原木去挖石头", ACCEPT_PROPOSAL, NEW_GOAL),
+    ("好，去砍五根白桦原木", ACCEPT_PROPOSAL, NEW_GOAL),
+    ("好，去砍三根橡木原木", ACCEPT_PROPOSAL, NEW_GOAL),
+    ("好，给我做 64 块橡木木板", NEW_GOAL, NOT_ACCEPT),
+)
+
+
+@pytest.mark.parametrize(("message", "expected_classify", "expected_target"), R0_NEW_GOAL_PATHS)
+def test_r0_mechanism_paths_are_the_ones_audited(
+    message: str,
+    expected_classify: str,
+    expected_target: str,
+) -> None:
+    """§3.2 审计要求：必须按真实函数顺序区分两条 NEW_GOAL 路径。
+
+    * 合成新目标走 ``classify_handoff_reply() == NEW_GOAL`` 的**早退路径**；
+    * 树种/数量冲突走接受分支里的 ``handoff_target_verdict() == NEW_GOAL``。
+    """
+    assert classify_handoff_reply(message) == expected_classify
+    assert handoff_target_verdict(message, PENDING) == expected_target
+
+
+async def _r0_mixed_negative(h: Harness, message: str, kind: TurnDecisionKind) -> None:
+    """§3.4 负向通用断言：零消费、零执行入口、稳定原因码、非空澄清话术。"""
+    reply = await h.send(message, kind=kind)
+    assert ("IdCraft", "s") not in h.bridge._pending_handoffs  # type: ignore[attr-defined]
+    assert h.bridge.accept_calls == []  # type: ignore[attr-defined]
+    assert h.bridge.wood_replies == []  # type: ignore[attr-defined]
+    assert h.bridge.wood_routes == []  # type: ignore[attr-defined]
+    assert h.bridge.craft_calls == []  # type: ignore[attr-defined]
+    assert h.bridge.delegate_calls == []  # type: ignore[attr-defined]
+    assert h.bridge.capability_calls == []  # type: ignore[attr-defined]
+    assert h.plans.calls == []
+    assert R0_MIXED_REASON in h.reasons
+    assert "handoff_accepted" not in h.reasons
+    assert "handoff_new_goal" not in h.reasons
+    assert reply is not None and reply.reply
+    assert "一件" in (reply.reply or "")
+
+
+@pytest.mark.parametrize(("message", "label"), R0_MIXED_CONFLICT_MESSAGES)
+async def test_r0_mixed_conflict_never_executes_a_subgoal(message: str, label: str) -> None:
+    """§3.1(5)/§3.2：作废旧提案 + 澄清，绝不静默执行第一个子目标。"""
+    await _r0_mixed_negative(Harness(pending=PENDING), message, TurnDecisionKind.TASK_PROPOSAL)
+
+
+@pytest.mark.parametrize("kind", [TurnDecisionKind.QUERY, TurnDecisionKind.ATOMIC_ACTION])
+@pytest.mark.parametrize(("message", "label"), R0_MIXED_CONFLICT_MESSAGES)
+async def test_r0_mixed_conflict_holds_across_decision_kinds(
+    message: str,
+    label: str,
+    kind: TurnDecisionKind,
+) -> None:
+    """§3.2 非提案类别绕过：上游 kind 不能绕过冲突混合语义。"""
+    await _r0_mixed_negative(Harness(pending=PENDING), message, kind)
+
+
+@pytest.mark.parametrize("message", R0_CLEAN_NEW_GOAL_MESSAGES)
+async def test_r0_clean_new_goal_voids_and_routes_normally(message: str) -> None:
+    """§3.2 单一冲突对照：旧提案作废，消息走自身既有路径，不复用旧参数。"""
+    h = Harness(pending=PENDING)
+    await h.send(message)
+    assert ("IdCraft", "s") not in h.bridge._pending_handoffs  # type: ignore[attr-defined]
+    assert h.bridge.accept_calls == []  # type: ignore[attr-defined]
+    assert "handoff_accepted" not in h.reasons
+    assert "handoff_new_goal" in h.reasons
+    assert R0_MIXED_REASON not in h.reasons
+    if parse_craft_request(message) is not None:
+        assert len(h.bridge.craft_calls) == 1  # type: ignore[attr-defined]
+        assert h.bridge.wood_routes == []  # type: ignore[attr-defined]
+    else:
+        assert parse_wood_request(message) is not None
+        assert h.bridge.wood_routes == [message]  # type: ignore[attr-defined]
+    assert h.bridge.wood_replies == []  # type: ignore[attr-defined]
+
+
+async def test_r0_voided_proposal_does_not_revive_after_mixed_conflict() -> None:
+    """§3.1(5)：混合冲突已作废旧提案 → 随后纯接受不得消费幽灵提案。"""
+    h = Harness(pending=PENDING)
+    await h.send(R0_MIXED_CONFLICT_MESSAGES[1][0])
+    assert ("IdCraft", "s") not in h.bridge._pending_handoffs  # type: ignore[attr-defined]
+    await h.send("好，去砍橡木原木")
+    assert h.bridge.accept_calls == []  # type: ignore[attr-defined]
+    assert h.bridge.wood_replies == []  # type: ignore[attr-defined]

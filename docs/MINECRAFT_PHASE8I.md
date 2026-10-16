@@ -855,7 +855,113 @@ FU5 的 `handoff_target_verdict()` 只比对**木材目标与数量**（`parse_w
 
 ### 15.7 裁决
 
-**PASS**。§1 每条候选都在基线被实测（4 条确为反例，附真实函数与仲裁输出）；数量 token 只有在语义、单位、
+**PASS**。§1 每条候选都在基线被实测（4 条确为反例，附真实函数与仲裁输出）；数量 token 只有在语义、
+
+## 16. R0 最终闭环：交接仲裁、导航可靠性、证据链与迁移演练（本轮新增）
+
+任务书：`docs/specs/CatooBot R0 Final Closure — Handoff Arbitration, Navigation Reliability, Evidence Reconciliation & Migration Drill.md`
+（38919 bytes，SHA256 `9FB3E8E64CC43722B3E133E3CEE8BE254AA4D9685B20602B3E617A9496B6C4D1`，逐字节归档）。
+开工基线 `67ad74d976689a73a98f736cd2d46af9469b3950`。本节**追加**，§10–§15 的历史结论原样保留。
+
+### 16.1 R0.1 修复前实测（先用生产函数最小复现，不预设失败）
+
+待决提案 `oak_log × 2`，§3.2 的四条候选在基线 `67ad74d` 上的真实机制（`classify_handoff_reply` →
+`handoff_target_verdict` → 复合/结构门 → `_arbitrate_pending_handoff` → `_route_turn` 效果）：
+
+| 消息 | classify | target_verdict | tail | 结构 | 真实路由效果（修复前） |
+| --- | --- | --- | --- | --- | --- |
+| `好，去砍三根橡木原木再砍橡木原木` | accept_proposal | new_goal | `''` | `second_action` | 旧提案作废后**整条消息交给木材解析器** |
+| `好，去砍五根白桦原木，然后去挖石头` | accept_proposal | new_goal | `然后石头` | `unexplained` | 同上（`wood_routes=[整句]`、`delegate=1`） |
+| `好，给我做 64 块橡木木板，然后去砍橡木原木` | **new_goal**（`_is_new_craft_request` 早退） | not_accept | None | `not_wood` | **静默只合成**，丢掉「然后去砍橡木原木」 |
+| `好，去砍五根白桦原木去挖石头` | accept_proposal | new_goal | `石头` | `unexplained` | 整条消息交给木材解析器 |
+
+即两条 `NEW_GOAL` 路径（分类器早退 + 接受分支冲突）**都绕过**复合/结构门，§3.1(5) 明确禁止。
+`QUERY`/`ATOMIC_ACTION` 入口同样落入能力入口（`capability_calls=1`），即跨决策类别也能绕过。
+
+### 16.2 R0.1 修复（确定性、闭集、fail-closed，不新增执行器/权限/状态机）
+
+1. `handoff_mixed_intent(message)`（`app/integrations/minecraft/chat_bridge.py`）：复用既有
+   `has_compound_connector`/`_has_second_clause_goal`/`_has_trailing_goal`/
+   `acceptance_structure_violation ∈ {second_action, second_target}`，并对未解释尾部要求出现
+   **目标词**（`_RESOURCE_WORDS`/`_ACTION_VERBS`）才算第二目标 —— 因此 `同意，改砍白桦` 这类
+   干净新目标（残留只是填充词「改」）仍走自己的路由，不被降级成澄清。
+2. 两条 `NEW_GOAL` 路径都先**作废旧提案**（§3.1(5)），混合消息再返回**稳定原因码**
+   `handoff_conflict_compound_clarify` + `conflict_compound_clarify_text()` 澄清（不执行任何子目标）；
+   干净单一冲突新目标仍记 `handoff_new_goal` 并走既有新目标路径。
+3. 两处**真实缺陷**（本轮真机门禁直接暴露）：
+   * `_task_reply` 在「模型输出无效」时提前返回澄清，**根本不进 `_route_turn`** → FU4 的确定性
+     仲裁被跳过：待决提案 + `同意` 无法被消费（接受语义被模型可用性绑架）。已改为**先跑真实仲裁**
+     再决定是否澄清（`CANCEL`/`STOP` 已由第 1 步确定性控制处理，不会走到这里）。
+   * `_control_turn` 命中「确认」词但没有待确认事项时返回**空 `_TurnReply()`**（`reply=None`）→
+     `_task_reply` 直接返回它，用户只看到角色闲聊。已改为 `_delegate_task()` 在任务入口**明确没处理**
+     时返回 `None`；`_control_turn` 对「只是 confirm 命中」的回落继续走仲裁与统一决策，而
+     **stop/cancel/pause/resume 依旧绝不回落给模型**（既有 `test_stop_does_not_wait_for_a_hanging_provider` 继续通过）。
+
+### 16.3 R0.2 导航失败的可诊断状态与证据链修复
+
+审计结论（既有实现已按 9 类状态区分，无需重写导航）：
+
+| 状态 | 既有确定性机制 |
+| --- | --- |
+| 目标/实体选择错误或歧义 | 工具/服务校验（`action.invalid` → `VALIDATION`）+ 规划期真实观察 |
+| 观察过期 / 目标丢失 | `block.not_found`/`block.changed` → `TARGET_LOST`/`WORLD_CHANGED` |
+| 无可用路径 | `path.not_found` + `detail.reason=no_path` |
+| 路径规划成功但执行失败 | `path.not_reached`（`empty_path_without_arrival`/`path_stopped_short`/`goal_reached_without_arrival`） |
+| 移动超时 | ActionRuntime `minecraft.action.timeout` → `TaskFailure.TIMEOUT`；路径搜索超时为 `path_search_timeout` |
+| 已在 `goal_near` 半径内 | `moveArrival.reached`（重新读取的实际位置，不采信 pathfinder resolve） |
+| 到达附近但后置条件不满足 | `MinecraftMoveUnconfirmedError`（`minecraft.move_unconfirmed`） |
+| 暂停/取消/STOP | `TaskState.PAUSED`（`pause_requested`/`_pause_after_failure`）与 `CANCELLED` |
+| 迟到/重复事件 | `_settled_action_ids` + `terminal_record`：只收敛证据，绝不复活 |
+
+**发现的真实缺陷（本轮修复）**：JS 运行时把结构化失败 `detail`（目标/实际坐标/距离/半径/`reason`）
+放进 `minecraft.action.*` 事件，但 Python 边界 `task_coordinator._handle_terminal` **只转发
+`result`/`error`/`code`，丢掉了 `detail`**，`TaskRuntime.on_action_event` 也没有该参数 → 任务记录只剩
+一句 message，**无法区分 `no_path` 与 `path_search_timeout` 等状态**。已按 §4.2「补最少必要诊断」修复：
+协调器转发 `detail`，运行时写入 `step.result['detail']`（纯新增键，任务记录本就整份存 JSON，**无 schema/迁移**）。
+
+### 16.4 真实服务器门禁证据（本地脚本，**不发布**）
+
+脚本 `scripts/r0_final_smoke_real.py`（本地专用）；日志全部在 `CatooBot_backups/`：
+
+| 场景 | 结果 | 日志 |
+| --- | --- | --- |
+| R1 四类仲裁（R1a 纯接受 / R1b 同目标复合 / R1c 冲突复合 / R1d 干净冲突） | **4/4 PASS** | `_r0_gate_R1f.log` |
+| R2 N1 真实可达移动（不传送） | **PASS**：真实位移 7.77 格、终态 `SUCCEEDED`、独立核验 `oak_log` 净增 1 | `_r0_gate_R2b.log` |
+| R2 N3/N5 真实路径失败 | **PASS**：`reason=path_search_timeout`、`distance_to_target=2.83`、`radius=1.5`、`goal_reached=false`、任务 `PAUSED`、后续步骤全 `PENDING`、库存不变 | `_r0_gate_R2e.log` |
+| R2 N6 移动中 STOP | **PASS**：`WAITING_ACTION → CANCELLED`，6 秒后仍 `CANCELLED`（不复活），无在途动作 | `_r0_gate_R2b.log`、`_r0_gate_R2e.log` |
+
+* R1 的 R1a/R1b/R1d 由**真实第二个 Mineflayer 客户端 `IdCraft8G`** 投递（`how=second_client`）；
+  R1c 用真实聊天桥事件注入（`how=bridge_injection`，**替代证据**，如实标注 DEVIATION）。
+* N1 全程**没有**传送罐头（`/tp` 只用于把 op 客户端 `CatodayoMate` 送到目标区块加载世界）；
+  独立位置核验 = 执行前后各一次 `service.world_view()` 的真实坐标读回。
+* 门禁脚本对夹具自检（op 客户端 `/setblock` 回执偶发 `PartialReadError`）只如实记录，
+  断言落在端到端真实事实（真实移动/独立库存净增/计划目标来自有界真实观察）。
+
+### 16.5 R0.4 真实迁移演练（隔离副本，真实旧版本样本）
+
+* 样本：`CatooBot_backups/catoobot-pre-v18-20261001.db`（1224704 bytes，
+  SHA256 `44DAB4F83220E43A2A1289EAEF60448148EBE78E9BCA6E188B98EA9B0BDF9AAF`，`integrity_check=ok`）。
+* 复制到隔离目录后再迁移（生产库全程只读、未改动）：**version 13 → 36**、tables **58 → 83**、
+  `integrity ['ok','ok']`、`lost_rows {}`、`schema_evidence_ok true`、`changed_count 526`、
+  `status "migrated"`、退出码 0；第二次运行 → `version [36,36]`、`status "no_op"`、退出码 0（不二次破坏）。
+* 结果：**R0.4 PASS**（有真实版本上升与迁移报告、完整性/数据保留证据）。
+
+### 16.6 本轮新增测试（旧断言零删除、零放宽）
+
+* `tests/test_r0_handoff_arbitration_priority.py`（4 条）：模型输出无效时待决仲裁仍必须先跑；
+  `CANCEL/STOP` 的确定性控制仍优先于仲裁。
+* `tests/test_r0_navigation_evidence.py`（6 条）：失败 `detail` 落到 `step.result`；超时与路径失败区分；
+  失败后不派发后续世界动作；迟到/重复终态事件不复活；协调器转发 `detail`。
+* `tests/test_phase8i_handoff_route_matrix.py`：191 → **217** 条（R0 冲突复合矩阵 26 条）。
+
+### 16.7 保留边界（如实）
+
+* R0.2 收敛的是**已知历史失败**的可诊断性与安全停止；长距离导航可靠性（8D 能力域）与
+  「配方变体按库存可满足度排序」仍是独立后续事项 —— N3 的真实失败（2.83 格、半径 1.5、
+  `path_search_timeout`）说明**即使很近也可能规划超时**，本节不把它当作已解决。
+* `handoff_mixed_intent` 仍是**闭集文法**判定：只覆盖既有解析器能识别的第二目标信号；
+  无法证明时一律澄清（不消费、不执行）。
+* 结构/数量/单位契约、跨用户/session/TTL、拒绝不复活等既有语义未变。单位、
 数值与位置均符合既有契约时才参与接受，裸数字与错位/重复数量不再被静默消费；合法纯接受、相容单目标描述与
 既有收尾语继续正常工作，明确树种/数量冲突的 `NEW_GOAL` 语义不变；结构负向用例在真实仲裁中保留提案、
 返回澄清、执行入口零调用，跨决策类别与 STOP/CANCEL/双确认契约无回归；本地全量测试与 CI 结果完整报告

@@ -2140,6 +2140,7 @@ class TaskRuntime:
         result: Mapping[str, Any] | None = None,
         error: str = "",
         code: str = "",
+        detail: Mapping[str, Any] | None = None,
         runtime_instance: str = "",
     ) -> TaskRecord | None:
         """异步动作的终态 → 恢复对应 Task 的对应 step（绑 action_id **与** Runtime 实例）。
@@ -2174,6 +2175,7 @@ class TaskRuntime:
             "result": dict(result or {}),
             "error": str(error or ""),
             "code": str(code or ""),
+            "detail": dict(detail or {}),
             "runtime_instance": str(runtime_instance or ""),
         }
         # 先做一次**无锁**的候选发现，只用来决定要对哪些任务加锁；真正的判定在锁内重查。
@@ -2245,6 +2247,8 @@ class TaskRuntime:
         result = payload.get("result") or {}
         error = str(payload.get("error") or "")
         code = str(payload.get("code") or "")
+        raw_detail = payload.get("detail")
+        detail: dict[str, Any] = dict(raw_detail) if isinstance(raw_detail, Mapping) else {}
         runtime_instance = str(payload.get("runtime_instance") or "")
         # Follow-up 2 §一.A.2/3：**锁内重新查询**并重新验证匹配数量、步骤与关联事实。
         matches = await self._store.find_by_action(action_id, include_terminal=True)
@@ -2338,6 +2342,12 @@ class TaskRuntime:
         # 不设这一句，这一步会永远停在 ACCEPTED，人工核对时看不出它其实已经结束了。
         step.dispatch_state = DispatchState.SETTLED.value
         step.result = dict(result or {})
+        if detail:
+            # R0 §4.2/§5.1：运行时结构化失败 detail（目标 / 实际位置 / 距离 / 半径 /
+            # reason：no_path、path_search_timeout、goal_reached_without_arrival、
+            # path_stopped_short、goal_changed …）是区分导航失败状态的唯一字段。
+            # 纯新增键，任务记录本来就整份存 JSON —— 不改 schema、不改终态语义。
+            step.result.setdefault("detail", detail)
         target.pending_action_id = ""
         target.pending_step_id = ""
         # Phase 7F.5.3 §三.A/§四.8：**终态任务保持终态** —— 取消就是取消、过期就是过期。

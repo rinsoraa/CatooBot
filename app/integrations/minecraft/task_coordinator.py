@@ -83,6 +83,10 @@ class MinecraftTaskCoordinator:
                 result=data.get("result") if isinstance(data.get("result"), dict) else {},
                 error=str(data.get("error") or ""),
                 code=str(data.get("code") or ""),
+                # R0 §4.2/§5.1：运行时结构化失败 detail（目标/实际位置/距离/半径/reason）
+                # 必须一起带进任务证据 —— 只靠一句 message 无法区分 no_path、
+                # path_search_timeout、goal_reached_without_arrival 等失败状态。
+                detail=data.get("detail") if isinstance(data.get("detail"), dict) else {},
                 # Phase 7F.5：事件必须说明是**哪个 Runtime 实例**发出的。
                 runtime_instance=str(data.get("runtime_instance") or ""),
             )
