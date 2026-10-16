@@ -321,6 +321,117 @@ _WOOD_REQUEST_MARKERS = (
     "想",
 )
 
+
+# ---------------------------------------------------------- 许可接受语法（FU5 Follow-up 3）
+
+#: 可忽略字符：只有标点与空白。任何**词**都不在这里 —— 未解释的词一律 fail closed。
+_ACCEPTANCE_IGNORED = frozenset("，,、；;。.！!？?：: \t\r\n～~")
+
+#: 数量短语（完整数字或中文数字 + 可选原木单位）。复用既有单位表，不新增词表。
+_ACCEPTANCE_COUNT_RE = re.compile(
+    r"(\d+|[零一二两三四五六七八九十])\s*(" + "|".join(_LOG_COUNT_UNITS) + r")?"
+)
+
+#: 许可的**单任务收尾语**（既有 `_MULTI_STEP_MARKERS` 里已审计的收尾短语；
+#: 「再回来」由填充词「再」+ 收尾语「回来」覆盖）。
+_ACCEPTANCE_TAILS = ("带回来", "拿回来", "捡回来", "采回来", "取回来", "弄回来", "回来")
+
+#: 许可的填充/称呼/语气词：复用既有已审计的 `_WOOD_REQUEST_MARKERS`（帮我/给我/请/去/来/…）
+#: 再加少量结构助词与句末语气词。**只用于完整消费校验**，不表达任何目标。
+_ACCEPTANCE_FILLERS: tuple[str, ...] = tuple(
+    dict.fromkeys(
+        _WOOD_REQUEST_MARKERS
+        + (
+            "你",
+            "我",
+            "就",
+            "一下",
+            "先",
+            "麻烦",
+            "吧",
+            "了",
+            "哦",
+            "啊",
+            "呀",
+            "嘛",
+            "呢",
+            "的",
+            "再",
+            "点",
+            "些",
+            "几",
+        )
+    )
+)
+
+#: 许可接受语法的全部词元（目标短语 + 收尾语 + 填充词），**最长优先**贪心消费。
+_ACCEPTANCE_VOCAB: tuple[str, ...] = tuple(
+    sorted(
+        {
+            *(action.lower() for action in _WOOD_ACTIONS),
+            *(alias for alias, _block in _WOOD_ALIASES),
+            "原木",
+            "木头",
+            "树",
+            "log",
+            "wood",
+            *_ACCEPTANCE_TAILS,
+            *_ACCEPTANCE_FILLERS,
+        },
+        key=lambda token: (-len(token), token),
+    )
+)
+
+
+def _consume_acceptance_phrase(text: str) -> str:
+    """按许可接受语法从头扫描整段文本，返回**未能解释**的字符。
+
+    这是「完整消费」的核心：标点/空白/数量短语可忽略，词元必须命中许可词表，
+    否则该字符被记为**未解释**。未解释内容不为空 = 不接受（交给调用方 fail closed）。
+    """
+    lowered = str(text or "").lower()
+    leftovers: list[str] = []
+    cursor = 0
+    while cursor < len(lowered):
+        for token in _ACCEPTANCE_VOCAB:
+            if lowered.startswith(token, cursor):
+                cursor += len(token)
+                break
+        else:
+            if lowered[cursor] in _ACCEPTANCE_IGNORED:
+                cursor += 1
+                continue
+            match = _ACCEPTANCE_COUNT_RE.match(lowered, cursor)
+            if match is not None and match.end() > cursor:
+                cursor = match.end()
+                continue
+            leftovers.append(text[cursor])
+            cursor += 1
+    return "".join(leftovers)
+
+
+def unexplained_acceptance_tail(text: str) -> str | None:
+    """一条「接受描述」里**未能被许可语法解释**的剩余文本。
+
+    ``None`` = 这段文本不是一条木材采集描述（调用方按既有语义判定）；
+    ``""``   = 整段被许可语法完整消费（合法单任务接受）；
+    非空     = 存在未解释内容（复合/未知尾部）→ 调用方必须 fail closed。
+    """
+    raw = str(text or "").strip()
+    if not raw:
+        return None
+    request = parse_wood_request(raw)
+    if request is None or request.problem:
+        return None
+    return _consume_acceptance_phrase(raw).strip()
+
+
+def is_permissive_wood_acceptance(text: str) -> bool:
+    """整段文本能否被许可接受语法**完整消费**（且本身是一条可执行的木材描述）。"""
+    tail = unexplained_acceptance_tail(text)
+    return tail is not None and not tail
+
+
 #: 叙述/回忆标记（过去时）：出现任意一个就不当作**新的采集指令**。
 _WOOD_NARRATION_MARKERS = (
     "昨天",

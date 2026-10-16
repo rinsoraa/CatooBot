@@ -20,10 +20,12 @@ from app.integrations.minecraft.chat_bridge import (
     REJECT_PROPOSAL,
     MinecraftChatBridge,
     _TurnReply,
+    _acceptance_remainder,
     _WoodRoute,
     classify_handoff_reply,
     handoff_target_verdict,
 )
+from app.tasks.intent import is_permissive_wood_acceptance, unexplained_acceptance_tail
 from app.tasks.turn_decision import TurnDecisionKind, TurnDecisionOutcome
 
 PENDING: dict[str, Any] = {
@@ -418,7 +420,16 @@ async def test_fu5_pure_accept_consumes_once(message: str) -> None:
     assert h.bridge.craft_calls == []  # type: ignore[attr-defined]
 
 
-@pytest.mark.parametrize("message", ["好，去砍橡木原木", "好，去砍原木", "好，去砍两根橡木原木"])
+@pytest.mark.parametrize(
+    "message",
+    [
+        "好，去砍橡木原木",
+        "好，去砍原木",
+        "好，去砍两根橡木原木",
+        "好，去砍橡木原木带回来",
+        "好，去砍橡木原木再回来",
+    ],
+)
 async def test_fu5_matching_description_uses_pending_target(message: str) -> None:
     """§3.3：接受 + 与提案一致的描述 → 可接受，目标只能来自待决提案且不得重复建任务。"""
     h = Harness(pending=PENDING)
@@ -555,14 +566,23 @@ def test_fu5_target_consistency_contract(message: str, expected: str) -> None:
 
 # ---- Phase 8I FU5 Follow-up：复合意图不得消费待决提案（§必测场景 3、4）----
 
-#: 复合接受表达：目标与提案相容，但整条消息还有别的意图片段。前两条是 FU5-FU 的
-#: 连接词/跟随类；后两条是本轮补的**无连接词**复合指令（此前会被误当成接受并消费提案）。
+#: 复合接受表达：目标与提案相容，但整条消息还有**未被许可语法完整解释**的片段。
+#: 前五条是 FU5-FU/FU5-FU2 的连接词/跟随/标点类；中间三条是任务书 §3.3 的**无标点、
+#: 无连接词**连续指令（本轮由完整消费判定覆盖）；最后三条是 §5.3 的未知尾部（未知资源、
+#: 未知动作、无关闲聊），同样不得被默认为无害。
 COMPOUND_MESSAGES = (
     "好，去砍橡木原木并跟我走",
     "好，去砍橡木原木，然后探索附近",
     "好，去砍橡木原木，帮我挖附近的石头",
     "好，去砍橡木原木，挖点石头",
     "好，去砍橡木原木再去挖石头",
+    "好，去砍橡木原木去挖石头",
+    "好，去砍橡木原木探索附近",
+    "好，去砍橡木原木挖附近的石头",
+    "好，去砍橡木原木，帮我找附近的煤",
+    "好，去砍橡木原木然后去钓鱼吧",
+    "好，去砍橡木原木挖附近的青金石",
+    "好，去砍橡木原木顺手把栅栏修了",
 )
 
 
@@ -615,3 +635,55 @@ async def test_fu5fu_pure_acceptance_still_works_after_compound(message: str) ->
     assert len(h.bridge.accept_calls) == 1  # type: ignore[attr-defined]
     assert h.bridge.wood_replies == [("IdCraft", "s", "砍橡木原木 2 根")]  # type: ignore[attr-defined]
     assert h.bridge._pending_handoffs == {}  # type: ignore[attr-defined]
+
+
+# ---- Phase 8I FU5 Follow-up 3 §4：正向许可接受语法（**完整消费**）----
+
+#: 整段被许可语法完整消费的单任务接受描述（§3.1 的采集类表达 + 已审计收尾语/语气词）。
+PERMISSIVE_ACCEPTANCES = (
+    "去砍橡木原木",
+    "去砍原木",
+    "去砍两根橡木原木",
+    "去砍橡木原木带回来",
+    "去砍橡木原木再回来",
+    "去砍橡木原木吧",
+    "帮我砍点橡木原木",
+)
+
+#: §3.3 + §5.3：**未被许可语法解释**的剩余文本（第二个目标、未知尾部、无关闲聊）。
+UNEXPLAINED_TAILS: tuple[tuple[str, str], ...] = (
+    ("好，去砍橡木原木去挖石头", "石头"),
+    ("好，去砍橡木原木探索附近", "探索附近"),
+    ("好，去砍橡木原木挖附近的石头", "附近石头"),
+    ("好，去砍橡木原木，帮我挖附近的石头", "附近石头"),
+    ("好，去砍橡木原木再去挖石头", "石头"),
+    ("好，去砍橡木原木，帮我找附近的煤", "找附近煤"),
+    ("好，去砍橡木原木并跟我走", "并跟走"),
+    ("好，去砍橡木原木，然后探索附近", "然后探索附近"),
+    ("好，去砍橡木原木然后去钓鱼吧", "然后钓鱼"),
+    ("好，去砍橡木原木挖附近的青金石", "附近青金石"),
+    ("好，去砍橡木原木顺手把栅栏修了", "顺手把栅栏修"),
+)
+
+
+@pytest.mark.parametrize("message", PERMISSIVE_ACCEPTANCES)
+def test_fu5fu3_permissive_grammar_fully_consumes(message: str) -> None:
+    """§4：整段都能被许可语法解释 → 未解释尾部为空，允许作为单一接受。"""
+    assert unexplained_acceptance_tail(message) == ""
+    assert is_permissive_wood_acceptance(message) is True
+
+
+@pytest.mark.parametrize(("message", "tail"), UNEXPLAINED_TAILS)
+def test_fu5fu3_unexplained_tail_is_never_accepted(message: str, tail: str) -> None:
+    """§5.3：未解释的剩余文本必须被如实指出（未知尾部**不得**默认为无害）。"""
+    rest = _acceptance_remainder(message)
+    assert rest, message
+    assert unexplained_acceptance_tail(rest) == tail
+    assert is_permissive_wood_acceptance(rest) is False
+    assert handoff_target_verdict(message, PENDING) == NOT_ACCEPT
+
+
+def test_fu5fu3_non_wood_text_is_not_applicable() -> None:
+    """不是木材描述的文本 → ``None``（交给既有语义，不由许可语法裁定）。"""
+    assert unexplained_acceptance_tail("去挖石头") is None
+    assert unexplained_acceptance_tail("就按这个方案来") is None

@@ -48,6 +48,7 @@ from app.tasks.intent import (
     has_compound_connector,
     mentions_wood,
     parse_wood_request,
+    unexplained_acceptance_tail,
 )
 from app.tasks.resource_handoff import (
     REASON_MATERIAL,
@@ -354,7 +355,10 @@ def is_compound_acceptance(message: str) -> bool:
     wood = parse_wood_request(rest)
     if wood is None or wood.problem:
         return False
-    return _has_extra_intent(rest)
+    # FU5 Follow-up 3：除了既有信号，整段描述**未被许可语法解释**的部分同样算复合 ——
+    # 这样「未知尾部」也走同一条澄清路径，不再依赖关键词是否恰好命中。
+    tail = unexplained_acceptance_tail(rest)
+    return _has_extra_intent(rest) or tail is None or bool(tail)
 
 
 def compound_clarify_text(pending: dict[str, Any] | None) -> str:
@@ -444,9 +448,11 @@ def handoff_target_verdict(message: str, pending: dict[str, Any] | None) -> str:
     explicit = explicit_log_count(rest)
     if explicit is not None and pending_amount and explicit != pending_amount:
         return NEW_GOAL
-    # FU5 Follow-up：目标相容也还不够 —— 整条消息只能有**这一个**意图才会消费提案。
-    # 残留的跟随/合成/并列内容（例：「好，去砍橡木原木并跟我走」）一律 fail closed。
-    if _has_extra_intent(rest):
+    # FU5 Follow-up 3 §4：目标相容还不够 —— 整段接受描述必须被**许可语法完整消费**。
+    # 任何未解释的剩余文本（第二个目标、未知尾部、无连接词的连续动作）一律 fail closed。
+    # 既有关键词信号保留为**附加**护栏：它只会增加拒绝，不会放宽接受。
+    tail = unexplained_acceptance_tail(rest)
+    if tail is None or tail or _has_extra_intent(rest):
         return NOT_ACCEPT
     return ACCEPT_PROPOSAL
 

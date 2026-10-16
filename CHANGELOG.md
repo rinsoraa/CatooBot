@@ -1,4 +1,29 @@
 # Changelog
+### Phase 8I FU5 Follow-up 3 — 完整消费的正向许可接受语法（Compound Acceptance Gate Closure）
+
+- **缺陷（任务书 §1 + 生产代码实测）**：`好，去砍橡木原木去挖石头` / `…探索附近` / `…挖附近的石头` 这类
+  **既无标点、又无连接词、也无「再」**的复合指令仍判 `accept_proposal` 并消费旧提案 —— 既有判定依赖
+  信号枚举，没有信号的第二目标不留任何痕迹。
+- **修复（方案 A：完整消费）**：`app/tasks/intent.py` 新增 `_ACCEPTANCE_IGNORED`（**只有**标点与空白）、
+  `_ACCEPTANCE_COUNT_RE`（完整数字或中文数字 + 可选既有原木单位）、`_ACCEPTANCE_TAILS`（已审计单任务
+  收尾语）、`_ACCEPTANCE_FILLERS`（复用既有 `_WOOD_REQUEST_MARKERS`）、`_ACCEPTANCE_VOCAB`（最长优先：
+  `_WOOD_ACTIONS` + `_WOOD_ALIASES` + 通用木材名词 + 收尾语 + 填充词）、`_consume_acceptance_phrase()`、
+  `unexplained_acceptance_tail()`、`is_permissive_wood_acceptance()`；**不复制第二套树种/别名/单位词表**。
+  `chat_bridge.handoff_target_verdict()` 的最后一道门改为「整段必须被许可语法完整消费」，既有关键词信号
+  保留为**只增不减**的附加护栏；`is_compound_acceptance()` 同步纳入未解释尾部。
+- **失败语义**：冲突目标仍 `NEW_GOAL`（先于完整消费判定，作废并走自己的路由）；其余未解释内容 →
+  `NOT_ACCEPT` → 澄清（`handoff_compound_clarify`：不消费、不执行、保留提案）。
+- **测试**：`tests/test_phase8i_handoff_route_matrix.py` 116 → **165 条**（§3.1 八条全部覆盖；
+  `COMPOUND_MESSAGES` 5 → 12（§3.3 九条 + §5.3 三条未知尾部）；许可语法单测 7 条完整消费 + 11 条
+  未解释尾部 + 1 条非木材文本）；负向用例全部驱动真实 `_route_turn()` 与真实仲裁，断言零消费、提案保留、
+  澄清话术非空、三类入口零调用、`plans.calls == []`。
+- **真实服务器门禁**（本地脚本，不发布）：场景 I 扩到六条复合消息（含 §3.3 无标点无连接词三类）+
+  纯接受与 `带回来`/`再回来` 对照 → `通过=1 失败=0 BLOCKED=0` / `REAL SERVER: PASS`；I1–I4 由真实第二个
+  Mineflayer 客户端投递，I5/I6 与收尾语对照因第二个客户端不可用回退**真实聊天桥事件注入**（日志逐条
+  标注 `DEVIATION`，属替代证据并与真实客户端证据分开记录）。
+- **验证**：`pytest tests -q` 全量通过；`ruff check .`、`ruff format --check .`、`mypy app`、`git diff --check`；
+  CI 两个 Job。**范围声明**：许可语法是闭集，不声称理解任意自然语言；被澄清的第二个目标不解析、不执行。
+
 ### Phase 8I Follow-up 5 Follow-up 2 — 无连接词复合意图门与澄清（No-Connector Compound Intent Gate）
 
 - **缺陷（用户报告 + 生产代码实测确认）**：`_has_extra_intent()` 只认「跟随 / 合成 / 预先列举的连接词」
