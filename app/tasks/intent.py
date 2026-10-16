@@ -327,9 +327,12 @@ _WOOD_REQUEST_MARKERS = (
 #: 可忽略字符：只有标点与空白。任何**词**都不在这里 —— 未解释的词一律 fail closed。
 _ACCEPTANCE_IGNORED = frozenset("，,、；;。.！!？?：: \t\r\n～~")
 
-#: 数量短语（完整数字或中文数字 + 可选原木单位）。复用既有单位表，不新增词表。
+#: 数量短语：**与 ``_parse_log_count`` 同契约** —— 数字或中文数字 **必须** 带单位。
+#: 单位取自 ``_LOG_COUNT_UNITS``，且**不可省略**：否则「裸数字」会被许可语法当成数量，
+#: 而 ``parse_wood_request`` 认为用户没写数量（FU5 Follow-up 5 §4.1 的解释分歧）。
+#: （FU5 Follow-up 5 §4.1 的解释分歧）。复用既有单位表，不新增第二套单位列表。
 _ACCEPTANCE_COUNT_RE = re.compile(
-    r"(\d+|[零一二两三四五六七八九十])\s*(" + "|".join(_LOG_COUNT_UNITS) + r")?"
+    r"(?:\d+|[零一二两三四五六七八九十])\s*(?:" + "|".join(_LOG_COUNT_UNITS) + r")"
 )
 
 #: 许可的**单任务收尾语**（既有 `_MULTI_STEP_MARKERS` 里已审计的收尾短语；
@@ -485,12 +488,29 @@ def _acceptance_structure_error(kinds: list[str]) -> str:
 
     许可结构（确定性、可审计）：
 
-      ``填充词* 动作 填充词* [数量] (树种? 通用名词? 且至少其一) 填充词*``
-      ``[数量] 填充词* [收尾语] 填充词*``
+      ``填充词* 动作 填充词* [数量] (树种? 通用名词? 且至少其一)``
+      ``填充词* [数量] 填充词* [收尾语] 填充词*``
 
-    关键约束：**恰好一个动作**、**恰好一个目标短语**（树种+通用名词算同一个目标）、
-    数量与收尾语各至多一次且必须落在结构位置上。任何第二个动作/目标都判为结构违反 ——
-    「每个词元都在词表里」不等于「只有一个动作目标」。
+    每个类别的**前置状态/是否转移/可重复次数**都显式定义（不做「当前状态允许就算过」的宽松判定）：
+
+    ============  ==================================================  ===================
+    类别          允许的前置状态                                      违反原因码
+    ============  ==================================================  ===================
+    动作          ``prefix``（恰好一次，必须先于目标）                ``second_action``
+    树种          ``prefix`` / ``action`` / ``count``                 ``second_target``
+    通用名词      同上；或 ``target`` 且目标仅树种（仍算**一个**目标）  ``second_target``
+    数量          ``action`` / ``target``（整句至多一次）             ``count_repeated``
+                                                                    / ``count_misplaced``
+    收尾语        ``target`` / ``after``（至多一次，只在目标之后）     ``tail_misplaced``
+    填充词        任何状态（不改变顺序约束）                          ——
+    ============  ==================================================  ===================
+
+    终态条件：必须已进入 ``target``/``after``，否则 ``target_missing``；类别序列出现无法解释的
+    字符时 ``_acceptance_token_kinds`` 返回 ``None`` → ``unexplained``。
+
+    关键约束：**恰好一个动作**、**恰好一个目标短语**（树种+通用名词算同一个目标）、数量与收尾语
+    各至多一次且**只能落在上表允许的位置**。任何第二个动作/目标、错位或重复的数量/收尾语都判为
+    结构违反 —— 「每个词元都在词表里」不等于「只有一个动作目标」。
     """
     action = _ACCEPTANCE_KIND_ACTION
     species = _ACCEPTANCE_KIND_SPECIES
@@ -523,10 +543,12 @@ def _acceptance_structure_error(kinds: list[str]) -> str:
                 continue
             return "second_target"
         if kind == count:
-            if state in ("prefix", "action", "target", "after") and not seen_count:
+            if seen_count:
+                return "count_repeated"
+            if state in ("action", "target"):
                 seen_count = True
                 continue
-            return "count_repeated" if seen_count else "count_misplaced"
+            return "count_misplaced"
         if kind == tail:
             if state in ("target", "after") and not seen_tail:
                 seen_tail = True

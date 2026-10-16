@@ -1,4 +1,30 @@
 # Changelog
+### Phase 8I FU5 Follow-up 5 — 接受语法的数量 token 与既有数量契约一致性
+
+- **实测候选（基线实测，4 条全部为真实缺陷）**：数量 token **位置约束未被真正执行** ——
+  `好，两根去砍橡木原木`（数量在动作前）、`好，去砍橡木原木带回来两根`（数量在收尾语后）在基线上
+  都判 `accept_proposal` 并消费旧提案；**且数量单位可省略** —— `_ACCEPTANCE_COUNT_RE` 的单位组是
+  可选的，而 `_parse_log_count` 要求 `_LOG_COUNT_UNITS` 单位，于是 `好，去砍 2026 橡木原木`、
+  `好，去砍橡木原木 2026` 被许可语法当成数量完全消费，而 `parse_wood_request` 认为用户没写数量
+  （`explicit_log_count is None`、`requested=1`）—— 解释分歧。
+- **修复**（`app/tasks/intent.py`）：① `_ACCEPTANCE_COUNT_RE` 改为与 `_parse_log_count` **同契约**
+  （数字/中文数字 **必须** 带既有单位，单位表仍为 `_LOG_COUNT_UNITS`，不新增第二套）；
+  ② `_acceptance_structure_error()` 的数量分支改为显式位置约束 —— `count_repeated` 优先，
+  其次只允许前置状态 `action`/`target`，其余 `count_misplaced`；③ 文档串补上**类别转移表**
+  （前置状态 / 是否转移 / 可重复次数 / 违反原因码 / 终态条件）。
+- **语义**：裸数字与错位/重复数量 → `NOT_ACCEPT` + `handoff_compound_clarify`（保留提案、不消费、
+  不执行）；树种/明确数量冲突仍 `NEW_GOAL`（`好，去砍 3 根橡木原木` 与既有数量解析一致地判冲突）；
+  纯接受、合法单目标描述与既有收尾语继续通过；权限/确认/授权/冻结计划未改。
+- **测试**：`tests/test_phase8i_handoff_route_matrix.py` 191 → **217 条**（+26：数量位置反例与原因码、
+  重复/错位 token、真实路由负向断言、跨 `QUERY`/`ATOMIC_ACTION`、澄清后纯接受、合法与冲突对照）；
+  Follow-up 3/4 全部用例原样通过。
+- **真实服务器门禁**（本地脚本，不发布）：新增场景 K → `通过=1 失败=0 BLOCKED=0` / `REAL SERVER: PASS`；
+  K1（数量在动作前）与 K2（目标后裸数字）**都由真实第二个 Mineflayer 客户端 `IdCraft8G` 投递**
+  （`how=second_client`，日志无 `DEVIATION`）；提案保留、`targets=[]`、澄清话术送达、目标物品无变化。
+- **验证**：`pytest tests -q` → **4598 passed, 0 failed**；`ruff check .`、`ruff format --check .`、
+  `mypy app`、`git diff --check`、凭据扫描 0；CI 两个 Job。**范围声明**：只覆盖既有五个数量单位与
+  既有数字集合；数量在动作之前的自然说法会被澄清（刻意 fail-closed）。
+
 ### Phase 8I FU5 Follow-up 4 — 单目标结构门（Single Intent Structure Gate）
 
 - **缺陷（任务书 §3 + 基线实测）**：完整消费是**必要但不足**的 —— `好，去砍橡木原木去砍橡木原木`、

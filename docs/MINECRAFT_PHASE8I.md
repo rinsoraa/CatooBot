@@ -760,3 +760,103 @@ FU5 的 `handoff_target_verdict()` 只比对**木材目标与数量**（`parse_w
 **PASS**。静态审计候选全部被实际测试（4 条确为反例、1 条仅被既有护栏拦下，均给出真实输出）；修复后所有
 结构不唯一的输入都不消费旧提案、不触发任何执行入口，并走既有澄清路径；合法单任务（含已审计收尾语）
 继续通过；完全回归、静态检查与 CI 通过；权限与执行安全边界未发生变化。
+
+## 15. FU5 Follow-up 5：接受语法的数量 token 与既有数量契约一致性（Acceptance Grammar Conformance）
+
+### 15.1 修复前实测（基线 `4d8776e6f9d53a60a4903f01bcc51d7172ec2440`，**未改生产逻辑**）
+
+§1 的候选在基线上**全部实测为真实缺陷**（真实函数输出，待决提案 `oak_log × 2`）：
+
+| 消息 | `explicit_log_count` | `unexplained_acceptance_tail` | `acceptance_structure_violation` | `handoff_target_verdict` |
+| --- | --- | --- | --- | --- |
+| `好，两根去砍橡木原木`（数量在动作前） | `2` | `''` | `''`（**漏检**） | **`accept_proposal`** |
+| `好，去砍橡木原木带回来两根`（数量在收尾语后） | `2` | `''` | `''`（**漏检**） | **`accept_proposal`** |
+| `好，去砍 2026 橡木原木`（裸数字，无单位） | **`None`** | `''`（**漏检**） | `''`（**漏检**） | **`accept_proposal`** |
+| `好，去砍橡木原木 2026`（目标后裸数字） | **`None`** | `''`（**漏检**） | `''`（**漏检**） | **`accept_proposal`** |
+| `好，去砍两根橡木原木带回来`（合法对照） | `2` | `''` | `''` | `accept_proposal`（正确） |
+| `好，去砍三根橡木原木`（冲突对照） | `3` | `''` | `''` | `new_goal`（正确） |
+
+两条独立缺陷：**① 数量 token 的位置约束未被真正执行**（自动机只要「当前状态允许该类别」就放行）；
+**② 数量单位可省略** —— `_ACCEPTANCE_COUNT_RE` 的单位组是可选的，而 `_parse_log_count` 要求
+`_LOG_COUNT_UNITS` 单位，于是「许可语法把裸数字当数量」与「`parse_wood_request` 认为用户没写数量」
+（`requested=1`）出现解释分歧。
+
+### 15.2 修复：数量 token 的单位与位置（`app/tasks/intent.py`）
+
+1. `_ACCEPTANCE_COUNT_RE` 改为**与 `_parse_log_count` 同契约**：数字或中文数字 **必须** 带
+   `_LOG_COUNT_UNITS`（`根|个|块|条|截`）单位，单位不可省略；不新增第二套单位列表。
+2. `_acceptance_structure_error()` 的数量分支改为显式位置约束：`count_repeated`（已出现过）优先，
+   其次只允许前置状态 `action` / `target`（即声明文法中的两处 `[数量]`），其余一律 `count_misplaced`。
+3. 文档串补上**类别转移表**（前置状态 / 是否转移 / 可重复次数 / 违反原因码 / 终态条件），使实现与
+   声明文法可逐项对照。
+
+修复后实测（同一批消息，`rest = _acceptance_remainder(message)`）：
+
+| 消息 | `unexplained_acceptance_tail` | 结构原因码 | `handoff_target_verdict` |
+| --- | --- | --- | --- |
+| `好，两根去砍橡木原木` | `''` | `count_misplaced` | `not_accept` |
+| `好，去砍橡木原木带回来两根` | `''` | `count_misplaced` | `not_accept` |
+| `好，去砍 2026 橡木原木` | `2026` | `unexplained` | `not_accept` |
+| `好，去砍橡木原木 2026` | `2026` | `unexplained` | `not_accept` |
+| `好，去砍两根橡木原木带回来` | `''` | `''` | `accept_proposal`（合法） |
+| `好，去砍三根橡木原木` | `''` | `''` | `new_goal`（冲突） |
+| `好，去砍 3 根橡木原木`（带单位） | `''` | `''` | `new_goal`（冲突，与既有数量解析一致） |
+
+裸数字的拒绝由**两级**共同保证：完整消费（tail 非空）与结构门（`unexplained`）；数量错位只由结构门
+拦下（`count_misplaced`）。树种/数量冲突的 `NEW_GOAL` 语义与纯接受/合法收尾语行为**零变化**。
+
+### 15.3 自动化验收矩阵（§5 逐项；真实 `_route_turn()` + 真实 `_arbitrate_pending_handoff()`）
+
+`tests/test_phase8i_handoff_route_matrix.py` **191 → 217 条**（+26，原断言零删除、零放宽）：
+
+1. §5.1 数量位置反例 4 条：原因码 + `explicit_log_count` 一致性断言（裸数字两边都不算数量）
+   + `handoff_target_verdict == NOT_ACCEPT`；
+2. §5.4 重复/错位 token 4 条（`count_repeated` 优先于 `count_misplaced`）；
+3. §5.5 负向公共断言 4 条真实路由：`accept_calls == []`、提案仍在 `_pending_handoffs`、
+   `handoff_not_accept` 有而 `handoff_accepted` 无、`handoff_compound_clarify` + 非空澄清话术、
+   `wood_replies`/`wood_routes`/`delegate_calls`/`capability_calls`/`craft_calls` 全空、`plans.calls == []`；
+4. §5.6 跨入口：`TASK_PROPOSAL` + `QUERY`/`ATOMIC_ACTION`（8 条）；
+5. §5.7 澄清后恢复：再发纯接受 → 只消费一次（4 条）；
+6. §5.2/§5.3 合法与冲突对照各 1 条（合法数量位置消费一次且目标只来自提案；`三根` 走既有 `NEW_GOAL`、
+   不消费旧提案）；
+7. §5.8 无回归：Follow-up 3（许可集/冲突集/未知尾部）与 Follow-up 4（五条结构反例、机制分离、跨入口、
+   真实路由）全部原样通过。
+
+### 15.4 真实第二客户端证据（§6）
+
+本地专用 `scripts/phase8i_handoff_smoke_real.py`（**不发布**）新增场景 **K**：
+`CatooBot_backups/_phase8i_fu5fu5_gateK1.log` → **`通过=1 失败=0 BLOCKED=0` / `REAL SERVER: PASS`**。
+真实 Java 1.21.1 + 真实 Runtime/MinecraftService + 真实 Provider + 真实待决 `oak_log × 2`。
+
+| 子用例 | 消息 | 投递路径 | 证据 |
+| --- | --- | --- | --- |
+| K1 | `好，两根去砍橡木原木`（数量在动作前） | **真实第二 Mineflayer 客户端 `IdCraft8G`**（`how=second_client`） | `handoff_compound_clarify`、`targets=[]`、提案保留、澄清话术真实送达、目标物品无变化 |
+| K2 | `好，去砍橡木原木 2026`（目标后裸数字） | **真实第二 Mineflayer 客户端**（`how=second_client`） | 同上 |
+| K-对照 | `好，去砍橡木原木`（纯接受） | 同上 | 提案**恰好消费一次** |
+
+**本次无替代注入证据**（场景 K 两条均由真实第二客户端投递，日志无 `DEVIATION`）；替代注入证据仍见
+§14.4 的 J5（历史记录）。世界自然掉落照旧全量记录（全程 `{'rotten_flesh': 1}`），断言只针对目标相关物品。
+
+### 15.5 质量门禁
+
+* `pytest tests -q` → **4598 passed, 0 failed**（4572 + 新增 26）。本时段**未触发**既有已知时段抖动
+  `tests/test_social.py::TestCognitionEngine::test_direct_mention_not_blocked_by_sleeping`；该抖动在上一轮
+  （§14.5）为唯一失败项，**其断言未被修改或放宽**，本地结果与 CI 结果分别记录。
+* `ruff check .`、`ruff format --check .`、`mypy app`、`git diff --check`、凭据扫描、受保护区域审计见交付报告；
+  本地门禁脚本与日志保持 untracked（`scripts/` 0 tracked）。
+
+### 15.6 保留边界（如实）
+
+* 结构门仍是**闭集文法**：它保证「整段匹配一个动作 + 一个目标短语 + 至多一个带单位数量」，不声称理解
+  任意自然语言；**过度拒绝是可能的**（例如数量在动作之前的自然说法会被澄清），这是刻意 fail-closed。
+* 数量文法只覆盖既有 `_LOG_COUNT_UNITS` 的五个单位与既有数字/中文数字集合；不新增单位或量词。
+* 被澄清的表达**不解析、不执行**，也不新增任何能力。
+* 本阶段范围外（不变）：8D 导航可达性、配方变体按库存可排序性、真实成功迁移演练、`test_social.py` 时段抖动。
+
+### 15.7 裁决
+
+**PASS**。§1 每条候选都在基线被实测（4 条确为反例，附真实函数与仲裁输出）；数量 token 只有在语义、单位、
+数值与位置均符合既有契约时才参与接受，裸数字与错位/重复数量不再被静默消费；合法纯接受、相容单目标描述与
+既有收尾语继续正常工作，明确树种/数量冲突的 `NEW_GOAL` 语义不变；结构负向用例在真实仲裁中保留提案、
+返回澄清、执行入口零调用，跨决策类别与 STOP/CANCEL/双确认契约无回归；本地全量测试与 CI 结果完整报告
+（无隐瞒失败）；关键新增反例 K1/K2 有**真实第二客户端**路径证据；权限模型与受保护区域未变。

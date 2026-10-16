@@ -28,6 +28,7 @@ from app.integrations.minecraft.chat_bridge import (
 )
 from app.tasks.intent import (
     acceptance_structure_violation,
+    explicit_log_count,
     is_permissive_wood_acceptance,
     unexplained_acceptance_tail,
 )
@@ -778,3 +779,118 @@ async def test_fu5fu4_pure_acceptance_still_works_after_structure(message: str) 
     assert len(h.bridge.accept_calls) == 1  # type: ignore[attr-defined]
     assert h.bridge.wood_replies == [("IdCraft", "s", "砍橡木原木 2 根")]  # type: ignore[attr-defined]
     assert h.bridge._pending_handoffs == {}  # type: ignore[attr-defined]
+
+
+# ---- Phase 8I FU5 Follow-up 5 §5：数量 token 的单位与位置必须与既有数量契约一致 ----
+
+#: §1 数量位置/单位反例 → 结构原因码（``unexplained`` = 裸数字无法被许可语法解释）。
+COUNT_POSITION_CASES: tuple[tuple[str, str], ...] = (
+    ("好，两根去砍橡木原木", "count_misplaced"),
+    ("好，去砍橡木原木带回来两根", "count_misplaced"),
+    ("好，去砍 2026 橡木原木", "unexplained"),
+    ("好，去砍橡木原木 2026", "unexplained"),
+)
+
+#: §5.4 重复/错位 token（重复优先于错位）。
+COUNT_TOKEN_CASES: tuple[tuple[str, str], ...] = (
+    ("好，去砍两根橡木原木两根", "count_repeated"),
+    ("好，去砍两根橡木原木带回来两根", "count_repeated"),
+    ("好，两根去砍橡木原木", "count_misplaced"),
+    ("好，去砍橡木原木 2026", "unexplained"),
+)
+
+COUNT_POSITION_MESSAGES = tuple(message for message, _ in COUNT_POSITION_CASES)
+
+
+@pytest.mark.parametrize(("message", "expected"), COUNT_POSITION_CASES)
+def test_fu5fu5_count_token_reason_codes(message: str, expected: str) -> None:
+    """§5.1/§5.4：原因码必须能从明确文法解释，且与既有数量契约一致。"""
+    rest = _acceptance_remainder(message)
+    assert rest, message
+    assert acceptance_structure_violation(rest) == expected
+    assert is_permissive_wood_acceptance(rest) is False
+    assert handoff_target_verdict(message, PENDING) == NOT_ACCEPT
+    # §4.1：许可语法与 parse_wood_request 的数量解释**不得分歧** —— 裸数字两边都不算数量。
+    if expected == "unexplained":
+        assert explicit_log_count(message) is None
+    else:
+        assert explicit_log_count(message) == 2
+
+
+@pytest.mark.parametrize(("message", "expected"), COUNT_TOKEN_CASES)
+def test_fu5fu5_repeated_or_misplaced_count_tokens(message: str, expected: str) -> None:
+    """§5.4：重复/错位数量 token 的结果必须能从文法解释（重复优先于错位）。"""
+    rest = _acceptance_remainder(message)
+    assert acceptance_structure_violation(rest) == expected
+    assert handoff_target_verdict(message, PENDING) == NOT_ACCEPT
+
+
+async def _fu5fu5_negative(
+    h: Harness,
+    message: str,
+    kind: TurnDecisionKind = TurnDecisionKind.TASK_PROPOSAL,
+) -> None:
+    """§5.5 执行副作用断言（真实 _route_turn + 真实 _arbitrate_pending_handoff）。"""
+    reply = await h.send(message, kind=kind)
+    assert h.bridge.accept_calls == []  # type: ignore[attr-defined]
+    assert h.bridge.wood_replies == []  # type: ignore[attr-defined]
+    assert ("IdCraft", "s") in h.bridge._pending_handoffs  # type: ignore[attr-defined]
+    assert "handoff_not_accept" in h.reasons
+    assert "handoff_accepted" not in h.reasons
+    assert "handoff_compound_clarify" in h.reasons
+    assert reply is not None and reply.reply
+    assert "一件" in (reply.reply or "")
+    assert h.bridge.wood_routes == []  # type: ignore[attr-defined]
+    assert h.bridge.delegate_calls == []  # type: ignore[attr-defined]
+    assert h.bridge.capability_calls == []  # type: ignore[attr-defined]
+    assert h.bridge.craft_calls == []  # type: ignore[attr-defined]
+    assert h.plans.calls == []
+
+
+@pytest.mark.parametrize("message", COUNT_POSITION_MESSAGES)
+async def test_fu5fu5_count_position_never_consumes(message: str) -> None:
+    """§5.1/§5.5：数量错位或没有单位的裸数字绝不消费待决提案。"""
+    await _fu5fu5_negative(Harness(pending=PENDING), message)
+
+
+@pytest.mark.parametrize("kind", [TurnDecisionKind.QUERY, TurnDecisionKind.ATOMIC_ACTION])
+@pytest.mark.parametrize("message", COUNT_POSITION_MESSAGES)
+async def test_fu5fu5_count_holds_across_decision_kinds(
+    message: str,
+    kind: TurnDecisionKind,
+) -> None:
+    """§5.6：三种入口类别都不得绕过数量边界。"""
+    await _fu5fu5_negative(Harness(pending=PENDING), message, kind)
+
+
+@pytest.mark.parametrize("message", COUNT_POSITION_MESSAGES)
+async def test_fu5fu5_pure_acceptance_still_works_after_count_clarify(message: str) -> None:
+    """§5.7：数量反例澄清之后，用户再发纯接受 → 提案仍可且只可消费一次。"""
+    h = Harness(pending=PENDING)
+    await h.send(message)
+    assert h.bridge.accept_calls == []  # type: ignore[attr-defined]
+    await h.send("好，去砍橡木原木")
+    assert len(h.bridge.accept_calls) == 1  # type: ignore[attr-defined]
+    assert h.bridge.wood_replies == [("IdCraft", "s", "砍橡木原木 2 根")]  # type: ignore[attr-defined]
+    assert h.bridge._pending_handoffs == {}  # type: ignore[attr-defined]
+
+
+async def test_fu5fu5_legal_count_position_still_consumes() -> None:
+    """§5.2 合法对照：数量带单位且位于文法位置 → 消费一次，数量只来自提案。"""
+    h = Harness(pending=PENDING)
+    reply = await h.send("好，去砍两根橡木原木带回来")
+    assert len(h.bridge.accept_calls) == 1  # type: ignore[attr-defined]
+    assert h.bridge.wood_replies == [("IdCraft", "s", "砍橡木原木 2 根")]  # type: ignore[attr-defined]
+    assert h.bridge._pending_handoffs == {}  # type: ignore[attr-defined]
+    assert reply is not None
+
+
+async def test_fu5fu5_conflict_count_keeps_new_goal_semantics() -> None:
+    """§5.3 冲突对照：明确不同数量 → 既有 NEW_GOAL 语义，旧提案不得被消费。"""
+    assert handoff_target_verdict("好，去砍三根橡木原木", PENDING) == NEW_GOAL
+    h = Harness(pending=PENDING)
+    await h.send("好，去砍三根橡木原木")
+    assert h.bridge.accept_calls == []  # type: ignore[attr-defined]
+    assert "handoff_accepted" not in h.reasons
+    assert "handoff_new_goal" in h.reasons
+    assert ("IdCraft", "s") not in h.bridge._pending_handoffs  # type: ignore[attr-defined]
