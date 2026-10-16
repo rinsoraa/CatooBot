@@ -7,7 +7,10 @@ R0.2 NAVIGATION: PASS
 R0.3 EVIDENCE/DOCUMENTATION: PASS
 R0.4 MIGRATION DRILL: PASS
 LOCAL FULL TESTS: pytest tests -q → 4632 passed, 0 failed, 0 skipped (802.40s, dev tree)
-CI: @CI@
+CI: 实现提交 run 38965148200（attempt 1 与 attempt 2）—— 两个 job 中 `webui · typecheck · tests · build` 始终 success；
+`lint · format · types · tests` 唯一非成功步骤是**既有** `Minecraft runtime tests (ActionRuntime 单测 + E2E)`：
+`minecraft_runtime/test/e2e.js:135` `placeAndWait` → `timeout waiting for: runtime 看见 Followee`（与本轮 Python 改动无关，
+未改任何断言/超时）。证据提交的 CI run 见 §10。
 REAL CLIENT GATES: R1 4/4 PASS (IdCraft8G second client; R1c bridge injection = DEVIATION) | R2 N1 PASS, N3/N5 PASS, N6 PASS (see 8)
 FINAL HEAD == origin/main: @HEAD@
 DIRTY: 0
@@ -174,11 +177,13 @@ MinecraftService + 真实 Provider（`enabled=True`）+ 真实第二个 Mineflay
 
 * `pytest tests -q` → **4632 passed, 0 failed, 0 skipped**（802.40s）。
 * `ruff check .`、`ruff format --check .`、`mypy app`、`git diff --check`、凭据扫描：见 §10 与最终提交。
-* GitHub Actions：@CI@
+* GitHub Actions：实现提交 run 38965148200 attempt 1/2 仅既有 `minecraft_runtime` E2E 断言超时（详见首屏 CI 行）；
+  `webui` job 两次均 success。**首轮失败已保留**，重跑只针对失败 job，且未修改任何断言/超时/阈值。
 
 ## 10. 最终一致性
 
-* 代码提交：@IMPL_SHA@；文档提交：@DOC_SHA@；镜像 HEAD == `origin/main` == @HEAD@；工作区 dirty=0。
+* 实现/测试提交：`5d3f8e14c3b1309646ebb5eca6f72ab146d8f958`（10 文件 +1343/−14）；
+  证据提交：@DOC_SHA@；镜像 HEAD == `origin/main` == @HEAD@；工作区 dirty=0，`scripts/` 0 tracked。
 
 ## 11. 路线图 v2.0 状态更新文本（可直接复制）
 
