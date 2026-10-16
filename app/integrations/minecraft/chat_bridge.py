@@ -44,11 +44,11 @@ from app.tasks.intent import (
     WOOD_SPECIES,
     TaskIntentDetector,
     WoodRequest,
+    acceptance_structure_violation,
     explicit_log_count,
     has_compound_connector,
     mentions_wood,
     parse_wood_request,
-    acceptance_structure_violation,
     unexplained_acceptance_tail,
 )
 from app.tasks.resource_handoff import (
