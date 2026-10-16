@@ -538,6 +538,11 @@ async def test_fu5_conflict_holds_across_decision_kinds(
         ("可以，不过这次砍五根橡木原木", NEW_GOAL),
         ("好，去砍橡木原木并跟我走", NOT_ACCEPT),
         ("好，去砍橡木原木，然后探索附近", NOT_ACCEPT),
+        ("好，去砍橡木原木，帮我挖附近的石头", NOT_ACCEPT),
+        ("好，去砍橡木原木，挖点石头", NOT_ACCEPT),
+        ("好，去砍橡木原木，去挖石头", NOT_ACCEPT),
+        ("好，去砍橡木原木再去挖石头", NOT_ACCEPT),
+        ("好，去砍橡木原木再回来", ACCEPT_PROPOSAL),
         ("好，先跟我去另一个地方", NOT_ACCEPT),
         ("好，去砍竹子", NOT_ACCEPT),
         ("好，给我做 64 块橡木木板", NOT_ACCEPT),
@@ -550,9 +555,14 @@ def test_fu5_target_consistency_contract(message: str, expected: str) -> None:
 
 # ---- Phase 8I FU5 Follow-up：复合意图不得消费待决提案（§必测场景 3、4）----
 
+#: 复合接受表达：目标与提案相容，但整条消息还有别的意图片段。前两条是 FU5-FU 的
+#: 连接词/跟随类；后两条是本轮补的**无连接词**复合指令（此前会被误当成接受并消费提案）。
 COMPOUND_MESSAGES = (
     "好，去砍橡木原木并跟我走",
     "好，去砍橡木原木，然后探索附近",
+    "好，去砍橡木原木，帮我挖附近的石头",
+    "好，去砍橡木原木，挖点石头",
+    "好，去砍橡木原木再去挖石头",
 )
 
 
@@ -560,15 +570,19 @@ COMPOUND_MESSAGES = (
 async def test_fu5fu_compound_intent_never_consumes(message: str) -> None:
     """§必测 3/4：目标相容但整条消息还有别的意图 → 保留提案、绝不消费、不吞额外意图。"""
     h = Harness(pending=PENDING)
-    await h.send(message)
+    reply = await h.send(message)
     assert h.bridge.accept_calls == []  # type: ignore[attr-defined]
     assert h.bridge.wood_replies == []  # type: ignore[attr-defined]
     assert ("IdCraft", "s") in h.bridge._pending_handoffs  # type: ignore[attr-defined]
     assert "handoff_not_accept" in h.reasons
     assert "handoff_accepted" not in h.reasons
-    # 额外意图没有被吞掉：消息仍进入自己的既有路由（木材入口 + 既有任务入口）
-    assert h.bridge.wood_routes == [message]  # type: ignore[attr-defined]
-    assert h.bridge.delegate_calls == [message]  # type: ignore[attr-defined]
+    # 本轮补丁：复合消息**既不**消费提案，也**不**把第二个目标静默丢掉 —— 桥接改为澄清
+    # （保留提案、不执行、不替用户猜），因此不进任何执行/任务路由。
+    assert "handoff_compound_clarify" in h.reasons
+    assert reply is not None and reply.reply
+    assert "一件" in (reply.reply or "")
+    assert h.bridge.wood_routes == []  # type: ignore[attr-defined]
+    assert h.bridge.delegate_calls == []  # type: ignore[attr-defined]
     assert h.plans.calls == []
 
 
@@ -580,11 +594,14 @@ async def test_fu5fu_compound_holds_across_decision_kinds(
 ) -> None:
     """§验收门禁：非 task_proposal 类别下复合意图同样不得消费（不重新引入 FU4 问题）。"""
     h = Harness(pending=PENDING)
-    await h.send(message, kind=kind)
+    reply = await h.send(message, kind=kind)
     assert h.bridge.accept_calls == []  # type: ignore[attr-defined]
     assert h.bridge.wood_replies == []  # type: ignore[attr-defined]
     assert ("IdCraft", "s") in h.bridge._pending_handoffs  # type: ignore[attr-defined]
     assert h.bridge.craft_calls == []  # type: ignore[attr-defined]
+    assert h.bridge.capability_calls == []  # type: ignore[attr-defined]
+    assert "handoff_compound_clarify" in h.reasons
+    assert reply is not None and reply.reply
     assert h.plans.calls == []
 
 

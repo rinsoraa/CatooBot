@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 import time
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -295,23 +296,104 @@ def _is_pure_acceptance_tail(rest: str) -> bool:
     return any(rest.startswith(head) for head in _ACCEPT_HEADS)
 
 
+_CLAUSE_SPLIT_RE = re.compile(r"[，,、；;。！!？?\n]+")
+#: 「再」不在这里 —— 它只有在后面确实跟着一个新目标时才算复合（见 ``_has_trailing_goal``），
+#: 否则「去砍橡木原木再回来」这种**单一任务**会被误判成复合意图。
+_TRAILING_MARKERS = ("再",)
+
+
+def _clause_is_goal(clause: str) -> bool:
+    """这个从句本身是不是一个可执行目标（全部复用既有、已审计的解析器）。"""
+    text = str(clause or "").strip()
+    if not text:
+        return False
+    wood = parse_wood_request(text)
+    if wood is not None and not wood.problem:
+        return True
+    craft = parse_craft_request(text)
+    if craft is not None and not craft.problem and craft.item:
+        return True
+    if _DETECTOR.detect_follow(text):
+        return True
+    reasons = tuple(getattr(_DETECTOR.detect(text), "reasons", ()) or ())
+    has_verb = any(str(reason).startswith("verb:") for reason in reasons)
+    has_resource = any(str(reason).startswith("resource:") for reason in reasons)
+    return has_verb and has_resource
+
+
+def _has_second_clause_goal(rest: str) -> bool:
+    """标点切分后，**第一个从句之外**还有从句本身是个可执行目标。
+
+    覆盖「好，去砍橡木原木，帮我挖附近的石头」这类**没有连接词**的复合指令：它既没有
+    「并/然后」也没有跟随/合成信号，此前会被当成对旧提案的接受。
+    """
+    clauses = [c for c in _CLAUSE_SPLIT_RE.split(str(rest or "")) if c.strip()]
+    return len(clauses) > 1 and any(_clause_is_goal(clause) for clause in clauses[1:])
+
+
+def _has_trailing_goal(rest: str, marker: str) -> bool:
+    """标记之后确实跟着一个新目标才算复合（例：「再去挖石头」✓，「再回来」✗）。"""
+    text = str(rest or "")
+    index = text.find(marker)
+    while index >= 0:
+        if _clause_is_goal(text[index + len(marker) :]):
+            return True
+        index = text.find(marker, index + 1)
+    return False
+
+
+def is_compound_acceptance(message: str) -> bool:
+    """消息是不是「既描述了提案目标、又带了另一个意图」的复合接受表达。
+
+    这种消息无法无歧义地当成单一接受：既不能消费旧提案，也不能替用户猜「只想做其中
+    一件」——调用方应当**澄清**（不消费、不执行，保留提案）。
+    """
+    rest = _acceptance_remainder(str(message or "").strip())
+    if not rest:
+        return False
+    wood = parse_wood_request(rest)
+    if wood is None or wood.problem:
+        return False
+    return _has_extra_intent(rest)
+
+
+def compound_clarify_text(pending: dict[str, Any] | None) -> str:
+    """复合接受表达的澄清话术（不猜测、不执行、明确提案仍在等）。"""
+    item = str((pending or {}).get("item") or (pending or {}).get("block") or "").strip()
+    try:
+        amount = int((pending or {}).get("amount") or 0)
+    except (TypeError, ValueError):
+        amount = 0
+    target = (item + " ×" + str(amount)) if item and amount else (item or "刚才那个目标")
+    return (
+        "这句话里不止一件事，罐头一次只做一件，怕替你猜错就先不动手。"
+        "刚才的采集提案还留着（" + target + "）：你回一句只做哪一件，我就按那一件走既有流程。"
+    )
+
+
 def _has_extra_intent(rest: str) -> bool:
-    """FU5 Follow-up §实现原则：accept 之后的剩余内容里是否还有**别的可执行意图**。
+    """accept 之后的剩余内容里是否还有**别的可执行意图**（FU5-FU + 本轮补丁）。
 
     复用既有、已审计的解析器（不新增内容黑名单）：
       * ``_DETECTOR.detect_follow`` —— 跟随意图（既有 ``FOLLOW_INTENT_KEYWORDS``，含「跟我」）；
-      * ``parse_craft_request``   —— 合成意图；
-      * ``has_compound_connector`` —— 既有并列/顺承连接词（「并/然后/再/接着/顺便」等）。
+      * ``parse_craft_request``     —— 合成意图；
+      * ``has_compound_connector``   —— 明确的并列/顺承连接词（「并/然后/接着/顺便」等）；
+      * ``_has_trailing_goal``      —— 「再」后面确实跟着新目标（「再回来」不算）；
+      * ``_has_second_clause_goal`` —— 标点切分后第二个从句本身就是目标（**无连接词**）。
 
-    任一命中就说明这条消息**不止一个意图片段**：保守地不消费待决提案，把消息交回它自己的
-    既有路由（用户明确说的额外意图必须由它自己的授权链处理，绝不被静默丢弃）。
+    任一命中就说明这条消息**不止一个意图片段**：一律不消费待决提案；调用方再用
+    ``is_compound_acceptance`` 区分「澄清」与「交回自己的路由」。
     """
     if _DETECTOR.detect_follow(rest):
         return True
     craft = parse_craft_request(rest)
     if craft is not None and not craft.problem and craft.item:
         return True
-    return has_compound_connector(rest)
+    if has_compound_connector(rest):
+        return True
+    if any(_has_trailing_goal(rest, marker) for marker in _TRAILING_MARKERS):
+        return True
+    return _has_second_clause_goal(rest)
 
 
 def _normalized_block(name: Any) -> str:
@@ -774,6 +856,17 @@ class MinecraftChatBridge:
                     session_id=session_id,
                     text_chars=len(message),
                 )
+                # 本轮补丁：复合接受表达（既描述提案目标、又带另一个意图）**不**交回
+                # 它自己的路由 —— 那会把第二个目标静默丢掉。改为澄清：不消费、不执行、
+                # 保留提案，明确请用户指定只做哪一件。
+                if is_compound_acceptance(message):
+                    self._route(
+                        reason_code="handoff_compound_clarify",
+                        route_target=RouteTarget.CHAT_ONLY.value,
+                        session_id=session_id,
+                        text_chars=len(message),
+                    )
+                    return _TurnReply(compound_clarify_text(pending))
                 return None
             return await self._accept_pending_handoff(username, session_id, message)
         if key in self._pending_handoffs:

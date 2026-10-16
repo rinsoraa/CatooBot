@@ -477,3 +477,88 @@ FU5 的 `handoff_target_verdict()` 只比对**木材目标与数量**（`parse_w
 * 上游决策层偶尔不产出可用决策（`model_no_tool_call`）时，桥接走既有澄清路径，仲裁不介入；此时
   「不消费」由 fail-closed 澄清保证，属替代证据（已在 §11.4 说明）。
 * 导航可达性、配方变体排序、真实成功迁移演练、`test_social.py` 时段抖动仍为独立后续事项。
+* **（本轮 Follow-up 更正）** §11.5 第二条已被取代：复合类消息**不再**交回它自己的路由，而是**澄清**
+  （不消费、不执行、不替用户猜）—— 见 §12.4。
+
+## 12. Follow-up 5 Follow-up（第二轮）：无连接词复合意图与澄清
+
+用户报告（本轮驱动）：FU5-FU 只覆盖「跟随 / 合成 / 预先列举的连接词」三类信号，因此
+`好，去砍橡木原木，帮我挖附近的石头` 这类**没有连接词**的复合指令仍会被判成对旧提案的接受。
+
+### 12.1 修复前实测（生产代码，非推测）
+
+| 消息（待决提案 `oak_log × 2`） | 修复前判定 | 修复前额外意图信号 |
+| --- | --- | --- |
+| `好，去砍橡木原木，帮我挖附近的石头` | `accept_proposal`（**会消费旧提案**） | `False` |
+| `好，去砍橡木原木，挖点石头` | `accept_proposal` | `False` |
+| `好，去砍橡木原木，去挖石头` | `accept_proposal` | `False` |
+| `好，去砍橡木原木再去挖石头` | `not_accept`（「再」恰在连接词表里） | `True` |
+| `好，去砍橡木原木再回来` | `not_accept`（**误判**：单一任务） | `True` |
+
+### 12.2 修复（确定性、复用既有解析器）
+
+* `app/integrations/minecraft/chat_bridge.py` 新增 `_CLAUSE_SPLIT_RE`（按 `，,、；;。！!？?` 切分）、
+  `_clause_is_goal(clause)`（复用 `parse_wood_request` / `parse_craft_request` / `_DETECTOR.detect_follow`
+  / `_DETECTOR.detect` 的 `verb:` + `resource:` 理由组合 —— **不新增内容黑名单、不做语义猜测**）、
+  `_has_second_clause_goal(rest)`（第一个从句之外还有从句本身是目标）、
+  `_has_trailing_goal(rest, marker)`（「再」后面确实跟着新目标才算复合）。`_has_extra_intent()` 现按
+  「跟随 → 合成 → 连接词 → 再+新目标 → 第二个从句是目标」依次判定。
+* `app/tasks/intent.py`：`_COMPOUND_CONNECTORS` **移除「再」**（改由「标记之后是否是新目标」判定），
+  消除 `去砍橡木原木再回来` 的误判；其余连接词集合不变。
+* 澄清路径：新增纯函数 `is_compound_acceptance(message)`（接受词 + 与提案相容的采集描述 + **还有别的
+  意图**）与 `compound_clarify_text(pending)`；`_arbitrate_pending_handoff()` 在 `NOT_ACCEPT` 分支命中
+  前者时记录 `handoff_compound_clarify` 并返回澄清回复（**不消费、不执行、不猜「只想做其中一件」**）。
+
+### 12.3 修复后判定表（真实函数输出）
+
+| 消息 | 判定 | `is_compound_acceptance` | 行为 |
+| --- | --- | --- | --- |
+| `好，去砍橡木原木，帮我挖附近的石头` | `not_accept` | `True` | 澄清 |
+| `好，去砍橡木原木，挖点石头` / `…，去挖石头` | `not_accept` | `True` | 澄清 |
+| `好，去砍橡木原木再去挖石头` | `not_accept` | `True` | 澄清 |
+| `好，去砍橡木原木并跟我走` / `…，然后探索附近` | `not_accept` | `True` | 澄清（本轮起） |
+| `好，去砍橡木原木再回来` / `…带回来` / `…回来` | `accept_proposal` | `False` | 消费一次 |
+| `好，去砍橡木原木` / `好，去砍原木` / `同意` / `好，就按这个方案来` | `accept_proposal` | `False` | 消费一次 |
+| `好，去砍五根白桦原木` / `可以，不过这次砍五根橡木原木` | `new_goal` | `False` | 作废旧提案 |
+| `好，给我做 64 块橡木木板` / `好，先跟我去另一个地方` | `not_accept` | `False` | 走自己的既有路由（不变） |
+
+### 12.4 行为变更（如实）
+
+复合类消息的处理**从「交回消息自己的既有路由」改为「澄清」**：此前第二个意图（跟随/探索/挖掘）
+可能被静默丢掉（只执行木材那一半），本轮按用户给出的验收口径改为**问清再动**。相应地 FU5-FU 的
+两条测试断言被**替换为更强的一组**（不消费 + 提案保留 + `handoff_compound_clarify` + 真实澄清话术 +
+**零** `wood_routes` / `delegate_calls` / `capability_calls`）；原有断言其余部分零删除、零放宽。
+
+### 12.5 自动化回归
+
+`tests/test_phase8i_handoff_route_matrix.py` 由 99 条扩到 **116 条**（+17）：`COMPOUND_MESSAGES` 2 → 5 条
+（新增 `…，帮我挖附近的石头`、`…，挖点石头`、`…再去挖石头`）驱动真实 `_route_turn()` + 真实仲裁；
+契约表新增 5 行（含 `好，去砍橡木原木再回来` → `ACCEPT_PROPOSAL`）。
+
+### 12.6 真实服务器验证
+
+场景 **I** 扩到 3 条复合消息 + 1 条对照；最终一轮 `CatooBot_backups/_phase8i_fu5fu2_gateI3.log`：
+`通过=1 失败=0 BLOCKED=0` → `REAL SERVER: PASS`。三条复合消息**全部**（真实第二个 Mineflayer 客户端
+`IdCraft8G` 投递）：`handoff_not_accept` + `handoff_compound_clarify`、`targets=[]`（既有资源入口未收到
+任何目标）、提案保留、澄清话术**真实送达游戏内**：
+
+> 这句话里不止一件事，罐头一次只做一件，怕替你猜错就先不动手。刚才的采集提案还留着（oak_log ×2）：
+> 你回一句只做哪一件，我就按那一件走既有流程。
+
+对照的纯接受 `好，去砍橡木原木` 仍**恰好消费一次**（`被消费=True`），证明提案有效、门不是一刀切。
+
+### 12.7 夹具修正与环境噪声（如实）
+
+* 首跑 `_phase8i_fu5fu2_gateI1.log` 有 4 处「背包不变」失败：诊断确认是**环境噪声** —— 罐子自动捡起了
+  世界掉落物 `rotten_flesh`（基线 `{}` → 之后 `{'rotten_flesh': 1}`），与产品副作用无关。夹具据此改为
+  只对**与目标相关物品**（`oak_log/oak_planks/stick/cobblestone/stone/dirt/coal/iron_ore`）断言零副作用，
+  同时打印完整背包快照；采集/合成/挖掘产物仍被严格覆盖。
+* 中间迭代 `_phase8i_fu5fu2_gateI2.log` 为同一场景的诊断跑，保留在 `CatooBot_backups`。
+
+### 12.8 仍未覆盖的形态（因此**通用**复合门仍未达成）
+
+第二轮探测（真实函数输出）仍判成 `accept_proposal` 的形态：**既没有标点、也没有连接词、也没有「再」**
+的第二种目标 —— 例 `好，去砍橡木原木去挖石头`、`好，去砍橡木原木探索附近`、`好，去砍橡木原木挖附近的石头`；
+以及现有解析器完全识别不出的目标短语。这些形态**没有**被本轮修复覆盖，如实记录：**本阶段不宣称
+「通用复合意图接受门」已达成**；「从句切分 / 连接词 / 标记后目标」三类信号 + 既有解析器是当前实现的
+**真实检测范围**。

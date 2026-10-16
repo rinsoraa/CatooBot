@@ -288,8 +288,10 @@ def explicit_log_count(text: str) -> int | None:
 #: 只取既有多阶段词表（``_MULTI_STEP_MARKERS``）里的连接词 —— 不含「回来/带回来/捡起来/挖掉」
 #: 这类**单任务收尾语**：它们本来就是既有采集计划的一部分，不是第二个意图。
 #: 另外补几个同义连接词，仍然只表达「有连接结构」，不做语义判断。
+#: 「再」**不在**这里：它只有在后面确实跟着一个新目标时才算复合（调用方用「标记之后是否
+#: 是一个目标」判定），否则「去砍橡木原木再回来」这种单一任务会被误判成复合意图。
 _COMPOUND_CONNECTORS = tuple(
-    marker for marker in _MULTI_STEP_MARKERS if marker in ("并", "然后", "再", "接着", "顺便")
+    marker for marker in _MULTI_STEP_MARKERS if marker in ("并", "然后", "接着", "顺便")
 ) + ("之后", "以后", "同时", "另外", "而且", "以及", "and then")
 
 

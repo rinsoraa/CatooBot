@@ -1,4 +1,28 @@
 # Changelog
+### Phase 8I Follow-up 5 Follow-up 2 — 无连接词复合意图门与澄清（No-Connector Compound Intent Gate）
+
+- **缺陷（用户报告 + 生产代码实测确认）**：`_has_extra_intent()` 只认「跟随 / 合成 / 预先列举的连接词」
+  三类信号，于是**没有连接词**的复合指令「好，去砍橡木原木，帮我挖附近的石头」仍判成 `accept_proposal`
+  （`_has_extra_intent=False`）—— 会消费旧提案、第二个目标被静默丢弃。次要问题：「再」作为连接词做子串
+  匹配会把「好，去砍橡木原木再回来」这种单一任务误判成复合。
+- **修复**：`app/integrations/minecraft/chat_bridge.py` 新增 `_CLAUSE_SPLIT_RE` / `_clause_is_goal`（复用
+  既有 `parse_wood_request`、`parse_craft_request`、`_DETECTOR.detect_follow`、`_DETECTOR.detect` 的
+  `verb:`+`resource:` 理由）/ `_has_second_clause_goal`（标点切分后第二个从句本身是目标）/
+  `_has_trailing_goal`（「再」后面确实跟着新目标才算复合）；`app/tasks/intent.py` 的 `_COMPOUND_CONNECTORS`
+  移除「再」以消除误判。
+- **行为变更（如实）**：复合接受表达不再交回自己的路由（那会把第二个目标静默丢掉），改为**澄清** ——
+  `is_compound_acceptance()` + `compound_clarify_text()`，仲裁记录 `handoff_compound_clarify` 并回复
+  「一次只做一件，请指定做哪一件」，**不消费提案、不执行、不替用户猜**。
+- **测试**：`tests/test_phase8i_handoff_route_matrix.py` 99 → **116 条**（`COMPOUND_MESSAGES` 2→5，含无连接词
+  与「再」变体；契约表 +5 行；FU5-FU 两条断言替换为更强的「零路由 + 真实澄清话术」）。
+- **真实服务器验证**（本地门禁脚本，不发布）：场景 I 扩到 3 条复合消息 + 1 条对照，最终一轮
+  `通过=1 失败=0 BLOCKED=0` → `REAL SERVER: PASS`；三条复合消息均由真实第二个 Mineflayer 客户端投递，
+  全部触发 `handoff_compound_clarify`、澄清话术真实送达游戏内、既有资源入口未收到任何目标、提案保留；
+  对照的纯接受仍恰好消费一次。
+- **仍未覆盖（如实）**：既无标点、又无连接词、也无「再」的第二目标（例 `好，去砍橡木原木去挖石头`）仍判成
+  接受，**不宣称通用复合意图接受门已达成**。
+- **验证**：`pytest tests -q` 全量通过；`ruff check .`、`ruff format --check .`、`mypy app`、`git diff --check`。
+
 ### Phase 8I Follow-up 5 Follow-up — 复合意图接受门（Compound Intent Acceptance Gate）
 
 - **缺陷**：FU5 的 `handoff_target_verdict()` 只比对树种与明确数量，而 `parse_wood_request` 只抽取动作 + 树种 +
