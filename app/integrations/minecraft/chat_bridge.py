@@ -173,6 +173,106 @@ def _is_new_craft_request(message: str) -> bool:
     return craft is not None and not craft.problem and bool(craft.item)
 
 
+#: Phase 8I Follow-up 3 §4：待决资源提案的**显式接受门**四态判定结果。
+ACCEPT_PROPOSAL = "accept_proposal"
+NEW_GOAL = "new_goal"
+REJECT_PROPOSAL = "reject_proposal"
+NOT_ACCEPT = "not_accept"
+
+#: 明确的接受表达（必须位于消息**起始**，且紧跟标点或结束）。
+#: 「好难」「好像不行」这类以「好」开头却不是接受的消息不会被匹配。
+_ACCEPT_HEADS = (
+    "同意",
+    "可以",
+    "没问题",
+    "就这样",
+    "就按这个",
+    "按这个",
+    "按你说的",
+    "好的",
+    "好",
+    "行",
+    "嗯",
+    "去吧",
+    "去砍吧",
+    "干吧",
+    "开工吧",
+    "动手吧",
+    "办吧",
+)
+_ACCEPT_BOUNDARY = "，,。！!~～、 \t"
+#: 明确的拒绝/取消/停止信号：绝不当作接受，并立即作废待决提案。
+_REJECTION_SIGNALS = (
+    "取消",
+    "停止",
+    "停下",
+    "别",
+    "不用",
+    "算了",
+    "不要",
+    "不行",
+    "否决",
+    "拒绝",
+    "先不",
+)
+#: 询问/不确定信号：fail closed（「可以吗？」不是接受）。
+_QUESTION_SIGNALS = (
+    "吗",
+    "?",
+    "？",
+    "什么",
+    "怎么",
+    "为什么",
+    "多久",
+    "多少",
+    "能不能",
+    "是不是",
+    "要不要",
+)
+
+
+def _is_acceptance(text: str) -> bool:
+    """消息是不是一个**明确的接受表达**（起始处出现接受词，且紧跟标点或结束）。"""
+    for head in _ACCEPT_HEADS:
+        if not text.startswith(head):
+            continue
+        rest = text[len(head) :]
+        if not rest or rest[0] in _ACCEPT_BOUNDARY:
+            return True
+    return False
+
+
+def classify_handoff_reply(message: str) -> str:
+    """存在待决资源提案时，判断一条用户消息是否**明确接受**了它（Phase 8I FU3 §4）。
+
+    返回四态之一：
+      * ACCEPT_PROPOSAL —— 明确的接受表达，可以消费待决提案（仍走既有两道门）；
+      * NEW_GOAL        —— 新的可执行目标（合成请求或采集请求），按**它自己**的语义
+        重新评估，并作废旧提案：绝不复用旧提案的目标与数量；
+      * REJECT_PROPOSAL —— 明确拒绝/取消/停止：立即作废待决提案，绝不复活；
+      * NOT_ACCEPT      —— 询问、不确定、无关消息：**fail closed，不消费提案**
+        （提案保留到被明确接受或过期）。
+
+    判定顺序固定为「拒绝 → 新合成目标 → 询问 → 接受 → 新采集目标 → 兜底」。
+    决策层把「给我做 64 块橡木木板」和「好，去砍橡木原木」都判成 task_proposal，
+    所以「判成 task_proposal」本身**不是**接受证据，这里必须自己判语义。
+    """
+    text = str(message or "").strip()
+    if not text:
+        return NOT_ACCEPT
+    if any(signal in text for signal in _REJECTION_SIGNALS):
+        return REJECT_PROPOSAL
+    if _is_new_craft_request(text):
+        return NEW_GOAL
+    if any(signal in text for signal in _QUESTION_SIGNALS):
+        return NOT_ACCEPT
+    if _is_acceptance(text):
+        return ACCEPT_PROPOSAL
+    if parse_wood_request(text) is not None:
+        return NEW_GOAL
+    return NOT_ACCEPT
+
+
 class MinecraftChatBridge:
     """``minecraft.chat`` 事件 → USER 回合 → 游戏内回复。"""
 
@@ -553,14 +653,31 @@ class MinecraftChatBridge:
             craft = parse_craft_request(message)
             # Phase 8I H3：这句话本身就是一次新的合成请求时，它是新请求、不是接受 ——
             # 作废上一轮提案，并按新请求重新评估（提案绝不会被静默变成任务）。
-            if _is_new_craft_request(message):
-                self._pending_handoffs.pop((str(username), str(session_id)), None)
-            else:
-                # 有待决资源交接且用户明确接受（决策层判为 task_proposal）时，走**既有**
-                # 木材/资源入口 —— 合成计划的授权绝不外溢到资源操作。
+            # Phase 8I H3/FU3 §4：**显式接受门**。决策层把「给我做 64 块橡木木板」和
+            # 「好，去砍橡木原木」都判成 task_proposal，所以「判成 task_proposal」本身
+            # **不是**接受证据；只有本门判为接受才允许消费待决提案。
+            verdict = classify_handoff_reply(message)
+            handoff_key = (str(username), str(session_id))
+            if verdict in (NEW_GOAL, REJECT_PROPOSAL):
+                # 新目标取代旧提案 / 用户明确拒绝：立即作废，绝不复活、绝不复用旧目标与数量。
+                self._pending_handoffs.pop(handoff_key, None)
+            elif verdict == ACCEPT_PROPOSAL and handoff_key in self._pending_handoffs:
+                # 明确接受：走**既有**木材/资源入口 —— 合成计划的授权绝不外溢到资源操作。
                 accepted = await self._accept_pending_handoff(username, session_id, message)
                 if accepted is not None:
                     return accepted
+            if verdict != ACCEPT_PROPOSAL:
+                # §7：接受门的判定结果与原因必须可诊断（提案是否被消费一目了然）。
+                self._route(
+                    reason_code=f"handoff_{verdict}",
+                    route_target=(
+                        RouteTarget.TASK.value
+                        if verdict == NEW_GOAL
+                        else RouteTarget.CHAT_ONLY.value
+                    ),
+                    session_id=session_id,
+                    text_chars=len(message),
+                )
             if craft is not None:
                 return await self._craft_turn(username, session_id, message, craft)
             # FU4 §5.2：木材解析**只在这里**参与 —— 作为目标解析 + 额外安全否决：

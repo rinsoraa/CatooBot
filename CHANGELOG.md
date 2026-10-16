@@ -1,5 +1,23 @@
 # Changelog
 
+### Phase 8I Follow-up 3 — 显式接受门（Explicit Handoff Acceptance Gate）
+
+- **缺陷（真实代码审计）**：`_route_turn` 的 `TASK_PROPOSAL` 分支把「决策层判成 task_proposal」当成用户接受，
+  只要存在待决资源提案就消费它；于是新的**采集**请求（如「砍两根橡木原木」）会被当成接受，并用**旧提案的目标与数量**建任务，
+  用户当轮的新目标被静默丢弃；询问、不确定、无关消息同样会消费提案（fail-open）。
+- **修复**：新增 `classify_handoff_reply()` **四态接受门**（`accept_proposal` / `new_goal` / `reject_proposal` / `not_accept`），
+  判定顺序「拒绝 → 新合成目标 → 询问 → 明确接受 → 新采集目标 → 兜底」；只有明确接受才消费提案，
+  `new_goal` 作废旧提案并按新目标各自重评，`reject_proposal` 立即作废（不得复活），其余一律**不消费**（fail closed）。
+  每次判定写一条结构化路由记录（`handoff_accept_proposal` / `handoff_new_goal` / `handoff_reject_proposal` / `handoff_not_accept`）。
+- **测试**：新增 `tests/test_phase8i_handoff_route_matrix.py`（**27 条**）执行**真实** `_route_turn` 与**真实** `_accept_pending_handoff`，
+  覆盖 §5 十行矩阵，负向用例逐条断言「旧提案未被消费 / 无真实计划与观察调用 / 确认前零 action_id / 真实背包不变」。
+- **真实服务器**（本地脚本 `scripts/phase8i_handoff_smoke_real.py`，不发布）：场景 A（缺料 → 提案 → 接受 → 既有资源任务 → 确认门 →
+  执行 → 独立库存核验 → 重新规划 → 新确认 → 合成 → 独立核验）全 PASS，接受路径使用**第二个真实 Mineflayer 客户端**；
+  场景 E 关键负向路径（新采集请求不得当接受、跨会话不得消费、拒绝不得复活）PASS；E6 的接受语依赖上游分类（真实模型非确定性），
+  如实记录为**证据限制**，未据此放宽任何断言。
+- 未新增 Minecraft 工具/权限/执行器/任务状态机/数据库 schema 或迁移；未改 `ACTION_RISK`、`allow_medium` 默认值、双确认门与授权链。
+
+
 ### Phase 8I Follow-up 2 — 真机门禁 4/4 PASS（完整合成闭环 + 第三条真实缺陷）
 
 - 真机门禁（本地脚本 `scripts/phase8i_handoff_smoke_real.py`，不发布）最终 **4/4 PASS**：场景 A 完成**完整闭环** ——
