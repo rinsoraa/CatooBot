@@ -630,10 +630,19 @@ async function main() {
             y: dHere.y + 40,
             z: dHere.z,
           })
-          assert(
-            resp.status === 200 && resp.body.status === 'RUNNING',
-            `Test D：启动 → RUNNING（得到 ${JSON.stringify(resp.body)}）`,
+          // R1：这类「目标悬在头顶空气里」的请求现在会被 move_to 的只读可站立性预检**在动作启动前**
+          // 用稳定原因码拒绝（path.target_not_standable）—— 比等 30 秒动作超时更准确。两种结果都合法，
+          // 但都必须是结构化失败、绝不能 completed（下面的断言继续守着这一点）。
+          const earlyReject = Boolean(
+            resp.body && resp.body.error && resp.body.error.code === 'path.target_not_standable',
           )
+          assert(
+            earlyReject || (resp.status === 200 && resp.body.status === 'RUNNING'),
+            `Test D：启动 → RUNNING 或预检快速拒绝（得到 ${JSON.stringify(resp.body)}）`,
+          )
+          if (earlyReject) {
+            console.log('[e2e] move_to 不可站立预检 ✓ path.target_not_standable（动作未启动）')
+          }
           const actionId = resp.body.action_id
           const isTerminal = (row) =>
             [
@@ -657,7 +666,9 @@ async function main() {
           )
           if (terminal && terminal.event === 'minecraft.action.failed') {
             assert(
-              terminal.code === 'path.not_found' || terminal.code === 'path.not_reached',
+              terminal.code === 'path.not_found' ||
+                terminal.code === 'path.not_reached' ||
+                terminal.code === 'path.target_not_standable',
               `Test D：结构化错误码（得到 ${terminal.code}）`,
             )
             assert(
