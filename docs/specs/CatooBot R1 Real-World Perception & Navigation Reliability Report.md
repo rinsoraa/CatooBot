@@ -7,7 +7,7 @@ R1.2 NAVIGATION RELIABILITY: PASS
 R1.3 TARGET FRESHNESS / LIFECYCLE: PASS
 R1.4 EVIDENCE / CI / HYGIENE: PASS
 BASELINE SHA: 32649eb1856feba56e970d51026f79cf6ad477fc
-IMPLEMENTATION SHA: （见 §9 收尾提交）
+IMPLEMENTATION SHA: 38ca66d0271550846233c0466843112286583db9
 FINAL HEAD == origin/main: YES（闭环时核验；当前报告提交见 Git 历史）
 DIRTY: 0
 scripts/ TRACKED: 0
@@ -114,8 +114,11 @@ FOLLOW-UP CREATED: NO
 
 ## 9. 发布与 CI
 
-* 实现+测试+文档提交与 CI run 见收尾提交；`HEAD == origin/main`、`dirty=0`、`scripts/` 0 tracked 均在收尾时核验。
-* 首轮 CI 若命中既有 `minecraft_runtime` E2E flake：保留首轮失败并只重跑失败 job，报告区分 attempt。
+* 实现+测试+文档提交：`38ca66d0271550846233c0466843112286583db9`（337 commits）。
+  镜像 `HEAD == origin/main`（= 本文件所在提交），`dirty=0`，`scripts/` **0 tracked**，受保护区 diff **0 行**，`git diff --check` exit 0。
+* CI：[run 39061860694](https://github.com/rinsoraa/CatooBot/actions/runs/39061860694) **attempt 1 两个 job 均 success**
+  （`webui · typecheck · tests · build`、`lint · format · types · tests`），零非成功步骤，**本轮没有触发既有 E2E flake**。
+  （记录口径：若后续补文档提交再次触发，另行记录 attempt；重跑通过不等于根因修复。）
 
 ## 10. 结论
 
