@@ -335,3 +335,46 @@ chunks_total, chunks_loaded, coverage, coverage_reason}`；用真实 `bot.world.
 | P1 第三方观察端 | **BLOCKED** | 观察端 30s 内未出现在 `/list` |
 
 **N9-B 的修复代码与单测已在库中，但没有真机复验，因此不判 PASS**；N8 同样维持 NOT PASSED。
+
+---
+
+## 追加（3）：N9-B 的**能力边界**结论（含我一次错误修复的撤回）
+
+### 决定性证据：时序**不能**区分「我挖掉的」与「期间被别人移除的」
+
+修好本地门禁脚本（此前 0 字节退出的根因是我上一次打补丁把 `if __name__ == "__main__"` 入口行弄丢了）后，真机复跑 N9-B：
+
+```text
+N9-B 命中 WAITING_ACTION=('WAITING_ACTION', 'act_mvd0kxbd_2')
+N9-B 已移除目标方块，真实读=air
+attribution: world_effect=BLOCK_REMOVED, attribution=SELF_INFERRED, assurance=INFERRED,
+             confirm_basis=dig_lifecycle_timing, strict_self_proof=false,
+             expected_dig_ms=3000, removal.elapsed_ms=2570, removal.ratio=0.857, removal.source=server
+N9-B 终态=SUCCEEDED
+```
+
+**结论**：外部 `/setblock air` 在这次挖掘的 2570ms（期望 3000ms、ratio 0.857）到达，与一次真实橡木挖掘**完全同形**；
+产品自己的归因 schema 也只是 `SELF_INFERRED` / `strict_self_proof=false`。也就是说：
+**在当前能力集（Mineflayer 客户端 + 无服务端插件）内，无法证明「这个方块变化是本次挖掘造成的」。**
+
+### 我因此撤回了一个错误修复（有证据，不硬撑）
+
+我此前基于「更新早于期望时长 50% 即判外部」加了一条 `block.changed_during_dig` 硬门。上述证据表明该前提是错的：
+ratio 0.857 的正常挖掘与外部移除无法区分，这条门只会**误杀合法挖掘**。已**撤回**（保留 `first_update_after_ms` /
+`expected_dig_ms` / `source` 等只读观测值到 `controller.digAttribution`，不参与判定）。
+`dig.test.js` 95/95、`dig_attribution.test.js` 71/71、`move_to.test.js` 84/84 全部保持通过。
+
+### N9-B 的正式裁定：**BLOCKED（能力缺口），不是 PASS**
+
+要真正满足「执行窗口内目标变化不得误报成功」，需要**服务端侧归因**（例如 Bukkit `BlockBreakEvent` 的 player 字段、
+或玩家统计/进度数据）。这属于**新增能力**，明确不在 R1 范围（任务书禁止为过门禁新增能力/绕过既有安全链）。
+因此 N9-B 记为 `BLOCKED(capability_required=server_side_block_attribution)`，逐项裁定里 **R1.3 = PARTIAL**。
+
+### 由此得到的 R1 上限（诚实结论）
+
+* R1.1（感知/覆盖）：**PASS**（coverage 三态 + 话术 + 真机 COMPLETE 9/9 + P1–P5）。
+* R1.2（导航）：**PARTIAL** —— N5 5/5、N6-A/B 3/3、N6-C 快速拒绝都通过；剩下的只有 **N8 的 5 次受控 timeout 触发**（可做但本轮未取到证据）。
+* R1.3（目标/维度生命周期）：**PARTIAL** —— N9-A E3 通过、N12 E2 全矩阵通过；**N9-B 受能力边界阻塞**。
+* R1.4：**PASS**。
+* **总体：PARTIAL** —— 按任务书「N9-B 证据不足…总体不得 PASS」的硬门槛，这条**不能**靠其它项全绿抵消；
+  要判 PASS 只有两条路：(a) 引入服务端归因能力（新阶段），或 (b) 用户正式把 N9-B 的要求收窄为「不得静默换目标 / 不得误报库存增量」。
