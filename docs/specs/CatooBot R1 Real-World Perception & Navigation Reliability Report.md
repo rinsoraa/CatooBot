@@ -302,3 +302,36 @@ chunks_total, chunks_loaded, coverage, coverage_reason}`；用真实 `bot.world.
 `IdObserveR1`（`P1 观察端进入 /list=False`），因此没有再执行 `/tp`（避免又是 `No entity was found`）。
 第三方实体证据仍为 `None`。已确认的不是产品问题：产品感知 vs Runtime `/status` 仍一致（差 0.000，E3）。
 下一步需要抓观察端的 stderr（本次门禁未捕获）判断是连接失败、用户名占用还是服务器拒绝。
+
+---
+
+## 追加（2）：`dig` 归因硬门实现 + N8 诊断增强（含本轮未完成项）
+
+### 已实现的真实产品修复：**外部世界变化不得算作本次挖掘成功**
+
+`minecraft_runtime/runtime.js` 的 `dig.wait()` 新增**归因硬门**：
+
+* 挖之前在目标格挂 `blockUpdate` 监听，记录该格**每一次真实方块更新的时刻**；
+* `bot.dig()` 返回后：若最早的那次更新发生在 `digStartedAt + 0.5 × expectedDigMs` **之前**，
+  则说明这个变化在本次挖掘「还不可能完成」的时间点就发生了 → 一定是外部造成的 →
+  以稳定码 `block.changed_during_dig`（detail 含 `update_after_ms` / `expected_dig_ms` / `reason=external_change_during_dig`）**fail-closed**，
+  绝不报成功；
+* 监听在 `finally` 里幂等摘除（不跨动作、不跨重连残留）。
+
+这条门直接封住了 N9-B 暴露的假成功路径（外部 `/setblock air` 在 dig 窗口内到达曾被当成本次成功）。
+回归：`dig.test.js` **95/95**、`dig_attribution.test.js` **71/71**、`move_to.test.js` **84/84** 全绿。
+
+### N8 诊断增强（为受控触发取证铺路）
+
+`move_to` **成功结果**现在也带 `trace`（`updates/partials/timeouts/no_path/last_status/last_path_len/max_path_len/elapsed_ms`），
+这样「是否走过搜索预算耗尽分支」在成功样本上也可取证（此前只有失败 detail 才有）。`move_to.test.js` 84/84 保持通过。
+
+### 本轮**未完成**的真实门禁（如实记录）
+
+| 项 | 状态 | 原因 |
+| --- | --- | --- |
+| N8 受控 timeout **5 次真实触发** | **NOT RUN（本轮第二次尝试也未取到日志）** | 把预算降到 1ms 后重跑门禁进程未产出日志（脚本/环境问题），未能在本轮取得 5/5 触发证据 |
+| N9-B 修复后的**真机复验** | **NOT RUN** | 归因硬门已实现并由 95/95 + 71/71 单测覆盖，但修复后的真实 `WAITING_ACTION` 场景尚未重跑 |
+| P1 第三方观察端 | **BLOCKED** | 观察端 30s 内未出现在 `/list` |
+
+**N9-B 的修复代码与单测已在库中，但没有真机复验，因此不判 PASS**；N8 同样维持 NOT PASSED。

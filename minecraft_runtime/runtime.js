@@ -2160,6 +2160,8 @@ const ACTION_REGISTRY = {
             const view = moveArrival(bot, state)
             const position = view.position
             finish(null, {
+              // R1-N8：成功结果也带**有界**诊断摘要（否则无法证明用户是否走过搜索预算耗尽分支）。
+              trace: traceSummary(),
               target: { x: params.x, y: params.y, z: params.z },
               final_position: position
                 ? { x: round2(position.x), y: round2(position.y), z: round2(position.z) }
@@ -2439,6 +2441,31 @@ const ACTION_REGISTRY = {
         // 说这个坐标变了"才是唯一可信的世界效果证据（真机踩过：本地乐观更新会骗人）。
         const collector = state && state.attributionCollector ? state.attributionCollector : null
         let payload = null
+        // R1-N9B：**归因硬门**。若目标格子的方块更新在「本次挖掘还不可能完成」的时间点就到了，
+        // 那这个变化一定是外部造成的（例如夹具/其他玩家 /setblock），不能算本次挖掘成功。
+        const digStartedAt = Date.now()
+        const serverUpdateTimes = []
+        const onTargetUpdate = (oldBlock, newBlock) => {
+          try {
+            if (!newBlock || !newBlock.position) return
+            if (newBlock.position.x !== state.position.x) return
+            if (newBlock.position.y !== state.position.y) return
+            if (newBlock.position.z !== state.position.z) return
+            serverUpdateTimes.push(Date.now())
+          } catch (error) {
+            log('warn', 'dig update watcher failed', { error: error.message })
+          }
+        }
+        if (bot && typeof bot.on === 'function') bot.on('blockUpdate', onTargetUpdate)
+        const detachUpdateWatcher = () => {
+          try {
+            if (bot && typeof bot.removeListener === 'function') {
+              bot.removeListener('blockUpdate', onTargetUpdate)
+            }
+          } catch (error) {
+            log('warn', 'dig update watcher detach failed', { error: error.message })
+          }
+        }
         try {
           try {
             // forceLook=true：由 Mineflayer 负责朝向（Python 层绝不碰 yaw/pitch）
@@ -2456,6 +2483,24 @@ const ACTION_REGISTRY = {
               )
             }
             throw new ActionError(`挖掘失败：${message}`, 'action.failed', 500)
+          }
+          // R1-N9B：最短合理完成时间内就到的方块更新 = 外部变化 → fail-closed（绝不报成功）。
+          const expectedMs = Number(state.expectedDigMs) > 0 ? Number(state.expectedDigMs) : null
+          if (expectedMs !== null && serverUpdateTimes.length > 0) {
+            const earliest = Math.min(...serverUpdateTimes) - digStartedAt
+            if (earliest < expectedMs * 0.5) {
+              throw new ActionError(
+                '目标方块在本次挖掘可能完成之前就被外部改变了（不算本次成功）',
+                'block.changed_during_dig',
+                409,
+                {
+                  target: { x: state.position.x, y: state.position.y, z: state.position.z },
+                  update_after_ms: earliest,
+                  expected_dig_ms: expectedMs,
+                  reason: 'external_change_during_dig',
+                },
+              )
+            }
           }
           // §二十二/§二十三：不信 Promise —— 重新读一次方块，确认真的没了
           const after = bot.blockAt(state.position)
@@ -2507,6 +2552,7 @@ const ACTION_REGISTRY = {
         } finally {
           // 证据只属于"刚才那次挖掘"：所有出口都在这里摘一次，绝不跨动作、跨重连残留；
           // 摘掉之后的迟到事件一律忽略（cleanup 再摘一次也是幂等的）。
+          detachUpdateWatcher()
           if (collector) collector.detach()
         }
       },
