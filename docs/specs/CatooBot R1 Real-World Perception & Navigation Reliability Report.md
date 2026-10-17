@@ -253,3 +253,52 @@ chunks_total, chunks_loaded, coverage, coverage_reason}`；用真实 `bot.world.
   注入 `MC_TEST_MODE=1` 并重复 5 次，本轮未跑 → R1.2 不能 PASS。
 * **N9-B（执行窗口内目标变化）**：barrier 方案已明确，本轮未实现/未跑 → R1.3 不能 PASS。
 * **P1 第三方观察端**：仍 BLOCKED（`/tp` 回 `No entity was found`）。
+
+---
+
+## 追加：N8 / N9-B / P1 的真实门禁结果（含**新发现的真实产品缺口**）
+
+### N8 受控 timeout 5 次 —— **NOT PASSED（0/5 触发）**
+
+门禁通过 `service._runtime_env` 包装注入了 `MC_TEST_MODE=1` + `MC_TEST_THINK_TIMEOUT_MS=5`（仅本进程，生产/CI 不设），
+随后对 5 个 7–10 格的平地目标各发一次真实 `minecraft_move_to`：
+
+| # | 终态 | 独立重读格距 | `detail.trace` |
+| --- | --- | --- | --- |
+| N8-1 | SUCCEEDED | 0.00 | 无（成功路径不带 detail） |
+| N8-2 | SUCCEEDED | 2.00 | 无 |
+| N8-3/4/5 | SUCCEEDED | 1.41 ×3 | 无 |
+
+**结论：0/5 经过 timeout 分支**，因此「5 次受控真实触发」**未达成**（NOT PASSED）。两个具体原因，均已定位：
+
+1. **5ms 预算在平地上依然够用** —— A* 在这些目标上几十微秒内就找到路径，根本不进 timeout 分支。要稳定触发需要更难的几何（迷宫/大高差）或更小的预算；
+   本轮没有为此去改产品默认或扩大地形改造范围。
+2. **成功路径不携带 `detail.trace`** —— 诊断摘要目前只在**失败 detail** 里，成功时看不到 `timeouts` 计数，
+   所以即使触发了也无法在成功样本上取证（这是可改进项，不是造假空间）。
+
+已就绪且**通过**的部分（E2）：`MC_TEST_MODE` 覆盖的生产隔离 9/9 检查（缺值/0/负数/小数/超界/模式关闭全部不生效）。
+
+### N9-B 执行窗口内目标变化 —— **FAIL（真实产品缺口）**
+
+门禁真的等到了**执行窗口**：`state=WAITING_ACTION` 且 `action_id=act_mvcz1wui_1q` 存在，随后由 op 夹具把目标方块改为 air
+（真实重读 `oak_log → air`）。结果：
+
+```text
+[r1u] N9-B 终态=SUCCEEDED plan_hash_stable=True timed_out=False detail=None
+```
+
+**这是一个真实缺口**：`dig` 的既有后置校验只要求「动作结束后该位置不再是原方块」，
+并没有证明**这个变化是本次挖掘造成的**。当目标在动作窗口内被**外部**移除时，服务器方块更新同样会被 `dig` 的
+归因收集器当作已确认，于是任务报 SUCCEEDED —— 属于「工具报成功但世界变化不是自己造成的」这一类假成功风险。
+`plan_hash` 未变（✓），但它**不能**替代「不误报成功」这条要求。
+
+修复方向（未在本轮实施，需要单独论证）：给 `dig` 增加「本次挖掘自身产生的完成确认」硬门
+（例如要求自己这次 dig 的 `digging completed` ack 与目标方块变化在时间/来源上对应，且外部来源变化不得计为本次成功），
+并补 E2 竞态测试（外部先到/后到、重复事件、STOP 竞态）。**没有证据就不该把这条改成 PASS。**
+
+### P1 第三方观察端 —— **BLOCKED（仍未进服）**
+
+按任务书要求把顺序改成「先 join → 用 `/list` 独立确认 → 再定位」：观察端启动后 30 秒内 `/list` **始终没有出现**
+`IdObserveR1`（`P1 观察端进入 /list=False`），因此没有再执行 `/tp`（避免又是 `No entity was found`）。
+第三方实体证据仍为 `None`。已确认的不是产品问题：产品感知 vs Runtime `/status` 仍一致（差 0.000，E3）。
+下一步需要抓观察端的 stderr（本次门禁未捕获）判断是连接失败、用户名占用还是服务器拒绝。
