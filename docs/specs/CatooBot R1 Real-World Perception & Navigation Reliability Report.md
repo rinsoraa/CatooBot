@@ -238,3 +238,18 @@ chunks_total, chunks_loaded, coverage, coverage_reason}`；用真实 `bot.world.
 4. **N9-B 未单独执行**：由 A + 既有 `WORLD_CHANGED/TARGET_LOST` 承载。
 5. **P1 第三源 BLOCKED**：观察端未进服务器玩家列表；E4 独立性限制已写明。
 6. **coverage=UNKNOWN 的 UX**：规划器明确说「不能确认有没有」，这是有意的保守语义。
+
+### 本轮发现并修复的两处**真实回归**（均由 CI 门禁暴露，未放宽任何断言）
+
+1. **可站立性预检误拒可达目标**：第一版预检把「有地板但头部空间/半砖/楼梯形状判断不一致」也算作不可站立，
+   CI e2e `Test B：move_to 启动即 RUNNING` 因此失败（`path.target_not_standable` 出现在一个合法目标上）。
+   **已收窄**：只有当 GoalNear 窗口内**完全没有地板**（目标悬在开阔空中）时才拒绝，其余灰区一律 `unknown` →
+   完全不干预、走既有行为。收窄后重跑真机 N6-A 3/3、N6-B 3/3、N6-C 仍在动作启动前被拒。
+2. **`find_blocks` 观察字段撞上「不泄露 chunk」硬断言**（上一轮）：字段改名 `columns_*`，语义不变，断言未放宽。
+
+### 本轮未执行项（如实记录，直接决定裁定）
+
+* **N8 的 5 次受控真实 timeout 触发**：覆盖开关与隔离测试（9/9）已就绪，但需要在真实运行中的 runtime 进程里
+  注入 `MC_TEST_MODE=1` 并重复 5 次，本轮未跑 → R1.2 不能 PASS。
+* **N9-B（执行窗口内目标变化）**：barrier 方案已明确，本轮未实现/未跑 → R1.3 不能 PASS。
+* **P1 第三方观察端**：仍 BLOCKED（`/tp` 回 `No entity was found`）。
