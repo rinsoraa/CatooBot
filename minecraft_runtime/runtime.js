@@ -56,6 +56,17 @@ function blockPassable(bot, pos) {
   return block.boundingBox === 'empty'
 }
 
+/** bot 自己是否站在实地上 —— 用来证明「世界数据在当前上下文是可信的」。
+ *  悬空/未知时不启用任何可站立性判定（避免在数据不可信的上下文里误拒）。 */
+function botHasGroundSupport(bot) {
+  const position = bot && bot.entity ? bot.entity.position : null
+  if (!position || typeof position.floored !== 'function') return false
+  const cell = position.floored()
+  const feet = blockPassable(bot, cell)
+  const below = blockPassable(bot, { x: cell.x, y: cell.y - 1, z: cell.z })
+  return feet === true && below === false
+}
+
 function standabilityOf(bot, cell) {
   if (!bot || typeof bot.blockAt !== 'function') return 'unknown'
   let unknown = false
@@ -2049,7 +2060,7 @@ const ACTION_REGISTRY = {
         }
         // R1-N6C/N7：目标是否**根本站不到**的保守只读预检：只有「目标格 + 全部 GoalNear 可达邻格
         // 都无法站立」才提前拒绝；任何 UNKNOWN（未加载/blockAt null）都退回既有行为，绝不误拒。
-        if (standabilityOf(bot, coords) === 'not_standable') {
+        if (botHasGroundSupport(bot) && standabilityOf(bot, coords) === 'not_standable') {
           throw new ActionError(
             '目标格及其全部可达邻格都无法站立（不移动、不猜另一处）',
             'path.target_not_standable',
@@ -4514,6 +4525,7 @@ module.exports = {
   findBlocksView,
   findBlocksCoverage,
   standabilityOf,
+  botHasGroundSupport,
   testThinkTimeoutOverride,
   blockDistanceView,
   DIG_CAPABILITY_DEFAULTS: {
