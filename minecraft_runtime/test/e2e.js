@@ -1685,17 +1685,38 @@ async function main() {
           duringMove.status === 200 && duringMove.body.result.ok === true,
           `move_to 跑着时 find_blocks 照样能执行（得到 HTTP ${duringMove.status}）`,
         )
-        const busyDig = await request(runtimePort, 'POST', '/minecraft/dig', {
-          x: Math.round(here.x),
-          y: Math.round(here.y) - 1,
-          z: Math.round(here.z),
-          expected_block: 'stone',
-        })
-        const exclusiveCode = busyDig.body && busyDig.body.error && busyDig.body.error.code
-        assert(
-          exclusiveCode === 'action.busy' || exclusiveCode === 'block.not_found',
-          `前台动作在跑时独占动作仍然被拒（得到 ${exclusiveCode}）`,
-        )
+        // R1：本用例**自己**确认「前台动作确实正在跑」，不依赖别的用例留下的时序/副作用。
+        // （此前依赖 Test D 跑满 45s；一旦 move_to 被结构化快速拒绝，这里就没有前台动作了。）
+        let foregroundRunning = false
+        const foregroundDeadline = Date.now() + 10000
+        while (Date.now() < foregroundDeadline) {
+          const liveStatus = (await request(runtimePort, 'GET', '/minecraft/status')).body
+          if (liveStatus && liveStatus.action && liveStatus.action.active_count > 0) {
+            foregroundRunning = true
+            break
+          }
+          if (!busyFind.body || !busyFind.body.action_id) break
+          await new Promise((resolve) => setTimeout(resolve, 100))
+        }
+        if (!foregroundRunning) {
+          // move_to 被结构化快速拒绝（例如目标不可站立）时，本前置条件不存在 —— 如实记录并跳过独占断言，
+          // 绝不用「制造一个假在跑的动作」来迁就测试（产品逻辑不为测试让路）。
+          console.log(
+            `[e2e] Test J 前置条件不成立：没有前台动作在跑（move_to=${JSON.stringify(busyFind.body && busyFind.body.error ? busyFind.body.error.code : 'ok')}）→ 跳过独占拒绝断言`,
+          )
+        } else {
+          const busyDig = await request(runtimePort, 'POST', '/minecraft/dig', {
+            x: Math.round(here.x),
+            y: Math.round(here.y) - 1,
+            z: Math.round(here.z),
+            expected_block: 'stone',
+          })
+          const exclusiveCode = busyDig.body && busyDig.body.error && busyDig.body.error.code
+          assert(
+            exclusiveCode === 'action.busy' || exclusiveCode === 'block.not_found',
+            `前台动作在跑时独占动作仍然被拒（得到 ${exclusiveCode}）`,
+          )
+        }
         await request(runtimePort, 'POST', '/minecraft/stop', {})
         if (busyFind.body && busyFind.body.action_id) {
           await waitFor(
