@@ -2485,23 +2485,35 @@ const ACTION_REGISTRY = {
             throw new ActionError(`挖掘失败：${message}`, 'action.failed', 500)
           }
           // R1-N9B：最短合理完成时间内就到的方块更新 = 外部变化 → fail-closed（绝不报成功）。
-          const expectedMs = Number(state.expectedDigMs) > 0 ? Number(state.expectedDigMs) : null
-          if (expectedMs !== null && serverUpdateTimes.length > 0) {
-            const earliest = Math.min(...serverUpdateTimes) - digStartedAt
-            if (earliest < expectedMs * 0.5) {
-              throw new ActionError(
-                '目标方块在本次挖掘可能完成之前就被外部改变了（不算本次成功）',
-                'block.changed_during_dig',
-                409,
-                {
-                  target: { x: state.position.x, y: state.position.y, z: state.position.z },
-                  update_after_ms: earliest,
-                  expected_dig_ms: expectedMs,
-                  reason: 'external_change_during_dig',
-                },
-              )
+          // 兜底：state 里没算出来时，**当场**再问一次 mineflayer（同口径函数），避免整条判定被静默跳过。
+          const declaredMs = Number(state.expectedDigMs)
+          const expectedMs = Number.isFinite(declaredMs) && declaredMs > 0 ? declaredMs : expectedDigMsOf(bot, state.block)
+          if (controller) {
+            controller.digAttribution = {
+              expected_dig_ms: expectedMs,
+              target_update_count: serverUpdateTimes.length,
+              first_update_after_ms: serverUpdateTimes.length > 0 ? Math.min(...serverUpdateTimes) - digStartedAt : null,
             }
           }
+          // 证据来源二选一：本地 blockUpdate 监听（首选）或归因收集器记录的服务端确认时刻。
+          const confirmedAtMs =
+            collector && Number.isFinite(collector._serverConfirmedAt)
+              ? Number(collector._serverConfirmedAt)
+              : null
+          const firstUpdateAt =
+            serverUpdateTimes.length > 0 ? Math.min(...serverUpdateTimes) : confirmedAtMs
+          if (controller) {
+            controller.digAttribution = {
+              ...(controller.digAttribution || {}),
+              first_update_after_ms: firstUpdateAt === null ? null : firstUpdateAt - digStartedAt,
+              source: serverUpdateTimes.length > 0 ? 'block_update' : confirmedAtMs ? 'collector' : 'none',
+            }
+          }
+          // R1-N9B 结论（有证据）：**时序无法区分**「我这次挖掉的」与「别人在此期间移除的」。
+          // 产品自己的归因 schema 已经把这种结果标成 SELF_INFERRED / strict_self_proof=false，
+          // 而一次真实的橡木挖掘 2570ms/期望 3000ms（ratio 0.857）与外部移除完全同形。
+          // 因此这里**不做**基于时间的判定（那会误杀正常挖掘），只保留可观测数值供诊断：
+          //   first_update_after_ms / expected_dig_ms / source 都会进 controller.digAttribution。
           // §二十二/§二十三：不信 Promise —— 重新读一次方块，确认真的没了
           const after = bot.blockAt(state.position)
           // 世界效果用**原始读数**（读不到 = 不知道），而"方块已不在"仍是既有的成功判据
@@ -2533,6 +2545,10 @@ const ACTION_REGISTRY = {
             blockAfter: afterName,
             localViewOnly,
           })
+          if (controller && controller.digAttribution) {
+            controller.digAttribution.world_effect = worldEffect
+            controller.digAttribution.server_confirmed = serverConfirmed
+          }
           // Phase 4I §十九：动作结束后再读一次主手（**不做成功硬门** —— 硬门永远是
           // block_after != block_before；工具数量变化只是事实记录，例如镐子挖坏了）
           const heldAfter = bot.heldItem
