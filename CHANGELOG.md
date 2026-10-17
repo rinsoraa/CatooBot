@@ -6,7 +6,7 @@
 - **N6-A/B 各 3/3 PASS**：op 构造可恢复的单块上升平台与两级楼梯（已还原），罐头自行走上去；**N6-C 真实不可站立目标
   fail-closed**（PAUSED/step FAILED，`reason=action_timeout_after_path_search_timeout`，从未 SUCCEEDED）。
 - **find_blocks coverage / freshness（真实缺陷修复）**：Runtime 新增 `findBlocksCoverage()`，响应带只读 `observation`
-  （captured_at/dimension/center/requested_radius/chunks_total/chunks_loaded/coverage/coverage_reason），用真实
+  （captured_at/dimension/center/requested_radius/columns_total/columns_loaded/coverage/coverage_reason），用真实
   `bot.world.getColumn()` 逐列探测；缺 API/缺维度/异常一律 `UNKNOWN`（绝不默认 COMPLETE）。规划器据此在
   `matches=[] + PARTIAL/UNKNOWN` 时报「不能确认有没有」而不是「附近没有」。真机证据 `9/9` chunk `COMPLETE`。
 - **维度一致性守卫（N12，确认前）**：观察冻结真实 `dimension`；`TaskPlan.to_payload()` 仅在带维度证据时持久化

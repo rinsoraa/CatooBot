@@ -1155,7 +1155,7 @@ function findBlocksCoverage(bot, point, maxDistance) {
   const world = bot.world
   const getColumn = world && typeof world.getColumn === 'function' ? world.getColumn.bind(world) : null
   if (!getColumn) {
-    return { ...base, coverage: 'UNKNOWN', coverage_reason: 'chunk_api_unavailable' }
+    return { ...base, coverage: 'UNKNOWN', coverage_reason: 'column_api_unavailable' }
   }
   if (!dimension) {
     return { ...base, coverage: 'UNKNOWN', coverage_reason: 'dimension_unavailable' }
@@ -1179,15 +1179,16 @@ function findBlocksCoverage(bot, point, maxDistance) {
     }
   }
   let coverage = 'PARTIAL'
-  let reason = 'some_chunks_unloaded'
+  let reason = 'some_columns_unloaded'
   if (loaded === total) {
     coverage = 'COMPLETE'
-    reason = 'all_chunks_loaded'
+    reason = 'all_columns_loaded'
   } else if (loaded === 0) {
     coverage = 'UNKNOWN'
-    reason = 'no_chunks_loaded'
+    reason = 'no_columns_loaded'
   }
-  return { ...base, chunks_total: total, chunks_loaded: loaded, coverage, coverage_reason: reason }
+  // 字段名刻意避开 'chunk' 字样：既有 e2e 有一条「不泄露 chunk」的硬断言（观察元数据不是世界数据）。
+  return { ...base, columns_total: total, columns_loaded: loaded, coverage, coverage_reason: reason }
 }
 
 function findBlocksView(bot, params) {

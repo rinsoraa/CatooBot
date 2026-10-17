@@ -42,25 +42,25 @@ console.log('[find-blocks-coverage] R1-G6：覆盖完整性语义')
 {
   const view = findBlocksCoverage(makeBot({ loaded: () => true }), point, 8)
   assert(view.coverage === 'COMPLETE', '全部 chunk 已加载 → COMPLETE')
-  assert(view.coverage_reason === 'all_chunks_loaded', 'reason=all_chunks_loaded')
+  assert(view.coverage_reason === 'all_columns_loaded', 'reason=all_columns_loaded')
   assert(typeof view.captured_at === 'number' && view.captured_at > 0, 'captured_at 来自真实搜索帧')
   assert(view.dimension === 'minecraft:overworld', 'dimension 来自真实 game 状态')
   assert(view.center.x === 0 && view.center.y === 64 && view.center.z === 0, 'center 为真实方块格中心')
   assert(view.requested_radius === 8, 'requested_radius 如实回显请求半径')
-  assert(view.chunks_total === 4 && view.chunks_loaded === 4, '半径 8 → 2×2 chunk 全部已加载')
+  assert(view.columns_total === 4 && view.columns_loaded === 4, '半径 8 → 2×2 chunk 全部已加载')
 }
 
 {
   const view = findBlocksCoverage(makeBot({ loaded: (cx) => cx === 0 }), point, 8)
   assert(view.coverage === 'PARTIAL', '只加载一部分 → PARTIAL（不能宣称完整）')
-  assert(view.coverage_reason === 'some_chunks_unloaded', 'reason=some_chunks_unloaded')
-  assert(view.chunks_loaded < view.chunks_total, '已加载数 < 总数')
+  assert(view.coverage_reason === 'some_columns_unloaded', 'reason=some_columns_unloaded')
+  assert(view.columns_loaded < view.columns_total, '已加载数 < 总数')
 }
 
 {
   const view = findBlocksCoverage(makeBot({ loaded: () => false }), point, 8)
   assert(view.coverage === 'UNKNOWN', '一个都没加载 → UNKNOWN')
-  assert(view.coverage_reason === 'no_chunks_loaded', 'reason=no_chunks_loaded')
+  assert(view.coverage_reason === 'no_columns_loaded', 'reason=no_columns_loaded')
 }
 
 {
@@ -72,7 +72,7 @@ console.log('[find-blocks-coverage] R1-G6：覆盖完整性语义')
   const noApi = { game: { dimension: 'minecraft:overworld' } }
   const view = findBlocksCoverage(noApi, point, 8)
   assert(view.coverage === 'UNKNOWN', '没有 chunk 列 API → UNKNOWN')
-  assert(view.coverage_reason === 'chunk_api_unavailable', 'reason=chunk_api_unavailable')
+  assert(view.coverage_reason === 'column_api_unavailable', 'reason=column_api_unavailable')
 }
 
 {

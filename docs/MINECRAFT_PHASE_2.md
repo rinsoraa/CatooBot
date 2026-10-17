@@ -378,7 +378,7 @@ R1（真实世界感知与导航可靠性）在**行为契约**上补充了两�
 `minecraft_find_blocks` 的响应新增**只读** `observation` 元数据（旧字段与稳定错误码不变）：
 
 - `captured_at`（真实搜索帧时间）、`dimension`（真实 `bot.game.dimension`）、`center`（真实方块格中心）、
-  `requested_radius`、`chunks_total`/`chunks_loaded`、`coverage`、`coverage_reason`。
+  `requested_radius`、`columns_total`/`columns_loaded`、`coverage`、`coverage_reason`。
 - `coverage` 语义：请求半径覆盖到的每个 chunk 列都必须已加载才 `COMPLETE`；只加载一部分 `PARTIAL`；
   拿不到 chunk 列 API / 维度不可用 / 探测抛错一律 `UNKNOWN`。**绝不默认 COMPLETE。**
 

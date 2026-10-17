@@ -205,10 +205,10 @@ N6-C 第一版对照**设计无效**（目标在 3 格柱顶上方，但相邻�
 ### R1-G6 `find_blocks` coverage / freshness 合同
 
 Runtime 新增 `findBlocksCoverage()` 并随响应返回 `observation{captured_at, dimension, center, requested_radius,
-chunks_total, chunks_loaded, coverage, coverage_reason}`；用真实 `bot.world.getColumn(cx, cz)` 逐列探测，
+columns_total, columns_loaded, coverage, coverage_reason}`；用真实 `bot.world.getColumn(cx, cz)` 逐列探测，
 缺 API / 缺维度 / 异常一律 `UNKNOWN`（**绝不默认 COMPLETE**）。
 
-* 真机证据（E3）：`chunks_total=9, chunks_loaded=9, coverage=COMPLETE`，与同帧真实方块一致（N9-A / P5）。
+* 真机证据（E3）：`columns_total=9, columns_loaded=9, coverage=COMPLETE`，与同帧真实方块一致（N9-A / P5）。
 * 消费端：`planner.observation_coverage()` → 空命中且 `coverage != COMPLETE` 抛
   `coverage_incomplete:<coverage>:<reason>:…不能确认有没有…`；只有 `COMPLETE + matches=[]` 才说「附近没有找到」。
 * 测试：Node `test/find_blocks_coverage.test.js` **19/19**；Python coverage 解析 + 两个 planner 文案分支。
