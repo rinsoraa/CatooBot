@@ -10,9 +10,13 @@ LOCAL FULL TESTS: pytest tests -q → 4632 passed, 0 failed, 0 skipped (802.40s,
 CI: 实现提交 run 38965148200（attempt 1 与 attempt 2）—— 两个 job 中 `webui · typecheck · tests · build` 始终 success；
 `lint · format · types · tests` 唯一非成功步骤是**既有** `Minecraft runtime tests (ActionRuntime 单测 + E2E)`：
 `minecraft_runtime/test/e2e.js:135` `placeAndWait` → `timeout waiting for: runtime 看见 Followee`（与本轮 Python 改动无关，
-未改任何断言/超时）。证据提交的 CI run 见 §10。
-REAL CLIENT GATES: R1 4/4 PASS (IdCraft8G second client; R1c bridge injection = DEVIATION) | R2 N1 PASS, N3/N5 PASS, N6 PASS (see 8)
-FINAL HEAD == origin/main: 6773b2d67467d06bfe2b6bcc2e179996d41dd969 (+ 收尾文档提交，见 §10)
+未改任何断言/超时；**首轮失败已保留**）。
+CI（证据提交 6773b2d）：run 38967120493 **attempt 1 两 job success**。
+CI（收尾提交 db5b6b9，即本报告上一版内容）：run 38968254511 attempt 1 触发同一已知 E2E 家族超时
+（`timeout waiting for: runtime 看见 FarTarget`）→ **只重跑失败 job → attempt 2 两 job success、零非成功步骤**；
+重跑通过 ≠ 根因修复，未改任何 E2E 断言/超时/阈值。详见 §9/§10。
+REAL CLIENT GATES: 交接场景矩阵 4/4 通过（**3 项经真实第二 Mineflayer 客户端 `IdCraft8G` 投递**；R1c 为 bridge injection = **替代证据/DEVIATION**，非端到端第二客户端验证）| R2 N1 PASS, N3/N5 PASS, N6 PASS (see §6)
+FINAL HEAD == origin/main: YES（闭环时核验；当前报告提交见 Git 历史）
 DIRTY: 0
 FOLLOW-UP CREATED: NO
 ```
@@ -179,6 +183,9 @@ MinecraftService + 真实 Provider（`enabled=True`）+ 真实第二个 Mineflay
 * `ruff check .`、`ruff format --check .`、`mypy app`、`git diff --check`、凭据扫描：见 §10 与最终提交。
 * GitHub Actions：实现提交 run 38965148200 attempt 1/2 仅既有 `minecraft_runtime` E2E 断言超时（详见首屏 CI 行）；
   `webui` job 两次均 success。**首轮失败已保留**，重跑只针对失败 job，且未修改任何断言/超时/阈值。
+* 证据提交 run 38967120493 attempt 1 两 job success；**最终收尾提交 run 38968254511** attempt 1 同一已知 E2E
+  家族超时（`runtime 看见 FarTarget`）→ attempt 2 两 job success、零非成功步骤。三次运行的失败步均属同一
+  既有 `minecraft_runtime` E2E 家族，与本轮 Python 改动无关。
 
 ## 10. 最终一致性
 
@@ -186,19 +193,25 @@ MinecraftService + 真实 Provider（`enabled=True`）+ 真实第二个 Mineflay
   证据提交：`6773b2d67467d06bfe2b6bcc2e179996d41dd969`；收尾文档提交 = **本文件所在提交**（`git log -1`，
   只填写本报告的 CI/镜像状态，不含代码改动）。
   镜像 HEAD == `origin/main`（= 本文件所在提交）；工作区 dirty=0，`scripts/` 0 tracked。
-* CI（证据提交）：run [38967120493](https://github.com/rinsoraa/CatooBot/actions/runs/38967120493) **attempt 1 两个 job 均 success、零非成功步骤**。
+* CI（证据提交 `6773b2d`）：run [38967120493](https://github.com/rinsoraa/CatooBot/actions/runs/38967120493) **attempt 1 两个 job 均 success、零非成功步骤**。
+* CI（收尾提交 `db5b6b9`，本报告上一版内容）：run [38968254511](https://github.com/rinsoraa/CatooBot/actions/runs/38968254511)
+  attempt 1 仅既有 `minecraft_runtime` E2E 步骤超时（`timeout waiting for: runtime 看见 FarTarget`）→
+  只重跑失败 job → **attempt 2 两个 job 均 success、零非成功步骤**。首轮失败记录保留；未改断言/超时/阈值。
+* 最终镜像 HEAD == `origin/main`（= 本文件所在提交，SHA 见 `git log -1`，不在本文件内固化以避免自引用）；
+  dirty=0，`scripts/` 0 tracked。
 
 ## 11. 路线图 v2.0 状态更新文本（可直接复制）
 
 ```text
 R0（已有能力安全与可靠性收敛）已完成：
 - R0.1 交接接受与新目标仲裁：PASS。修复两条真实缺陷（模型决策无效时跳过确定性仲裁；确认词命中
-  但无待确认事项时静默吞回合），并把冲突混合消息统一为「作废旧提案 + 稳定澄清」；真实第二客户端
-  四类场景（纯接受/同目标复合/冲突复合/干净冲突）全部通过，纯接受恰好消费一次。
+  但无待确认事项时静默吞回合），并把冲突混合消息统一为「作废旧提案 + 稳定澄清」；交接场景矩阵
+  4/4 通过（纯接受/同目标复合/冲突复合/干净冲突），其中 **3 项经真实第二客户端投递、1 项为注入替代证据**；
+  纯接受恰好消费一次。
 - R0.2 真实导航可达性与失败边界：PASS。补齐运行时结构化失败 detail 到任务步骤证据（可区分
   no_path / path_search_timeout / goal_reached_without_arrival 等）；真实 N1 可达闭环成功
   （位移 7.77 格、库存净增 1、未传送），N3/N5 真实路径失败安全停止且后续步骤不派发，N6 移动中
-  STOP 权威生效且不复活。未解决边界：长距离导航可靠性（8D 能力域）。
+  STOP 权威生效且不复活。未解决边界：长距离导航可靠性（8D 能力域）→ 归入 R1 主线。
 - R0.3 证据链与文档对账：PASS。路由/提案/任务/计划哈希/步骤/动作/终态/独立库存与世界快照可关联；
   Phase 8I 历史保留，8H 修复与 8I 遗留配方变体排序问题分别记录（后者仍未修）。
 - R0.4 真实成功迁移演练：PASS。真实旧版本备份（version 13，58 表）在隔离副本上迁移到 36
@@ -211,9 +224,13 @@ R0 技术出口：PASS。下一步建议进入 R1（导航可靠性专项）；R
 
 1. **长距离导航可靠性**：N3 的真实失败发生在 2.83 格距离（`path_search_timeout`、半径 1.5），
    说明即便很近也可能规划超时；8D 模板半径（16 格）内的路径规划成功率与卡顿原因属 R1 专项。
+   **归属：R1 主线（导航可靠性专项）** —— 真实、重要的能力缺口，但 R0 已完成失败边界收敛。
 2. **配方变体排序**：所有变体都 `available:false` 时退化为 `recipe_id` 字母序（会选到金合欢/竹子变体），
-   应改按真实库存可满足度排序，且不得降低既有检查。
+   应改按真实库存可满足度排序，且不得降低既有检查。**归属：后续资源采集/合成相关阶段**；
+   当前状态明确为**未修**，不得误报为已修复。
 3. **既有测试时段抖动**：`tests/test_social.py::TestCognitionEngine::test_direct_mention_not_blocked_by_sleeping`
    在当天最后一分钟会因夹具自身时段（`00:00–23:59`）失败；本轮未改其断言/超时（应把「当前时间」注入为可控输入）。
+   **归属：后续测试确定性维护** —— 属夹具时间依赖问题，不得通过放宽断言处理。
 4. **接手语义仍是闭集文法**：`handoff_mixed_intent` 只覆盖既有解析器能识别的第二目标信号；
-   无法证明时一律澄清（不消费、不执行）。
+   无法证明时一律澄清（不消费、不执行）。**归属：当前安全设计边界，不自动等于缺陷** —— 保持未知/复合意图
+   澄清，不为追求自然语言覆盖率放松安全门。
