@@ -135,6 +135,24 @@ def _reachable_height(
     return float(y) <= float(bot_y) + headroom
 
 
+def coverage_message(coverage: str, *, radius: int, target: str) -> str:
+    """coverage 三态对应的**用户可见**结论（绝不把 PARTIAL/UNKNOWN 说成「附近没有」）。"""
+    coverage = str(coverage or "UNKNOWN").upper()
+    if coverage == "COMPLETE":
+        return f"在本次完整检查的 {radius} 格范围内没有找到 {target}"
+    if coverage == "PARTIAL":
+        return (
+            f"我还没能确认这 {radius} 格是否都检查到了，"
+            f"所以不能确定这里有没有 {target}。"
+            "可以先移动到一个已加载的区域再重新观察。"
+        )
+    return (
+        f"我现在无法确认这 {radius} 格的观察覆盖范围，"
+        f"所以不能确定这里有没有 {target}。"
+        "可以先移动到一个已加载的区域再重新观察。"
+    )
+
+
 def observation_coverage(payload: Mapping[str, Any] | None) -> tuple[str, str]:
     """读 ``find_blocks`` 的观察覆盖状态（缺省 UNKNOWN，绝不默认 COMPLETE）。
 
@@ -191,12 +209,11 @@ async def plan_resource_task(
     if not matches:
         # R1-G6：空命中只有在**覆盖完整**时才能解释成「范围内确实没有」。
         coverage, why = observation_coverage(found_result)
-        if coverage != "COMPLETE":
-            raise ObservationFailed(
-                f"coverage_incomplete:{coverage}:{why}:"
-                f"附近 {max_distance} 格内不能确认有没有 {block}"
-            )
-        raise ObservationFailed(f"附近 {max_distance} 格内没有找到 {block}")
+        prefix = "coverage_complete" if coverage == "COMPLETE" else "coverage_incomplete"
+        raise ObservationFailed(
+            f"{prefix}:{coverage}:{why}:"
+            + coverage_message(coverage, radius=int(max_distance), target=block)
+        )
     world_view = await _safe_observe(observe, "minecraft_world", {})
     world_result = _result_of(world_view)
     observations.append(
@@ -469,12 +486,11 @@ async def plan_wood_task(
     ]
     if not targets:
         coverage, why = observation_coverage(found_result)
-        if coverage != "COMPLETE":
-            raise ObservationFailed(
-                f"coverage_incomplete:{coverage}:{why}:"
-                f"no_wood_target：附近 {max_distance} 格内不能确认有没有原木"
-            )
-        raise ObservationFailed(f"no_wood_target：附近 {max_distance} 格内没有找到原木")
+        prefix = "coverage_complete" if coverage == "COMPLETE" else "coverage_incomplete"
+        raise ObservationFailed(
+            f"{prefix}:{coverage}:{why}:no_wood_target:"
+            + coverage_message(coverage, radius=int(max_distance), target="原木")
+        )
 
     world_view = await _safe_observe(observe, "minecraft_world", {})
     world_result = _result_of(world_view)

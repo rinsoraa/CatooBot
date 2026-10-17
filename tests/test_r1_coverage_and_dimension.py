@@ -62,7 +62,7 @@ async def test_empty_matches_with_partial_coverage_is_not_reported_as_no_target(
         await plan_resource_task("帮我挖点橡木", observe=observe, block_name="oak_log")
     message = str(info.value)
     assert message.startswith("coverage_incomplete:PARTIAL:some_chunks_unloaded:"), message
-    assert "不能确认" in message
+    assert "不能确定" in message or "无法确认" in message
 
 
 async def test_empty_matches_with_complete_coverage_keeps_no_target_message() -> None:

@@ -1,4 +1,17 @@
 # Changelog
+### R1 残余缺口统一收敛（N6-C/N7 预检 · N8 受控覆盖 · N5 trace · Coverage UX）
+
+- **move_to 保守可站立性预检**：`standabilityOf()` 枚举 GoalNear 1.5 格内全部可达落脚候选（本格 + 6 轴 + 12 边长对角），
+  只有**全部候选都不可站立**才抛 `path.target_not_standable`；任何数据缺失 → `unknown` → 完全不干预。
+  真机：空中目标 action 未启动即被拒（不再等 30s）；同轮 N6-A/N6-B 各 3/3 全部成功（**无误拒**）。
+- **N8 测试专用 timeout 覆盖**：`MC_TEST_MODE=1` + 纯十进制正整数 `MC_TEST_THINK_TIMEOUT_MS` 才生效，
+  0/负数/小数/超界一律忽略；9/9 隔离检查通过，生产默认行为不变。
+- **N5 有界诊断（阶段 A）**：`move_to` 记录 updates/partials/timeouts/last_status/last_path_len/elapsed_ms，失败 detail 带
+  `trace` 摘要；**默认不加**强制重算（无证据支持）。
+- **Coverage UX 三态**：`COMPLETE` 才说「完整检查范围内没有找到」；`PARTIAL`/`UNKNOWN` 明确说「不能确定」并给出
+  「换到已加载区域再观察」的**建议**（不自动执行）。
+- 门禁：N5 5/5、N6-A/B 3/3、N6-C 快速拒绝、move_to 84/84、find_blocks 41/41+19/19；**N8 5 次受控真实触发与 N9-B
+  本轮未执行**（如实记录，R1.2/R1.3 保持 PARTIAL）。
 ### R1 残余缺口一次性闭环（N5/N6/N8/N9/N12 + find_blocks coverage + P1）
 
 - **N5 受控绕障 5/5 PASS**：固定几何（3×2 墙 + 两端缺口，op 夹具逐点还原）连续 5 次真实移动全部到达，每次由脚本独立
@@ -6,7 +19,7 @@
 - **N6-A/B 各 3/3 PASS**：op 构造可恢复的单块上升平台与两级楼梯（已还原），罐头自行走上去；**N6-C 真实不可站立目标
   fail-closed**（PAUSED/step FAILED，`reason=action_timeout_after_path_search_timeout`，从未 SUCCEEDED）。
 - **find_blocks coverage / freshness（真实缺陷修复）**：Runtime 新增 `findBlocksCoverage()`，响应带只读 `observation`
-  （captured_at/dimension/center/requested_radius/columns_total/columns_loaded/coverage/coverage_reason），用真实
+  （captured_at/dimension/center/requested_radius/chunks_total/chunks_loaded/coverage/coverage_reason），用真实
   `bot.world.getColumn()` 逐列探测；缺 API/缺维度/异常一律 `UNKNOWN`（绝不默认 COMPLETE）。规划器据此在
   `matches=[] + PARTIAL/UNKNOWN` 时报「不能确认有没有」而不是「附近没有」。真机证据 `9/9` chunk `COMPLETE`。
 - **维度一致性守卫（N12，确认前）**：观察冻结真实 `dimension`；`TaskPlan.to_payload()` 仅在带维度证据时持久化

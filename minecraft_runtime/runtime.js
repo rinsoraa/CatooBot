@@ -29,6 +29,64 @@ const fs = require('fs')
 const crypto = require('crypto')
 const mineflayer = require('mineflayer')
 const Vec3 = require('vec3').Vec3 ?? require('vec3')
+/**
+ * R1-N6C/N7：目标可站立性的**保守**只读预检。
+ *
+ * GoalNear 允许停在目标 1.5 格内的任意合法位置，因此只有「目标格与其全部可达邻格都无法站立」
+ * 时才允许提前拒绝；任何邻域数据缺失（未加载/blockAt 为 null/dimension 未知）一律返回 UNKNOWN，
+ * 让调用方退回既有行为 —— 绝不把「没看见」当成「不可站立」。
+ */
+function standabilityCandidates(cell) {
+  const offsets = [[0, 0, 0]]
+  for (const d of [[1, 0, 0], [-1, 0, 0], [0, 1, 0], [0, -1, 0], [0, 0, 1], [0, 0, -1]]) {
+    offsets.push(d)
+  }
+  // 边长对角（3D 距离 √2 ≈ 1.414 ≤ 1.5）也满足 GoalNear；体对角 √3 不满足，排除。
+  for (const a of [1, -1]) {
+    for (const b of [1, -1]) {
+      offsets.push([a, b, 0], [a, 0, b], [0, a, b])
+    }
+  }
+  return offsets.map(([dx, dy, dz]) => ({ x: cell.x + dx, y: cell.y + dy, z: cell.z + dz }))
+}
+
+function blockPassable(bot, pos) {
+  const block = bot.blockAt(new Vec3(pos.x, pos.y, pos.z))
+  if (!block) return null
+  return block.boundingBox === 'empty'
+}
+
+function standabilityOf(bot, cell) {
+  if (!bot || typeof bot.blockAt !== 'function') return 'unknown'
+  let unknown = false
+  for (const candidate of standabilityCandidates(cell)) {
+    const feet = blockPassable(bot, candidate)
+    const head = blockPassable(bot, { x: candidate.x, y: candidate.y + 1, z: candidate.z })
+    const floor = blockPassable(bot, { x: candidate.x, y: candidate.y - 1, z: candidate.z })
+    if (feet === null || head === null || floor === null) {
+      unknown = true
+      continue
+    }
+    if (feet && head && !floor) return 'standable'
+  }
+  return unknown ? 'unknown' : 'not_standable'
+}
+
+/**
+ * R1-N8：**测试专用**的 pathfinder 搜索预算覆盖。只有 MC_TEST_MODE=1 且给出合法正整数时才生效；
+ * 生产默认行为逐字节不变（CI/生产都不设置该变量）。非法/越界值一律忽略，绝不意外改变生产配置。
+ */
+function testThinkTimeoutOverride() {
+  if (String(process.env.MC_TEST_MODE || '') !== '1') return null
+  const raw = process.env.MC_TEST_THINK_TIMEOUT_MS
+  if (raw === undefined || raw === null || String(raw).trim() === '') return null
+  const text = String(raw).trim()
+  if (!/^[0-9]+$/.test(text)) return null // 只接受纯十进制正整数（'1.5'/'5ms' 一律忽略）
+  const value = Number.parseInt(text, 10)
+  if (!Number.isFinite(value) || value <= 0 || value > 120000) return null
+  return value
+}
+
 const pathfinder = require('mineflayer-pathfinder')
 const { Movements, goals } = pathfinder
 const { createActionRuntime, ActionError } = require('./action_runtime')
@@ -1983,6 +2041,20 @@ const ACTION_REGISTRY = {
             )
           }
         }
+        // R1-N6C/N7：目标是否**根本站不到**的保守只读预检：只有「目标格 + 全部 GoalNear 可达邻格
+        // 都无法站立」才提前拒绝；任何 UNKNOWN（未加载/blockAt null）都退回既有行为，绝不误拒。
+        if (standabilityOf(bot, coords) === 'not_standable') {
+          throw new ActionError(
+            '目标格及其全部可达邻格都无法站立（不移动、不猜另一处）',
+            'path.target_not_standable',
+            400,
+            {
+              target: { x: coords.x, y: coords.y, z: coords.z },
+              radius: MOVE_TO_RADIUS,
+              reason: 'target_not_standable',
+            },
+          )
+        }
         return coords
       },
       async start(bot, params) {
@@ -2018,10 +2090,27 @@ const ACTION_REGISTRY = {
             if (controller) controller.moveSearchTimedOut = true
           }
 
+          // R1-N5 阶段 A：**有界**诊断摘要（只统计，不改变任何恢复/终止行为）。
+          const moveTrace = {
+            updates: 0,
+            partials: 0,
+            timeouts: 0,
+            no_path: 0,
+            last_status: null,
+            last_path_len: null,
+            max_path_len: 0,
+            elapsed_ms: 0,
+          }
+          const traceSummary = () => ({
+            ...moveTrace,
+            elapsed_ms: Date.now() - traceStartedAt,
+          })
+          const traceStartedAt = Date.now()
           /** 失败 detail（§二十）：目标 / 实际 / 距离 / 半径都如实带出去。 */
           const detail = (reason) => {
             const view = moveArrival(bot, state)
             return {
+              trace: traceSummary(),
               target: { x: params.x, y: params.y, z: params.z },
               actual: view.position
                 ? {
@@ -2089,6 +2178,13 @@ const ACTION_REGISTRY = {
             if (dead()) return
             const status = String((results && results.status) || '')
             const path = (results && results.path) || []
+            moveTrace.updates += 1
+            moveTrace.last_status = status || null
+            moveTrace.last_path_len = path.length
+            if (path.length > moveTrace.max_path_len) moveTrace.max_path_len = path.length
+            if (status === 'partial') moveTrace.partials += 1
+            else if (status === 'timeout') moveTrace.timeouts += 1
+            else if (status === 'noPath') moveTrace.no_path += 1
             if (status === 'noPath') {
               // §十一：空路径 + noPath 也必须如实失败（2.4.5 的 goto 正是在这里静默成功的）
               finish(
@@ -3913,6 +4009,12 @@ function startConnect(host, port) {
   try {
     state.bot = mineflayer.createBot(options)
     state.bot.loadPlugin(pathfinder.pathfinder) // Phase 3C：导航能力（move_to 用；注入函数在 .pathfinder）
+    // R1-N8：测试专用搜索预算覆盖（仅 MC_TEST_MODE=1 + 合法正整数；生产默认行为不变）
+    const thinkOverride = testThinkTimeoutOverride()
+    if (thinkOverride !== null && state.bot.pathfinder) {
+      state.bot.pathfinder.thinkTimeout = thinkOverride
+      log('warn', 'test thinkTimeout override active', { thinkTimeout: thinkOverride })
+    }
   } catch (error) {
     state.phase = 'ERROR'
     state.lastError = String(error && error.message ? error.message : error)
@@ -4405,6 +4507,8 @@ module.exports = {
   },
   findBlocksView,
   findBlocksCoverage,
+  standabilityOf,
+  testThinkTimeoutOverride,
   blockDistanceView,
   DIG_CAPABILITY_DEFAULTS: {
     timeoutMs: DIG_CAPABILITY_TIMEOUT_MS,
