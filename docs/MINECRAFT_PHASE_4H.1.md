@@ -160,3 +160,21 @@ function noPathListener (results) {
 升级 mineflayer / mineflayer-pathfinder / minecraft-data（单独建 dependency upgrade 阶段）；
 改 `follow_player` 或 `pickup_item`（它们用的是 `setGoal` + 自己轮询，从来不走 `goto`）；
 新增任何 Minecraft 能力；改 `allow_medium` 默认值。
+---
+
+## R1 交叉引用：move_to 的两处契约澄清（追加，不改写上文）
+
+1. **`path_update(status='timeout')` 不再是「立即失败」的充分条件。** pathfinder 的 `thinkTimeout`（默认 5000ms）
+   是**累计搜索预算**，超预算时它仍持有可用路径并继续走。旧实现立刻判失败，会把「已经走了一段、目标真实可达」
+   的导航误杀（真实案例：R0 的 2.83 格 `path_search_timeout`、Phase 8I 约 6.8 格失败）。
+   现行规则：**已到达 → 成功；`path.length > 0` → 继续（由既有 `MOVE_TIMEOUT_MS` 兜底）；没有任何可用路径 →
+   仍按 `path.not_found` / `detail.reason=path_search_timeout` fail-closed。** `MOVE_TO_RADIUS=1.5`、
+   `MOVE_MAX_DISTANCE=64`、`MOVE_TIMEOUT_MS=30000` **全部未改**。
+2. **动作级 `TIMEOUT`/`CANCELLED` 也必须带导航证据。** 新增动作可选钩子 `terminalDetail(controller)`（由
+   `action_runtime.withTerminalDetail()` 调用）：`move_to` 现在在这两种终态里给出 target/actual/格距/浮点距/
+   半径/`reason`（`action_timeout` 或 `action_timeout_after_path_search_timeout`）。纯新增字段。
+3. **到达口径**：move_to 的权威判据仍是「实际位置取整成方块格 → 与目标方块格 3D 距离 ≤ 1.5」；
+   任务级 `position_within` 也改成**同一方块格口径**（浮点距离仅作 `raw_distance` 诊断），
+   避免「动作已合法到达、任务后置条件却判失败」（真实案例：格距 1.414、浮点 2.10）。
+
+真实门禁与回归证据见 R1 报告与 `minecraft_runtime/test/move_to.test.js`（R1 两组断言）。

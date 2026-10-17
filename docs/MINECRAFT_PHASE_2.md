@@ -357,3 +357,17 @@ Phase 3A 完成：WorldPerception 已能区分「观察窗口位移」与「世�
 移动 1/3/5 格、传送、旋转、跳跃均不产生虚假 `world.changed`，重叠区真实变化照常计数。
 **可以进入 Phase 3B（Safe Action Layer）**——届时终于可以在 runtime 加入移动能力，
 感知层不需要再改；唯一的后续观察项是真实移动速度下的 rebase 频率与该日志（§12.5.1）。
+---
+
+## R1 交叉引用：感知缓存的时间语义（追加，不改写上文）
+
+R1（真实世界感知与导航可靠性）在**行为契约**上补充了两点，均**追加**而非改写既有记录：
+
+1. `WorldStateCache.view()['layers'][layer]` 现在同时给出该层真实的 `captured_at` 与 `age_seconds`；
+   顶层 `captured_at` 明确是「最近一次任意层成功的聚合时刻」，**不得**再被当成每一层的观测时刻。
+2. `local` 层的合并分支补上了 `is not None` 守卫（此前一次空载荷会刷新 local 时间戳并清空兴趣点，
+   把空内容标成「刚取的」）。near/local/extended 现在同口径：**没有真实数据就不动时间戳、不清内容**。
+3. 状态对账（`service._poll_loop`）发现离开 `ONLINE` 时同样会让感知缓存失效——在此之前只有
+   connected/disconnected 事件会失效，事件一旦丢失，缓存会一直 `available=True` 且 age 无限增长。
+
+真实门禁证据见 `docs/specs/CatooBot R1 Real-World Perception & Navigation Reliability Report.md`（P1/P2/P4）。

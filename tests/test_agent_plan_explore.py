@@ -54,6 +54,30 @@ class TestExplorePlanning:
         assert expected.position_within is not None
         assert expected.position_within["radius"] == 2.0
 
+    async def test_explore_postcondition_matches_frozen_cell(self) -> None:
+        """R1 P-MATH：后置条件必须与动作参数同一坐标口径（整数方块格，floor 取整）。"""
+        rig = PlanRig()
+        result = await rig.service.planner.plan("去外面探索一下", observe=rig.observe)
+        plan = result.plan.plan
+        move = plan.steps[0]
+        expected = plan.expected_final_state.position_within
+        assert expected is not None
+        assert isinstance(move.arguments["x"], int)
+        assert isinstance(move.arguments["y"], int)
+        assert isinstance(move.arguments["z"], int)
+        assert expected["x"] == float(move.arguments["x"])
+        assert expected["y"] == float(move.arguments["y"])
+        assert expected["z"] == float(move.arguments["z"])
+
+    def test_cell_floors_negative_coordinates(self) -> None:
+        """R1：负坐标必须向下取整（旧代码 int() 向零截断，-2.5 → -2 会选错方块格）。"""
+        from app.tasks.planner import _cell
+
+        assert _cell(-2.5) == -3
+        assert _cell(-0.5) == -1
+        assert _cell(2.5) == 2
+        assert _cell("-7") == -7
+
     async def test_explore_target_is_within_budget(self) -> None:
         rig = PlanRig()
         result = await rig.service.planner.plan("去外面探索一下", observe=rig.observe)

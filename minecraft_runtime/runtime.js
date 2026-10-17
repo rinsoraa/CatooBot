@@ -1953,6 +1953,12 @@ const ACTION_REGISTRY = {
           // 让 cleanup（stop / 超时 / 断开）也能摘掉这些监听器：复用 ActionRuntime 的
           // controller 与它已有的 cleaned 标记，不另建第二套 cleanup 状态（§二十四）。
           if (controller) controller.moveListeners = listeners
+          // R1：把失败 detail 的计算函数挂到 controller 上 —— 动作级 TIMEOUT/CANCELLED 也要能带上
+          // 目标/实际/距离/原因（此前这两种终态只带 reason，导航证据在诊断时全丢）。
+          if (controller) controller.moveDetailOf = (reason) => detail(reason)
+          const markSearchTimeout = () => {
+            if (controller) controller.moveSearchTimedOut = true
+          }
 
           /** 失败 detail（§二十）：目标 / 实际 / 距离 / 半径都如实带出去。 */
           const detail = (reason) => {
@@ -2038,7 +2044,18 @@ const ACTION_REGISTRY = {
               return
             }
             if (status === 'timeout') {
-              // §十三：路径搜索超时 → FAILED（清 Goal），绝不 SUCCEEDED
+              // R1 根因修复：pathfinder 的 thinkTimeout 是**累计搜索预算**，超预算时它仍然
+              // 持有可用路径并继续走（index.js 里 timeout 与 partial 同一条推进路径）。
+              // 原来在这里立刻判失败，会把'已经走了一段、目标真实可达'的导航误杀
+              // （R0 6.8 格与 2.83 格两个案例的实际形状）。现在的规则：
+              //   已到达 → 成功；手上有非空路径 → 继续等后续事件，由**既有动作超时**兜底；
+              //   没有任何可用路径 → 保持原 fail-closed 语义（path_search_timeout）。
+              markSearchTimeout()
+              if (moveArrival(bot, state).reached) {
+                succeed()
+                return
+              }
+              if (path.length > 0 && !dead()) return
               finish(
                 new ActionError(
                   '路径计算超时（非破坏性）',
@@ -2086,6 +2103,19 @@ const ACTION_REGISTRY = {
           // §七：监听器全部就位**之后**才 setGoal
           bot.pathfinder.setGoal(state.goal)
         })
+      },
+      // R1：动作级 TIMEOUT/CANCELLED 也要带导航证据（目标/实际/格距/浮点距/半径/原因）。
+      terminalDetail(controller) {
+        if (!controller || typeof controller.moveDetailOf !== 'function') return null
+        const reason = controller.moveSearchTimedOut
+          ? 'action_timeout_after_path_search_timeout'
+          : 'action_timeout'
+        try {
+          return controller.moveDetailOf(reason)
+        } catch (error) {
+          log('warn', 'move_to terminalDetail failed', { error: error.message })
+          return null
+        }
       },
       cleanup(bot, controller) {
         // Phase 3C §十一/§十二：先硬清 Goal（真正停止导航），再清控制位；

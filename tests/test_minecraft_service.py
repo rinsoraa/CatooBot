@@ -743,6 +743,40 @@ async def test_disabled_config_raises_disabled(make_service):
         await service.send_chat("hi")
 
 
+async def test_poll_loop_invalidates_perception_when_status_leaves_online(
+    fake_runtime: FakeRuntime, make_service
+):
+    """R1 P-STALE：状态对账发现离开 ONLINE 时必须让感知缓存失效。
+
+    否则事件一旦丢失（回调失败 / WebUI 未启用），缓存会一直 available=True 且 age 无限增长，
+    旧位置 / 旧玩家就会被当成'此刻的事实'。
+    """
+
+    class _Spy:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def invalidate(self) -> None:
+            self.calls += 1
+
+    service = make_service(make_config(fake_runtime, poll_interval_seconds=1.0))
+    spy = _Spy()
+    service.perception = spy  # type: ignore[assignment]
+    fake_runtime.online = True
+    service._started = True
+    task = asyncio.create_task(service._poll_loop())
+    try:
+        await asyncio.sleep(1.4)
+        assert spy.calls == 0, "仍在线时不得作废感知缓存"
+        fake_runtime.online = False
+        await asyncio.sleep(1.6)
+        assert spy.calls >= 1, "状态离开 ONLINE 必须让感知缓存失效"
+    finally:
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+
 async def test_poll_loop_reconciles_status(fake_runtime: FakeRuntime, make_service):
     service = make_service(make_config(fake_runtime, poll_interval_seconds=1.0))
     fake_runtime.online = True

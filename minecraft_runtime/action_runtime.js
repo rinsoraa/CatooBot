@@ -207,6 +207,22 @@ function createActionRuntime({
     }
   }
 
+  /**
+   * R1：动作可选提供 ``terminalDetail(controller)`` —— 让 TIMEOUT / CANCELLED 也带上
+   * 结构化诊断（如导航的目标/实际/距离/原因）。纯新增字段；动作不提供时行为完全不变。
+   */
+  function withTerminalDetail(controller, extra) {
+    const def = controller && controller.def
+    if (!def || typeof def.terminalDetail !== 'function') return extra
+    try {
+      const detail = def.terminalDetail(controller)
+      if (detail === null || detail === undefined) return extra
+      return { ...extra, detail }
+    } catch (error) {
+      return extra
+    }
+  }
+
   /** 终态落定：写状态、清 timer、退前台、发事件与日志（幂等）。 */
   function finish(controller, status, extra = {}) {
     const record = controller.record
@@ -322,7 +338,7 @@ function createActionRuntime({
             if (error instanceof ActionCancelled) {
               const status = cancellationStatus(error.reason)
               runCleanup(controller)
-              finish(controller, status, { reason: error.reason })
+              finish(controller, status, withTerminalDetail(controller, { reason: error.reason }))
               return
             }
             const message = String(error && error.message ? error.message : error)
@@ -347,7 +363,11 @@ function createActionRuntime({
       if (controller.token.cancelled || record.status !== STATES.RUNNING) {
         const status = cancellationStatus(controller.token.reason)
         runCleanup(controller)
-        finish(controller, status, { reason: controller.token.reason || 'cancelled' })
+        finish(
+          controller,
+          status,
+          withTerminalDetail(controller, { reason: controller.token.reason || 'cancelled' }),
+        )
         return { action_id: record.action_id, action: name, status }
       }
       const extra = {}
@@ -369,7 +389,7 @@ function createActionRuntime({
         // TIMEOUT 与 CANCELLED（stop / disconnect / shutdown）都必须清理底层状态：
         // runCancellable 只是不再等待，真正的终止由动作自己的 cleanup() 负责（§四）
         runCleanup(controller)
-        finish(controller, status, { reason: error.reason })
+        finish(controller, status, withTerminalDetail(controller, { reason: error.reason }))
         return { action_id: record.action_id, action: name, status }
       }
       const message = String(error && error.message ? error.message : error)

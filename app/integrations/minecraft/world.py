@@ -286,7 +286,8 @@ class WorldStateCache:
     * ``near`` 更新只替换 near；``local`` 更新替换 local + interesting；
       ``extended`` 更新只替换 extended；
     * 动态状态（self / players / entities / environment）取最新成功 snapshot；
-    * 每层有独立的 fetched_at：拉 near 不刷新 local / extended 的 age；
+    * 每层有独立的时间戳 ``_layer_at[layer]``（view 里是每层 ``captured_at`` + ``age_seconds``）：
+      拉 near 不刷新 local / extended 的 age；
     * 断开整体作废，不留假在线状态。
     """
 
@@ -336,9 +337,11 @@ class WorldStateCache:
             self._near = blocks.near
             self._near_anchor = observation_anchor(raw.self_state)
             self._layer_at["near"] = now
-        if "local" in layers:
-            if blocks.local is not None:
-                self._local = blocks.local
+        if "local" in layers and blocks.local is not None:
+            # R1 修复：原来这个分支**无条件**刷新 local 时间戳并清空 POI —— 一次
+            # local=None/interesting 缺失的载荷会把 local 层标成'刚取的'而内容是空的（
+            # 其余三层都有 is not None 守卫）。现在与 near/extended 同口径：没数据就不动。
+            self._local = blocks.local
             self._interesting = list(blocks.interesting)
             self._layer_at["local"] = now
         if "extended" in layers and blocks.extended is not None:
@@ -388,13 +391,21 @@ class WorldStateCache:
         )
 
     def view(self) -> dict[str, Any]:
-        """API/工具用的缓存元信息。"""
+        """API/工具用的缓存元信息。
+
+        R1：``captured_at`` 是**最近一次任意层成功**的聚合时刻（不是每一层的观测时刻），因此每层
+        额外给出自己的 ``captured_at``；只有 ``age_seconds`` 的单值视图无法区分'这一层是什么时候
+        取的真实数据'。这些字段纯新增，不改变任何既有语义。
+        """
         return {
             "online": self._online,
             "captured_at": self._fetched_at if self._online else None,
             "age_seconds": self.layer_age("near"),
             "layers": {
-                layer: {"age_seconds": self.layer_age(layer)}
+                layer: {
+                    "age_seconds": self.layer_age(layer),
+                    "captured_at": self._layer_at.get(layer) if self._online else None,
+                }
                 for layer in ("near", "local", "extended")
             },
         }

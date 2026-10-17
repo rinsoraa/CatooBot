@@ -2310,6 +2310,11 @@ class MinecraftService:
             current = str(live.get("status") or "DISCONNECTED")
             if previous != current:
                 log.info("[Minecraft] 状态对账：%s → %s", previous, current)
+                # R1：状态对账同样是感知失效的入口。此前只有 connected/disconnected 事
+                # 件会让缓存作废；一旦事件丢失（回调失败、WebUI 未启用），缓存会一直
+                # available=True 且 age 无限增长，旧位置/旧玩家就会被当成'此刻的事实'。
+                if self.perception is not None and current != "ONLINE":
+                    self.perception.invalidate()
 
     # ------------------------------------------------------------- 世界感知(P2)
 

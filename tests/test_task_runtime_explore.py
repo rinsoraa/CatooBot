@@ -9,6 +9,8 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Any
 
+import pytest
+
 from app.tasks.models import (
     ExpectedFinalState,
     TaskFailure,
@@ -161,6 +163,21 @@ class TestExploreRuntime:
         assert record.verification["position_within"]["distance"] == 0.0
         # 后置条件是重新读世界得到的，不是动作返回值自述
         assert "minecraft_world" in invoke.calls
+
+    async def test_cell_corner_arrival_is_not_a_false_failure(self) -> None:
+        """R1 口径一致性：到达判据必须与 move_to 的**方块格**口径一致。
+
+        真实形状（真机 N4-2/N5-1）：罐头站在目标格斜对角（格距 1.414 ≤ 1.5 已到达），
+        但浮点 3D 距离 2.10 > 2.0 —— 旧实现会因此把一次合法到达判失败。
+        """
+        invoke = WorldRecorder(self_position={"x": 109.5, "y": 64.0, "z": 209.5})
+        runtime = make_runtime(invoke, config=TaskConfig(position_verify_attempts=1))
+        record = await confirm(runtime, explore_plan())
+        assert record.state is TaskState.SUCCEEDED
+        within = record.verification["position_within"]
+        assert within["distance"] == pytest.approx(1.41, abs=0.02), "格距按方块格计算"
+        assert within["raw_distance"] > 2.0, "浮点距离仍然如实上报（不再冒充到达判据）"
+        assert record.verification["ok"] is True
 
     async def test_not_arrived_fails_verification(self) -> None:
         invoke = WorldRecorder(self_position={"x": 100.0, "y": 64.0, "z": 200.0})

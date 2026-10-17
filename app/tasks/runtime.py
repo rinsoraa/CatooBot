@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
 import time
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, field
@@ -223,6 +224,11 @@ FAILURE_BY_CODE: dict[str, TaskFailure] = {
     "recipe.not_found": TaskFailure.VALIDATION,
     "material.insufficient": TaskFailure.VALIDATION,
 }
+
+
+def _floor_cell(value: float) -> int:
+    """把世界坐标取整成**方块格**（floor；负数同样向下）——与 move_to 的 GoalNear 口径一致。"""
+    return math.floor(float(value))
 
 
 def classify_failure(code: str, *, event: str = "") -> TaskFailure:
@@ -2974,22 +2980,37 @@ class TaskRuntime:
         dx = position["x"] - target["x"]
         dy = position["y"] - target["y"]
         dz = position["z"] - target["z"]
-        distance = (dx * dx + dy * dy + dz * dz) ** 0.5
-        ok = distance <= target["radius"]
+        raw_distance = (dx * dx + dy * dy + dz * dz) ** 0.5
+        # R1 口径修复：到达判定必须与 move_to 的**方块格**口径一致（Phase 4H.1：GoalNear 把目标
+        # 与自身都取整成方块格再比距离）。此前这里用浮点 3D 距离，导致一次合法到达（格距 1.414
+        # ≤ 1.5）因为脚下小数偏移被算成 2.1 > 2.0 而判失败 —— 真机 N4-2/N5-1 就是这样失败的。
+        # 半径语义不变，浮点距离仍然如实上报（raw_distance），只是不再冒充到达判据。
+        cx, cy, cz = (
+            _floor_cell(position["x"]),
+            _floor_cell(position["y"]),
+            _floor_cell(position["z"]),
+        )
+        tx = _floor_cell(target["x"])
+        ty = _floor_cell(target["y"])
+        tz = _floor_cell(target["z"])
+        cdx, cdy, cdz = cx - tx, cy - ty, cz - tz
+        cell_distance = (cdx * cdx + cdy * cdy + cdz * cdz) ** 0.5
+        ok = cell_distance <= target["radius"]
         return {
             "ok": ok,
             "position_within": {
                 "x": round(position["x"], 2),
                 "y": round(position["y"], 2),
                 "z": round(position["z"], 2),
-                "distance": round(distance, 2),
+                "distance": round(cell_distance, 2),
+                "raw_distance": round(raw_distance, 2),
             },
             "expected_position": target,
             "message": ""
             if ok
             else (
-                f"最终位置与探索目标不符（距目标 {distance:.1f} 格，"
-                f"允许 {target['radius']:.1f} 格）"
+                f"最终位置与探索目标不符（格距 {cell_distance:.1f} 格，"
+                f"允许 {target['radius']:.1f} 格；浮点距 {raw_distance:.2f}）"
             ),
         }
 

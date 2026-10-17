@@ -1,4 +1,31 @@
 # Changelog
+### R1 真实世界感知与导航可靠性（单个综合工作周期，非 Follow-up 串）
+
+- **导航根因修复（`minecraft_runtime/runtime.js`）**：`path_update(status='timeout')` 曾被**立即判失败**；
+  而 mineflayer-pathfinder 的 `thinkTimeout` 是**累计搜索预算**，超预算时它仍持有可用路径并继续走。
+  真机复现（`CatooBot_backups/_r1_probe1.log`）：同一目标 `partial` 连续 **26.6s** 后 `timeout`，随后空路径
+  **48ms 即 resolve**（正是产品废弃 `goto` 的原因）。新规则：已到达→成功；`path.length>0`→继续（由既有
+  动作超时兜底）；**没有可用路径→保持 `path.not_found` / `reason=path_search_timeout`（fail-closed 不变）**。
+- **导航证据修复（`minecraft_runtime/action_runtime.js` + `runtime.js`）**：动作级 `TIMEOUT`/`CANCELLED` 事件
+  以前只带 `reason`，导航证据（target/actual/格距/浮点距/半径）在诊断最关键时**全丢**。新增动作可选钩子
+  `terminalDetail(controller)` 与 `withTerminalDetail()`：`move_to` 现在给出
+  `reason=action_timeout_after_path_search_timeout` / `action_timeout`。纯新增字段，其它动作行为不变。
+- **计划到达口径一致（`app/tasks/planner.py`）**：`plan_exploration_task` 曾把**浮点 waypoint** 冻结进
+  `position_within`，而 move_to 的参数是 `int()` 截断 → 一次合法到达可能被判没到（且负数向零截断）。
+  新增 `_cell()`（`math.floor`），单段/每段 leg/最终后置条件与动作参数统一为**同一整数方块格**。
+- **感知 P-STALE 修复（`app/integrations/minecraft/world.py`）**：`local` 层分支曾**无条件**刷新 local
+  时间戳并清空 POI（near/extended 都有 `is not None` 守卫）→ 一次空载荷就会把空内容标成「刚取的」。现已同口径守卫；
+  `view()['layers'][layer]` 增加**每层真实 `captured_at`**（顶层 `captured_at` 明确是「最近一次任意层成功」的聚合值）。
+- **感知失效入口补齐（`app/integrations/minecraft/service.py`）**：状态对账发现离开 `ONLINE` 时
+  `perception.invalidate()` —— 此前只有 connected/disconnected 事件会失效缓存，事件一旦丢失，缓存会一直
+  `available=True` 且 age 无限增长，旧位置/旧玩家会被当成「此刻的事实」。
+- **测试**：Node `move_to.test.js` 新增 R1 两组（有路径 timeout 不落终态→真实到达 completed；无路径 timeout
+  仍 fail-closed；动作超时带 detail）→ **84/84**；Python 新增 5 条（local 空载荷不刷 age/不清 POI、每层
+  `captured_at`、对账离开 ONLINE 必须失效、后置条件与动作参数同口径、`_cell` 负数向下取整）。
+- **真实门禁**：感知 P1–P5 全 PASS（真实 `/status` 与感知坐标差 0.000、每层 age 独立递增、op 夹具真实
+  世界变更与还原、真实 `/kick` 后不可用且不复活旧坐标、真实观察→产品规划器坐标 2/2 命中）；导航 N1–N4/N5/N10
+  真机运行（修复前 10 次 9 成功、修复后 12 次 11 成功 + 一次行走中取消），详见
+  `docs/specs/CatooBot R1 Real-World Perception & Navigation Reliability Report.md`。
 ### R0 最终闭环：交接仲裁、导航证据链与真实迁移演练
 
 - **R0.1 两条真实缺陷（真机门禁直接暴露，已修）**：
@@ -3604,4 +3631,3 @@
 - OneBot 11 反向 WebSocket 适配（token 鉴权、单连接接管、断线保活）、
   API 客户端（echo/future/超时/断开清理）、事件总线、命令系统、权限、插件加载、SQLite（WAL）。
 - 内置 `/ping` `/help` `/about`；WebUI 起步（登录 + 仪表盘）。
-

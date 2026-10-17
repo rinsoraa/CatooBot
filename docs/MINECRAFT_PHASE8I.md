@@ -966,3 +966,14 @@ FU5 的 `handoff_target_verdict()` 只比对**木材目标与数量**（`parse_w
 既有收尾语继续正常工作，明确树种/数量冲突的 `NEW_GOAL` 语义不变；结构负向用例在真实仲裁中保留提案、
 返回澄清、执行入口零调用，跨决策类别与 STOP/CANCEL/双确认契约无回归；本地全量测试与 CI 结果完整报告
 （无隐瞒失败）；关键新增反例 K1/K2 有**真实第二客户端**路径证据；权限模型与受保护区域未变。
+---
+
+## R1 交叉引用：导航失败的历史记录已被根因修复覆盖（追加，不改写上文）
+
+本阶段记录过的「约 6.8 格 `minecraft_move_to` 失败、任务 PAUSED」以及 R0 记录的「2.83 格
+`path_search_timeout`」在 R1 被定性并修复：根因是 **`path_update(status='timeout')` 被立即判失败**，
+而 pathfinder 的 `thinkTimeout` 只是**累计搜索预算**（超预算时仍持有可用路径）。R1 之后这类可达场景会继续走完，
+失败只在真正没有可用路径或动作整体超时发生，并且**两种终态都会带结构化 detail**
+（`action_timeout` / `action_timeout_after_path_search_timeout`）。
+
+R1 未改动本阶段的任何交接/合成/授权语义；本文的历史实验记录保持原样。

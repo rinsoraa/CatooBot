@@ -633,6 +633,74 @@ async function behaviour() {
       `浮点距离仍然如实上报（得到 ${result.raw_distance_to_target}）`,
     )
   }
+
+  console.log('[move-to-test] R1：path_search_timeout 持有可用路径时不得立即判失败')
+  {
+    // R1 根因：pathfinder 的 thinkTimeout 是**累计搜索预算**，超预算时它仍持有可用路径并继续走。
+    // 旧实现立刻判失败，会把'已经走了一段、目标真实可达'的导航误杀（R0 6.8 格 / 2.83 格案例）。
+    const harness = makeHarness()
+    const bot = makeBot(new Vec3(0, 64, 0))
+    harness.state.bot = bot
+    const resp = await harness.runtime.execute('move_to', { x: 10, y: 64, z: 0 })
+    bot.emit('path_update', { path: [{ x: 2, y: 64, z: 0 }], status: 'timeout' })
+    await sleep(40)
+    assert(
+      terminals(harness.events, resp.action_id).length === 0,
+      '有可用路径时 timeout 只是搜索预算耗尽，不得立即落终态',
+    )
+    bot.entity.position = new Vec3(10.2, 64, 0)
+    bot.emit('goal_reached', bot.pathfinder.setGoalCalls[0])
+    const terminal = await settle(harness, resp.action_id)
+    assert(
+      terminal && terminal.event === 'minecraft.action.completed',
+      `继续走并由真实位置确认到达 → completed（得到 ${terminal && terminal.event}）`,
+    )
+
+    // 反例：没有可用路径时 timeout 仍然必须 fail-closed（绝不因为'预算耗尽'报成功）
+    const bare = makeHarness()
+    bare.state.bot = makeBot(new Vec3(0, 64, 0))
+    const bareResp = await bare.runtime.execute('move_to', { x: 10, y: 64, z: 0 })
+    bare.state.bot.emit('path_update', { path: [], status: 'timeout' })
+    const bareTerminal = await settle(bare, bareResp.action_id)
+    assert(
+      bareTerminal &&
+        bareTerminal.event === 'minecraft.action.failed' &&
+        bareTerminal.data.code === 'path.not_found' &&
+        bareTerminal.data.detail &&
+        bareTerminal.data.detail.reason === 'path_search_timeout',
+      `没有可用路径时 timeout 仍然 path.not_found/path_search_timeout（得到 ${JSON.stringify(
+        bareTerminal && bareTerminal.data && bareTerminal.data.detail,
+      )}）`,
+    )
+  }
+
+  console.log('[move-to-test] R1：动作级 TIMEOUT 也必须带导航证据')
+  {
+    await withTimeoutMs(150, async () => {
+      const harness = makeHarness()
+      const bot = makeBot(new Vec3(0, 64, 0))
+      harness.state.bot = bot
+      const resp = await harness.runtime.execute('move_to', { x: 10, y: 64, z: 0 })
+      bot.emit('path_update', { path: [{ x: 1, y: 64, z: 0 }], status: 'timeout' })
+      await sleep(300)
+      const terminal = terminals(harness.events, resp.action_id)[0]
+      assert(
+        terminal && terminal.event === 'minecraft.action.timeout',
+        `预算耗尽 + 未到达 + 动作超时 → TIMEOUT（得到 ${terminal && terminal.event}）`,
+      )
+      assert(
+        terminal.data.detail &&
+          typeof terminal.data.detail.distance_to_target === 'number' &&
+          terminal.data.detail.reason === 'action_timeout_after_path_search_timeout',
+        `TIMEOUT 事件带 target/actual/距离/原因（得到 ${JSON.stringify(terminal.data.detail)}）`,
+      )
+      assert(
+        bot.pathfinder.setGoalCalls.filter((goal) => goal === null).length >= 1,
+        'TIMEOUT 之后 Goal 已清',
+      )
+      assert(bot.listenerCount() === 0, 'TIMEOUT 之后监听器全部摘掉')
+    })
+  }
 }
 
 async function run() {

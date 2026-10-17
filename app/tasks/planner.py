@@ -18,6 +18,7 @@
 
 from __future__ import annotations
 
+import math
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, field
 from typing import Any
@@ -1055,6 +1056,11 @@ def _planar(ax: float, az: float, bx: float, bz: float) -> float:
     return (dx * dx + dz * dz) ** 0.5
 
 
+def _cell(value: Any) -> int:
+    """把真实航点坐标取整成**方块格**（floor，负数同样向下）。"""
+    return math.floor(float(value))
+
+
 def _explore_waypoints(
     view: Mapping[str, Any],
     sx: float,
@@ -1199,7 +1205,11 @@ async def plan_exploration_task(
             TaskStep(
                 step_id="step_1",
                 tool="minecraft_move_to",
-                arguments={"x": int(target["x"]), "y": int(target["y"]), "z": int(target["z"])},
+                arguments={
+                    "x": _cell(target["x"]),
+                    "y": _cell(target["y"]),
+                    "z": _cell(target["z"]),
+                },
                 risk="LOW",
             ),
             TaskStep(
@@ -1223,9 +1233,11 @@ async def plan_exploration_task(
         ]
         expected = ExpectedFinalState(
             position_within={
-                "x": float(target["x"]),
-                "y": float(target["y"]),
-                "z": float(target["z"]),
+                # R1：后置条件必须与 move_to 的目标**同一坐标口径**（整数方块格，floor 取整）——
+                # 否则浮点航点配整数动作参数会把一次合法到达判成没到（也修掉负数向零截断）。
+                "x": float(_cell(target["x"])),
+                "y": float(_cell(target["y"])),
+                "z": float(_cell(target["z"])),
                 "radius": float(arrive_radius),
             }
         )
@@ -1241,9 +1253,9 @@ async def plan_exploration_task(
                     step_id=move_id,
                     tool="minecraft_move_to",
                     arguments={
-                        "x": int(waypoint["x"]),
-                        "y": int(waypoint["y"]),
-                        "z": int(waypoint["z"]),
+                        "x": _cell(waypoint["x"]),
+                        "y": _cell(waypoint["y"]),
+                        "z": _cell(waypoint["z"]),
                     },
                     risk="LOW",
                 )
@@ -1265,9 +1277,9 @@ async def plan_exploration_task(
                     "index": index,
                     "step_id": move_id,
                     "position_within": {
-                        "x": float(waypoint["x"]),
-                        "y": float(waypoint["y"]),
-                        "z": float(waypoint["z"]),
+                        "x": float(_cell(waypoint["x"])),
+                        "y": float(_cell(waypoint["y"])),
+                        "z": float(_cell(waypoint["z"])),
                         "radius": float(arrive_radius),
                     },
                     "distance": float(waypoint["distance"]),
@@ -1285,9 +1297,9 @@ async def plan_exploration_task(
         final = waypoints[-1]
         expected = ExpectedFinalState(
             position_within={
-                "x": float(final["x"]),
-                "y": float(final["y"]),
-                "z": float(final["z"]),
+                "x": float(_cell(final["x"])),
+                "y": float(_cell(final["y"])),
+                "z": float(_cell(final["z"])),
                 "radius": float(arrive_radius),
             },
             route={

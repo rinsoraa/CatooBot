@@ -376,6 +376,54 @@ def _payload_with_layers(*layers: str) -> dict:
     return payload
 
 
+def test_partial_local_payload_without_data_must_not_refresh_age_or_clear_poi():
+    """R1 P-STALE：请求了 local 层但载荷里没有 local/interesting 数据时，
+    不得把 local 层时间戳刷成 now（旧实现会），也不得静默清空兴趣点。
+    """
+    clock, advance = make_clock()
+    cache = WorldStateCache(clock)
+    cache.update(parse_raw_snapshot(raw_payload()), {"near", "local", "extended"})
+    before = cache.raw
+    assert before is not None
+    poi_before = list(before.blocks.interesting)
+    assert poi_before, "夹具前提：初始载荷必须带兴趣点"
+    age_before = cache.view()["layers"]["local"]["age_seconds"]
+    assert age_before is not None
+    advance(3.0)
+
+    payload = _payload_with_layers("near")
+    payload["blocks"].pop("interesting", None)
+    cache.update(parse_raw_snapshot(payload), {"local"})
+
+    after = cache.view()["layers"]["local"]
+    assert after["age_seconds"] is not None and after["age_seconds"] >= 3.0, (
+        f"local 层没有真实数据时不得把 age 刷成 0（得到 {after['age_seconds']!r}）"
+    )
+    merged = cache.raw
+    assert merged is not None
+    assert merged.blocks.interesting == poi_before, "没有数据时不得清空兴趣点"
+
+
+def test_view_exposes_per_layer_captured_at():
+    """R1 P-STALE：view 必须给出每层自己的 captured_at（聚合时间戳不能冒充每层观测时刻）。"""
+    clock, advance = make_clock()
+    cache = WorldStateCache(clock)
+    cache.update(parse_raw_snapshot(raw_payload()), {"near", "local", "extended"})
+    started = cache.view()["layers"]["extended"]["captured_at"]
+    assert started is not None
+    advance(5.0)
+    cache.update(parse_raw_snapshot(_payload_with_layers("near")), {"near"})
+    layers = cache.view()["layers"]
+    near_at = layers["near"]["captured_at"]
+    extended_at = layers["extended"]["captured_at"]
+    assert near_at is not None and extended_at is not None
+    assert near_at > extended_at, "刚刷新的 near 层时间戳必须晚于未刷新的 extended 层"
+    assert layers["near"]["age_seconds"] is not None and layers["near"]["age_seconds"] < 1.0
+    assert (
+        layers["extended"]["age_seconds"] is not None and layers["extended"]["age_seconds"] >= 5.0
+    )
+
+
 def test_partial_near_update_preserves_local_and_extended():
     """near 更新只能覆盖 near：local/interesting/extended 必须原样保留。"""
     clock, advance = make_clock()
