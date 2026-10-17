@@ -59,6 +59,7 @@ function blockPassable(bot, pos) {
 function standabilityOf(bot, cell) {
   if (!bot || typeof bot.blockAt !== 'function') return 'unknown'
   let unknown = false
+  let anyFloor = false
   for (const candidate of standabilityCandidates(cell)) {
     const feet = blockPassable(bot, candidate)
     const head = blockPassable(bot, { x: candidate.x, y: candidate.y + 1, z: candidate.z })
@@ -67,9 +68,14 @@ function standabilityOf(bot, cell) {
       unknown = true
       continue
     }
+    if (!floor) anyFloor = true
     if (feet && head && !floor) return 'standable'
   }
-  return unknown ? 'unknown' : 'not_standable'
+  if (unknown) return 'unknown'
+  // 只在**整个 GoalNear 窗口都没有任何地板**（目标悬在开阔空中）时才判定不可站立。
+  // 这排除了「地板存在但头部空间/半砖/楼梯等形状判断有分歧」的灰色情形 —— 那里一律不干预，
+  // 避免误拒可达目标（CI e2e 曾因此暴露过一次真实误拒）。
+  return anyFloor ? 'unknown' : 'not_standable'
 }
 
 /**
