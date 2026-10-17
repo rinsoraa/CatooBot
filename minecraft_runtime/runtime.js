@@ -1136,6 +1136,60 @@ function blockDistanceView(bot, position) {
  * 事实来源是 Mineflayer 的 ``bot.findBlocks``（默认以罐头当前位置为起点，按距离排序）；
  * 绝不自己遍历 x±N / y±N / z±N，也绝不因为找不到就自动 move / equip / dig。
  */
+/**
+ * R1-G6：查询覆盖完整性 —— ``bot.findBlocks`` 会**静默跳过未加载区块**，所以空命中本身
+ * 不能证明「范围内没有」。这里用真实的 chunk 可用性给出可验证的 coverage：
+ *   COMPLETE = 请求半径覆盖到的**每个 chunk 列都已加载**（搜索基线完整）
+ *   PARTIAL  = 只加载了一部分（结论不完整）
+ *   UNKNOWN  = 运行时拿不到 chunk 列 API 或维度不可用（不能下结论）
+ * 用 `bot.world.getColumn(cx, cz)` 实际探测；任何异常都降级为 UNKNOWN，绝不当成 COMPLETE。
+ */
+function findBlocksCoverage(bot, point, maxDistance) {
+  const dimension = (bot.game && bot.game.dimension) || null
+  const base = {
+    captured_at: Date.now() / 1000,
+    dimension,
+    center: { x: point.x, y: point.y, z: point.z },
+    requested_radius: maxDistance,
+  }
+  const world = bot.world
+  const getColumn = world && typeof world.getColumn === 'function' ? world.getColumn.bind(world) : null
+  if (!getColumn) {
+    return { ...base, coverage: 'UNKNOWN', coverage_reason: 'chunk_api_unavailable' }
+  }
+  if (!dimension) {
+    return { ...base, coverage: 'UNKNOWN', coverage_reason: 'dimension_unavailable' }
+  }
+  const minCx = Math.floor((point.x - maxDistance) / 16)
+  const maxCx = Math.floor((point.x + maxDistance) / 16)
+  const minCz = Math.floor((point.z - maxDistance) / 16)
+  const maxCz = Math.floor((point.z + maxDistance) / 16)
+  let total = 0
+  let loaded = 0
+  for (let cx = minCx; cx <= maxCx; cx += 1) {
+    for (let cz = minCz; cz <= maxCz; cz += 1) {
+      total += 1
+      let column = null
+      try {
+        column = getColumn(cx, cz)
+      } catch (error) {
+        column = null
+      }
+      if (column) loaded += 1
+    }
+  }
+  let coverage = 'PARTIAL'
+  let reason = 'some_chunks_unloaded'
+  if (loaded === total) {
+    coverage = 'COMPLETE'
+    reason = 'all_chunks_loaded'
+  } else if (loaded === 0) {
+    coverage = 'UNKNOWN'
+    reason = 'no_chunks_loaded'
+  }
+  return { ...base, chunks_total: total, chunks_loaded: loaded, coverage, coverage_reason: reason }
+}
+
 function findBlocksView(bot, params) {
   if (typeof bot.findBlocks !== 'function') {
     // §二十一：运行时给不出这个查询能力时如实说（结构化错误，不假装空结果）
@@ -1194,6 +1248,9 @@ function findBlocksView(bot, params) {
     },
     matches,
     truncated,
+    // R1-G6：只读观察元数据（新增字段，旧消费者忽略即可）。空命中只有 coverage=COMPLETE
+    // 才能被解释为「该范围内确实没有目标」。
+    observation: findBlocksCoverage(bot, point, maxDistance),
   }
 }
 
@@ -4346,6 +4403,7 @@ module.exports = {
     maxNames: FIND_BLOCKS_MAX_NAMES,
   },
   findBlocksView,
+  findBlocksCoverage,
   blockDistanceView,
   DIG_CAPABILITY_DEFAULTS: {
     timeoutMs: DIG_CAPABILITY_TIMEOUT_MS,

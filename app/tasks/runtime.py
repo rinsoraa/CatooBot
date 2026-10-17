@@ -231,6 +231,28 @@ def _floor_cell(value: float) -> int:
     return math.floor(float(value))
 
 
+def _expected_dimension_of(plan: Any) -> str | None:
+    """从计划冻结的观察里读出可信的 dimension（取第一条带 observation.dimension 的观察）。
+
+    只认 ``find_blocks`` 这类真实查询返回的 ``observation.dimension``；规划器/模型自述的
+    维度不算证据。读不到就返回 None（此时不做维度判定，保持既有行为）。
+    """
+    observations = getattr(plan, "observations", None) or []
+    for entry in observations:
+        if not isinstance(entry, Mapping):
+            continue
+        result = entry.get("result")
+        if not isinstance(result, Mapping):
+            continue
+        observation = result.get("observation")
+        if not isinstance(observation, Mapping):
+            continue
+        dimension = observation.get("dimension")
+        if isinstance(dimension, str) and dimension.strip():
+            return dimension.strip()
+    return None
+
+
 def classify_failure(code: str, *, event: str = "") -> TaskFailure:
     """把错误码/事件映射成失败分类（不认识的一律 ``ACTION_FAILED``，绝不猜）。"""
     key = str(code or "")
@@ -731,6 +753,17 @@ class TaskRuntime:
             raise TaskAuthorizationError(
                 "确认必须来自发起这个任务的人与会话", code="task.confirmation_wrong_owner"
             )
+        # R1-G5：维度一致性守卫 —— 计划里冻结的观察若带有可信 dimension，确认前必须只读重查
+        # 当前维度；不一致/缺失一律 fail-closed（不消费确认、不派发任何世界动作）。
+        # 不新增跨维度能力：只保证相同 x/y/z 绝不会被当成另一个维度的坐标执行。
+        expected_dimension = _expected_dimension_of(record.plan)
+        if expected_dimension is not None:
+            current_dimension = await self._current_dimension()
+            if not current_dimension or current_dimension != expected_dimension:
+                reason = "dimension.unknown" if not current_dimension else "dimension.mismatch"
+                record.message = f"{reason}:{expected_dimension}:{current_dimension or 'unknown'}"
+                await self._save(record, event=TASK_PLAN_READY)
+                return record
         ok, code = await self._confirmations.consume(
             record.confirmation_id,
             task_id=record.task_id,
@@ -1765,6 +1798,27 @@ class TaskRuntime:
         return record
 
     # ------------------------------------------------------------ 只读对账（§二十一）
+
+    async def _current_dimension(self) -> str | None:
+        """只读重查当前维度（SAFE `minecraft_world`）；读不到返回 None，绝不猜。"""
+        try:
+            world = await self._safe_read("minecraft_world", {})
+        except Exception:  # noqa: BLE001
+            return None
+        view = world.result if (world.ok and isinstance(world.result, Mapping)) else {}
+        if not isinstance(view, Mapping):
+            return None
+        dimension = view.get("dimension")
+        if isinstance(dimension, str) and dimension.strip():
+            return dimension.strip()
+        semantic = view.get("semantic")
+        if isinstance(semantic, Mapping):
+            self_state = semantic.get("self")
+            if isinstance(self_state, Mapping):
+                dim = self_state.get("dimension") or self_state.get("dim")
+                if isinstance(dim, str) and dim.strip():
+                    return dim.strip()
+        return None
 
     async def _safe_read(
         self, tool: str, arguments: Mapping[str, Any] | None = None

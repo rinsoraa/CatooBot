@@ -135,6 +135,23 @@ def _reachable_height(
     return float(y) <= float(bot_y) + headroom
 
 
+def observation_coverage(payload: Mapping[str, Any] | None) -> tuple[str, str]:
+    """读 ``find_blocks`` 的观察覆盖状态（缺省 UNKNOWN，绝不默认 COMPLETE）。
+
+    返回 ``(coverage, coverage_reason)``；旧响应没有 ``observation`` 字段一律按 UNKNOWN 处理 ——
+    「运行时没说覆盖完整」不等于「覆盖完整」。
+    """
+    if not isinstance(payload, Mapping):
+        return "UNKNOWN", "observation_missing"
+    observation = payload.get("observation")
+    if not isinstance(observation, Mapping):
+        return "UNKNOWN", "observation_missing"
+    coverage = str(observation.get("coverage") or "UNKNOWN").upper()
+    if coverage not in ("COMPLETE", "PARTIAL", "UNKNOWN"):
+        return "UNKNOWN", f"coverage_invalid:{coverage}"
+    return coverage, str(observation.get("coverage_reason") or "")
+
+
 async def plan_resource_task(
     objective: str,
     *,
@@ -169,7 +186,16 @@ async def plan_resource_task(
         )
     )
     matches = found_result.get("matches") or []
-    if not found_result.get("ok") or not matches:
+    if not found_result.get("ok"):
+        raise ObservationFailed(f"附近 {max_distance} 格内没有找到 {block}")
+    if not matches:
+        # R1-G6：空命中只有在**覆盖完整**时才能解释成「范围内确实没有」。
+        coverage, why = observation_coverage(found_result)
+        if coverage != "COMPLETE":
+            raise ObservationFailed(
+                f"coverage_incomplete:{coverage}:{why}:"
+                f"附近 {max_distance} 格内不能确认有没有 {block}"
+            )
         raise ObservationFailed(f"附近 {max_distance} 格内没有找到 {block}")
     world_view = await _safe_observe(observe, "minecraft_world", {})
     world_result = _result_of(world_view)
@@ -442,6 +468,12 @@ async def plan_wood_task(
         if target is not None
     ]
     if not targets:
+        coverage, why = observation_coverage(found_result)
+        if coverage != "COMPLETE":
+            raise ObservationFailed(
+                f"coverage_incomplete:{coverage}:{why}:"
+                f"no_wood_target：附近 {max_distance} 格内不能确认有没有原木"
+            )
         raise ObservationFailed(f"no_wood_target：附近 {max_distance} 格内没有找到原木")
 
     world_view = await _safe_observe(observe, "minecraft_world", {})

@@ -1,4 +1,23 @@
 # Changelog
+### R1 残余缺口一次性闭环（N5/N6/N8/N9/N12 + find_blocks coverage + P1）
+
+- **N5 受控绕障 5/5 PASS**：固定几何（3×2 墙 + 两端缺口，op 夹具逐点还原）连续 5 次真实移动全部到达，每次由脚本独立
+  重读坐标确认在 `MOVE_TO_RADIUS=1.5` 内；阈值一个都没动。历史 1 次 30s 超时保留在案。
+- **N6-A/B 各 3/3 PASS**：op 构造可恢复的单块上升平台与两级楼梯（已还原），罐头自行走上去；**N6-C 真实不可站立目标
+  fail-closed**（PAUSED/step FAILED，`reason=action_timeout_after_path_search_timeout`，从未 SUCCEEDED）。
+- **find_blocks coverage / freshness（真实缺陷修复）**：Runtime 新增 `findBlocksCoverage()`，响应带只读 `observation`
+  （captured_at/dimension/center/requested_radius/chunks_total/chunks_loaded/coverage/coverage_reason），用真实
+  `bot.world.getColumn()` 逐列探测；缺 API/缺维度/异常一律 `UNKNOWN`（绝不默认 COMPLETE）。规划器据此在
+  `matches=[] + PARTIAL/UNKNOWN` 时报「不能确认有没有」而不是「附近没有」。真机证据 `9/9` chunk `COMPLETE`。
+- **维度一致性守卫（N12，确认前）**：观察冻结真实 `dimension`；`TaskPlan.to_payload()` 仅在带维度证据时持久化
+  observations（旧计划序列化逐字节不变、`plan_hash` 不变）；`confirm_and_start` 前只读重查当前维度，不一致/缺失 →
+  `dimension.mismatch` / `dimension.unknown` 且**保持待确认、零世界动作**。
+- **N9-A 真实通过（E3）**：真实观察（coverage COMPLETE）→ 冻结 dig 计划 → 确认前夹具移除方块 → 终态
+  REPLANNING/step FAILED、**从未 SUCCEEDED**、`plan_hash` 未变、无邻近方块被替换。
+- **裁决口径更正**：`R1.2` 由 PASS 改为 **PARTIAL**（N5 历史失败与 N8 自然触发不稳定如实计入），总裁决维持 PARTIAL。
+- 测试：新增 `tests/test_r1_coverage_and_dimension.py`（7 条）与 `minecraft_runtime/test/find_blocks_coverage.test.js`
+  （19 条检查）；`pytest tests -q` → **4645 passed**；`move_to.test.js` 84/84；`find_blocks.test.js` 41/41；
+  ruff/format/mypy 全绿。
 ### R1 真实世界感知与导航可靠性（单个综合工作周期，非 Follow-up 串）
 
 - **导航根因修复（`minecraft_runtime/runtime.js`）**：`path_update(status='timeout')` 曾被**立即判失败**；

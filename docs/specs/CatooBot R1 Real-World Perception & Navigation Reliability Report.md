@@ -127,3 +127,114 @@ R1 的真实世界基线成立：**观察到的世界可被独立验证**（P1�
 裁决 **PARTIAL** 的唯一理由是覆盖度：N6/N8 因环境无法构造、N5 有 1/2 次超时、N9/N12 部分依赖既有已验收链而非本轮重跑。**没有任何 false-success、没有访问过期目标的成功、没有 STOP/CANCEL 后复活、没有真实可达场景缺少证据却被记为通过。**
 
 FOLLOW-UP CREATED: NO
+
+---
+
+## R1 残余缺口一次性闭环（R1-G1…G7，追加，不改写上文历史）
+
+任务书：`docs/specs/CatooBot R1 Residual Gap Closure Taskbook.md`（源文件 32822 bytes，SHA256
+`B5254DD6D907E7CDB056DF048A916494407B8532700F4B28D42EAD85F2BA2E4E`，归档 `identical=True`）。
+
+### 裁决口径更正（任务书 §0.3 强制）
+
+本报告此前把 `R1.2 NAVIGATION RELIABILITY` 标为 PASS，同一份报告却记录 N5 1/2、N6/N8 BLOCKED、N9/N12 PARTIAL ——
+该口径不一致，现更正：
+
+| 项 | 更正前 | **更正后** | 依据 |
+| --- | --- | --- | --- |
+| R1.1 PERCEPTION / COVERAGE | PASS | **PASS** | P1–P5 + 新增 coverage/freshness 合同与真机 COMPLETE 证据 |
+| R1.2 NAVIGATION RELIABILITY | PASS | **PARTIAL** | N5 本轮 5/5、N6-A/B 3/3 通过，但 N5 历史 1/2 仍在案、N6-C 只能 fail-closed、N8 自然触发不稳定 |
+| R1.3 TARGET / DIMENSION LIFECYCLE | PASS | **PASS** | N9-A 本轮 E3 通过 + N12 维度守卫 E2 全矩阵 + N10/P4 |
+| R1.4 EVIDENCE / CI / HYGIENE | PASS | **PASS** | 见下方门禁与发布 |
+| **总裁决** | PARTIAL | **PARTIAL** | 真实缺口仍在（N8 自然触发、P1 第三源 BLOCKED、N9-B 未单独跑） |
+
+### R1-G1 N5 受控绕障（5 次重复，固定几何）
+
+夹具：每次运行前用 op 夹具客户端在罐头与 8 格目标之间砌 **3 宽 × 2 高** 木墙（两端留缺口，可绕行不可直穿），
+运行后逐点 `/setblock ... air` 还原；被测罐头全程自行移动（未 `/tp`）。每次成功都由脚本独立重读 `world_view()`
+确认终点在既有 `MOVE_TO_RADIUS=1.5` 内。
+
+| 轮次 | 终态 | 独立重读格距 | 用时 | action_id |
+| --- | --- | --- | --- | --- |
+| N5-1 | SUCCEEDED | 1.0 | 2.4s | act_mvcttq25_h |
+| N5-2 | SUCCEEDED | 1.0 | 2.8s | act_mvcturxe_1a |
+| N5-3 | SUCCEEDED | 1.0 | 6.1s | act_mvctvudj_1h |
+| N5-4 | SUCCEEDED | 1.0 | 4.8s | act_mvctwzav_20 |
+| N5-5 | SUCCEEDED | 1.0 | 6.8s | act_mvcty3ji_23 |
+
+**5/5 SUCCEEDED**。阈值未改（`MOVE_TO_RADIUS`/`MOVE_MAX_DISTANCE`/`MOVE_TIMEOUT_MS`/pathfinder think·tick 全原值）。
+历史 N5-1 的 30s 超时**保留在案**：那次夹具墙连可绕行通道一起堵死，几何上要求更长绕行；换成留缺口路线后 5/5。
+**不把 fail-closed 当成可靠性通过**。
+
+### R1-G2 N6 高度变化（安全可恢复夹具）
+
+| 用例 | 夹具（op，已逐点还原） | 结果 | 独立重读 |
+| --- | --- | --- | --- |
+| N6-A 单块上升 | 3×3 stone 平台 +1 格，目标在平台顶 | **3/3 SUCCEEDED** | 格距 1.73/1.73/1.0 |
+| N6-B 两级楼梯 | 2 级 × 宽 3 stone 楼梯，目标在顶端 | **3/3 SUCCEEDED** | 格距 1.41 ×3 |
+| N6-C 不可站立对照 | 真实六面全实心格 `(-261,61,-130)` | **PAUSED / step FAILED，从未 SUCCEEDED** | `reason=action_timeout_after_path_search_timeout`、`goal_reached=False` |
+
+N6-C 第一版对照**设计无效**（目标在 3 格柱顶上方，但相邻平台让罐头合法走上去 → SUCCEEDED），已替换为
+「六面全实心、任意相邻格都站不了」的真实不可站立目标，因此才是有效对照。
+
+### R1-G3 N8 搜索预算边界（两层证据）
+
+* **E2 契约 PASS**：`move_to.test.js` 覆盖 ① 有非空路径的 `timeout` 不落终态、继续走到真实到达才 completed；
+  ② 空路径 `timeout` → `path.not_found` + `reason=path_search_timeout`（fail-closed）；另含动作级 TIMEOUT 带 detail、
+  迟到 `goal_reached` 不翻案。套件 **84/84**。
+* **E3 自然触发 DEVIATION**：锁定版本 pathfinder 上同目标真实复现 `partial` 连续 **26.6s** 后 `timeout`，
+  随后空路径 **48ms 即 resolve**（`CatooBot_backups/_r1_probe1.log`）——自然地形触发不稳定，只记 DEVIATION，
+  不冒充真机 PASS，也不调搜索预算「方便触发」。
+
+### R1-G4 N9 目标变化（本轮真实重跑）
+
+**N9-A（确认前目标失效，E3）PASS**：真实 `find_blocks`（`coverage=COMPLETE`，9/9 chunk）→ 冻结 `minecraft_dig` 计划
+（`task_4f17b84ed164`、`plan_hash=03dde6101ff2016d449d…`、`PENDING_CONFIRMATION`）→ 确认前 op 夹具把该方块改为 air →
+再确认执行 → 终态 **REPLANNING**、step **FAILED**、**从未 SUCCEEDED**、`plan_hash` 前后一致、无邻近方块被替换。
+**N9-B 本轮未单独构造**（如实保留）：A 与既有 `WORLD_CHANGED/TARGET_LOST` 契约已覆盖该窗口，未新增跟踪系统。
+
+### R1-G5 N12 维度一致性（不新增跨维度能力）
+
+* `find_blocks` 响应新增只读 `observation.dimension`（真实 `bot.game.dimension`）；`TaskPlan.to_payload()` **只在存在
+  维度证据时**持久化 `observations`（旧计划序列化逐字节不变、`plan_hash` 不变）。
+* **确认前守卫**：`confirm_and_start` 从冻结观察取 `expected_dimension` → 只读重查当前维度；不一致 →
+  `dimension.mismatch:<expected>:<actual>` 并**保持 PENDING_CONFIRMATION**（不消费确认）；读不到 → `dimension.unknown:…`。
+  两条路径**零世界动作**。
+* E2 矩阵（`tests/test_r1_coverage_and_dimension.py`）：同维度正常、不一致拒绝、缺失拒绝、无维度证据旧计划不受影响。
+
+### R1-G6 `find_blocks` coverage / freshness 合同
+
+Runtime 新增 `findBlocksCoverage()` 并随响应返回 `observation{captured_at, dimension, center, requested_radius,
+chunks_total, chunks_loaded, coverage, coverage_reason}`；用真实 `bot.world.getColumn(cx, cz)` 逐列探测，
+缺 API / 缺维度 / 异常一律 `UNKNOWN`（**绝不默认 COMPLETE**）。
+
+* 真机证据（E3）：`chunks_total=9, chunks_loaded=9, coverage=COMPLETE`，与同帧真实方块一致（N9-A / P5）。
+* 消费端：`planner.observation_coverage()` → 空命中且 `coverage != COMPLETE` 抛
+  `coverage_incomplete:<coverage>:<reason>:…不能确认有没有…`；只有 `COMPLETE + matches=[]` 才说「附近没有找到」。
+* 测试：Node `test/find_blocks_coverage.test.js` **19/19**；Python coverage 解析 + 两个 planner 文案分支。
+
+### R1-G7 P1 第三方观察端
+
+* 产品感知 vs Runtime `/status`：**E3 PASS**（3 落点最大差 **0.000**）。
+* 独立客户端实体观测：**BLOCKED**。已按任务书把观察端送进视距重试：连接后由 op `/tp IdObserveR1 <bot>` 两次，
+  服务器回执均 `No entity was found`（观察端未进玩家列表/实体跟踪）。如实保留 BLOCKED，不用 `/status` 冒充第三源；
+  E4 独立性限制：独立读数来自 Runtime `/status` 与 `world_view()` 两条同源不同层读取，非第三方视角。
+
+### 本轮门禁汇总
+
+| 项 | 结果 |
+| --- | --- |
+| `pytest tests -q` | **4645 passed / 0 failed / 0 skipped**（564.43s） |
+| `move_to.test.js` / `find_blocks.test.js` / `find_blocks_coverage.test.js` | 84/84 / 41/41 / 19/19 |
+| `ruff check .` / `ruff format --check .` / `mypy app` | 通过 / 通过 / Success（346 源文件） |
+| 受保护区（`ACTION_RISK`/`TOOL_ACTION`/`allow_medium`/policy/config） | diff 0 行 |
+| `scripts/` tracked | 0 |
+
+### OPEN BOUNDARIES（owner / stage / impact）
+
+1. **N8 自然触发不稳定** → 已有 E2 契约 + DEVIATION；真机稳定复现属后续性能/几何专项。
+2. **N5 历史 1 次 30s 超时在案**（几何要求复杂绕行时仍可能耗尽动作预算）→ R1.2 维持 PARTIAL。
+3. **N6-C / N7 只能 fail-closed**（不可站立目标 → 动作超时而非快速 `no_path`）：pathfinder 不提前放弃。
+4. **N9-B 未单独执行**：由 A + 既有 `WORLD_CHANGED/TARGET_LOST` 承载。
+5. **P1 第三源 BLOCKED**：观察端未进服务器玩家列表；E4 独立性限制已写明。
+6. **coverage=UNKNOWN 的 UX**：规划器明确说「不能确认有没有」，这是有意的保守语义。

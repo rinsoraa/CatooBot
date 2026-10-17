@@ -371,3 +371,19 @@ R1（真实世界感知与导航可靠性）在**行为契约**上补充了两�
    connected/disconnected 事件会失效，事件一旦丢失，缓存会一直 `available=True` 且 age 无限增长。
 
 真实门禁证据见 `docs/specs/CatooBot R1 Real-World Perception & Navigation Reliability Report.md`（P1/P2/P4）。
+---
+
+## R1 残余缺口：`find_blocks` 覆盖完整性（coverage）与维度绑定（追加）
+
+`minecraft_find_blocks` 的响应新增**只读** `observation` 元数据（旧字段与稳定错误码不变）：
+
+- `captured_at`（真实搜索帧时间）、`dimension`（真实 `bot.game.dimension`）、`center`（真实方块格中心）、
+  `requested_radius`、`chunks_total`/`chunks_loaded`、`coverage`、`coverage_reason`。
+- `coverage` 语义：请求半径覆盖到的每个 chunk 列都必须已加载才 `COMPLETE`；只加载一部分 `PARTIAL`；
+  拿不到 chunk 列 API / 维度不可用 / 探测抛错一律 `UNKNOWN`。**绝不默认 COMPLETE。**
+
+消费者契约：`matches=[]` 只有在 `coverage=COMPLETE` 时才可以解释成「该范围内确实没有目标」；
+`PARTIAL/UNKNOWN` 必须报「不能确认有没有」（`planner.observation_coverage` 与两个规划模板已按此实现）。
+
+维度：观察里的 `dimension` 会被冻结进计划观察证据；`TaskRuntime.confirm_and_start` 在**确认前**只读重查当前维度，
+不一致/缺失一律 `dimension.mismatch` / `dimension.unknown` 并保持待确认（零世界动作）。本阶段**不实现**跨维度传送/导航。

@@ -815,6 +815,20 @@ class ExpectedFinalState:
         )
 
 
+def _has_dimension_evidence(observations: list[Any]) -> bool:
+    """观察里是否真的带 ``result.observation.dimension``（只有真实查询响应才带）。"""
+    for item in observations:
+        if not isinstance(item, Mapping):
+            continue
+        result = item.get("result")
+        if not isinstance(result, Mapping):
+            continue
+        observation = result.get("observation")
+        if isinstance(observation, Mapping) and observation.get("dimension"):
+            return True
+    return False
+
+
 @dataclass
 class TaskPlan:
     """准备做什么（冻结后不可静默修改，§十一/§十二）。"""
@@ -826,11 +840,18 @@ class TaskPlan:
     observations: list[dict[str, Any]] = field(default_factory=list)
 
     def to_payload(self) -> dict[str, Any]:
-        return {
+        # R1-G5：观察证据里的真实 dimension 必须能持久化，否则「确认前重查维度」在 store
+        # 往返之后就看不到冻结观察了。**只在确实带 dimension 证据时**才写入该键：
+        #   ① plan_hash 由 hash_payload 定义，不包含 observations → 哈希不变；
+        #   ② 旧计划（Phase 7F.1 探索计划等）没有 dimension 证据 → 序列化逐字节不变（兼容）。
+        payload: dict[str, Any] = {
             "objective": self.objective,
             "steps": [step.to_payload() for step in self.steps],
             "expected_final_state": self.expected_final_state.to_payload(),
         }
+        if self.observations and _has_dimension_evidence(self.observations):
+            payload["observations"] = [dict(item) for item in self.observations]
+        return payload
 
     def hash_payload(self) -> dict[str, Any]:
         """参与 ``plan_hash`` 的**只有**真正决定世界操作的东西。
