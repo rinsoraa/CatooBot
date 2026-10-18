@@ -3,7 +3,7 @@ package catoo.attrib;
 import java.util.*;
 import java.util.function.Function;
 
-/** 会话 / 登记 / 唯一匹配（纯逻辑，无 Minecraft 依赖）。会话不信任载荷；维度、精确方块 ID、玩家身份全参与匹配。 */
+/** 会话 / 登记 / 唯一匹配（纯逻辑）。维度与玩家身份必须来自**真实事件**，不得用预期值自证。 */
 final class Booking {
     static final class Session {
         final String name;
@@ -44,7 +44,7 @@ final class Booking {
         }
     }
 
-    /** Block{minecraft:oak_leaves}[...] -> minecraft:oak_leaves（精确比较，杜绝 oak_log/dark_oak_log 子串误配）。 */
+    /** Block{minecraft:oak_leaves}[...] -> minecraft:oak_leaves（精确比较）。 */
     static String canonicalBlock(String raw) {
         if (raw == null) return "";
         String text = raw.trim();
@@ -58,13 +58,30 @@ final class Booking {
         return text.substring(start, end).trim();
     }
 
+    /** 维度规范化：只接受 namespace:path 形态；空/未知一律返回 ""（调用方必须 fail closed）。 */
+    static String normalizeDimension(String raw) {
+        if (raw == null) return "";
+        String text = raw.trim().toLowerCase(Locale.ROOT);
+        if (text.isEmpty() || "unknown".equals(text)) return "";
+        int idx = text.indexOf("minecraft:");
+        if (idx >= 0) {
+            String tail = text.substring(idx + "minecraft:".length());
+            int cut = tail.indexOf('[');
+            if (cut >= 0) tail = tail.substring(0, cut);
+            tail = tail.trim();
+            return tail.isEmpty() ? "" : "minecraft:" + tail;
+        }
+        return "";
+    }
+
     private final Map<String, Session> byName = new LinkedHashMap<>();
     private final Map<String, Session> byRef = new LinkedHashMap<>();
     private final List<Reservation> reservations = new ArrayList<>();
     private final Set<String> seenNonces = new HashSet<>();
     private long seqCounter = 0;
 
-    int rejected = 0, expired = 0, ambiguous = 0, unknown = 0, consumedCount = 0, identityRejected = 0;
+    int rejected = 0, expired = 0, ambiguous = 0, unknown = 0, consumedCount = 0;
+    int identityRejected = 0, dimensionRejected = 0;
 
     synchronized Session newSession(String name, String uuid, String ref, Object world) {
         Session previous = byName.get(name);
@@ -97,7 +114,6 @@ final class Booking {
         return count;
     }
 
-    /** 登记：session_ref 必须属于**当前有效**会话（不信任载荷）；目标方块由服务端自读核验。 */
     synchronized ReserveResult reserve(Map<String, String> fields, Function<Map<String, String>, String> blockAt) {
         String sessionRef = fields.getOrDefault("session_ref", "").trim();
         Session session = byRef.get(sessionRef);
@@ -107,10 +123,10 @@ final class Booking {
         }
         String actionId = fields.getOrDefault("action_id", "").trim();
         String nonce = fields.getOrDefault("nonce", "").trim();
-        String dim = fields.getOrDefault("dimension", "").trim();
+        String dim = normalizeDimension(fields.getOrDefault("dimension", ""));
         String pos = fields.getOrDefault("pos", "").trim();
         String expected = canonicalBlock(fields.getOrDefault("expected_block", ""));
-        if (actionId.isEmpty() || nonce.isEmpty() || dim.isEmpty() || pos.isEmpty() || expected.isEmpty()) {
+        if (actionId.isEmpty() || nonce.isEmpty() || pos.isEmpty() || expected.isEmpty() || dim.isEmpty()) {
             rejected += 1;
             return new ReserveResult(false, "missing_field", "", 400);
         }
@@ -149,11 +165,31 @@ final class Booking {
         return new ReserveResult(true, "ok", reservation.id, 200);
     }
 
-    /** 匹配：会话有效 + 会话一致 + 玩家身份一致 + 精确坐标 + 规范化方块 ID 精确相等。 */
-    synchronized MatchResult match(Session session, String playerUuid, String pos, String blockBeforeRaw) {
+    /**
+     * 匹配：入参的 sessionUuid/dimension 必须是**事件现场实际观测值**。
+     * 任何缺失/不一致都 fail closed（UNKNOWN），绝不用 Session 的预期值顶替事件观测值。
+     */
+    synchronized MatchResult match(Session session, String eventUuid, String eventDimension, String pos,
+            String blockBeforeRaw) {
+        String dim = normalizeDimension(eventDimension);
         if (session == null || !session.valid) {
             unknown += 1;
             return new MatchResult("UNKNOWN", "no_valid_session", null);
+        }
+        if (eventUuid == null || eventUuid.isEmpty() || "unknown".equals(eventUuid)) {
+            unknown += 1;
+            identityRejected += 1;
+            return new MatchResult("UNKNOWN", "event_identity_unknown", null);
+        }
+        if (!session.uuid.equals(eventUuid)) {
+            unknown += 1;
+            identityRejected += 1;
+            return new MatchResult("UNKNOWN", "event_identity_mismatch", null);
+        }
+        if (dim.isEmpty()) {
+            unknown += 1;
+            dimensionRejected += 1;
+            return new MatchResult("UNKNOWN", "event_dimension_unknown", null);
         }
         String blockBefore = canonicalBlock(blockBeforeRaw);
         List<Reservation> candidates = new ArrayList<>();
@@ -170,8 +206,12 @@ final class Booking {
                 stale = true;
                 continue;
             }
-            if (!reservation.playerUuid.equals(playerUuid)) {
+            if (!reservation.playerUuid.equals(eventUuid)) {
                 identityRejected += 1;
+                continue;
+            }
+            if (!reservation.dim.equals(dim)) {
+                dimensionRejected += 1;
                 continue;
             }
             if (!reservation.expectedId.equals(blockBefore)) continue;
@@ -184,7 +224,7 @@ final class Booking {
         if (candidates.isEmpty()) {
             unknown += 1;
             if (stale) return new MatchResult("UNKNOWN", "stale_session", null);
-            if (samePosSeen) return new MatchResult("UNKNOWN", "target_or_identity_mismatch", null);
+            if (samePosSeen) return new MatchResult("UNKNOWN", "target_or_identity_or_dimension_mismatch", null);
             return new MatchResult("UNREGISTERED_BREAK", "no_reservation", null);
         }
         Reservation reservation = candidates.get(0);

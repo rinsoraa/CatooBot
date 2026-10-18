@@ -58,6 +58,10 @@ public final class CatooAttributionMod implements ModInitializer {
         loadConfig();
         log("INIT mod=catoobot-attribution version=" + VER + " shadow_enabled=" + ENABLED
                 + " outbox_capacity=" + OUTBOX_CAPACITY);
+        if (!ENABLED) {
+            log("DISABLED listeners_not_registered (no JOIN/AFTER, no HTTP, no outbox, no match)");
+            return;
+        }
         ServerPlayConnectionEvents.JOIN.register((handler, sender, server) -> {
             try {
                 var player = handler.field_14140;
@@ -80,7 +84,12 @@ public final class CatooAttributionMod implements ModInitializer {
             try {
                 String name = player.method_5477().getString();
                 Booking.Session session = BOOK.currentSessionOf(name);
-                String uuid = session == null ? "unknown" : session.uuid;
+                String eventUuid;
+                try {
+                    eventUuid = String.valueOf(player.method_5667());
+                } catch (Throwable error) {
+                    eventUuid = "unknown";
+                }
                 String stateNow;
                 try {
                     stateNow = String.valueOf(world.method_8320(pos));
@@ -88,14 +97,23 @@ public final class CatooAttributionMod implements ModInitializer {
                     stateNow = "UNKNOWN";
                 }
                 String posText = pos.method_10263() + "," + pos.method_10264() + "," + pos.method_10260();
-                Booking.MatchResult match = BOOK.match(session, uuid, posText, String.valueOf(state));
+                String eventDim;
+                try {
+                    eventDim = Booking.normalizeDimension(
+                            String.valueOf(world.method_27983().method_29177()));
+                } catch (Throwable error) {
+                    eventDim = "";
+                }
+                Booking.MatchResult match =
+                        BOOK.match(session, eventUuid, eventDim, posText, String.valueOf(state));
                 String eventId = UUID.randomUUID().toString();
-                String payload = eventJson(eventId, match, session, uuid, posText, String.valueOf(state), stateNow);
+                String payload =
+                        eventJson(eventId, match, session, eventUuid, eventDim, posText, String.valueOf(state), stateNow);
                 boolean queued = OUTBOX.offer(payload);
                 if (!queued) OUTBOX_OVERFLOW.incrementAndGet();
-                log("AFTER name=" + name + " uuid=" + uuid + " session_ref="
+                log("AFTER name=" + name + " uuid=" + eventUuid + " session_ref="
                         + (session == null ? "" : session.ref) + " session_seq=" + (session == null ? -1 : session.seq)
-                        + " pos=" + posText + " state_before=" + Booking.canonicalBlock(String.valueOf(state))
+                        + " dim=" + eventDim + " pos=" + posText + " state_before=" + Booking.canonicalBlock(String.valueOf(state))
                         + " state_now=" + Booking.canonicalBlock(stateNow) + " shadow=" + match.state
                         + " reason=" + match.reason + " event=" + eventId + " queued=" + queued
                         + " reservation=" + (match.reservation == null ? "null" : match.reservation.id));
@@ -111,6 +129,7 @@ public final class CatooAttributionMod implements ModInitializer {
     }
 
     static String eventJson(String eventId, Booking.MatchResult match, Booking.Session session, String uuid,
+            String dimensionId,
             String pos, String before, String after) {
         String reservationId = match.reservation == null ? "" : match.reservation.id;
         String actionId = match.reservation == null ? "" : match.reservation.actionId;

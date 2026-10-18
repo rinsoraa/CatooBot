@@ -356,3 +356,76 @@ R1 引入的 `move_to` 可站立性预检会**正确**快速拒绝落在平台�
 * **P3 未授权、未实现**：严格归因接入仍待单独审批；
 * 已知残余：e2e 的 FarTarget/Followee 实体可见性在 CI 上偶发滞后（已加三次重试，仍属环境 flake）；
   覆盖率口径依赖夹具选择（瞬时方块/挖脚下不产生事件）——已在报告中写明，不作为产品缺陷。
+
+---
+
+## P2 验收修复轮（任务书 25）：维度 / 玩家身份 / 默认关闭
+
+任务书归档：`docs/specs/CatooBot P2 Acceptance Fix Round — Dimension, Player Identity & Default-Off Semantics.md`
+（18627 bytes，SHA256 `8A113BA086FD451CE3EDCD807C12F3C5B7985237948AC6AC2C3C9C7A38D06BAD`，`identical=True`）。
+
+### A. 最终裁定
+
+**P2 ACCEPTANCE REPAIR: PARTIAL**
+
+| 门禁 | 结果 | 依据 |
+| --- | --- | --- |
+| G1 维度匹配 | **PASS** | 事件维度取自 `world.method_27983().method_29177()`（真实世界 registry key），进入 `Booking.match` 比较；未知/不一致 fail closed；真机日志 `dim=minecraft:overworld` |
+| G2 玩家身份 | **PASS** | 事件 UUID 取自事件玩家 `player.method_5667()`，与 Session 绑定 UUID 比较；缺失/不一致 `UNKNOWN`；真机日志 `uuid=f67b6c84-…` |
+| G3 关闭语义 | **PASS** | `enabled=false` → `DISABLED listeners_not_registered (no JOIN/AFTER, no HTTP, no outbox, no match)`；19132 未监听；2 次真实挖掘后 `after_events_delta=0`、日志仅 +2 行 |
+| G4 原契约回归 | **PASS** | Java `BookingTest` **23/23**（位置/方块 ID/消费/TTL/会话/动作/幂等/歧义/AI 身份） |
+| G5 接收端回归 | **PASS** | Python `test_attribution_shadow.py` **17/17**（未放宽任何校验） |
+| G6 真机证据 | **PARTIAL** | 正向（同维度+正确身份→`SELF_CONFIRMED`）与关闭语义已真机验证；**维度不一致/身份不一致的负向真机夹具未取到事件**（两次目标方块挖掘未产生 `AFTER`），如实标注未验证 |
+| G7 产品隔离 | **PASS** | 产品任务路径零改动；shadow 仍未进入终态链 |
+| G8 工程门禁 | **PASS（待 CI）** | Java 构建 + smoke `class_load_ok=true`；ruff/pytest 全绿；回滚后 `Loading 42 mods` |
+
+### B. 缺口修复对照
+
+| 缺口 | 修复前 | 修复后（文件/方法） | 测试 | 真机 |
+| --- | --- | --- | --- | --- |
+| A 维度 | 事件 JSON 用配置 `dimension_label` 默认 `minecraft:overworld`；匹配器不比较维度 | `CatooAttributionMod.onInitialize`（AFTER 回调取 `world.method_27983().method_29177()` → `Booking.normalizeDimension`）→ `Booking.match(session, eventUuid, eventDim, pos, blockBefore)`；`Reservation.dim` 必须相等 | 维度相同→可自证；不一致→`UNKNOWN`；空/未知→`UNKNOWN(event_dimension_unknown)`；预约缺维度→拒绝登记 | `dim=minecraft:overworld`（真实事件世界） |
+| B 身份 | 用 `session.uuid` 当事件 UUID（自证） | AFTER 回调取 `player.method_5667()` 为 `eventUuid`；`Booking.match` 先比 `session.uuid`，再比 `reservation.playerUuid`；两者任一不符 fail closed | 伪造 UUID → `UNKNOWN(event_identity_mismatch)`；未知 → `UNKNOWN(event_identity_unknown)`；会话替换 → `UNKNOWN`；他人真实事件保留自身 UUID 但不自证 | `uuid=f67b6c84-aa88-3cd7-bd6b-eb66110648b9`（事件真实身份） |
+| C 关闭 | 仅不启动 HTTP/worker，监听器仍注册并执行匹配/入队 | `onInitialize` 在 `ENABLED=false` 时**直接 return**（不注册 JOIN/AFTER、不起 HTTP/outbox），并输出 `DISABLED …` 说明 | Java 侧无监听注册路径；真机验证见 G3 | 2 次挖掘 0 事件、0 队列增长、19132 关闭 |
+
+### C. 维度与 UUID 数据流（可审查）
+
+```text
+PlayerBlockBreakEvents.AFTER(world, player, pos, state, blockEntity)
+  eventUuid := String.valueOf(player.method_5667())        ← 事件玩家对象（不再用 session.uuid）
+  eventDim  := normalizeDimension(world.method_27983().method_29177())   ← 事件发生世界的 registry key
+  match := Booking.match(session, eventUuid, eventDim, posText, state)
+    1) session 有效？否则 UNKNOWN(no_valid_session)
+    2) eventUuid 为空/unknown → UNKNOWN(event_identity_unknown)
+    3) eventUuid != session.uuid → UNKNOWN(event_identity_mismatch)
+    4) eventDim 为空 → UNKNOWN(event_dimension_unknown)
+    5) 候选预约必须：sessionRef 相同、playerUuid == eventUuid、dim == eventDim、pos 相同、方块 ID 精确相等
+    6) 唯一 → 消费并 SELF_CONFIRMED；多候选 → AMBIGUOUS；否则 UNKNOWN/UNREGISTERED_BREAK
+  event JSON: player_uuid := eventUuid, dimension := eventDim（配置项不再参与）
+```
+
+### D. 默认关闭证明（真机）
+
+```text
+09:02:59 INIT mod=catoobot-attribution version=p2-shadow-2 shadow_enabled=false outbox_capacity=1024
+09:02:59 DISABLED listeners_not_registered (no JOIN/AFTER, no HTTP, no outbox, no match)
+port25565=True  port19132=False
+两次真实挖掘（oak_leaves → air）后：after_events_delta=0，逻辑日志仅 +2 行（INIT/DISABLED），无队列增长
+```
+
+### E. 测试与真机证据（本轮新增，不覆盖历史样本）
+
+| 项 | 命令/结果 |
+| --- | --- |
+| Java 单元 | `catoo.attrib.BookingTest` → **23/23 PASSED**（新增维度/UUID 用例） |
+| 类加载冒烟 | `catoo.attrib.Smoke` → `class_load_ok=true` |
+| 模组构建 | `server_mod/build.ps1` → jar SHA256 **`444CEDA38E939C49C37450AF0A04F9940CABE1A0C9D5E142BC8210CCF4B3887A`**（部署后比对一致） |
+| Python 接收端 | `pytest tests/test_attribution_shadow.py` → **17/17** |
+| 真机（enabled=true） | 3 次正常挖掘 → 日志 `dim=… uuid=… shadow=SELF_CONFIRMED`；接收端 3 事件、`verified_correlation`、`strict_match_rate=1.0` |
+| 真机（enabled=false） | 见 §D |
+| 真机负向夹具 | **未验证**：为维度/身份负向准备的两块目标在两次尝试中未产生 `AFTER`（与历史观测一致：部分方块/几何不触发），因此只能依据 E2 单元测试，**不当作真机证据** |
+
+### F. 边界与未完成
+
+* 负向真机证据（维度不一致/身份不一致）未取得，原因已定位为**目标方块未触发回调**，不是匹配逻辑问题；
+* 历史 E3 样本 `10 / 5 / 9` 保持原样，本轮新增证据单列；
+* **N9-B 仍 BLOCKED**、**P3 未授权**；shadow 结果仍未接入任何任务终态。
