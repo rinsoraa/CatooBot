@@ -3,7 +3,7 @@ package catoo.attrib;
 import java.util.*;
 import java.util.function.Function;
 
-/** 会话 / 登记 / 唯一匹配（纯逻辑）。维度与玩家身份必须来自**真实事件**，不得用预期值自证。 */
+/** 会话 / 登记 / 唯一匹配。维度只支持原版三维度；事件身份必须来自真实事件对象。 */
 final class Booking {
     static final class Session {
         final String name;
@@ -45,7 +45,6 @@ final class Booking {
         }
     }
 
-    /** Block{minecraft:oak_leaves}[...] -> minecraft:oak_leaves（精确比较）。 */
     static String canonicalBlock(String raw) {
         if (raw == null) return "";
         String text = raw.trim();
@@ -59,19 +58,28 @@ final class Booking {
         return text.substring(start, end).trim();
     }
 
-    /** 维度规范化：只接受 namespace:path 形态；空/未知一律返回 ""（调用方必须 fail closed）。 */
+    /** 能力边界：本阶段只支持原版三维度，自定义命名空间一律视为未知（fail closed）。 */
+    static final Set<String> SUPPORTED_DIMENSIONS =
+            Set.of("minecraft:overworld", "minecraft:the_nether", "minecraft:the_end");
+
     static String normalizeDimension(String raw) {
         if (raw == null) return "";
         String text = raw.trim().toLowerCase(Locale.ROOT);
-        if (text.isEmpty() || "unknown".equals(text)) return "";
         int idx = text.indexOf("minecraft:");
-        if (idx >= 0) {
-            String tail = text.substring(idx + "minecraft:".length());
-            int cut = tail.indexOf('[');
-            if (cut >= 0) tail = tail.substring(0, cut);
-            tail = tail.trim();
-            return tail.isEmpty() ? "" : "minecraft:" + tail;
-        }
+        if (idx < 0) return "";
+        String tail = text.substring(idx + "minecraft:".length());
+        int cut = tail.indexOf('[');
+        if (cut >= 0) tail = tail.substring(0, cut);
+        tail = tail.trim();
+        String id = "minecraft:" + tail;
+        return SUPPORTED_DIMENSIONS.contains(id) ? id : "";
+    }
+
+    static String checkDimension(String requestDim, String currentDim) {
+        String want = normalizeDimension(requestDim);
+        String have = normalizeDimension(currentDim);
+        if (want.isEmpty() || have.isEmpty()) return "dimension_unknown";
+        if (!want.equals(have)) return "dimension_not_current";
         return "";
     }
 
@@ -104,14 +112,6 @@ final class Booking {
 
     synchronized Session sessionOfRef(String ref) {
         return ref == null ? null : byRef.get(ref);
-    }
-
-    static String checkDimension(String requestDim, String currentDim) {
-        String want = normalizeDimension(requestDim);
-        String have = normalizeDimension(currentDim);
-        if (want.isEmpty() || have.isEmpty()) return "dimension_unknown";
-        if (!want.equals(have)) return "dimension_not_current";
-        return "";
     }
 
     synchronized Session currentSessionOf(String name) {
@@ -183,10 +183,6 @@ final class Booking {
         return new ReserveResult(true, "ok", reservation.id, 200);
     }
 
-    /**
-     * 匹配：入参的 sessionUuid/dimension 必须是**事件现场实际观测值**。
-     * 任何缺失/不一致都 fail closed（UNKNOWN），绝不用 Session 的预期值顶替事件观测值。
-     */
     synchronized MatchResult match(Session session, String eventUuid, String eventDimension, String pos,
             String blockBeforeRaw) {
         String dim = normalizeDimension(eventDimension);

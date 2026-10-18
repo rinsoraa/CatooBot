@@ -501,3 +501,63 @@ AFTER:  eventUuid := player.method_5667(); eventDim := world.method_27983().meth
 * G4 未完成 → 本轮 **PARTIAL**（按任务书规则：任一必要负向真机用例未触发事件即 PARTIAL）；
 * 历史样本 `10 / 5 / 9` 与本轮新增证据分开记录，未混写；
 * **N9-B 仍 BLOCKED**、**P3 未授权**；shadow 结果仍未进入任何任务终态。
+
+---
+
+## P2 验收修复轮 3（任务书 27）：预约线程边界 + 维度范围 + G4 补证
+
+任务书归档：docs/specs/CatooBot Taskbook 27 — P2 Reservation Thread Boundary & Cross-Dimension Negative Retake.md
+（15265 bytes，SHA256 590DB86D059F8B0960901B647E192B53831AF62A7C611D9696DFB78BC939A7B8，identical=True）。
+
+### A. 最终裁定：PARTIAL
+
+| 门禁 | 结果 | 证据 |
+| --- | --- | --- |
+| G-A 线程一致性 | PASS | 新增 runOnServerThread(Work, timeout)：HTTP 线程有界等待 2500ms，世界访问全部在服务端主线程一次性完成；超时置 expired=true，排队中的迟到任务会先看到 expired 直接放弃；主线程自调用走内联路径避免自等待；ReserveBridgeTest 6/6（含“超时后不得产生迟到预约”断言） |
+| G-B 维度范围 | PASS | 明确只支持原版三维度（SUPPORTED_DIMENSIONS），自定义命名空间/未知路径归一为空并 fail closed；DimensionPolicyTest 12/12；README/报告记录能力边界 |
+| G1 维度输出 | PASS | EventJsonTest 5/5 |
+| G2 预约世界 | PASS | 预约在主线程内用玩家当前世界读取；真机：玩家在下界时请求 overworld 被 dimension_not_current 正确拒绝，强制回主世界后同请求 RESERVE code=200 reason=ok |
+| G3 正向 | PASS | 新 JAR 真机 AFTER dim=minecraft:overworld → 接收端 SELF_CONFIRMED/verified_correlation |
+| G4 跨维度负向 | PARTIAL | 真机已取得 nether 事件：AFTER name=Catodayo dim=minecraft:the_nether pos=10,60,8 shadow=UNKNOWN；其后 reservations_active=1/2、consumed=0（主世界预约未被消费）。但未在同一次尝试内完成“主世界同坐标同方块预约 + 下界破坏同坐标”的严格配对 |
+| G5 他人破坏 | PASS | 机器人预约 oak_log(-268,62,-121) → CatodayoMate 破坏 → AFTER uuid=7ea555c4-…，接收端 UNKNOWN(stale_session)，consumed=0、reservations_active=2 |
+| G6 默认关闭 | PASS | 新构建 p2-shadow-4：INIT shadow_enabled=false + DISABLED listeners_not_registered；19132 未监听；2 次真实挖掘后日志仅 +2 行、无事件 |
+| G7 接收端 | PASS | Python 未改动、契约未放宽（17/17），downgraded=0 |
+| G8 产品隔离 | PASS | 产品任务路径零改动，shadow 未进终态链 |
+| G9 工程门禁 | PASS | Java 46 项断言、ruff、CI 见下 |
+| G10 回滚 | PASS | 删 jar+配置 → Loading 42 mods、19132 关闭、25565 正常 |
+
+### B. 关键实现（文件/方法）
+
+| 项 | 位置 | 说明 |
+| --- | --- | --- |
+| 主线程桥 | CatooAttributionMod.runOnServerThread(Work, long) | Executor.execute + CountDownLatch 有界等待 + AtomicBoolean expired；超时/异常/无执行器一律 fail closed（reserve_timeout / work_error / server_thread_unavailable） |
+| 预约一体化 | CatooAttributionMod.handleReserve | 会话有效、玩家在线且 UUID 一致、当前维度一致、当前世界读方块、建预约——同一个主线程任务内完成 |
+| 维度范围 | Booking.normalizeDimension + SUPPORTED_DIMENSIONS | 仅 minecraft:overworld / the_nether / the_end；其它归一为空（fail closed） |
+| 会话到玩家 | Booking.attachPlayer / sessionOfRef | JOIN 绑定真实玩家对象，预约时据此取当前世界 |
+
+### C. G4 失败尝试（全部保留）
+
+1. 尝试 1：tp 到 nether y=80 → 玩家死亡/重生回主世界，无事件；
+2. 尝试 2：y=59 石台 + setblock 目标 → bot.dig 返回 Digging aborted 并重生，无事件；
+3. 尝试 3：石室夹具成功同步 dim=the_nether，但目标区块未加载（block 为 null）→ dig was called with an undefined or null block；
+4. 尝试 4：目标 (10,60,8) 已被前次尝试破坏 → 无新事件；
+5. 尝试 5：先 setblock 主世界 oak_log 并预约 → 被 dimension_not_current 拒绝（玩家仍在下界）；
+6. 尝试 6：成功——先强制回主世界 → RESERVE ok（09713b5a…）→ tp 下界 → 真实 AFTER dim=minecraft:the_nether pos=10,60,8 shadow=UNKNOWN，其后 reservations_active 保持、consumed=0。
+
+结论：事件与不产生自证已取得真机证据；严格同坐标配对未完成 → G4 = PARTIAL。
+
+### D. 测试与构建
+
+| 项 | 结果 |
+| --- | --- |
+| Java：BookingTest / EventJsonTest / DimensionPolicyTest / ReserveBridgeTest / Smoke | 23/23、5/5、12/12、6/6、class_load_ok=true（共 46 项断言，全部 exit 0） |
+| Python：tests/test_attribution_shadow.py | 17/17 |
+| ruff check . | All checks passed |
+| 构建 | jar SHA256 2F4F9A4F0422453446DD2ABDCDF82E8459CF07091874BC20B227AED95508EC08；部署后文件哈希一致 |
+| CI | 见本次提交后的 run（首次结果如实记录） |
+
+### E. 边界
+
+* G4 严格配对未完成 → 总判 PARTIAL；
+* 维度能力范围：仅原版三维度，自定义维度未支持、未验证；
+* N9-B 仍 BLOCKED、P3 未授权；shadow 结果未进入任何任务终态。
