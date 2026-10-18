@@ -91,3 +91,56 @@ jar_sha256=202B06A2C0B56DC0C61874D765E1BEE02C5358480C14E9CEAEB5B239016349CF
 * 未改授权链、工具白名单、Policy、确认门、数据库 schema、世界动作执行链；
 * `token` 只出现在 `config.sample.properties` 的占位符（`CHANGE_ME`），不入库、不写日志；
 * `scripts/` 保持 0 tracked；构建产物在 `server_mod/build/`（不入库）。
+
+---
+
+## P2 追加：影子接收端实现 + E3 真实服务器验证（本轮，获准在生产测试服临时部署）
+
+### 1. 授权与前置
+
+用户批准：①在**本机测试服**临时部署 P2 模组（明确测试窗口、备份世界、验证回滚）；②实现 CatooBot 侧影子接收端（独立模块、默认关闭、不参与终态）。
+世界备份：`E:\WorkSpace ZCode\CatooBot_backups\mc_world_p2_20261018-132057.zip`，**20387006 bytes**，SHA256 `10FE3D00A0D6901817587F56992137C18D8EDCB7B7E2BB3A86E55885CAD90F7C`
+（首次尝试因 `session.lock` 占用失败，随后**先停服再备份**成功；失败记录保留）。
+
+### 2. CatooBot 侧影子接收端（新模块，默认关闭）
+
+`app/integrations/minecraft/attribution_shadow.py`：
+* `ShadowLedger`（幂等 `event_id`、状态归一、匹配率/未比率、重复与签名失败计数）；
+* `ShadowServer`（仅 `127.0.0.1`，`/attribution/event` + `/attribution/stats`，HMAC-SHA256 校验，缺 token 拒跑）；
+* `reserve()` 客户端登记辅助；`python -m app...attribution_shadow` 需 `CATOO_ATTRIBUTION_TOKEN` 才启动。
+**零终态影响**：不 import 任何任务/策略模块，不被任何任务路径调用。
+E2：`tests/test_attribution_shadow.py` **8/8 通过**（签名三态、幂等、状态归一、统计口径、未知不计入自证/外部、HTTP 收/拒、仅回环绑定）。
+
+### 3. 模组修复（E3 期间发现的真实缺陷）
+
+`Json.flat` 原先用逗号切分 JSON，导致 `pos="-247,67,-141"` 被切坏 → 登记坐标错误 → 所有事件变成 `UNREGISTERED_BREAK`。
+已改为**带引号感知的扫描式解析**；重编后 jar SHA256 由 `202B06A2…` 变为 `F53EAD593857127F12F58A6C19D510D8442593303A46F44CEAE15B6156915728`。
+
+### 4. E3 真实服务器结果（原始、未美化）
+
+设计样本：10 次 bot 正常挖掘 + 5 次 `/setblock` 移除 + 5 次另一玩家挖掘。
+
+| 指标 | 实测 |
+| --- | --- |
+| 送达影子接收端的事件 | **7** |
+| `SELF_CONFIRMED`（唯一匹配） | **2** |
+| `UNREGISTERED_BREAK`（未匹配登记，**不记为本次成功**） | **5** |
+| `UNKNOWN` | 0 |
+| 重复事件 / HMAC 失败 | 0 / 0 |
+| 匹配率 | 0.2857（2/7） |
+
+模组侧计数：`AFTER name=Catodayo` **6** 次、`AFTER name=CatodayoMate` **1** 次（共 7）；`AFTER_ERROR` 0。
+
+**结论（如实）**：
+* **正确性验证通过的部分**：另一玩家挖掘**从未**被记成 bot 的自证（`UNREGISTERED_BREAK` 或未匹配）；出现的事件里唯一匹配的确实得到 `SELF_CONFIRMED`；`/setblock` 组**没有产生任何玩家破坏事件**（与 P1 一致）。
+* **发现的缺口（未解决）**：20 个设计动作中只有 7 个产生了送达事件。10 次 bot 挖掘里只有 6 次触发 `AFTER`、其中 2 次与登记唯一匹配；其余 4 次事件与登记未匹配（原因待查：可能是挖掘期间方块被客户端预测提前置 air、或登记与事件坐标/方块前置条件不一致）。
+* 因此 E3 **不达标**：样本量与覆盖率都不满足「10 正常 + 5 外部 + 5 他人」的可复核要求，**不判 PASS**。
+
+### 5. 回滚（已验证）
+
+删除 `mods/catoobot-attribution-2.0.0.jar` 与 `config/catoo-attribution.properties` → 重启 →
+`Loading 42 mods`（装模组时为 43）、**端口 19132 已关闭**、无 catoo-attrib 新日志。服务器回到未装模组状态。
+
+### 6. N9-B 与 P3
+
+**N9-B 仍 BLOCKED**；影子模式按设计**不产生** `strict_self_proof=true` 证据。**P3 未授权、未开始。**
