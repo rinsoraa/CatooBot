@@ -10,11 +10,26 @@
 
 **禁止**：执行任何游戏动作、修改世界、判定任务成败、提供授权旁路。
 
-## 构建（无需 Gradle）
+## 构建与测试（无需 Gradle）
+
+需要 JDK 21；使用 `JAVA_HOME`、PATH 中的 `javac` 或显式 `-JavaHome`。固定依赖：
+Minecraft 1.21.1 / Fabric Loader 0.19.5 / Fabric API 0.116.17+1.21.1。
+脚本只读取测试服的 JAR，不修改、启动或部署服务器。
+
 ```powershell
+# 独立纯逻辑契约：Booking 23 + DimensionPolicy 12（CI 同一入口）
+pwsh -NoProfile -File server_mod/test.ps1
+# 完整编译 + 上述契约 + EventJson 5 + ReserveBridge 6 + 类加载 Smoke
+pwsh -NoProfile -File server_mod/test.ps1 -ServerDir "D:\Minecraft server\1.21.1"
+# 仅构建
 pwsh -NoProfile -File server_mod/build.ps1 -ServerDir "D:\Minecraft server\1.21.1"
 ```
-产物：`server_mod/build/catoobot-attribution-2.0.0.jar`（脚本会打印 SHA256）。
+
+Windows PowerShell 用户可将 `pwsh` 换成 `powershell.exe -ExecutionPolicy Bypass`，只对本次进程设置执行策略。
+产物：`server_mod/build/catoobot-attribution-2.0.0.jar`（打印 SHA256；固定归档时间戳）。
+编译/打包失败立即返回非零；旧的成功产物可保留，不代表本次构建成功，必须检查退出码。
+`server_mod/build/` 及依赖 classpath 不同步、不入库。
+CI 只运行不依赖 Minecraft 的 35 项契约；完整 Fabric 编译、类加载和真实服务端 E3 分开验证。
 
 ## 部署 / 禁用 / 回滚
 1. 复制 jar 到服务器 `mods/`；
@@ -34,6 +49,9 @@ pwsh -NoProfile -File server_mod/build.ps1 -ServerDir "D:\Minecraft server\1.21.
 `/setblock` 类命令移除不产生玩家破坏事件 → 只会得到「没有事件」，即 `UNKNOWN`，**不得**记为外部归因成功。
 
 ## 已知边界（P2 未覆盖）
-* 维度以「会话 world 实例」判断，未单独解析维度 key；
+* 只支持原版三维度 `minecraft:overworld` / `the_nether` / `the_end`，自定义维度 fail closed；
+* 事件维度与 UUID 来自实际事件对象；预约验证通过有界主线程调度读取玩家当前世界；
 * `block_after` 依赖回调内 `world.getBlockState(pos)` 实读，其它模组可能抢先改动；
-* 影子接收端（CatooBot 侧）尚未实现 —— 本阶段事件只写日志与 OUTBOX。
+* 独立接收端已实现于 `app/integrations/minecraft/attribution_shadow.py`，需显式启动，未接入产品任务终态；
+* 最新任务书 27 的 G4 严格同坐标配对证据仍缺失，P2 保持 PARTIAL。P3 未启用，N9-B 仍 BLOCKED；
+* 现有主线程桥测试覆盖排队超时；执行中读取世界后超时与提交的竞态仍需专项复核。

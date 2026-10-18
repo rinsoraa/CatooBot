@@ -1,27 +1,88 @@
-# P2 可复现构建（无 Gradle；直接用 JDK 21 对 intermediary 编译）
-# 用法: pwsh -NoProfile -File server_mod/build.ps1
-param([string]$ServerDir = 'D:\Minecraft server\1.21.1')
+# Compile against the fixed, read-only Fabric test-server installation. No deployment.
+param(
+    [string]$ServerDir = 'D:\Minecraft server\1.21.1',
+    [string]$JavaHome = $env:JAVA_HOME
+)
 $ErrorActionPreference = 'Stop'
-$mk = Split-Path -Parent $MyInvocation.MyCommand.Path
-$jdk = 'C:\Program Files\Java\jdk-21\bin'
-$srv = Join-Path $ServerDir '.fabric\remappedJars\minecraft-1.21.1-0.19.5\server-intermediary.jar'
-$loaderJar = (Get-ChildItem (Join-Path $ServerDir 'libraries\net\fabricmc\fabric-loader') -Recurse -Filter 'fabric-loader-*.jar' | Select-Object -First 1).FullName
-$apiJar = (Get-ChildItem (Join-Path $ServerDir 'mods') -Filter 'fabric-api-*.jar' | Select-Object -First 1).FullName
-$brigJar = (Get-ChildItem (Join-Path $ServerDir 'libraries\com\mojang\brigadier') -Recurse -Filter '*.jar' | Select-Object -First 1).FullName
-$tmp = Join-Path $env:TEMP ('catoo-api-' + [guid]::NewGuid().ToString('N'))
-New-Item -ItemType Directory -Path $tmp | Out-Null
-Push-Location $tmp; & (Join-Path $jdk 'jar.exe') xf $apiJar; Pop-Location
-$nested = Get-ChildItem (Join-Path $tmp 'META-INF\jars') -Filter '*.jar'
-$need = @('fabric-api-base', 'fabric-events-interaction-v0', 'fabric-networking-api-v1')
-$parts = foreach ($n in $need) { ($nested | Where-Object { $_.Name -like ($n + '-*') } | Select-Object -First 1).FullName }
-$cp = (@($srv, $loaderJar, $brigJar) + $parts) -join ';'
-$out = Join-Path $mk 'build\classes'
-if (Test-Path $out) { Remove-Item -Recurse -Force $out }
-New-Item -ItemType Directory -Path $out -Force | Out-Null
-& (Join-Path $jdk 'javac.exe') -nowarn -proc:none -encoding UTF-8 -cp $cp -d $out (Get-ChildItem (Join-Path $mk 'src\main\java') -Recurse -Filter *.java | ForEach-Object { $_.FullName })
-Copy-Item (Join-Path $mk 'fabric.mod.json') (Join-Path $out 'fabric.mod.json') -Force
-$jar = Join-Path $mk 'build\catoobot-attribution-2.0.0.jar'
-Push-Location $out; & (Join-Path $jdk 'jar.exe') --create --file $jar .; Pop-Location
-"jar=" + $jar
-"jar_sha256=" + (Get-FileHash $jar -Algorithm SHA256).Hash
-Remove-Item -Recurse -Force $tmp
+Set-StrictMode -Version Latest
+$modRoot = $PSScriptRoot
+if (-not $JavaHome) {
+    $javac = Get-Command javac -ErrorAction SilentlyContinue
+    if ($javac) { $JavaHome = Split-Path -Parent (Split-Path -Parent $javac.Source) }
+}
+if (-not $JavaHome) { throw 'Set JAVA_HOME or pass -JavaHome for JDK 21.' }
+$javacPath = Join-Path $JavaHome 'bin/javac.exe'
+$jarPath = Join-Path $JavaHome 'bin/jar.exe'
+foreach ($tool in @($javacPath, $jarPath)) {
+    if (-not (Test-Path -LiteralPath $tool -PathType Leaf)) { throw "Missing JDK tool: $tool" }
+}
+$version = & $javacPath -version 2>&1
+if ($LASTEXITCODE -ne 0 -or "$version" -notmatch '^javac 21\.') {
+    throw "JDK 21 required; got: $version"
+}
+$serverJar = Join-Path $ServerDir '.fabric/remappedJars/minecraft-1.21.1-0.19.5/server-intermediary.jar'
+$loaderJar = Join-Path $ServerDir 'libraries/net/fabricmc/fabric-loader/0.19.5/fabric-loader-0.19.5.jar'
+$apiJar = Join-Path $ServerDir 'mods/fabric-api-0.116.17+1.21.1.jar'
+$brigadier = @(Get-ChildItem -LiteralPath (Join-Path $ServerDir 'libraries/com/mojang/brigadier') -Recurse -Filter '*.jar')
+if ($brigadier.Count -ne 1) { throw 'Expected exactly one Brigadier JAR.' }
+foreach ($file in @($serverJar, $loaderJar, $apiJar)) {
+    if (-not (Test-Path -LiteralPath $file -PathType Leaf)) { throw "Missing pinned dependency: $file" }
+}
+$buildRoot = Join-Path $modRoot 'build'
+New-Item -ItemType Directory -Path $buildRoot -Force | Out-Null
+$stage = Join-Path $buildRoot ('stage-' + [guid]::NewGuid().ToString('N'))
+New-Item -ItemType Directory -Path $stage | Out-Null
+try {
+    $unpack = Join-Path $stage 'api'
+    New-Item -ItemType Directory -Path $unpack | Out-Null
+    Push-Location $unpack
+    try {
+        & $jarPath xf $apiJar
+        if ($LASTEXITCODE -ne 0) { throw 'Fabric API extraction failed.' }
+    } finally { Pop-Location }
+    $nested = @(Get-ChildItem -LiteralPath (Join-Path $unpack 'META-INF/jars') -Filter '*.jar')
+    $parts = foreach ($module in @('fabric-api-base', 'fabric-events-interaction-v0', 'fabric-networking-api-v1')) {
+        $matches = @($nested | Where-Object { $_.Name -like ($module + '-*') })
+        if ($matches.Count -ne 1) { throw "Expected exactly one Fabric module: $module" }
+        $matches[0].FullName
+    }
+    # Keep dependency extraction for the complete local test entry point.
+    $dependencyDir = Join-Path $buildRoot 'deps'
+    New-Item -ItemType Directory -Path $dependencyDir -Force | Out-Null
+    $dependencyPaths = foreach ($part in $parts) {
+        $destination = Join-Path $dependencyDir (Split-Path -Leaf $part)
+        Copy-Item -LiteralPath $part -Destination $destination -Force
+        $destination
+    }
+    $classpath = (@($serverJar, $loaderJar, $brigadier[0].FullName) + @($dependencyPaths)) -join [IO.Path]::PathSeparator
+    $classes = Join-Path $stage 'classes'
+    New-Item -ItemType Directory -Path $classes | Out-Null
+    $sources = @(Get-ChildItem -LiteralPath (Join-Path $modRoot 'src/main/java') -Recurse -Filter '*.java' | Sort-Object FullName | ForEach-Object { $_.FullName })
+    & $javacPath --release 21 -nowarn -proc:none -encoding UTF-8 -cp $classpath -d $classes @sources
+    if ($LASTEXITCODE -ne 0) { throw 'Java compilation failed; no new JAR was packaged.' }
+    Copy-Item -LiteralPath (Join-Path $modRoot 'fabric.mod.json') -Destination (Join-Path $classes 'fabric.mod.json')
+    $candidate = Join-Path $stage 'candidate.jar'
+    Push-Location $classes
+    try {
+        # Fixed ZIP timestamps make identical sources/dependencies produce identical JAR bytes.
+        & $jarPath --create --file $candidate --date=2026-10-18T00:00:00Z .
+        if ($LASTEXITCODE -ne 0) { throw 'JAR packaging failed.' }
+    } finally { Pop-Location }
+    $sha = [Security.Cryptography.SHA256]::Create()
+    $stream = [IO.File]::OpenRead($candidate)
+    try { $digest = [BitConverter]::ToString($sha.ComputeHash($stream)).Replace('-', '') }
+    finally { $stream.Dispose(); $sha.Dispose() }
+    Set-Content -LiteralPath (Join-Path $buildRoot 'classpath.txt') -Value $classpath -Encoding UTF8
+    $artifact = Join-Path $buildRoot 'catoobot-attribution-2.0.0.jar'
+    Copy-Item -LiteralPath $candidate -Destination $artifact -Force
+    'jar=' + $artifact
+    'jar_sha256=' + $digest
+} finally {
+    # Only delete this invocation's verified staging directory inside server_mod/build.
+    $resolvedStage = [IO.Path]::GetFullPath($stage)
+    $resolvedBuild = [IO.Path]::GetFullPath($buildRoot) + [IO.Path]::DirectorySeparatorChar
+    if (-not $resolvedStage.StartsWith($resolvedBuild, [StringComparison]::OrdinalIgnoreCase)) {
+        throw 'Refusing staging cleanup outside server_mod/build.'
+    }
+    if (Test-Path -LiteralPath $resolvedStage) { Remove-Item -LiteralPath $resolvedStage -Recurse -Force }
+}

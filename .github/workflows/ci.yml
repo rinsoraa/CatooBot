@@ -9,6 +9,21 @@ permissions:
   contents: read
 
 jobs:
+  server-mod-contracts:
+    name: server mod · Java 21 contracts (no live server)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+      # Pure Booking/Dimension contracts only. Full Fabric compilation, event JSON,
+      # thread bridge, class loading and E3 require the pinned local server dependencies.
+      - name: Booking and dimension contract tests
+        shell: pwsh
+        run: ./server_mod/test.ps1
+
   checks:
     name: lint · format · types · tests
     runs-on: ubuntu-latest

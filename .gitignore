@@ -46,3 +46,7 @@ logs/
 # Minecraft Bridge runtime（Phase 1）：账号认证与 token 缓存只在本地
 minecraft_runtime/auth.json
 minecraft_runtime/auth_cache/
+
+# Mod artifacts and verified pre-commit snapshots remain local.
+server_mod/build/
+.sync-backups/
