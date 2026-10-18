@@ -452,3 +452,49 @@ ratio 0.857 的正常挖掘与外部移除无法区分，这条门只会**误杀
 | R1.3 TARGET / DIMENSION LIFECYCLE | **PARTIAL**（N9-A PASS、N12 PASS；N9-B **BLOCKED**，关闭条件=服务端归因） |
 | R1.4 EVIDENCE / CI / HYGIENE | **PASS** |
 | **总体** | **PARTIAL**（N9-B 未关闭前不得 PASS） |
+
+---
+
+## 服务端归因设计**安全复审与协议修订**（追加，v1 全文保留）
+
+任务书：`docs/specs/CatooBot Server-Side Block Attribution — Design Safety Review & Protocol Revision.md`
+（8407 bytes，SHA256 `4C95FF904A9B058D337D5394AA3D18F767C595952615572969D3F7D60EC5E680`，归档 `identical=True`）。
+
+本轮**只修订设计与协议**：未编写/未部署 Fabric 模组、未修改正式服务器、未改授权策略、**未宣称 N9-B 已关闭**。
+
+### 复审查出的 v1 四处硬伤（均已修订）
+
+1. **fail-closed 语义自相矛盾**：v1 在不同章节分别写「退化为 `SELF_INFERRED` 并按今日行为」与「fail-closed」。
+   修订：引入四态 `SELF_CONFIRMED` / `EXTERNAL_CONFIRMED` / `UNKNOWN` / `REJECTED`，并明确
+   「功能**已启用**时通道不可用或无事件只能是 `UNKNOWN`，不得回退 `SELF_INFERRED` 再报成功；功能**未启用**时行为与今日逐字节一致」。
+2. **跨进程时钟比较**（v1 用服务端 `System.nanoTime` 换算值与客户端动作窗口比较）：已**废止**，改为
+   「客户端登记 `reservation_id` + nonce → 服务端用**自己的**内部单调 TTL 判过期 → 在 `AFTER` 回调内做唯一匹配」；
+   跨进程只传标识与事实，不传可比时间戳。
+3. **离线模式身份被当成在线认证身份**：改为 `session_ref`（JOIN 签发）+ `session_seq`（全局单调）+ 回环认证；
+   同名重连使旧会话全部登记失效；UUID 明确写为「offline-derived UUID」。
+4. **未区分「没有证明」与「已证明是外部操作」**：四态区分开，话术与终态随之不同。
+
+### 交付物（任务书 §9 要求的五项）
+
+| 要求 | 落点 |
+| --- | --- |
+| 更新后的设计稿 | [`CatooBot Server-Side Block Attribution Design.md`](CatooBot%20Server-Side%20Block%20Attribution%20Design.md) 的「修订版 v2」（v1 全文保留） |
+| 时钟与因果关联协议修订 | v2 §R2（登记/事件/消费三段式，废止跨进程时间比较） |
+| 完整状态转换与竞态矩阵 | v2 §R1.1 四态 + §R6 十二行矩阵（含 STOP/CANCEL、迟到、重复、重启、AMBIGUOUS） |
+| 实现前风险审查结论 | v2 §R8（8 项风险 + 等级 + 缓解；结论=可进入 P1 实验阶段，但本轮不实施） |
+| 下一步实现范围/权限边界/真机验收计划 | v2 §R7（10 条最小实现规格 + P1/P2/P3 分阶段门禁） |
+
+### 对产品的影响（诚实代价）
+
+* 正常挖掘：多一次登记往返（约 5–20ms），成功判据不变；
+* 服务端故障/重启/断线：**任务会失败或暂停**（`UNKNOWN`），这是有意的保守选择——**可用性换正确性**；
+* **启用开关默认关闭**，未启用时行为与今日完全一致（今日即 `SELF_INFERRED`，也就是 N9-B 仍 BLOCKED 的事实）。
+
+### 未做（按任务书要求）
+
+* 未写模组代码、未部署、未改服务器配置；
+* **未做**「`/setblock` 是否产生 `PlayerBlockBreakEvents.AFTER`」的真实实验 —— 这是 P1 阶段的第一件事，
+  已写成明确的 stub mod 实验方案（v2 §R5/§R7.7），**不以假设替代实验记录**；
+* 未新增第二套授权系统、未扩大工具白名单、未在服务端执行任何游戏动作。
+
+**N9-B 状态不变：BLOCKED**。关闭条件：本方案 P3 落地并取得 `strict_self_proof=true` 的真实样本。
