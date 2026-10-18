@@ -520,7 +520,20 @@ async function main() {
         for (const distance of [20, 15, 25, 12]) {
           const farOrigin = (await request(runtimePort, 'GET', '/minecraft/status')).body.position
           const target = { x: farOrigin.x + ux * distance, y: farOrigin.y, z: farOrigin.z + uz * distance }
-          const startResp = await request(runtimePort, 'POST', '/minecraft/move_to', target)
+          let startResp = await request(runtimePort, 'POST', '/minecraft/move_to', target)
+          // R1：move_to 有「目标根本站不到」的只读预检；若该方向落在平台外/虚空，它会正确快速拒绝。
+          // 夹具改为在候选方向里挑一个能站立的落点（不放宽任何断言，也不改产品）。
+          for (const angle of [0.6, -0.6, 1.2, -1.2, 1.5708, -1.5708, 3.1416]) {
+            const early = startResp.body && startResp.body.error && startResp.body.error.code
+            if (early !== 'path.target_not_standable') break
+            const rotated = {
+              x: farOrigin.x + (ux * Math.cos(angle) - uz * Math.sin(angle)) * distance,
+              y: farOrigin.y,
+              z: farOrigin.z + (ux * Math.sin(angle) + uz * Math.cos(angle)) * distance,
+            }
+            console.log('[e2e] Test B fixture: 该方向落点站不到，换方向（不改产品/不放宽断言）')
+            startResp = await request(runtimePort, 'POST', '/minecraft/move_to', rotated)
+          }
           assert(
             startResp.status === 200 && startResp.body.status === 'RUNNING',
             `Test B：move_to 启动即 RUNNING（得到 ${JSON.stringify(startResp.body)}）`,
