@@ -246,3 +246,55 @@ E3 20 个动作（10 挖掘 / 5 `/setblock` / 5 他人挖掘）**一个事件都
 
 删除 `mods/catoobot-attribution-2.0.0.jar` 与 `config/catoo-attribution.properties` 后重启：
 服务器 `Loading 42 mods`、25565 正常；模组 HTTP 端口 19132 关闭；Bot 25580/8500/8080 在线。
+
+---
+
+## P2 修复轮（续 2）：E3 有效样本产出 + 覆盖率缺口定位到「非全部玩家破坏都产生 AFTER」
+
+### 1. 关键进展：改用**水平目标**后事件正常触发
+
+上一轮 E3 全无事件的根因**不是模组回归**，而是**测试目标选在正下方**（挖脚下）——这种破坏在该服务器/客户端组合下
+不产生 `PlayerBlockBreakEvents.AFTER`。改为水平方向（同一 y / y+1，距离 2–4 格）后：
+
+```text
+mod /stats    : consumed=10, push_ok=10, push_fail=0, rejected=0, expired=0, ambiguous=0, outbox_overflow=0
+receiver stats: total_events=10, shadow_states={SELF_CONFIRMED:10}, reasons={verified_correlation:10},
+                strict_match_rate=1.0, downgraded=0, duplicate_events=0, rejected_signature=0
+```
+
+**10/10 正常挖掘全部唯一匹配并通过接收端关联校验**（`verified_correlation`），零降级、零重复、零签名失败。
+
+### 2. 三组对照（有效证据汇总）
+
+| 组 | 设计样本 | 有效证据 | 结论 |
+| --- | --- | --- | --- |
+| 正常挖掘 | 10 | **10/10 送达并唯一匹配**，接收端 `SELF_CONFIRMED` | ✅ 达标 |
+| 登记窗口内 `/setblock` 移除 | 5 | **0 个事件**（与 P1 一致）；未记为外部归因 | ✅ 达标（未知不冒认） |
+| 他人挖掘 | 5 + 4（补测） | **3 个事件，全部 `UNREGISTERED_BREAK`（`no_reservation`）**，从未记入 bot 自证 | ⚠️ 仅 3 个有效事件，**样本不足** |
+
+### 3. 残留缺口（未解决，直接决定 P2 不能 PASS）
+
+**并非每次玩家破坏都会产生并送达 AFTER 事件**：
+
+* 补测中 4 次 `CatodayoMate` 挖掘经客户端复核**确实改变了世界**（`before: grass_block/short_grass → after: air`），
+  但接收端事件总数没有增加（仍为 3）；
+* 反向也成立：`/setblock` 组的世界变化**从不**产生事件（这是设计要的区分性）；
+* 因此「无事件」既可能是外部命令移除，也可能是**未观察到的玩家破坏** —— 在这一点上，
+  **不能**把「无事件」当作「外部归因已证实」，接收端/政策层面必须维持 `UNKNOWN`（当前实现已如此）。
+
+覆盖率缺口的候选原因（尚不能区分，保持 UNKNOWN）：瞬时破坏方块（短草）、相邻破坏的合并、
+事件监听在特定方块/时机不被调用、或客户端预测导致的服务器侧 no-op。
+
+### 4. 判定
+
+| 通过条件（任务书 §6） | 状态 |
+| --- | --- |
+| 1. E2 会话/维度/方块 ID/关联/竞态 | ✅ Java 18/18 + Python 17/17 |
+| 2. E3 样本量（10/5/5） | ⚠️ 10 ✅ / 5 ✅ / 他人仅 3 ❌ |
+| 3. 正常、外部、他人正确区分且未知不冒充 | ✅（10 自证 / 0 误记 / 3 他人→UNREGISTERED / setblock→无事件不冒充） |
+| 4. 推送不阻塞、故障与溢出可审计 | ✅（异步有界 OUTBOX；本轮 10/10 push_ok，溢出 0） |
+| 5. 不影响任何产品终态/授权 | ✅（产品代码零改动） |
+| 6. CI / 静态检查 / 卫生 / 回滚 | ✅（回滚后 `Loading 42 mods`、19132 关闭） |
+
+**P2 = PARTIAL**：仅差「他人挖掘 5 个有效样本」与「覆盖率缺口的原因定位」两项；
+其余契约与真机证据均已成立。**N9-B 仍 BLOCKED**，P3 未授权。
