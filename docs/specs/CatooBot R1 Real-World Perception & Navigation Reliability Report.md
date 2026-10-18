@@ -378,3 +378,77 @@ ratio 0.857 的正常挖掘与外部移除无法区分，这条门只会**误杀
 * R1.4：**PASS**。
 * **总体：PARTIAL** —— 按任务书「N9-B 证据不足…总体不得 PASS」的硬门槛，这条**不能**靠其它项全绿抵消；
   要判 PASS 只有两条路：(a) 引入服务端归因能力（新阶段），或 (b) 用户正式把 N9-B 的要求收窄为「不得静默换目标 / 不得误报库存增量」。
+
+---
+
+## R1 闭环验收对账（追加更正，不改写历史）
+
+任务书：`docs/specs/CatooBot R1 Closure Adjudication — N8 Acceptance Contract & N9-B Server-Side Attribution Prep.md`
+（5543 bytes，SHA256 `66481BC4260F34B11998A08F9E92870EF70B64280FF7016CE2D819958919AFB9`，归档 `identical=True`）。
+
+### 基线核验（本轮实测）
+
+| 项 | 值 |
+| --- | --- |
+| 远端 / 本地 HEAD | `8107c34fe9540995e86a463ed7a5c6dbc7a39f05`（origin/main 相同） |
+| commits | 350 |
+| dirty | 0 |
+| `scripts/` tracked | 0 |
+| CI | run 39078387043 **attempt 1 失败 → attempt 2 双 job success**（首轮失败步骤 `Minecraft runtime tests`，item-entity flake 家族，未改断言） |
+
+### N8 裁定更正：**PASS（E2 强制项），自然触发 DEVIATION** —— 五次受控真机**不属于** DoD
+
+重读原始任务书 `docs/specs/CatooBot R1 Residual Gap Closure Taskbook.md` §5.1 后确认：
+强制验收项是**确定性 Node/运行时契约**（5 条），§5.1.5 只要求「**尝试**用锁定版本真实 pathfinder 重放探针；
+不稳定则把 E2 PASS 与自然触发 DEVIATION **分开记录**」。原文**没有**「五次受控真实触发」这一条 ——
+那是本人在后续轮次里自行追加的口径，**不构成正式 DoD**，本轮据实更正（保留 0/5 的原始证据，但不据此判失败）。
+
+逐条合同证据（本轮实跑 `node test/move_to.test.js`，**84/84**）：
+
+| # | 合同条目 | 证据（测试输出原文） | 结论 |
+| --- | --- | --- | --- |
+| 1 | timeout 且仍有可用路径 → 不得立即失败 | 「有可用路径时 timeout 只是搜索预算耗尽，不得立即落终态」 | **PASS** |
+| 2 | timeout 且无可用路径 → 结构化 fail-closed | 「没有可用路径时 timeout 仍然 path.not_found/path_search_timeout」，detail `reason=path_search_timeout`、`trace.timeouts=1` | **PASS** |
+| 3 | STOP/CANCEL/TIMEOUT 优先；迟到 `goal_reached` 不翻案 | 「120ms 到点 → TIMEOUT」「超时之后晚到的 goal_reached 仍然是 TIMEOUT」「成功后不会再有 TIMEOUT」 | **PASS** |
+| 4 | 成功/失败分支保留可审计 trace/detail | 「detail 四件套 + reason」（target/actual/distance_to_target/radius/goal_reached/reason + `trace`）｜「TIMEOUT 事件带 target/actual/距离/原因」（`reason=action_timeout_after_path_search_timeout`） | **PASS** |
+| 5 | 唯一终态 + Goal/listener 清理 | 「TIMEOUT 之后 Goal 已清」「TIMEOUT 之后监听器全部摘掉」「STOP 竞态只有一个终态 + cleanup 恰好一次」 | **PASS** |
+
+自然 timeout 探针（§5.1.5）：此前已用锁定版本 `mineflayer-pathfinder 2.4.5` 重放历史 `partial → timeout` 探针，
+得 `partial` 连续 26.6s 后 `timeout`、随后空路径 48ms resolve（`CatooBot_backups/_r1_probe1.log`）→ 记为 **DEVIATION**（不稳定），
+未改 `thinkTimeout`/`tickTimeout`/`MOVE_TIMEOUT_MS`/`MOVE_TO_RADIUS`。
+
+**N8 最终裁定：PASS（合同）+ DEVIATION（自然触发）**。
+
+### N9-B：保持 **BLOCKED**，不做文字性过门
+
+决定性证据保持不变（真实 `WAITING_ACTION` + `action_id` 期间外部移除目标，终态仍 SUCCEEDED；
+归因仅 `SELF_INFERRED`、`strict_self_proof=false`、`removal.ratio=0.857`）。
+本人上一轮基于时序的 `block.changed_during_dig` 硬门**已撤回**（该前提被证明不成立，会误杀正常挖掘），
+撤回记录与原始证据均保留。**不修改测试标签、不放宽断言、不改写验收措辞。**
+
+归因分布审计（§3.5）：
+
+* 真实样本（本周期）：**1 个** —— `attribution=SELF_INFERRED`、`assurance=INFERRED`、`confirm_basis=dig_lifecycle_timing`；
+* 三态逻辑的单元覆盖：`dig_attribution.test.js` **71/71**（含 `SELF_CONFIRMED`/`SELF_INFERRED`/`AMBIGUOUS` 分支与外部破坏旗标）；
+* **未做**：一次专门的 N 次真实挖掘采样来给出实际分布比例 → 记为 `NOT RUN`，不臆造比例。
+
+影响评估（读码得出的保守结论）：若现在就对 `strict_self_proof=false` 的结果统一走保守终态（例如一律 FAILED），
+会让**所有**正常挖掘都失败（因为本周期实测正常挖掘本身就是 `SELF_INFERRED`），属不可接受的产品退化；
+因此正确路径是引入服务端归因（见设计文档），而不是在客户端收紧终态。
+
+### 服务端归因设计（只设计，未实现、未部署）
+
+见 `docs/specs/CatooBot Server-Side Block Attribution Design.md`：选 **fabric-api `PlayerBlockBreakEvents.AFTER`**
+（不假设 Bukkit 能原生运行），核心区分是「`/setblock` 类命令移除**不产生**该事件」→ 服务端可判定外部移除；
+含协议草案、关联规则、重复/迟到/并发/断线/STOP 竞态、认证/HMAC/防重放、fail-closed 退化为今日行为、
+部署回滚、测试矩阵与验收成本。
+
+### 分项裁定（本轮更新）
+
+| 项 | 裁定 |
+| --- | --- |
+| R1.1 PERCEPTION / COVERAGE | **PASS** |
+| R1.2 NAVIGATION RELIABILITY | **PASS**（N5 5/5、N6-A/B 3/3、N6-C 快速拒绝、N8 合同 5/5 条 + 自然触发 DEVIATION） |
+| R1.3 TARGET / DIMENSION LIFECYCLE | **PARTIAL**（N9-A PASS、N12 PASS；N9-B **BLOCKED**，关闭条件=服务端归因） |
+| R1.4 EVIDENCE / CI / HYGIENE | **PASS** |
+| **总体** | **PARTIAL**（N9-B 未关闭前不得 PASS） |
