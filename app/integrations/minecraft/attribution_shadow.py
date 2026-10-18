@@ -1,4 +1,8 @@
-"""P2 影子归因接收端（独立模块，默认关闭，影子数据不参与任何任务终态）。"""
+"""P2 影子归因接收端（独立模块，默认关闭，影子数据不参与任何任务终态）。
+
+修复轮：接收端校验关联字段完整性/一致性；缺失或不一致只记 UNKNOWN/REJECTED，绝不把服务器给的
+状态字符串当已验证归因。
+"""
 
 from __future__ import annotations
 
@@ -19,6 +23,17 @@ SHADOW_STATES = (
     "EXTERNAL_CONFIRMED",
 )
 
+REQUIRED_FIELDS = ("event_id", "shadow", "pos", "block_before", "block_after")
+
+CORRELATION_FIELDS = (
+    "session_ref",
+    "session_seq",
+    "player_uuid",
+    "dimension",
+    "reservation_id",
+    "action_id",
+)
+
 
 def sign(body: bytes, token: str) -> str:
     return hmac.new(token.encode("utf-8"), body, hashlib.sha256).hexdigest()
@@ -30,6 +45,26 @@ def verify(body: bytes, token: str, signature: str | None) -> bool:
     return hmac.compare_digest(sign(body, token), signature.lower())
 
 
+def validate_event(payload: dict[str, Any]) -> tuple[str, str]:
+    """返回 (state, reason)。缺少必填/关联字段 → 一律降级，绝不采信原始状态字符串。"""
+    for field in REQUIRED_FIELDS:
+        if payload.get(field) in (None, ""):
+            return "REJECTED", f"missing_field:{field}"
+    raw_state = str(payload.get("shadow") or "").upper()
+    if raw_state != "SELF_CONFIRMED":
+        if raw_state in SHADOW_STATES:
+            return raw_state, str(payload.get("reason") or "server_reported")
+        return "UNKNOWN", "unknown_state"
+    for field in CORRELATION_FIELDS:
+        if payload.get(field) in (None, ""):
+            return "UNKNOWN", f"unverified_correlation:{field}"
+    if not str(payload.get("reservation_id") or "").strip():
+        return "UNKNOWN", "unverified_correlation:reservation_id"
+    if str(payload.get("block_before")) == str(payload.get("block_after")):
+        return "UNKNOWN", "no_world_change"
+    return "SELF_CONFIRMED", "verified_correlation"
+
+
 class ShadowLedger:
     """只做记录与统计：不返回任何可被任务消费的授权/成功信号。"""
 
@@ -39,6 +74,7 @@ class ShadowLedger:
         self.rejected_signature = 0
         self.duplicate_events = 0
         self.late_events = 0
+        self.downgraded = 0
         self.states: Counter[str] = Counter()
         self.reasons: Counter[str] = Counter()
         self.samples: list[dict[str, Any]] = []
@@ -51,15 +87,14 @@ class ShadowLedger:
                 return {"ok": True, "consumed": False, "reason": "duplicate_event"}
             if event_id:
                 self.seen_events.add(event_id)
-            state = str(payload.get("shadow") or "UNKNOWN").upper()
-            if state not in SHADOW_STATES:
-                state = "UNKNOWN"
-            reason = str(payload.get("reason") or "")
+            reported = str(payload.get("shadow") or "").upper()
+            state, reason = validate_event(payload)
+            if state != reported:
+                self.downgraded += 1
             self.states[state] += 1
-            if reason:
-                self.reasons[reason] += 1
-            self.samples.append({**payload, "shadow": state})
-            return {"ok": True, "consumed": True, "state": state}
+            self.reasons[reason] += 1
+            self.samples.append({**payload, "shadow": state, "receiver_reason": reason})
+            return {"ok": True, "consumed": True, "state": state, "reason": reason}
 
     def snapshot(self) -> dict[str, Any]:
         with self._lock:
@@ -70,8 +105,9 @@ class ShadowLedger:
                 "total_events": total,
                 "shadow_states": dict(self.states),
                 "reasons": dict(self.reasons),
-                "match_rate": round(confirmed / total, 4) if total else 0.0,
+                "strict_match_rate": round(confirmed / total, 4) if total else 0.0,
                 "unknown_ratio": round(unknown / total, 4) if total else 0.0,
+                "downgraded": self.downgraded,
                 "duplicate_events": self.duplicate_events,
                 "rejected_signature": self.rejected_signature,
                 "late_events": self.late_events,
@@ -80,7 +116,7 @@ class ShadowLedger:
 
 def build_handler(ledger: ShadowLedger, token: str) -> type[BaseHTTPRequestHandler]:
     class Handler(BaseHTTPRequestHandler):
-        def log_message(self, *args: Any) -> None:  # 安静：影子通道不污染日志
+        def log_message(self, *args: Any) -> None:
             return
 
         def _respond(self, code: int, payload: dict[str, Any]) -> None:
@@ -103,8 +139,7 @@ def build_handler(ledger: ShadowLedger, token: str) -> type[BaseHTTPRequestHandl
                 return
             length = int(self.headers.get("Content-Length") or 0)
             body = self.rfile.read(length)
-            signature = self.headers.get("X-Signature")
-            if not verify(body, token, signature):
+            if not verify(body, token, self.headers.get("X-Signature")):
                 ledger.rejected_signature += 1
                 self._respond(401, {"ok": False, "reason": "hmac"})
                 return
@@ -141,7 +176,6 @@ class ShadowServer:
             self._server.shutdown()
             self._server.server_close()
             self._server = None
-            self._server = None
         if self._thread is not None:
             self._thread.join(timeout=2.0)
             self._thread = None
@@ -171,14 +205,12 @@ def main() -> int:
 
     token = os.environ.get("CATOO_ATTRIBUTION_TOKEN", "")
     if not token:
-        print(
-            "[shadow] 缺少 CATOO_ATTRIBUTION_TOKEN，拒绝启动（不开放无认证通道）", file=sys.stderr
-        )
+        print("[shadow] missing CATOO_ATTRIBUTION_TOKEN, refusing to start", file=sys.stderr)
         return 2
     port = int(os.environ.get("CATOO_ATTRIBUTION_PORT", "19133"))
     server = ShadowServer(token=token, port=port)
     url = server.start()
-    print(f"[shadow] listening {url}（影子模式，不参与任务终态）")
+    print(f"[shadow] listening {url} (shadow mode, never affects task state)")
     try:
         while True:
             time.sleep(1.0)

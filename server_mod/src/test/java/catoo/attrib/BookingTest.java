@@ -2,7 +2,7 @@ package catoo.attrib;
 
 import java.util.*;
 
-/** P2 E2：纯逻辑竞态矩阵（无需 Minecraft 运行时）。 */
+/** P2 修复轮 E2：会话/维度/精确方块 ID/关联/竞态（纯逻辑，无 Minecraft 运行时）。 */
 public final class BookingTest {
     static int passed = 0;
     static int failed = 0;
@@ -17,67 +17,71 @@ public final class BookingTest {
         }
     }
 
-    static Map<String, String> fields(String action, String nonce, String pos, String block) {
+    static Map<String, String> fields(String action, String nonce, String pos, String block, String sessionRef) {
         Map<String, String> map = new LinkedHashMap<>();
         map.put("action_id", action);
         map.put("nonce", nonce);
         map.put("dimension", "minecraft:overworld");
         map.put("pos", pos);
         map.put("expected_block", block);
-        map.put("session_ref", "ref-1");
+        map.put("session_ref", sessionRef);
         map.put("ttl_ms", "60000");
         return map;
     }
 
     public static void main(String[] args) {
         Booking booking = new Booking();
-        long seq = booking.newSession("Catodayo", "uuid-bot", "ref-1");
-        check(seq == 1, "first JOIN allocates session_seq=1");
+        Booking.Session bot = booking.newSession("Catodayo", "uuid-bot", "ref-1", new Object());
+        Booking.Session mate = booking.newSession("CatodayoMate", "uuid-mate", "ref-2", new Object());
+        check(bot.seq == 1 && mate.seq == 2, "two players get distinct monotonic session_seq");
 
-        Map<String, String> good = fields("act_1", "nonce-aaaaaaaaaaaaaaaa", "1,2,3", "minecraft:oak_log");
-        Booking.ReserveResult ok = booking.reserve(good, f -> "Block{minecraft:oak_log}", n -> "ref-1", "ref-1");
-        check(ok.ok && ok.httpCode == 200, "reserve accepted when server-read block matches");
+        Booking.ReserveResult ok = booking.reserve(fields("act_1", "nonce-aaaaaaaaaaaaaaaa", "1,2,3", "Block{minecraft:oak_log}", "ref-1"), f -> "Block{minecraft:oak_log}[axis=y]");
+        check(ok.ok, "reserve accepted for the current session");
 
-        Map<String, String> wrongBlock = fields("act_2", "nonce-bbbbbbbbbbbbbbbb", "1,2,3", "minecraft:stone");
-        Booking.ReserveResult mismatch = booking.reserve(wrongBlock, f -> "Block{minecraft:oak_log}", n -> "ref-1", "ref-1");
-        check(!mismatch.ok && "target_mismatch".equals(mismatch.reason), "target mismatch rejects reservation");
+        Booking.ReserveResult wrongSession = booking.reserve(fields("act_2", "nonce-bbbbbbbbbbbbbbbb", "1,2,3", "minecraft:oak_log", "ref-999"), f -> "Block{minecraft:oak_log}");
+        check(!wrongSession.ok && "session_not_current".equals(wrongSession.reason), "unknown/non-current session_ref rejected");
 
-        Map<String, String> replay = fields("act_3", "nonce-aaaaaaaaaaaaaaaa", "5,2,3", "minecraft:oak_log");
-        Booking.ReserveResult nonceReplay = booking.reserve(replay, f -> "Block{minecraft:oak_log}", n -> "ref-1", "ref-1");
-        check(!nonceReplay.ok && "nonce_replay".equals(nonceReplay.reason), "replayed nonce rejected");
+        Booking.ReserveResult staleSession = booking.reserve(fields("act_3", "nonce-cccccccccccccccc", "1,2,3", "minecraft:oak_log", "ref-2"), f -> "Block{minecraft:oak_log}");
+        check(staleSession.ok, "its own session can reserve");
 
-        Map<String, String> dupAction = fields("act_1", "nonce-cccccccccccccccc", "1,2,3", "minecraft:oak_log");
-        Booking.ReserveResult duplicate = booking.reserve(dupAction, f -> "Block{minecraft:oak_log}", n -> "ref-1", "ref-1");
-        check(!duplicate.ok && "duplicate_action".equals(duplicate.reason), "duplicate action reservation rejected");
+        Booking.ReserveResult substring = booking.reserve(fields("act_4", "nonce-dddddddddddddddd", "5,2,3", "minecraft:oak_log", "ref-1"), f -> "Block{minecraft:dark_oak_log}");
+        check(!substring.ok && "target_mismatch".equals(substring.reason), "oak_log must NOT match dark_oak_log (exact id)");
 
-        Booking.MatchResult self = booking.match("Catodayo", "1,2,3", "Block{minecraft:oak_log}", "Block{minecraft:air}");
-        check("SELF_CONFIRMED".equals(self.state) && self.reservation != null, "normal dig matches uniquely -> SELF_CONFIRMED");
+        Booking.ReserveResult replay = booking.reserve(fields("act_5", "nonce-aaaaaaaaaaaaaaaa", "1,2,3", "minecraft:oak_log", "ref-1"), f -> "Block{minecraft:oak_log}");
+        check(!replay.ok && "nonce_replay".equals(replay.reason), "replayed nonce rejected");
 
-        Booking.MatchResult repeat = booking.match("Catodayo", "1,2,3", "Block{minecraft:oak_log}", "Block{minecraft:air}");
-        check("UNREGISTERED_BREAK".equals(repeat.state), "consumed reservation is not reusable");
+        Booking.MatchResult self = booking.match(bot, "uuid-bot", "1,2,3", "Block{minecraft:oak_log}[axis=y]");
+        check("SELF_CONFIRMED".equals(self.state) && self.reservation != null, "unique match -> SELF_CONFIRMED");
 
-        booking.reserve(fields("act_4", "nonce-dddddddddddddddd", "9,2,3", "minecraft:oak_log"), f -> "Block{minecraft:oak_log}", n -> "ref-1", "ref-1");
-        Booking.MatchResult other = booking.match("CatodayoMate", "9,2,3", "Block{minecraft:oak_log}", "Block{minecraft:air}");
-        check("UNKNOWN".equals(other.state) && "no_valid_session".equals(other.reason), "break by unknown session -> UNKNOWN");
+        Booking.MatchResult repeat = booking.match(bot, "uuid-bot", "1,2,3", "Block{minecraft:oak_log}");
+        check(!"SELF_CONFIRMED".equals(repeat.state), "consumed reservation can never yield SELF_CONFIRMED again (got " + repeat.state + ")");
 
-        booking.reserve(fields("act_5", "nonce-eeeeeeeeeeeeeeee", "7,2,3", "minecraft:oak_log"), f -> "Block{minecraft:oak_log}", n -> "ref-1", "ref-1");
-        booking.reserve(fields("act_6", "nonce-ffffffffffffffff", "7,2,3", "minecraft:oak_log"), f -> "Block{minecraft:oak_log}", n -> "ref-1", "ref-1");
-        Booking.MatchResult many = booking.match("Catodayo", "7,2,3", "Block{minecraft:oak_log}", "Block{minecraft:air}");
+        booking.reserve(fields("act_6", "nonce-eeeeeeeeeeeeeeee", "9,2,3", "minecraft:oak_log", "ref-1"), f -> "Block{minecraft:oak_log}");
+        Booking.MatchResult otherPlayer = booking.match(mate, "uuid-mate", "9,2,3", "Block{minecraft:oak_log}");
+        check("UNKNOWN".equals(otherPlayer.state), "other player's session cannot consume bot reservation");
+
+        Booking.MatchResult otherIdentity = booking.match(bot, "uuid-evil", "9,2,3", "Block{minecraft:oak_log}");
+        check("UNKNOWN".equals(otherIdentity.state), "identity mismatch cannot produce SELF_CONFIRMED");
+
+        Booking.MatchResult unregistered = booking.match(bot, "uuid-bot", "100,60,100", "Block{minecraft:dirt}");
+        check("UNREGISTERED_BREAK".equals(unregistered.state), "unregistered break recorded as external evidence");
+
+        booking.reserve(fields("act_7", "nonce-ffffffffffffffff", "7,2,3", "minecraft:oak_log", "ref-1"), f -> "Block{minecraft:oak_log}");
+        booking.reserve(fields("act_8", "nonce-1111111111111111", "7,2,3", "minecraft:oak_log", "ref-1"), f -> "Block{minecraft:oak_log}");
+        Booking.MatchResult many = booking.match(bot, "uuid-bot", "7,2,3", "Block{minecraft:oak_log}");
         check("AMBIGUOUS".equals(many.state), "multiple candidates -> AMBIGUOUS");
 
-        Booking.MatchResult unregistered = booking.match("Catodayo", "100,60,100", "Block{minecraft:dirt}", "Block{minecraft:air}");
-        check("UNREGISTERED_BREAK".equals(unregistered.state), "unregistered break recorded as external-player evidence, never self");
-
-        booking.newSession("Catodayo", "uuid-bot", "ref-2");
-        Booking.MatchResult oldSession = booking.match("Catodayo", "7,2,3", "Block{minecraft:oak_log}", "Block{minecraft:air}");
-        check("UNKNOWN".equals(oldSession.state), "stale session reservations become UNKNOWN");
+        Booking.Session botAgain = booking.newSession("Catodayo", "uuid-bot", "ref-3", new Object());
+        Booking.MatchResult oldSession = booking.match(botAgain, "uuid-bot", "7,2,3", "Block{minecraft:oak_log}");
+        check("UNKNOWN".equals(oldSession.state), "reservations from replaced session become UNKNOWN");
 
         booking.invalidateAll();
-        check(booking.activeReservations() == 0, "server restart / invalidation clears all reservations");
+        check(booking.activeReservations() == 0, "invalidation clears all reservations");
+        check(Booking.canonicalBlock("Block{minecraft:oak_leaves}[distance=3,persistent=false]").equals("minecraft:oak_leaves"), "canonical block id extraction");
 
-        check(Hmac.verify("body", "token", Hmac.sign("body", "token")), "HMAC round-trip verifies");
+        check(Hmac.verify("body", "token", Hmac.sign("body", "token")), "HMAC round-trip");
         check(!Hmac.verify("body", "token", "deadbeef"), "HMAC mismatch rejected");
-        check(!Hmac.verify("body", "", Hmac.sign("body", "")), "missing token rejected (never accepted)");
+        check(!Hmac.verify("body", "", Hmac.sign("body", "")), "missing token rejected");
 
         System.out.println("[booking-test] " + passed + "/" + (passed + failed) + " checks passed");
         if (failed > 0) {

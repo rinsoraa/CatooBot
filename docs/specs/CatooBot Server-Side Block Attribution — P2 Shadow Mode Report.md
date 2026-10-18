@@ -144,3 +144,58 @@ E2：`tests/test_attribution_shadow.py` **8/8 通过**（签名三态、幂等�
 ### 6. N9-B 与 P3
 
 **N9-B 仍 BLOCKED**；影子模式按设计**不产生** `strict_self_proof=true` 证据。**P3 未授权、未开始。**
+
+---
+
+## P2 修复轮（任务书 24）：管道修复 + E2 契约 + E3 重跑（结果如实）
+
+任务书归档：`docs/specs/CatooBot P2 Shadow Mode — Attribution Pipeline Audit, Coverage Localization & E3 Retest.md`
+（5384 bytes，SHA256 `1BB903B7333FEA9FED9620674B9B6C5BF43349CA4EE0F70FE8922BDFA3C1D7CC`，`identical=True`）。
+
+### 1. 第一阶段：管道缺口已修（模组版本 `p2-shadow-2`）
+
+| 任务书要求 | 实现 |
+| --- | --- |
+| 1. `reserve()` 必须校验 `session_ref` 属于当前有效会话 | `Booking.reserve` 通过 `byRef` 查会话，无效/过期 → `session_not_current`（409），**不信任载荷** |
+| 2. JOIN/登记/事件显式关联会话 | 删除全局 `lastSessionRef`；JOIN 建 `Session(name,uuid,ref,seq,world)`，事件按 `currentSessionOf(name)` 取会话 |
+| 3. 匹配含维度/精确坐标/规范化方块 ID/玩家身份/会话 | `match(session, playerUuid, pos, blockBefore)`：会话一致 + UUID 一致 + 坐标相等 + `canonicalBlock()` 精确相等 |
+| 4. 事件载荷字段齐全 | `event_id / reservation_id / action_id / session_ref / session_seq / player_uuid / dimension / pos / block_before / block_after / shadow / reason` |
+| 5. 接收端校验必填与关联一致性 | Python `validate_event()`：缺必填 → `REJECTED`；`SELF_CONFIRMED` 缺任一关联字段 → `UNKNOWN(unverified_correlation:…)`；无世界变化 → `UNKNOWN` |
+| 6. 推送移出事件回调、异步有界 OUTBOX | `ArrayBlockingQueue(1024)` + 守护线程 `catoo-attrib-outbox`；溢出计数 `outbox_overflow`；回调只 `offer()` 不阻塞 |
+| 7. 修复矛盾描述 | `config.sample.properties`（`enabled=false` 默认关闭）、README 语义表、本报告同步更新 |
+
+模组新增 `GET /stats`（`reserved/rejected/expired/ambiguous/unknown/consumed/identity_rejected/push_ok/push_fail/outbox_overflow`）。
+构建：`server_mod/build.ps1`，jar SHA256 **`3E5981FB6FB1D77F80FEF450280B9987BD60016DB28EBD3400BAE13F8244A0F6`**。
+
+### 2. 第二阶段：E2 契约测试（真跑全绿）
+
+* **Java 逻辑 18/18**：两会话 `session_seq` 单调、当前会话登记成功、未知/非当前 `session_ref` 被拒、自身会话可登记、
+  **`oak_log` 不匹配 `dark_oak_log`（精确 ID）**、nonce 重放拒绝、唯一匹配 `SELF_CONFIRMED`、已消费永不再自证、
+  他人会话不能消费 bot 登记、身份不匹配不能自证、未登记破坏记 `UNREGISTERED_BREAK`、多候选 `AMBIGUOUS`、
+  会话替换后旧登记 `UNKNOWN`、失效清空、`canonicalBlock` 提取、HMAC 三态。
+* **Python 17/17**：签名三态、`validate_event` 全关联字段逐项缺失降级、缺必填 `REJECTED`、无世界变化 `UNKNOWN`、
+  非自证状态透传、幂等与重复计数、降级计数、`UNREGISTERED_BREAK`/`UNKNOWN` 不计入严格匹配率、HTTP 收/拒、仅回环。
+
+### 3. 第三/四阶段：E3 本轮**无效**（如实记录，不采纳为证据）
+
+部署新 jar 后重跑 10/5/5，结果：
+
+* 模组 `/stats`：`rejected=15`、`consumed=0`、`unknown=1`；逐条拒绝原因均为 **`session_not_current`**；
+  原因：测试客户端未持有 `session_ref`（该值由服务端 JOIN 时签发），按新契约**应当**被拒绝 —— 这本身证明第 1 条修复生效；
+* 但这也意味着**本轮没有产生有效登记**，`SELF_CONFIRMED` 必然为 0；接收端展示的 2 次 `SELF_CONFIRMED` 来自**上一轮遗留进程**
+  （统计跨轮累积，且 `match_rate` 键说明运行的是旧版接收端），属于**污染数据，不采纳**。
+* 因此：**覆盖率没有定位、E3 指标不成立**，任务书第三、四阶段**未完成**。
+
+### 4. 结论与缺口
+
+| 通过条件（任务书 §6） | 状态 |
+| --- | --- |
+| 1. E2 会话/维度/方块 ID/关联/竞态契约测试 | **满足**（Java 18/18 + Python 17/17） |
+| 2. E3 样本量与可追溯原始尝试 | **不满足**（本轮无效，需客户端先取得 `session_ref`） |
+| 3. 正常/外部/他人正确区分，未知不冒充 | **部分**（`UNREGISTERED_BREAK` 与 `UNKNOWN` 语义单测成立；真机未形成有效样本） |
+| 4. 推送不阻塞 STOP/CANCEL、故障与溢出可审计 | **满足（代码层面）**：异步有界 OUTBOX + 溢出计数；真机溢出未触发 |
+| 5. 影子模块不影响任何产品终态 | **满足**（产品代码零改动，模块不被任务路径调用） |
+| 6. CI / 静态检查 / 卫生 / 回滚 | **满足**（见下） |
+
+**P2 维持 PARTIAL**。下一步的最小必要工作（已定位）：给模组加认证回环 `GET /session?name=` 让客户端取到
+`session_ref`/`session_seq`，重新跑 10/5/5 并建立每次尝试的时间顺序表（Phase 3 要求的字段已全部具备）。
