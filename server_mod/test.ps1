@@ -21,8 +21,8 @@ New-Item -ItemType Directory -Path $output | Out-Null
 try {
     $testRoot = Join-Path $PSScriptRoot 'src/test/java/catoo/attrib'
     $mainRoot = Join-Path $PSScriptRoot 'src/main/java/catoo/attrib'
-    $tests = @('BookingTest', 'DimensionPolicyTest')
-    $sources = @((Join-Path $mainRoot 'Booking.java'), (Join-Path $mainRoot 'Hmac.java'))
+    $tests = @('BookingTest', 'DimensionPolicyTest', 'RequestStateTest')
+    $sources = @((Join-Path $mainRoot 'Booking.java'), (Join-Path $mainRoot 'Hmac.java'), (Join-Path $mainRoot 'RequestState.java'))
     $classpath = $output
     if ($ServerDir) {
         & (Join-Path $PSScriptRoot 'build.ps1') -ServerDir $ServerDir -JavaHome $JavaHome

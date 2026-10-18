@@ -1,0 +1,1835 @@
+{
+  "schema": 1,
+  "baseline": "5f5c0146a78f9a54029bff89fb7058ae2723814b",
+  "experiment": "P2 SHADOW PROTOCOL ON REAL FABRIC SERVER, NOT A PRODUCT TASK EXECUTION",
+  "build": {
+    "initial_server_running": false,
+    "backup_files": 99,
+    "backup_sha256": "5923103570b4dc31253dd11250506b452305f3bb56a6868d30c4f0158b234795",
+    "jar_sha256": "5b9dec7c0e80ff08b8e7a953438d1ac5f4f0783d7d008ad6609cc8cd37352fb2",
+    "deployed_hash_matches": true,
+    "initial_mod_files": [],
+    "initial_config_present": false,
+    "version": "p2-shadow-6"
+  },
+  "run": "eb5b64a5-aecc-4046-9a10-f6b34ce0742a",
+  "attempts_by_kind": {
+    "normal": 11,
+    "cross": 1,
+    "external": 5,
+    "other": 5
+  },
+  "sampling": {
+    "normal_requested": 10,
+    "normal_verified": 10,
+    "normal_after_triggered": 10,
+    "external_command_requested": 5,
+    "external_command_unknown_no_event": 5,
+    "other_player_requested": 5,
+    "other_player_unknown": 5,
+    "extra_positive_control": 1,
+    "cross_negative_and_same_reservation_positive": 1
+  },
+  "delivered_event_states": {
+    "SELF_CONFIRMED": 12,
+    "UNKNOWN": 6
+  },
+  "event_statistics_not_normal_attempt_denominator": {
+    "total_events": 18,
+    "shadow_states": {
+      "SELF_CONFIRMED": 12,
+      "UNKNOWN": 6
+    },
+    "reasons": {
+      "verified_correlation": 12,
+      "target_or_identity_or_dimension_mismatch": 1,
+      "stale_session": 5
+    },
+    "strict_match_rate": 0.6667,
+    "unknown_ratio": 0.3333,
+    "downgraded": 0,
+    "duplicate_events": 0,
+    "rejected_signature": 0,
+    "late_events": 0
+  },
+  "server_statistics_before_disconnect": {
+    "code": 200,
+    "reservations_active": 10,
+    "rejected": 0,
+    "expired": 0,
+    "ambiguous": 0,
+    "unknown": 6,
+    "consumed": 12,
+    "identity_rejected": 0,
+    "dimension_rejected": 1,
+    "push_ok": 18,
+    "push_fail": 0,
+    "outbox_overflow": 0
+  },
+  "disconnect": {
+    "disconnected_session_rejected": true,
+    "session_ref": "df814296-1440-4c14-b270-e657ecf0bbc5",
+    "response": {
+      "code": 409,
+      "ok": false,
+      "reason": "session_not_current"
+    }
+  },
+  "disabled": {
+    "run": "a18bd819-037c-403a-bcc6-8a54b5165e9e",
+    "real_digs": 2,
+    "all_world_air_assertions_passed": true,
+    "attribution_log_unchanged": true,
+    "receiver_event_count": 18,
+    "http_port_closed": true
+  },
+  "rollback": {
+    "restored_files": 99,
+    "all_original_hashes_match": true,
+    "extra_world_files": 0,
+    "test_mod_removed": true,
+    "test_config_removed": true,
+    "server_stopped": true
+  },
+  "does_not_prove_item_pickup_inventory_delta_or_product_task_success": true,
+  "attempts": [
+    {
+      "id": "task29_eb5b64a5-aecc-4046-9a10-f6b34ce0742a_normal_1",
+      "kind": "normal",
+      "pos": {
+        "x": 10005,
+        "y": 100,
+        "z": 10013
+      },
+      "before": {
+        "source": "server_execute_if_block",
+        "dimension": "minecraft:overworld",
+        "pos": "10005,100,10013",
+        "block": "minecraft:oak_log"
+      },
+      "bot_observation": {
+        "client": "Task29Bot",
+        "dimension": "minecraft:overworld",
+        "position": {
+          "x": 10003.5,
+          "y": 99,
+          "z": 10013.5
+        }
+      },
+      "reservation": {
+        "payload": {
+          "session_ref": "df814296-1440-4c14-b270-e657ecf0bbc5",
+          "action_id": "task29_eb5b64a5-aecc-4046-9a10-f6b34ce0742a_normal_1",
+          "nonce_sha256": "3c703202a21e78e2c6103776c39c859ddcb3e015373a344bf5ecb52e48e9c243",
+          "dimension": "minecraft:overworld",
+          "pos": "10005,100,10013",
+          "x": 10005,
+          "y": 100,
+          "z": 10013,
+          "expected_block": "minecraft:oak_log",
+          "ttl_ms": 120000
+        },
+        "result": {
+          "code": 200,
+          "ok": true,
+          "reason": "ok",
+          "reservation_id": "bf7df7bb-8916-4c04-97b9-03898f2130af"
+        },
+        "session": {
+          "code": 200,
+          "ok": true,
+          "session_ref": "df814296-1440-4c14-b270-e657ecf0bbc5",
+          "session_seq": 1,
+          "player_uuid": "655516bd-bba2-3474-a585-bb321a872a9c"
+        },
+        "reserved_at": 1792328259923
+      },
+      "actual": {
+        "source": "server_execute_if_block",
+        "dimension": "minecraft:overworld",
+        "pos": "10005,100,10013",
+        "block": "minecraft:air"
+      },
+      "event": {
+        "event": {
+          "event_id": "7718c199-1562-4b3b-a9d5-50d7cb61171e",
+          "reservation_id": "bf7df7bb-8916-4c04-97b9-03898f2130af",
+          "action_id": "task29_eb5b64a5-aecc-4046-9a10-f6b34ce0742a_normal_1",
+          "session_ref": "df814296-1440-4c14-b270-e657ecf0bbc5",
+          "session_seq": 1,
+          "player_uuid": "655516bd-bba2-3474-a585-bb321a872a9c",
+          "dimension": "minecraft:overworld",
+          "pos": "10005,100,10013",
+          "block_before": "minecraft:oak_log",
+          "block_after": "minecraft:air",
+          "shadow": "SELF_CONFIRMED",
+          "reason": "unique_match"
+        },
+        "receiver": {
+          "ok": true,
+          "consumed": true,
+          "state": "SELF_CONFIRMED",
+          "reason": "verified_correlation"
+        }
+      },
+      "status": "PASS"
+    },
+    {
+      "id": "task29_eb5b64a5-aecc-4046-9a10-f6b34ce0742a_cross_2",
+      "kind": "cross",
+      "pos": {
+        "x": 10005,
+        "y": 100,
+        "z": 10023
+      },
+      "overworld_before": {
+        "source": "server_execute_if_block",
+        "dimension": "minecraft:overworld",
+        "pos": "10005,100,10023",
+        "block": "minecraft:oak_log"
+      },
+      "nether_before": {
+        "source": "server_execute_if_block",
+        "dimension": "minecraft:the_nether",
+        "pos": "10005,100,10023",
+        "block": "minecraft:oak_log"
+      },
+      "reservation": {
+        "payload": {
+          "session_ref": "df814296-1440-4c14-b270-e657ecf0bbc5",
+          "action_id": "task29_eb5b64a5-aecc-4046-9a10-f6b34ce0742a_cross_2",
+          "nonce_sha256": "46c0161d1196c8b10e3f970573e05d3a56223faf4b921fa6da4e674f648073bb",
+          "dimension": "minecraft:overworld",
+          "pos": "10005,100,10023",
+          "x": 10005,
+          "y": 100,
+          "z": 10023,
+          "expected_block": "minecraft:oak_log",
+          "ttl_ms": 120000
+        },
+        "result": {
+          "code": 200,
+          "ok": true,
+          "reason": "ok",
+          "reservation_id": "d61e46f8-5422-4229-93f5-68e0cf314668"
+        },
+        "session": {
+          "code": 200,
+          "ok": true,
+          "session_ref": "df814296-1440-4c14-b270-e657ecf0bbc5",
+          "session_seq": 1,
+          "player_uuid": "655516bd-bba2-3474-a585-bb321a872a9c"
+        },
+        "reserved_at": 1792328262724
+      },
+      "nether_observation": {
+        "client": "Task29Bot",
+        "dimension": "minecraft:the_nether",
+        "position": {
+          "x": 10003.5,
+          "y": 99,
+          "z": 10023.5
+        }
+      },
+      "negative": {
+        "actual": {
+          "source": "server_execute_if_block",
+          "dimension": "minecraft:the_nether",
+          "pos": "10005,100,10023",
+          "block": "minecraft:air"
+        },
+        "event": {
+          "event": {
+            "event_id": "849d0544-88e2-4c29-8556-df5f0f8e32be",
+            "reservation_id": "",
+            "action_id": "",
+            "session_ref": "df814296-1440-4c14-b270-e657ecf0bbc5",
+            "session_seq": 1,
+            "player_uuid": "655516bd-bba2-3474-a585-bb321a872a9c",
+            "dimension": "minecraft:the_nether",
+            "pos": "10005,100,10023",
+            "block_before": "minecraft:oak_log",
+            "block_after": "minecraft:air",
+            "shadow": "UNKNOWN",
+            "reason": "target_or_identity_or_dimension_mismatch"
+          },
+          "receiver": {
+            "ok": true,
+            "consumed": true,
+            "state": "UNKNOWN",
+            "reason": "target_or_identity_or_dimension_mismatch"
+          }
+        }
+      },
+      "overworld_preserved": {
+        "source": "server_execute_if_block",
+        "dimension": "minecraft:overworld",
+        "pos": "10005,100,10023",
+        "block": "minecraft:oak_log"
+      },
+      "paired_positive": {
+        "actual": {
+          "source": "server_execute_if_block",
+          "dimension": "minecraft:overworld",
+          "pos": "10005,100,10023",
+          "block": "minecraft:air"
+        },
+        "event": {
+          "event": {
+            "event_id": "805edb55-99c7-42b5-922d-10934cb0a6f4",
+            "reservation_id": "d61e46f8-5422-4229-93f5-68e0cf314668",
+            "action_id": "task29_eb5b64a5-aecc-4046-9a10-f6b34ce0742a_cross_2",
+            "session_ref": "df814296-1440-4c14-b270-e657ecf0bbc5",
+            "session_seq": 1,
+            "player_uuid": "655516bd-bba2-3474-a585-bb321a872a9c",
+            "dimension": "minecraft:overworld",
+            "pos": "10005,100,10023",
+            "block_before": "minecraft:oak_log",
+            "block_after": "minecraft:air",
+            "shadow": "SELF_CONFIRMED",
+            "reason": "unique_match"
+          },
+          "receiver": {
+            "ok": true,
+            "consumed": true,
+            "state": "SELF_CONFIRMED",
+            "reason": "verified_correlation"
+          }
+        }
+      },
+      "status": "PASS"
+    },
+    {
+      "id": "task29_eb5b64a5-aecc-4046-9a10-f6b34ce0742a_normal_10",
+      "kind": "normal",
+      "pos": {
+        "x": 10005,
+        "y": 100,
+        "z": 10103
+      },
+      "before": {
+        "source": "server_execute_if_block",
+        "dimension": "minecraft:overworld",
+        "pos": "10005,100,10103",
+        "block": "minecraft:oak_log"
+      },
+      "bot_observation": {
+        "client": "Task29Bot",
+        "dimension": "minecraft:overworld",
+        "position": {
+          "x": 10003.5,
+          "y": 99,
+          "z": 10103.5
+        }
+      },
+      "reservation": {
+        "payload": {
+          "session_ref": "df814296-1440-4c14-b270-e657ecf0bbc5",
+          "action_id": "task29_eb5b64a5-aecc-4046-9a10-f6b34ce0742a_normal_10",
+          "nonce_sha256": "691f7317dc237b7e3e66b164518d45653d2904c4970a6e6f56ea13faf88e6619",
+          "dimension": "minecraft:overworld",
+          "pos": "10005,100,10103",
+          "x": 10005,
+          "y": 100,
+          "z": 10103,
+          "expected_block": "minecraft:oak_log",
+          "ttl_ms": 120000
+        },
+        "result": {
+          "code": 200,
+          "ok": true,
+          "reason": "ok",
+          "reservation_id": "1c01882b-c603-4f83-a8c2-820df9cea760"
+        },
+        "session": {
+          "code": 200,
+          "ok": true,
+          "session_ref": "df814296-1440-4c14-b270-e657ecf0bbc5",
+          "session_seq": 1,
+          "player_uuid": "655516bd-bba2-3474-a585-bb321a872a9c"
+        },
+        "reserved_at": 1792328265645
+      },
+      "actual": {
+        "source": "server_execute_if_block",
+        "dimension": "minecraft:overworld",
+        "pos": "10005,100,10103",
+        "block": "minecraft:air"
+      },
+      "event": {
+        "event": {
+          "event_id": "c925bff4-4a1e-40ea-aaf4-50910e2c2529",
+          "reservation_id": "1c01882b-c603-4f83-a8c2-820df9cea760",
+          "action_id": "task29_eb5b64a5-aecc-4046-9a10-f6b34ce0742a_normal_10",
+          "session_ref": "df814296-1440-4c14-b270-e657ecf0bbc5",
+          "session_seq": 1,
+          "player_uuid": "655516bd-bba2-3474-a585-bb321a872a9c",
+          "dimension": "minecraft:overworld",
+          "pos": "10005,100,10103",
+          "block_before": "minecraft:oak_log",
+          "block_after": "minecraft:air",
+          "shadow": "SELF_CONFIRMED",
+          "reason": "unique_match"
+        },
+        "receiver": {
+          "ok": true,
+          "consumed": true,
+          "state": "SELF_CONFIRMED",
+          "reason": "verified_correlation"
+        }
+      },
+      "status": "PASS"
+    },
+    {
+      "id": "task29_eb5b64a5-aecc-4046-9a10-f6b34ce0742a_normal_11",
+      "kind": "normal",
+      "pos": {
+        "x": 10005,
+        "y": 100,
+        "z": 10113
+      },
+      "before": {
+        "source": "server_execute_if_block",
+        "dimension": "minecraft:overworld",
+        "pos": "10005,100,10113",
+        "block": "minecraft:oak_log"
+      },
+      "bot_observation": {
+        "client": "Task29Bot",
+        "dimension": "minecraft:overworld",
+        "position": {
+          "x": 10003.5,
+          "y": 99,
+          "z": 10113.5
+        }
+      },
+      "reservation": {
+        "payload": {
+          "session_ref": "df814296-1440-4c14-b270-e657ecf0bbc5",
+          "action_id": "task29_eb5b64a5-aecc-4046-9a10-f6b34ce0742a_normal_11",
+          "nonce_sha256": "490a1c2c294996ef3c614944b0fe1945acfeb804076ac781781e7e03a858729c",
+          "dimension": "minecraft:overworld",
+          "pos": "10005,100,10113",
+          "x": 10005,
+          "y": 100,
+          "z": 10113,
+          "expected_block": "minecraft:oak_log",
+          "ttl_ms": 120000
+        },
+        "result": {
+          "code": 200,
+          "ok": true,
+          "reason": "ok",
+          "reservation_id": "cdb20e16-45e9-4e21-b54e-72627d22b2b1"
+        },
+        "session": {
+          "code": 200,
+          "ok": true,
+          "session_ref": "df814296-1440-4c14-b270-e657ecf0bbc5",
+          "session_seq": 1,
+          "player_uuid": "655516bd-bba2-3474-a585-bb321a872a9c"
+        },
+        "reserved_at": 1792328267164
+      },
+      "actual": {
+        "source": "server_execute_if_block",
+        "dimension": "minecraft:overworld",
+        "pos": "10005,100,10113",
+        "block": "minecraft:air"
+      },
+      "event": {
+        "event": {
+          "event_id": "acebb237-427b-414f-a204-2a27f6842372",
+          "reservation_id": "cdb20e16-45e9-4e21-b54e-72627d22b2b1",
+          "action_id": "task29_eb5b64a5-aecc-4046-9a10-f6b34ce0742a_normal_11",
+          "session_ref": "df814296-1440-4c14-b270-e657ecf0bbc5",
+          "session_seq": 1,
+          "player_uuid": "655516bd-bba2-3474-a585-bb321a872a9c",
+          "dimension": "minecraft:overworld",
+          "pos": "10005,100,10113",
+          "block_before": "minecraft:oak_log",
+          "block_after": "minecraft:air",
+          "shadow": "SELF_CONFIRMED",
+          "reason": "unique_match"
+        },
+        "receiver": {
+          "ok": true,
+          "consumed": true,
+          "state": "SELF_CONFIRMED",
+          "reason": "verified_correlation"
+        }
+      },
+      "status": "PASS"
+    },
+    {
+      "id": "task29_eb5b64a5-aecc-4046-9a10-f6b34ce0742a_normal_12",
+      "kind": "normal",
+      "pos": {
+        "x": 10005,
+        "y": 100,
+        "z": 10123
+      },
+      "before": {
+        "source": "server_execute_if_block",
+        "dimension": "minecraft:overworld",
+        "pos": "10005,100,10123",
+        "block": "minecraft:oak_log"
+      },
+      "bot_observation": {
+        "client": "Task29Bot",
+        "dimension": "minecraft:overworld",
+        "position": {
+          "x": 10003.5,
+          "y": 99,
+          "z": 10123.5
+        }
+      },
+      "reservation": {
+        "payload": {
+          "session_ref": "df814296-1440-4c14-b270-e657ecf0bbc5",
+          "action_id": "task29_eb5b64a5-aecc-4046-9a10-f6b34ce0742a_normal_12",
+          "nonce_sha256": "7f1660d0dd3878afe9a664102cbb1c025ecd3d940c0ddd1c484dc9294885794a",
+          "dimension": "minecraft:overworld",
+          "pos": "10005,100,10123",
+          "x": 10005,
+          "y": 100,
+          "z": 10123,
+          "expected_block": "minecraft:oak_log",
+          "ttl_ms": 120000
+        },
+        "result": {
+          "code": 200,
+          "ok": true,
+          "reason": "ok",
+          "reservation_id": "ef6c7f51-b43c-4add-a91e-2bdc84d3faad"
+        },
+        "session": {
+          "code": 200,
+          "ok": true,
+          "session_ref": "df814296-1440-4c14-b270-e657ecf0bbc5",
+          "session_seq": 1,
+          "player_uuid": "655516bd-bba2-3474-a585-bb321a872a9c"
+        },
+        "reserved_at": 1792328268694
+      },
+      "actual": {
+        "source": "server_execute_if_block",
+        "dimension": "minecraft:overworld",
+        "pos": "10005,100,10123",
+        "block": "minecraft:air"
+      },
+      "event": {
+        "event": {
+          "event_id": "0bfccc5e-aed8-4fad-ad07-0763491cf7f6",
+          "reservation_id": "ef6c7f51-b43c-4add-a91e-2bdc84d3faad",
+          "action_id": "task29_eb5b64a5-aecc-4046-9a10-f6b34ce0742a_normal_12",
+          "session_ref": "df814296-1440-4c14-b270-e657ecf0bbc5",
+          "session_seq": 1,
+          "player_uuid": "655516bd-bba2-3474-a585-bb321a872a9c",
+          "dimension": "minecraft:overworld",
+          "pos": "10005,100,10123",
+          "block_before": "minecraft:oak_log",
+          "block_after": "minecraft:air",
+          "shadow": "SELF_CONFIRMED",
+          "reason": "unique_match"
+        },
+        "receiver": {
+          "ok": true,
+          "consumed": true,
+          "state": "SELF_CONFIRMED",
+          "reason": "verified_correlation"
+        }
+      },
+      "status": "PASS"
+    },
+    {
+      "id": "task29_eb5b64a5-aecc-4046-9a10-f6b34ce0742a_normal_13",
+      "kind": "normal",
+      "pos": {
+        "x": 10005,
+        "y": 100,
+        "z": 10133
+      },
+      "before": {
+        "source": "server_execute_if_block",
+        "dimension": "minecraft:overworld",
+        "pos": "10005,100,10133",
+        "block": "minecraft:oak_log"
+      },
+      "bot_observation": {
+        "client": "Task29Bot",
+        "dimension": "minecraft:overworld",
+        "position": {
+          "x": 10003.5,
+          "y": 99,
+          "z": 10133.5
+        }
+      },
+      "reservation": {
+        "payload": {
+          "session_ref": "df814296-1440-4c14-b270-e657ecf0bbc5",
+          "action_id": "task29_eb5b64a5-aecc-4046-9a10-f6b34ce0742a_normal_13",
+          "nonce_sha256": "8ebd6e6a929b0d5dc7dc88f50bd51e52784f1dc711bbee74ab4db797ec2d2cf0",
+          "dimension": "minecraft:overworld",
+          "pos": "10005,100,10133",
+          "x": 10005,
+          "y": 100,
+          "z": 10133,
+          "expected_block": "minecraft:oak_log",
+          "ttl_ms": 120000
+        },
+        "result": {
+          "code": 200,
+          "ok": true,
+          "reason": "ok",
+          "reservation_id": "279016bc-c697-4fe4-a52a-c093306b56c9"
+        },
+        "session": {
+          "code": 200,
+          "ok": true,
+          "session_ref": "df814296-1440-4c14-b270-e657ecf0bbc5",
+          "session_seq": 1,
+          "player_uuid": "655516bd-bba2-3474-a585-bb321a872a9c"
+        },
+        "reserved_at": 1792328270213
+      },
+      "actual": {
+        "source": "server_execute_if_block",
+        "dimension": "minecraft:overworld",
+        "pos": "10005,100,10133",
+        "block": "minecraft:air"
+      },
+      "event": {
+        "event": {
+          "event_id": "5e7e70a6-90c2-4019-93b9-f6c7930f0940",
+          "reservation_id": "279016bc-c697-4fe4-a52a-c093306b56c9",
+          "action_id": "task29_eb5b64a5-aecc-4046-9a10-f6b34ce0742a_normal_13",
+          "session_ref": "df814296-1440-4c14-b270-e657ecf0bbc5",
+          "session_seq": 1,
+          "player_uuid": "655516bd-bba2-3474-a585-bb321a872a9c",
+          "dimension": "minecraft:overworld",
+          "pos": "10005,100,10133",
+          "block_before": "minecraft:oak_log",
+          "block_after": "minecraft:air",
+          "shadow": "SELF_CONFIRMED",
+          "reason": "unique_match"
+        },
+        "receiver": {
+          "ok": true,
+          "consumed": true,
+          "state": "SELF_CONFIRMED",
+          "reason": "verified_correlation"
+        }
+      },
+      "status": "PASS"
+    },
+    {
+      "id": "task29_eb5b64a5-aecc-4046-9a10-f6b34ce0742a_normal_14",
+      "kind": "normal",
+      "pos": {
+        "x": 10005,
+        "y": 100,
+        "z": 10143
+      },
+      "before": {
+        "source": "server_execute_if_block",
+        "dimension": "minecraft:overworld",
+        "pos": "10005,100,10143",
+        "block": "minecraft:oak_log"
+      },
+      "bot_observation": {
+        "client": "Task29Bot",
+        "dimension": "minecraft:overworld",
+        "position": {
+          "x": 10003.5,
+          "y": 99,
+          "z": 10143.5
+        }
+      },
+      "reservation": {
+        "payload": {
+          "session_ref": "df814296-1440-4c14-b270-e657ecf0bbc5",
+          "action_id": "task29_eb5b64a5-aecc-4046-9a10-f6b34ce0742a_normal_14",
+          "nonce_sha256": "433d062ad6ae53a5b196f6d25604a52d2431c854dbc345df1433889c8fe98a39",
+          "dimension": "minecraft:overworld",
+          "pos": "10005,100,10143",
+          "x": 10005,
+          "y": 100,
+          "z": 10143,
+          "expected_block": "minecraft:oak_log",
+          "ttl_ms": 120000
+        },
+        "result": {
+          "code": 200,
+          "ok": true,
+          "reason": "ok",
+          "reservation_id": "9251885f-b436-4e48-a356-ee82ab119b34"
+        },
+        "session": {
+          "code": 200,
+          "ok": true,
+          "session_ref": "df814296-1440-4c14-b270-e657ecf0bbc5",
+          "session_seq": 1,
+          "player_uuid": "655516bd-bba2-3474-a585-bb321a872a9c"
+        },
+        "reserved_at": 1792328271747
+      },
+      "actual": {
+        "source": "server_execute_if_block",
+        "dimension": "minecraft:overworld",
+        "pos": "10005,100,10143",
+        "block": "minecraft:air"
+      },
+      "event": {
+        "event": {
+          "event_id": "daf51d1f-d020-4869-b58e-9d5b15901adc",
+          "reservation_id": "9251885f-b436-4e48-a356-ee82ab119b34",
+          "action_id": "task29_eb5b64a5-aecc-4046-9a10-f6b34ce0742a_normal_14",
+          "session_ref": "df814296-1440-4c14-b270-e657ecf0bbc5",
+          "session_seq": 1,
+          "player_uuid": "655516bd-bba2-3474-a585-bb321a872a9c",
+          "dimension": "minecraft:overworld",
+          "pos": "10005,100,10143",
+          "block_before": "minecraft:oak_log",
+          "block_after": "minecraft:air",
+          "shadow": "SELF_CONFIRMED",
+          "reason": "unique_match"
+        },
+        "receiver": {
+          "ok": true,
+          "consumed": true,
+          "state": "SELF_CONFIRMED",
+          "reason": "verified_correlation"
+        }
+      },
+      "status": "PASS"
+    },
+    {
+      "id": "task29_eb5b64a5-aecc-4046-9a10-f6b34ce0742a_normal_15",
+      "kind": "normal",
+      "pos": {
+        "x": 10005,
+        "y": 100,
+        "z": 10153
+      },
+      "before": {
+        "source": "server_execute_if_block",
+        "dimension": "minecraft:overworld",
+        "pos": "10005,100,10153",
+        "block": "minecraft:oak_log"
+      },
+      "bot_observation": {
+        "client": "Task29Bot",
+        "dimension": "minecraft:overworld",
+        "position": {
+          "x": 10003.5,
+          "y": 99,
+          "z": 10153.5
+        }
+      },
+      "reservation": {
+        "payload": {
+          "session_ref": "df814296-1440-4c14-b270-e657ecf0bbc5",
+          "action_id": "task29_eb5b64a5-aecc-4046-9a10-f6b34ce0742a_normal_15",
+          "nonce_sha256": "dcfc78deb8534587d2b108307aefac8178db4d789e0c3e7678cefa2ccd32ae32",
+          "dimension": "minecraft:overworld",
+          "pos": "10005,100,10153",
+          "x": 10005,
+          "y": 100,
+          "z": 10153,
+          "expected_block": "minecraft:oak_log",
+          "ttl_ms": 120000
+        },
+        "result": {
+          "code": 200,
+          "ok": true,
+          "reason": "ok",
+          "reservation_id": "e6b91f6e-ff6a-424c-b97d-ec8aa2148e7e"
+        },
+        "session": {
+          "code": 200,
+          "ok": true,
+          "session_ref": "df814296-1440-4c14-b270-e657ecf0bbc5",
+          "session_seq": 1,
+          "player_uuid": "655516bd-bba2-3474-a585-bb321a872a9c"
+        },
+        "reserved_at": 1792328273267
+      },
+      "actual": {
+        "source": "server_execute_if_block",
+        "dimension": "minecraft:overworld",
+        "pos": "10005,100,10153",
+        "block": "minecraft:air"
+      },
+      "event": {
+        "event": {
+          "event_id": "14baaf77-226e-4a3d-984b-67e68128882d",
+          "reservation_id": "e6b91f6e-ff6a-424c-b97d-ec8aa2148e7e",
+          "action_id": "task29_eb5b64a5-aecc-4046-9a10-f6b34ce0742a_normal_15",
+          "session_ref": "df814296-1440-4c14-b270-e657ecf0bbc5",
+          "session_seq": 1,
+          "player_uuid": "655516bd-bba2-3474-a585-bb321a872a9c",
+          "dimension": "minecraft:overworld",
+          "pos": "10005,100,10153",
+          "block_before": "minecraft:oak_log",
+          "block_after": "minecraft:air",
+          "shadow": "SELF_CONFIRMED",
+          "reason": "unique_match"
+        },
+        "receiver": {
+          "ok": true,
+          "consumed": true,
+          "state": "SELF_CONFIRMED",
+          "reason": "verified_correlation"
+        }
+      },
+      "status": "PASS"
+    },
+    {
+      "id": "task29_eb5b64a5-aecc-4046-9a10-f6b34ce0742a_normal_16",
+      "kind": "normal",
+      "pos": {
+        "x": 10005,
+        "y": 100,
+        "z": 10163
+      },
+      "before": {
+        "source": "server_execute_if_block",
+        "dimension": "minecraft:overworld",
+        "pos": "10005,100,10163",
+        "block": "minecraft:oak_log"
+      },
+      "bot_observation": {
+        "client": "Task29Bot",
+        "dimension": "minecraft:overworld",
+        "position": {
+          "x": 10003.5,
+          "y": 99,
+          "z": 10163.5
+        }
+      },
+      "reservation": {
+        "payload": {
+          "session_ref": "df814296-1440-4c14-b270-e657ecf0bbc5",
+          "action_id": "task29_eb5b64a5-aecc-4046-9a10-f6b34ce0742a_normal_16",
+          "nonce_sha256": "b58be30a9beb5069823fc90f9387f7bf3a0361e5878cef04b54a8665d2da89be",
+          "dimension": "minecraft:overworld",
+          "pos": "10005,100,10163",
+          "x": 10005,
+          "y": 100,
+          "z": 10163,
+          "expected_block": "minecraft:oak_log",
+          "ttl_ms": 120000
+        },
+        "result": {
+          "code": 200,
+          "ok": true,
+          "reason": "ok",
+          "reservation_id": "30496967-321d-4087-bc52-3a728942e45f"
+        },
+        "session": {
+          "code": 200,
+          "ok": true,
+          "session_ref": "df814296-1440-4c14-b270-e657ecf0bbc5",
+          "session_seq": 1,
+          "player_uuid": "655516bd-bba2-3474-a585-bb321a872a9c"
+        },
+        "reserved_at": 1792328274793
+      },
+      "actual": {
+        "source": "server_execute_if_block",
+        "dimension": "minecraft:overworld",
+        "pos": "10005,100,10163",
+        "block": "minecraft:air"
+      },
+      "event": {
+        "event": {
+          "event_id": "d61ae954-775a-474e-bf12-a4c12073a14d",
+          "reservation_id": "30496967-321d-4087-bc52-3a728942e45f",
+          "action_id": "task29_eb5b64a5-aecc-4046-9a10-f6b34ce0742a_normal_16",
+          "session_ref": "df814296-1440-4c14-b270-e657ecf0bbc5",
+          "session_seq": 1,
+          "player_uuid": "655516bd-bba2-3474-a585-bb321a872a9c",
+          "dimension": "minecraft:overworld",
+          "pos": "10005,100,10163",
+          "block_before": "minecraft:oak_log",
+          "block_after": "minecraft:air",
+          "shadow": "SELF_CONFIRMED",
+          "reason": "unique_match"
+        },
+        "receiver": {
+          "ok": true,
+          "consumed": true,
+          "state": "SELF_CONFIRMED",
+          "reason": "verified_correlation"
+        }
+      },
+      "status": "PASS"
+    },
+    {
+      "id": "task29_eb5b64a5-aecc-4046-9a10-f6b34ce0742a_normal_17",
+      "kind": "normal",
+      "pos": {
+        "x": 10005,
+        "y": 100,
+        "z": 10173
+      },
+      "before": {
+        "source": "server_execute_if_block",
+        "dimension": "minecraft:overworld",
+        "pos": "10005,100,10173",
+        "block": "minecraft:oak_log"
+      },
+      "bot_observation": {
+        "client": "Task29Bot",
+        "dimension": "minecraft:overworld",
+        "position": {
+          "x": 10003.5,
+          "y": 99,
+          "z": 10173.5
+        }
+      },
+      "reservation": {
+        "payload": {
+          "session_ref": "df814296-1440-4c14-b270-e657ecf0bbc5",
+          "action_id": "task29_eb5b64a5-aecc-4046-9a10-f6b34ce0742a_normal_17",
+          "nonce_sha256": "0c7d7b8f6cb5289d81a435bdb0bd1956e2f6f20f5fdf6a30cee1d42ec3af0660",
+          "dimension": "minecraft:overworld",
+          "pos": "10005,100,10173",
+          "x": 10005,
+          "y": 100,
+          "z": 10173,
+          "expected_block": "minecraft:oak_log",
+          "ttl_ms": 120000
+        },
+        "result": {
+          "code": 200,
+          "ok": true,
+          "reason": "ok",
+          "reservation_id": "e705f6f6-019c-48a6-b979-726df71c0502"
+        },
+        "session": {
+          "code": 200,
+          "ok": true,
+          "session_ref": "df814296-1440-4c14-b270-e657ecf0bbc5",
+          "session_seq": 1,
+          "player_uuid": "655516bd-bba2-3474-a585-bb321a872a9c"
+        },
+        "reserved_at": 1792328276313
+      },
+      "actual": {
+        "source": "server_execute_if_block",
+        "dimension": "minecraft:overworld",
+        "pos": "10005,100,10173",
+        "block": "minecraft:air"
+      },
+      "event": {
+        "event": {
+          "event_id": "0ad01597-7761-4d11-9dd4-1cf972cee559",
+          "reservation_id": "e705f6f6-019c-48a6-b979-726df71c0502",
+          "action_id": "task29_eb5b64a5-aecc-4046-9a10-f6b34ce0742a_normal_17",
+          "session_ref": "df814296-1440-4c14-b270-e657ecf0bbc5",
+          "session_seq": 1,
+          "player_uuid": "655516bd-bba2-3474-a585-bb321a872a9c",
+          "dimension": "minecraft:overworld",
+          "pos": "10005,100,10173",
+          "block_before": "minecraft:oak_log",
+          "block_after": "minecraft:air",
+          "shadow": "SELF_CONFIRMED",
+          "reason": "unique_match"
+        },
+        "receiver": {
+          "ok": true,
+          "consumed": true,
+          "state": "SELF_CONFIRMED",
+          "reason": "verified_correlation"
+        }
+      },
+      "status": "PASS"
+    },
+    {
+      "id": "task29_eb5b64a5-aecc-4046-9a10-f6b34ce0742a_normal_18",
+      "kind": "normal",
+      "pos": {
+        "x": 10005,
+        "y": 100,
+        "z": 10183
+      },
+      "before": {
+        "source": "server_execute_if_block",
+        "dimension": "minecraft:overworld",
+        "pos": "10005,100,10183",
+        "block": "minecraft:oak_log"
+      },
+      "bot_observation": {
+        "client": "Task29Bot",
+        "dimension": "minecraft:overworld",
+        "position": {
+          "x": 10003.5,
+          "y": 99,
+          "z": 10183.5
+        }
+      },
+      "reservation": {
+        "payload": {
+          "session_ref": "df814296-1440-4c14-b270-e657ecf0bbc5",
+          "action_id": "task29_eb5b64a5-aecc-4046-9a10-f6b34ce0742a_normal_18",
+          "nonce_sha256": "3a3d00c713b474b676b0da2b0eb347c1fa836fe92f8d6b127308216c46a82333",
+          "dimension": "minecraft:overworld",
+          "pos": "10005,100,10183",
+          "x": 10005,
+          "y": 100,
+          "z": 10183,
+          "expected_block": "minecraft:oak_log",
+          "ttl_ms": 120000
+        },
+        "result": {
+          "code": 200,
+          "ok": true,
+          "reason": "ok",
+          "reservation_id": "2364a458-f1bd-48d7-adc9-4b72dddcee88"
+        },
+        "session": {
+          "code": 200,
+          "ok": true,
+          "session_ref": "df814296-1440-4c14-b270-e657ecf0bbc5",
+          "session_seq": 1,
+          "player_uuid": "655516bd-bba2-3474-a585-bb321a872a9c"
+        },
+        "reserved_at": 1792328277839
+      },
+      "actual": {
+        "source": "server_execute_if_block",
+        "dimension": "minecraft:overworld",
+        "pos": "10005,100,10183",
+        "block": "minecraft:air"
+      },
+      "event": {
+        "event": {
+          "event_id": "a5ffc675-fc55-4f02-bd31-6775cff4aee3",
+          "reservation_id": "2364a458-f1bd-48d7-adc9-4b72dddcee88",
+          "action_id": "task29_eb5b64a5-aecc-4046-9a10-f6b34ce0742a_normal_18",
+          "session_ref": "df814296-1440-4c14-b270-e657ecf0bbc5",
+          "session_seq": 1,
+          "player_uuid": "655516bd-bba2-3474-a585-bb321a872a9c",
+          "dimension": "minecraft:overworld",
+          "pos": "10005,100,10183",
+          "block_before": "minecraft:oak_log",
+          "block_after": "minecraft:air",
+          "shadow": "SELF_CONFIRMED",
+          "reason": "unique_match"
+        },
+        "receiver": {
+          "ok": true,
+          "consumed": true,
+          "state": "SELF_CONFIRMED",
+          "reason": "verified_correlation"
+        }
+      },
+      "status": "PASS"
+    },
+    {
+      "id": "task29_eb5b64a5-aecc-4046-9a10-f6b34ce0742a_normal_19",
+      "kind": "normal",
+      "pos": {
+        "x": 10005,
+        "y": 100,
+        "z": 10193
+      },
+      "before": {
+        "source": "server_execute_if_block",
+        "dimension": "minecraft:overworld",
+        "pos": "10005,100,10193",
+        "block": "minecraft:oak_log"
+      },
+      "bot_observation": {
+        "client": "Task29Bot",
+        "dimension": "minecraft:overworld",
+        "position": {
+          "x": 10003.5,
+          "y": 99,
+          "z": 10193.5
+        }
+      },
+      "reservation": {
+        "payload": {
+          "session_ref": "df814296-1440-4c14-b270-e657ecf0bbc5",
+          "action_id": "task29_eb5b64a5-aecc-4046-9a10-f6b34ce0742a_normal_19",
+          "nonce_sha256": "f9db603b2e22c6846d050be3bd67bec83321fa9a4545b562dece506ca54f2e8b",
+          "dimension": "minecraft:overworld",
+          "pos": "10005,100,10193",
+          "x": 10005,
+          "y": 100,
+          "z": 10193,
+          "expected_block": "minecraft:oak_log",
+          "ttl_ms": 120000
+        },
+        "result": {
+          "code": 200,
+          "ok": true,
+          "reason": "ok",
+          "reservation_id": "ed7384f2-abf0-4f27-af47-90dbb4a715bd"
+        },
+        "session": {
+          "code": 200,
+          "ok": true,
+          "session_ref": "df814296-1440-4c14-b270-e657ecf0bbc5",
+          "session_seq": 1,
+          "player_uuid": "655516bd-bba2-3474-a585-bb321a872a9c"
+        },
+        "reserved_at": 1792328279361
+      },
+      "actual": {
+        "source": "server_execute_if_block",
+        "dimension": "minecraft:overworld",
+        "pos": "10005,100,10193",
+        "block": "minecraft:air"
+      },
+      "event": {
+        "event": {
+          "event_id": "2135f0b9-8f0d-4118-98c5-3ec61c6216d4",
+          "reservation_id": "ed7384f2-abf0-4f27-af47-90dbb4a715bd",
+          "action_id": "task29_eb5b64a5-aecc-4046-9a10-f6b34ce0742a_normal_19",
+          "session_ref": "df814296-1440-4c14-b270-e657ecf0bbc5",
+          "session_seq": 1,
+          "player_uuid": "655516bd-bba2-3474-a585-bb321a872a9c",
+          "dimension": "minecraft:overworld",
+          "pos": "10005,100,10193",
+          "block_before": "minecraft:oak_log",
+          "block_after": "minecraft:air",
+          "shadow": "SELF_CONFIRMED",
+          "reason": "unique_match"
+        },
+        "receiver": {
+          "ok": true,
+          "consumed": true,
+          "state": "SELF_CONFIRMED",
+          "reason": "verified_correlation"
+        }
+      },
+      "status": "PASS"
+    },
+    {
+      "id": "task29_eb5b64a5-aecc-4046-9a10-f6b34ce0742a_external_25",
+      "kind": "external",
+      "pos": {
+        "x": 10005,
+        "y": 100,
+        "z": 10253
+      },
+      "before": {
+        "source": "server_execute_if_block",
+        "dimension": "minecraft:overworld",
+        "pos": "10005,100,10253",
+        "block": "minecraft:oak_log"
+      },
+      "bot_observation": {
+        "client": "Task29Bot",
+        "dimension": "minecraft:overworld",
+        "position": {
+          "x": 10003.5,
+          "y": 99,
+          "z": 10253.5
+        }
+      },
+      "reservation": {
+        "payload": {
+          "session_ref": "df814296-1440-4c14-b270-e657ecf0bbc5",
+          "action_id": "task29_eb5b64a5-aecc-4046-9a10-f6b34ce0742a_external_25",
+          "nonce_sha256": "f47498a1c3030862e2d0cc65a382ea3371a661a57274788112639746888f5aff",
+          "dimension": "minecraft:overworld",
+          "pos": "10005,100,10253",
+          "x": 10005,
+          "y": 100,
+          "z": 10253,
+          "expected_block": "minecraft:oak_log",
+          "ttl_ms": 120000
+        },
+        "result": {
+          "code": 200,
+          "ok": true,
+          "reason": "ok",
+          "reservation_id": "de715928-e605-479a-92a0-317748f3c2c5"
+        },
+        "session": {
+          "code": 200,
+          "ok": true,
+          "session_ref": "df814296-1440-4c14-b270-e657ecf0bbc5",
+          "session_seq": 1,
+          "player_uuid": "655516bd-bba2-3474-a585-bb321a872a9c"
+        },
+        "reserved_at": 1792328280888
+      },
+      "after": {
+        "source": "server_execute_if_block",
+        "dimension": "minecraft:overworld",
+        "pos": "10005,100,10253",
+        "block": "minecraft:air"
+      },
+      "classification": "UNKNOWN_NO_PLAYER_EVENT",
+      "status": "PASS"
+    },
+    {
+      "id": "task29_eb5b64a5-aecc-4046-9a10-f6b34ce0742a_external_26",
+      "kind": "external",
+      "pos": {
+        "x": 10005,
+        "y": 100,
+        "z": 10263
+      },
+      "before": {
+        "source": "server_execute_if_block",
+        "dimension": "minecraft:overworld",
+        "pos": "10005,100,10263",
+        "block": "minecraft:oak_log"
+      },
+      "bot_observation": {
+        "client": "Task29Bot",
+        "dimension": "minecraft:overworld",
+        "position": {
+          "x": 10003.5,
+          "y": 99,
+          "z": 10263.5
+        }
+      },
+      "reservation": {
+        "payload": {
+          "session_ref": "df814296-1440-4c14-b270-e657ecf0bbc5",
+          "action_id": "task29_eb5b64a5-aecc-4046-9a10-f6b34ce0742a_external_26",
+          "nonce_sha256": "da9799a574de107ee67dac7b64790ced3bcadf4147b31780e2f8cb43e31957c6",
+          "dimension": "minecraft:overworld",
+          "pos": "10005,100,10263",
+          "x": 10005,
+          "y": 100,
+          "z": 10263,
+          "expected_block": "minecraft:oak_log",
+          "ttl_ms": 120000
+        },
+        "result": {
+          "code": 200,
+          "ok": true,
+          "reason": "ok",
+          "reservation_id": "b36403a6-5b06-465b-836a-cf221d3dcee9"
+        },
+        "session": {
+          "code": 200,
+          "ok": true,
+          "session_ref": "df814296-1440-4c14-b270-e657ecf0bbc5",
+          "session_seq": 1,
+          "player_uuid": "655516bd-bba2-3474-a585-bb321a872a9c"
+        },
+        "reserved_at": 1792328283014
+      },
+      "after": {
+        "source": "server_execute_if_block",
+        "dimension": "minecraft:overworld",
+        "pos": "10005,100,10263",
+        "block": "minecraft:air"
+      },
+      "classification": "UNKNOWN_NO_PLAYER_EVENT",
+      "status": "PASS"
+    },
+    {
+      "id": "task29_eb5b64a5-aecc-4046-9a10-f6b34ce0742a_external_27",
+      "kind": "external",
+      "pos": {
+        "x": 10005,
+        "y": 100,
+        "z": 10273
+      },
+      "before": {
+        "source": "server_execute_if_block",
+        "dimension": "minecraft:overworld",
+        "pos": "10005,100,10273",
+        "block": "minecraft:oak_log"
+      },
+      "bot_observation": {
+        "client": "Task29Bot",
+        "dimension": "minecraft:overworld",
+        "position": {
+          "x": 10003.5,
+          "y": 99,
+          "z": 10273.5
+        }
+      },
+      "reservation": {
+        "payload": {
+          "session_ref": "df814296-1440-4c14-b270-e657ecf0bbc5",
+          "action_id": "task29_eb5b64a5-aecc-4046-9a10-f6b34ce0742a_external_27",
+          "nonce_sha256": "6b4ba12ad8100b57bf1475fb255a7147ebd5512d80e05a8aa59a9b8672cf842a",
+          "dimension": "minecraft:overworld",
+          "pos": "10005,100,10273",
+          "x": 10005,
+          "y": 100,
+          "z": 10273,
+          "expected_block": "minecraft:oak_log",
+          "ttl_ms": 120000
+        },
+        "result": {
+          "code": 200,
+          "ok": true,
+          "reason": "ok",
+          "reservation_id": "3d9a9a11-8057-42dd-93ab-cf2ddcfff553"
+        },
+        "session": {
+          "code": 200,
+          "ok": true,
+          "session_ref": "df814296-1440-4c14-b270-e657ecf0bbc5",
+          "session_seq": 1,
+          "player_uuid": "655516bd-bba2-3474-a585-bb321a872a9c"
+        },
+        "reserved_at": 1792328285154
+      },
+      "after": {
+        "source": "server_execute_if_block",
+        "dimension": "minecraft:overworld",
+        "pos": "10005,100,10273",
+        "block": "minecraft:air"
+      },
+      "classification": "UNKNOWN_NO_PLAYER_EVENT",
+      "status": "PASS"
+    },
+    {
+      "id": "task29_eb5b64a5-aecc-4046-9a10-f6b34ce0742a_external_28",
+      "kind": "external",
+      "pos": {
+        "x": 10005,
+        "y": 100,
+        "z": 10283
+      },
+      "before": {
+        "source": "server_execute_if_block",
+        "dimension": "minecraft:overworld",
+        "pos": "10005,100,10283",
+        "block": "minecraft:oak_log"
+      },
+      "bot_observation": {
+        "client": "Task29Bot",
+        "dimension": "minecraft:overworld",
+        "position": {
+          "x": 10003.5,
+          "y": 99,
+          "z": 10283.5
+        }
+      },
+      "reservation": {
+        "payload": {
+          "session_ref": "df814296-1440-4c14-b270-e657ecf0bbc5",
+          "action_id": "task29_eb5b64a5-aecc-4046-9a10-f6b34ce0742a_external_28",
+          "nonce_sha256": "772a96db36370007bef151a72c97df11f25b489ff0f9b680de0d04f5e370e3ba",
+          "dimension": "minecraft:overworld",
+          "pos": "10005,100,10283",
+          "x": 10005,
+          "y": 100,
+          "z": 10283,
+          "expected_block": "minecraft:oak_log",
+          "ttl_ms": 120000
+        },
+        "result": {
+          "code": 200,
+          "ok": true,
+          "reason": "ok",
+          "reservation_id": "1192c4bc-b6c7-4d1c-a87f-6e029eff6842"
+        },
+        "session": {
+          "code": 200,
+          "ok": true,
+          "session_ref": "df814296-1440-4c14-b270-e657ecf0bbc5",
+          "session_seq": 1,
+          "player_uuid": "655516bd-bba2-3474-a585-bb321a872a9c"
+        },
+        "reserved_at": 1792328287287
+      },
+      "after": {
+        "source": "server_execute_if_block",
+        "dimension": "minecraft:overworld",
+        "pos": "10005,100,10283",
+        "block": "minecraft:air"
+      },
+      "classification": "UNKNOWN_NO_PLAYER_EVENT",
+      "status": "PASS"
+    },
+    {
+      "id": "task29_eb5b64a5-aecc-4046-9a10-f6b34ce0742a_external_29",
+      "kind": "external",
+      "pos": {
+        "x": 10005,
+        "y": 100,
+        "z": 10293
+      },
+      "before": {
+        "source": "server_execute_if_block",
+        "dimension": "minecraft:overworld",
+        "pos": "10005,100,10293",
+        "block": "minecraft:oak_log"
+      },
+      "bot_observation": {
+        "client": "Task29Bot",
+        "dimension": "minecraft:overworld",
+        "position": {
+          "x": 10003.5,
+          "y": 99,
+          "z": 10293.5
+        }
+      },
+      "reservation": {
+        "payload": {
+          "session_ref": "df814296-1440-4c14-b270-e657ecf0bbc5",
+          "action_id": "task29_eb5b64a5-aecc-4046-9a10-f6b34ce0742a_external_29",
+          "nonce_sha256": "fc72d33790a5bfec94e4104ae62d8df42e06b4a7aa504dbf012138ffc94d0f4b",
+          "dimension": "minecraft:overworld",
+          "pos": "10005,100,10293",
+          "x": 10005,
+          "y": 100,
+          "z": 10293,
+          "expected_block": "minecraft:oak_log",
+          "ttl_ms": 120000
+        },
+        "result": {
+          "code": 200,
+          "ok": true,
+          "reason": "ok",
+          "reservation_id": "5277f473-f085-48f6-8f36-73f975bb6528"
+        },
+        "session": {
+          "code": 200,
+          "ok": true,
+          "session_ref": "df814296-1440-4c14-b270-e657ecf0bbc5",
+          "session_seq": 1,
+          "player_uuid": "655516bd-bba2-3474-a585-bb321a872a9c"
+        },
+        "reserved_at": 1792328289420
+      },
+      "after": {
+        "source": "server_execute_if_block",
+        "dimension": "minecraft:overworld",
+        "pos": "10005,100,10293",
+        "block": "minecraft:air"
+      },
+      "classification": "UNKNOWN_NO_PLAYER_EVENT",
+      "status": "PASS"
+    },
+    {
+      "id": "task29_eb5b64a5-aecc-4046-9a10-f6b34ce0742a_other_35",
+      "kind": "other",
+      "pos": {
+        "x": 10005,
+        "y": 100,
+        "z": 10353
+      },
+      "before": {
+        "source": "server_execute_if_block",
+        "dimension": "minecraft:overworld",
+        "pos": "10005,100,10353",
+        "block": "minecraft:oak_log"
+      },
+      "bot_observation": {
+        "client": "Task29Bot",
+        "dimension": "minecraft:overworld",
+        "position": {
+          "x": 10003.5,
+          "y": 99,
+          "z": 10353.5
+        }
+      },
+      "reservation": {
+        "payload": {
+          "session_ref": "df814296-1440-4c14-b270-e657ecf0bbc5",
+          "action_id": "task29_eb5b64a5-aecc-4046-9a10-f6b34ce0742a_other_35",
+          "nonce_sha256": "c7b8f9e4701d0a576a41de7ccb86eeee5efe331bdcac53dd5f1006f35acf4887",
+          "dimension": "minecraft:overworld",
+          "pos": "10005,100,10353",
+          "x": 10005,
+          "y": 100,
+          "z": 10353,
+          "expected_block": "minecraft:oak_log",
+          "ttl_ms": 120000
+        },
+        "result": {
+          "code": 200,
+          "ok": true,
+          "reason": "ok",
+          "reservation_id": "50c7a884-1ea5-4bc0-99a4-6fb9b88242ee"
+        },
+        "session": {
+          "code": 200,
+          "ok": true,
+          "session_ref": "df814296-1440-4c14-b270-e657ecf0bbc5",
+          "session_seq": 1,
+          "player_uuid": "655516bd-bba2-3474-a585-bb321a872a9c"
+        },
+        "reserved_at": 1792328292068
+      },
+      "actual": {
+        "source": "server_execute_if_block",
+        "dimension": "minecraft:overworld",
+        "pos": "10005,100,10353",
+        "block": "minecraft:air"
+      },
+      "event": {
+        "event": {
+          "event_id": "b34be280-9c5b-46c9-a2b3-9b384e585032",
+          "reservation_id": "",
+          "action_id": "",
+          "session_ref": "93cbe27c-7dec-40a4-b9ec-cac3dd603feb",
+          "session_seq": 2,
+          "player_uuid": "a3e16d19-343a-39e8-8df7-426269882425",
+          "dimension": "minecraft:overworld",
+          "pos": "10005,100,10353",
+          "block_before": "minecraft:oak_log",
+          "block_after": "minecraft:air",
+          "shadow": "UNKNOWN",
+          "reason": "stale_session"
+        },
+        "receiver": {
+          "ok": true,
+          "consumed": true,
+          "state": "UNKNOWN",
+          "reason": "stale_session"
+        }
+      },
+      "status": "PASS"
+    },
+    {
+      "id": "task29_eb5b64a5-aecc-4046-9a10-f6b34ce0742a_other_36",
+      "kind": "other",
+      "pos": {
+        "x": 10005,
+        "y": 100,
+        "z": 10363
+      },
+      "before": {
+        "source": "server_execute_if_block",
+        "dimension": "minecraft:overworld",
+        "pos": "10005,100,10363",
+        "block": "minecraft:oak_log"
+      },
+      "bot_observation": {
+        "client": "Task29Bot",
+        "dimension": "minecraft:overworld",
+        "position": {
+          "x": 10003.5,
+          "y": 99,
+          "z": 10363.5
+        }
+      },
+      "reservation": {
+        "payload": {
+          "session_ref": "df814296-1440-4c14-b270-e657ecf0bbc5",
+          "action_id": "task29_eb5b64a5-aecc-4046-9a10-f6b34ce0742a_other_36",
+          "nonce_sha256": "50d9c1509147a413c1bd58b12a9d9f6926a703b37e067b7a251ad021b4a1b847",
+          "dimension": "minecraft:overworld",
+          "pos": "10005,100,10363",
+          "x": 10005,
+          "y": 100,
+          "z": 10363,
+          "expected_block": "minecraft:oak_log",
+          "ttl_ms": 120000
+        },
+        "result": {
+          "code": 200,
+          "ok": true,
+          "reason": "ok",
+          "reservation_id": "57f9df46-59cd-4401-a64c-a10f54fcd876"
+        },
+        "session": {
+          "code": 200,
+          "ok": true,
+          "session_ref": "df814296-1440-4c14-b270-e657ecf0bbc5",
+          "session_seq": 1,
+          "player_uuid": "655516bd-bba2-3474-a585-bb321a872a9c"
+        },
+        "reserved_at": 1792328294101
+      },
+      "actual": {
+        "source": "server_execute_if_block",
+        "dimension": "minecraft:overworld",
+        "pos": "10005,100,10363",
+        "block": "minecraft:air"
+      },
+      "event": {
+        "event": {
+          "event_id": "7c8f4593-3ff9-4592-b8ad-252a94f6b075",
+          "reservation_id": "",
+          "action_id": "",
+          "session_ref": "93cbe27c-7dec-40a4-b9ec-cac3dd603feb",
+          "session_seq": 2,
+          "player_uuid": "a3e16d19-343a-39e8-8df7-426269882425",
+          "dimension": "minecraft:overworld",
+          "pos": "10005,100,10363",
+          "block_before": "minecraft:oak_log",
+          "block_after": "minecraft:air",
+          "shadow": "UNKNOWN",
+          "reason": "stale_session"
+        },
+        "receiver": {
+          "ok": true,
+          "consumed": true,
+          "state": "UNKNOWN",
+          "reason": "stale_session"
+        }
+      },
+      "status": "PASS"
+    },
+    {
+      "id": "task29_eb5b64a5-aecc-4046-9a10-f6b34ce0742a_other_37",
+      "kind": "other",
+      "pos": {
+        "x": 10005,
+        "y": 100,
+        "z": 10373
+      },
+      "before": {
+        "source": "server_execute_if_block",
+        "dimension": "minecraft:overworld",
+        "pos": "10005,100,10373",
+        "block": "minecraft:oak_log"
+      },
+      "bot_observation": {
+        "client": "Task29Bot",
+        "dimension": "minecraft:overworld",
+        "position": {
+          "x": 10003.5,
+          "y": 99,
+          "z": 10373.5
+        }
+      },
+      "reservation": {
+        "payload": {
+          "session_ref": "df814296-1440-4c14-b270-e657ecf0bbc5",
+          "action_id": "task29_eb5b64a5-aecc-4046-9a10-f6b34ce0742a_other_37",
+          "nonce_sha256": "6e5d15fd1eb642838ff05d4bf9ca6a33d47e90ecdbb16461de881f1c3b1406db",
+          "dimension": "minecraft:overworld",
+          "pos": "10005,100,10373",
+          "x": 10005,
+          "y": 100,
+          "z": 10373,
+          "expected_block": "minecraft:oak_log",
+          "ttl_ms": 120000
+        },
+        "result": {
+          "code": 200,
+          "ok": true,
+          "reason": "ok",
+          "reservation_id": "7a606b98-26cd-4c5b-bc92-7c90486c8c60"
+        },
+        "session": {
+          "code": 200,
+          "ok": true,
+          "session_ref": "df814296-1440-4c14-b270-e657ecf0bbc5",
+          "session_seq": 1,
+          "player_uuid": "655516bd-bba2-3474-a585-bb321a872a9c"
+        },
+        "reserved_at": 1792328296135
+      },
+      "actual": {
+        "source": "server_execute_if_block",
+        "dimension": "minecraft:overworld",
+        "pos": "10005,100,10373",
+        "block": "minecraft:air"
+      },
+      "event": {
+        "event": {
+          "event_id": "31501072-b6b3-4a54-b5d0-8c242e6917f9",
+          "reservation_id": "",
+          "action_id": "",
+          "session_ref": "93cbe27c-7dec-40a4-b9ec-cac3dd603feb",
+          "session_seq": 2,
+          "player_uuid": "a3e16d19-343a-39e8-8df7-426269882425",
+          "dimension": "minecraft:overworld",
+          "pos": "10005,100,10373",
+          "block_before": "minecraft:oak_log",
+          "block_after": "minecraft:air",
+          "shadow": "UNKNOWN",
+          "reason": "stale_session"
+        },
+        "receiver": {
+          "ok": true,
+          "consumed": true,
+          "state": "UNKNOWN",
+          "reason": "stale_session"
+        }
+      },
+      "status": "PASS"
+    },
+    {
+      "id": "task29_eb5b64a5-aecc-4046-9a10-f6b34ce0742a_other_38",
+      "kind": "other",
+      "pos": {
+        "x": 10005,
+        "y": 100,
+        "z": 10383
+      },
+      "before": {
+        "source": "server_execute_if_block",
+        "dimension": "minecraft:overworld",
+        "pos": "10005,100,10383",
+        "block": "minecraft:oak_log"
+      },
+      "bot_observation": {
+        "client": "Task29Bot",
+        "dimension": "minecraft:overworld",
+        "position": {
+          "x": 10003.5,
+          "y": 99,
+          "z": 10383.5
+        }
+      },
+      "reservation": {
+        "payload": {
+          "session_ref": "df814296-1440-4c14-b270-e657ecf0bbc5",
+          "action_id": "task29_eb5b64a5-aecc-4046-9a10-f6b34ce0742a_other_38",
+          "nonce_sha256": "bf77ae57fe83fcf13e1ef4ad9f82177353c3f97aa5ae3c64569fd5daa53f8ef8",
+          "dimension": "minecraft:overworld",
+          "pos": "10005,100,10383",
+          "x": 10005,
+          "y": 100,
+          "z": 10383,
+          "expected_block": "minecraft:oak_log",
+          "ttl_ms": 120000
+        },
+        "result": {
+          "code": 200,
+          "ok": true,
+          "reason": "ok",
+          "reservation_id": "f27d6ecc-72ec-48d2-86a7-d5d06ce8ab1d"
+        },
+        "session": {
+          "code": 200,
+          "ok": true,
+          "session_ref": "df814296-1440-4c14-b270-e657ecf0bbc5",
+          "session_seq": 1,
+          "player_uuid": "655516bd-bba2-3474-a585-bb321a872a9c"
+        },
+        "reserved_at": 1792328298171
+      },
+      "actual": {
+        "source": "server_execute_if_block",
+        "dimension": "minecraft:overworld",
+        "pos": "10005,100,10383",
+        "block": "minecraft:air"
+      },
+      "event": {
+        "event": {
+          "event_id": "43bfce82-401b-45b3-99ff-089970fb0b14",
+          "reservation_id": "",
+          "action_id": "",
+          "session_ref": "93cbe27c-7dec-40a4-b9ec-cac3dd603feb",
+          "session_seq": 2,
+          "player_uuid": "a3e16d19-343a-39e8-8df7-426269882425",
+          "dimension": "minecraft:overworld",
+          "pos": "10005,100,10383",
+          "block_before": "minecraft:oak_log",
+          "block_after": "minecraft:air",
+          "shadow": "UNKNOWN",
+          "reason": "stale_session"
+        },
+        "receiver": {
+          "ok": true,
+          "consumed": true,
+          "state": "UNKNOWN",
+          "reason": "stale_session"
+        }
+      },
+      "status": "PASS"
+    },
+    {
+      "id": "task29_eb5b64a5-aecc-4046-9a10-f6b34ce0742a_other_39",
+      "kind": "other",
+      "pos": {
+        "x": 10005,
+        "y": 100,
+        "z": 10393
+      },
+      "before": {
+        "source": "server_execute_if_block",
+        "dimension": "minecraft:overworld",
+        "pos": "10005,100,10393",
+        "block": "minecraft:oak_log"
+      },
+      "bot_observation": {
+        "client": "Task29Bot",
+        "dimension": "minecraft:overworld",
+        "position": {
+          "x": 10003.5,
+          "y": 99,
+          "z": 10393.5
+        }
+      },
+      "reservation": {
+        "payload": {
+          "session_ref": "df814296-1440-4c14-b270-e657ecf0bbc5",
+          "action_id": "task29_eb5b64a5-aecc-4046-9a10-f6b34ce0742a_other_39",
+          "nonce_sha256": "2e50c2c07ad32a26d20c4fee3fdb9875c35f7a6a34b959f77f31aa345e7e25bd",
+          "dimension": "minecraft:overworld",
+          "pos": "10005,100,10393",
+          "x": 10005,
+          "y": 100,
+          "z": 10393,
+          "expected_block": "minecraft:oak_log",
+          "ttl_ms": 120000
+        },
+        "result": {
+          "code": 200,
+          "ok": true,
+          "reason": "ok",
+          "reservation_id": "957b732f-f104-4c05-82e4-5e762c273dab"
+        },
+        "session": {
+          "code": 200,
+          "ok": true,
+          "session_ref": "df814296-1440-4c14-b270-e657ecf0bbc5",
+          "session_seq": 1,
+          "player_uuid": "655516bd-bba2-3474-a585-bb321a872a9c"
+        },
+        "reserved_at": 1792328300213
+      },
+      "actual": {
+        "source": "server_execute_if_block",
+        "dimension": "minecraft:overworld",
+        "pos": "10005,100,10393",
+        "block": "minecraft:air"
+      },
+      "event": {
+        "event": {
+          "event_id": "78d013bc-6960-42d2-a657-36140349afd8",
+          "reservation_id": "",
+          "action_id": "",
+          "session_ref": "93cbe27c-7dec-40a4-b9ec-cac3dd603feb",
+          "session_seq": 2,
+          "player_uuid": "a3e16d19-343a-39e8-8df7-426269882425",
+          "dimension": "minecraft:overworld",
+          "pos": "10005,100,10393",
+          "block_before": "minecraft:oak_log",
+          "block_after": "minecraft:air",
+          "shadow": "UNKNOWN",
+          "reason": "stale_session"
+        },
+        "receiver": {
+          "ok": true,
+          "consumed": true,
+          "state": "UNKNOWN",
+          "reason": "stale_session"
+        }
+      },
+      "status": "PASS"
+    }
+  ],
+  "first_failures_preserved": [
+    "Original in-flight timeout regression: 1 valid reservation after HTTP timeout (java-first-failure.log).",
+    "v5 intermediate-build samples retained separately, not used for v6 acceptance.",
+    "v6 disabled first run stopped before process completion; final air check failed; raw failure retained, bounded retake passed."
+  ],
+  "raw_log_sha256": {
+    "java-first-failure.log": "ca0c5fbf611de85286fbdfb73d3c9b5ecc8f0a737f7e66b1a2df09171aa8d440",
+    "java-final.log": "d913fb6c5ad3a1b11ca493acc239f8be10279def95a1e9f6678842f2f5dd143b",
+    "pytest.log": "bb4cf94e8fbc5f18bf0a1237a7a8fac3a3e96d71a3f131d9908b7f876cf7697f",
+    "node.log": "5db92d51adb31ffe930d8879b0b9153ea511d3e5435f9ea4e559980f7d4b5b14",
+    "final-v6/real-driver.log": "a3b30d47ad7d61c0ac4c42fd7f9ccefd1bdc1f66365d44683eac4f67f7499767",
+    "final-v6/receiver-events.jsonl": "3e602899acf73ab7b832967e8766430f1a6d19d973f25ccc68a50d15c72143da",
+    "final-v6/disabled-first-failed.log": "ae74a2e84180db3c0f4aac4129ce6813243038a311c4d8250cbfdd91325065d8",
+    "final-v6/disabled-retake.log": "c864face808b2f35898021abe83cb3df5b7208552aabde854909cffb2e795859",
+    "final-v6/server-enabled.log": "8c2815eedad8502e5e1569a75ac3d31654840768457c787eed2e268500eece8c",
+    "final-v6/server-disabled-retake.log": "6f0a8a5a2591952019400a2102c41e5e6d10670da868ecb26b43adb9d07fe496"
+  }
+}

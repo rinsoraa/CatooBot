@@ -18,9 +18,9 @@ jobs:
         with:
           distribution: temurin
           java-version: '21'
-      # Pure Booking/Dimension contracts only. Full Fabric compilation, event JSON,
+      # Pure Booking/Dimension/request lifecycle contracts. Full Fabric compilation, event JSON,
       # thread bridge, class loading and E3 require the pinned local server dependencies.
-      - name: Booking and dimension contract tests
+      - name: Booking, dimension and request lifecycle contract tests
         shell: pwsh
         run: ./server_mod/test.ps1
 

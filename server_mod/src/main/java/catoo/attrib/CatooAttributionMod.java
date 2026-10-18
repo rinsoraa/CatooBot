@@ -5,9 +5,7 @@ import java.net.*;
 import java.nio.charset.StandardCharsets;
 import java.util.*;
 import java.util.concurrent.*;
-import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
-import java.util.concurrent.atomic.AtomicReference;
 import javax.crypto.Mac;
 import javax.crypto.spec.SecretKeySpec;
 
@@ -20,15 +18,15 @@ import net.minecraft.class_2338;
 import net.minecraft.class_3218;
 import net.minecraft.class_3222;
 
-/** P2 影子模式 v4：真实事件维度/UUID + 预约在主线程内一次性完成世界读取 + enabled=false 完全不观测。 */
+/** P2 shadow v6: atomic request cancellation/commit and current-connection sessions; default off. */
 public final class CatooAttributionMod implements ModInitializer {
-    static final String VER = "p2-shadow-4";
+    static final String VER = "p2-shadow-6";
     static final Booking BOOK = new Booking();
     static final Properties CFG = new Properties();
     static volatile boolean ENABLED = false;
 
     static volatile Executor SERVER_EXECUTOR = null;
-    static volatile String SERVER_THREAD_NAME = null;
+    static volatile Thread SERVER_THREAD = null;
     static final long RESERVE_TIMEOUT_MS = 2500L;
 
     static final int OUTBOX_CAPACITY = 1024;
@@ -49,7 +47,7 @@ public final class CatooAttributionMod implements ModInitializer {
     }
 
     interface Work {
-        Reply run(AtomicBoolean expired);
+        Reply run(RequestState<Reply> request);
     }
 
     static Reply refuse(int code, String reason) {
@@ -57,49 +55,45 @@ public final class CatooAttributionMod implements ModInitializer {
     }
 
     /**
-     * 在主线程执行世界访问；HTTP 线程有界等待。超时后置 expired=true，
-     * **迟到的排队任务会先看到 expired 并直接放弃**，绝不事后创建有效预约。
+     * World reads stay on the server thread. Timeout/interruption and reservation commit
+     * compete for ONE immutable outcome; a timeout can never overwrite a committed success.
      */
     static Reply runOnServerThread(Work work, long timeoutMs) {
         Executor executor = SERVER_EXECUTOR;
         if (executor == null) return refuse(503, "server_thread_unavailable");
-        String currentName = Thread.currentThread().getName();
-        if (SERVER_THREAD_NAME != null && SERVER_THREAD_NAME.equals(currentName)) {
+        final RequestState<Reply> request = new RequestState<>(timeoutMs, reason -> refuse(503, reason));
+        if (SERVER_THREAD == Thread.currentThread()) {
             try {
-                return work.run(new AtomicBoolean(false));
+                if (request.isOpen()) request.complete(work.run(request));
             } catch (Throwable error) {
-                return refuse(500, "work_error");
+                request.complete(refuse(500, "work_error"));
             }
+            return request.cancel("reserve_timeout");
         }
         final CountDownLatch latch = new CountDownLatch(1);
-        final AtomicBoolean expired = new AtomicBoolean(false);
-        final AtomicReference<Reply> holder = new AtomicReference<>();
         try {
             executor.execute(() -> {
                 try {
-                    if (expired.get()) return;
-                    holder.set(work.run(expired));
+                    if (!request.isOpen()) return;
+                    request.complete(work.run(request));
                 } catch (Throwable error) {
-                    holder.set(refuse(500, "work_error"));
+                    request.complete(refuse(500, "work_error"));
                 } finally {
                     latch.countDown();
                 }
             });
         } catch (Throwable error) {
-            return refuse(503, "server_thread_rejected");
+            return request.cancel("server_thread_rejected");
         }
         try {
             if (!latch.await(timeoutMs, TimeUnit.MILLISECONDS)) {
-                expired.set(true);
-                return refuse(503, "reserve_timeout");
+                return request.cancel("reserve_timeout");
             }
         } catch (InterruptedException interrupted) {
             Thread.currentThread().interrupt();
-            expired.set(true);
-            return refuse(503, "reserve_interrupted");
+            return request.cancel("reserve_interrupted");
         }
-        Reply reply = holder.get();
-        return reply != null ? reply : refuse(503, "reserve_timeout");
+        return request.cancel("reserve_timeout");
     }
 
     static void log(String line) {
@@ -136,7 +130,7 @@ public final class CatooAttributionMod implements ModInitializer {
         ServerPlayConnectionEvents.JOIN.register((handler, sender, server) -> {
             try {
                 SERVER_EXECUTOR = server;
-                SERVER_THREAD_NAME = Thread.currentThread().getName();
+                SERVER_THREAD = Thread.currentThread();
                 class_3222 player = handler.field_14140;
                 String name = player.method_5477().getString();
                 String uuid;
@@ -153,9 +147,19 @@ public final class CatooAttributionMod implements ModInitializer {
                 log("JOIN_ERROR " + error.getClass().getName() + ":" + error.getMessage());
             }
         });
+        ServerPlayConnectionEvents.DISCONNECT.register((handler, server) -> {
+            try {
+                class_3222 player = handler.field_14140;
+                boolean closed = BOOK.disconnect(player.method_5477().getString(),
+                        String.valueOf(player.method_5667()), player);
+                log("DISCONNECT session_closed=" + closed);
+            } catch (Throwable error) {
+                log("DISCONNECT_ERROR " + error.getClass().getSimpleName());
+            }
+        });
         PlayerBlockBreakEvents.AFTER.register((world, player, pos, state, blockEntity) -> {
             try {
-                SERVER_THREAD_NAME = Thread.currentThread().getName();
+                SERVER_THREAD = Thread.currentThread();
                 String name = player.method_5477().getString();
                 Booking.Session session = BOOK.currentSessionOf(name);
                 String eventUuid;
@@ -196,7 +200,7 @@ public final class CatooAttributionMod implements ModInitializer {
         });
         startHttp();
         startOutbox();
-        log("LISTENER_REGISTERED PlayerBlockBreakEvents.AFTER; ServerPlayConnectionEvents.JOIN");
+        log("LISTENER_REGISTERED PlayerBlockBreakEvents.AFTER; ServerPlayConnectionEvents.JOIN/DISCONNECT");
     }
 
     static class_3218 currentWorldOfPlayer(class_3222 player) {
@@ -344,8 +348,8 @@ public final class CatooAttributionMod implements ModInitializer {
             return;
         }
         Map<String, String> fields = Json.flat(body);
-        Reply reply = runOnServerThread(expired -> {
-            if (expired.get()) return refuse(503, "reserve_timeout");
+        Reply reply = runOnServerThread(request -> {
+            if (!request.isOpen()) return request.outcome();
             String sessionRef = fields.getOrDefault("session_ref", "").trim();
             Booking.Session sessionNow = BOOK.sessionOfRef(sessionRef);
             if (sessionNow == null || !sessionNow.valid) return refuse(409, "session_not_current");
@@ -359,21 +363,33 @@ public final class CatooAttributionMod implements ModInitializer {
             if (liveUuid.isEmpty() || "unknown".equals(liveUuid) || !liveUuid.equals(sessionNow.uuid)) {
                 return refuse(409, "identity_mismatch");
             }
-            String dimErr = Booking.checkDimension(fields.getOrDefault("dimension", ""),
-                    currentDimensionOf(sessionNow));
+            class_3218 targetWorld = currentWorldOf(sessionNow);
+            if (targetWorld == null) return refuse(503, "world_unavailable");
+            String actualDim = Booking.normalizeDimension(String.valueOf(targetWorld.method_27983().method_29177()));
+            String dimErr = Booking.checkDimension(fields.getOrDefault("dimension", ""), actualDim);
             if (!dimErr.isEmpty()) return refuse(409, dimErr);
-            if (expired.get()) return refuse(503, "reserve_timeout");
-            Booking.ReserveResult result = BOOK.reserve(fields, f -> {
-                class_3218 targetWorld = currentWorldOf(sessionNow);
-                if (targetWorld == null) return null;
+            if (!request.isOpen()) return request.outcome();
+            return reserveForRequest(fields, f -> {
                 return String.valueOf(targetWorld.method_8320(posOf(f)));
-            });
-            return new Reply(result.httpCode, "{\"ok\":" + result.ok + ",\"reason\":\"" + result.reason
-                    + "\",\"reservation_id\":\"" + result.id + "\"}", result.reason);
+            }, request);
         }, RESERVE_TIMEOUT_MS);
         respond(exchange, reply.code, reply.body);
         log("RESERVE code=" + reply.code + " reason=" + reply.reason
                 + " action=" + fields.getOrDefault("action_id", ""));
+    }
+
+    static Reply reserveForRequest(Map<String, String> fields,
+            java.util.function.Function<Map<String, String>, String> blockAt, RequestState<Reply> request) {
+        if (!request.isOpen()) return request.outcome();
+        Booking.ReserveResult result = BOOK.reserve(fields, blockAt,
+                candidate -> request.complete(reserveReply(candidate)));
+        Reply winner = request.outcome();
+        return winner != null ? winner : reserveReply(result);
+    }
+
+    static Reply reserveReply(Booking.ReserveResult result) {
+        return new Reply(result.httpCode, "{\"ok\":" + result.ok + ",\"reason\":\"" + result.reason
+                + "\",\"reservation_id\":\"" + result.id + "\"}", result.reason);
     }
 
     static class_2338 posOf(Map<String, String> fields) {

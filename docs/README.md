@@ -1,5 +1,7 @@
 # 设计文档索引
 
+最新任务：[任务书 29：预约超时原子性与 P2 跨维度补证](specs/CatooBot%20Taskbook%2029%20%E2%80%94%20Reservation%20Timeout%20Atomicity%20and%20P2%20Cross-Dimension%20Closure.md) · [实施报告与证据](TASK29_RESERVATION_AND_P2_REPORT.md)。
+
 当前交接入口：[2026-10-18 工程交接与任务书 28 报告](HANDOFF_2026-10-18.md)。
 产品目标：[产品定义 v2.0](PRODUCT_DEFINITION_v2.0.md) · [Rx v3.0 路线图](PRODUCT_ROADMAP_Rx_v3.0.md)。
 产品目标与实际验收进度分别记录；历史 Phase 编号不映射为 Rx 完成状态。

@@ -2,6 +2,7 @@ package catoo.attrib;
 
 import java.util.*;
 import java.util.function.Function;
+import java.util.function.Predicate;
 
 /** 会话 / 登记 / 唯一匹配。维度只支持原版三维度；事件身份必须来自真实事件对象。 */
 final class Booking {
@@ -85,7 +86,7 @@ final class Booking {
 
     private final Map<String, Session> byName = new LinkedHashMap<>();
     private final Map<String, Session> byRef = new LinkedHashMap<>();
-    private final List<Reservation> reservations = new ArrayList<>();
+    private final ArrayList<Reservation> reservations = new ArrayList<>(16);
     private final Set<String> seenNonces = new HashSet<>();
     private long seqCounter = 0;
 
@@ -119,6 +120,16 @@ final class Booking {
         return session != null && session.valid ? session : null;
     }
 
+    synchronized boolean disconnect(String name, String uuid, Object player) {
+        Session session = byName.get(name);
+        // A delayed disconnect from an older connection must not revoke its replacement.
+        if (session == null || !session.uuid.equals(uuid) || session.player != player) return false;
+        session.valid = false;
+        byName.remove(name);
+        byRef.remove(session.ref);
+        return true;
+    }
+
     synchronized void invalidateAll() {
         for (Session session : byName.values()) session.valid = false;
         byRef.clear();
@@ -128,59 +139,98 @@ final class Booking {
 
     synchronized int activeReservations() {
         int count = 0;
-        for (Reservation reservation : reservations) if (!reservation.consumed) count += 1;
+        for (Reservation reservation : reservations) {
+            Session session = byRef.get(reservation.sessionRef);
+            if (!reservation.consumed && System.nanoTime() <= reservation.expiresAtNanos
+                    && session != null && session.valid) count += 1;
+        }
         return count;
     }
 
-    synchronized ReserveResult reserve(Map<String, String> fields, Function<Map<String, String>, String> blockAt) {
+    ReserveResult reserve(Map<String, String> fields, Function<Map<String, String>, String> blockAt) {
+        return reserve(fields, blockAt, candidate -> true);
+    }
+
+    ReserveResult reserve(Map<String, String> fields, Function<Map<String, String>, String> blockAt,
+            Predicate<ReserveResult> commitGate) {
+        fields = Map.copyOf(fields);
         String sessionRef = fields.getOrDefault("session_ref", "").trim();
-        Session session = byRef.get(sessionRef);
-        if (session == null || !session.valid) {
-            rejected += 1;
-            return new ReserveResult(false, "session_not_current", "", 409);
-        }
+        Session session;
         String actionId = fields.getOrDefault("action_id", "").trim();
         String nonce = fields.getOrDefault("nonce", "").trim();
         String dim = normalizeDimension(fields.getOrDefault("dimension", ""));
         String pos = fields.getOrDefault("pos", "").trim();
         String expected = canonicalBlock(fields.getOrDefault("expected_block", ""));
-        if (actionId.isEmpty() || nonce.isEmpty() || pos.isEmpty() || expected.isEmpty() || dim.isEmpty()) {
-            rejected += 1;
-            return new ReserveResult(false, "missing_field", "", 400);
+        synchronized (this) {
+            session = byRef.get(sessionRef);
+            if (session == null || !session.valid) {
+                rejected += 1;
+                return new ReserveResult(false, "session_not_current", "", 409);
+            }
+            if (actionId.isEmpty() || nonce.isEmpty() || pos.isEmpty() || expected.isEmpty() || dim.isEmpty()) {
+                rejected += 1;
+                return new ReserveResult(false, "missing_field", "", 400);
+            }
+            if (nonce.length() < 16) {
+                rejected += 1;
+                return new ReserveResult(false, "nonce_too_short", "", 400);
+            }
+            // Preserve fail-closed replay semantics: even an unsuccessful attempt burns its nonce.
+            if (!seenNonces.add(nonce)) {
+                rejected += 1;
+                return new ReserveResult(false, "nonce_replay", "", 409);
+            }
+            if (hasAction(actionId)) {
+                rejected += 1;
+                return new ReserveResult(false, "duplicate_action", "", 409);
+            }
         }
-        if (nonce.length() < 16) {
-            rejected += 1;
-            return new ReserveResult(false, "nonce_too_short", "", 400);
-        }
-        if (!seenNonces.add(nonce)) {
-            rejected += 1;
-            return new ReserveResult(false, "nonce_replay", "", 409);
-        }
-        for (Reservation existing : reservations) {
-            if (existing.consumed || !existing.actionId.equals(actionId)) continue;
-            if (System.nanoTime() > existing.expiresAtNanos) continue;
-            rejected += 1;
-            return new ReserveResult(false, "duplicate_action", "", 409);
-        }
+        // Deliberately outside the book monitor: timeout/cancellation never waits for world I/O.
         String block = blockAt.apply(fields);
-        if (block == null) {
-            rejected += 1;
-            return new ReserveResult(false, "world_unavailable", "", 503);
-        }
-        if (!canonicalBlock(block).equals(expected)) {
-            rejected += 1;
-            return new ReserveResult(false, "target_mismatch", "", 409);
-        }
         long ttl = 60000L;
         try {
             ttl = Long.parseLong(fields.getOrDefault("ttl_ms", "60000"));
         } catch (NumberFormatException ignored) {
             ttl = 60000L;
         }
-        Reservation reservation = new Reservation(UUID.randomUUID().toString(), actionId, nonce, dim, pos, expected,
-                session.ref, session.seq, session.uuid, Math.max(1000L, Math.min(ttl, 600000L)));
-        reservations.add(reservation);
-        return new ReserveResult(true, "ok", reservation.id, 200);
+        synchronized (this) {
+            if (!session.valid || byRef.get(sessionRef) != session || byName.get(session.name) != session) {
+                rejected += 1;
+                return new ReserveResult(false, "session_not_current", "", 409);
+            }
+            if (block == null) {
+                rejected += 1;
+                return new ReserveResult(false, "world_unavailable", "", 503);
+            }
+            if (!canonicalBlock(block).equals(expected)) {
+                rejected += 1;
+                return new ReserveResult(false, "target_mismatch", "", 409);
+            }
+            if (hasAction(actionId)) {
+                rejected += 1;
+                return new ReserveResult(false, "duplicate_action", "", 409);
+            }
+            Reservation reservation = new Reservation(UUID.randomUUID().toString(), actionId, nonce, dim, pos, expected,
+                    session.ref, session.seq, session.uuid, Math.max(1000L, Math.min(ttl, 600000L)));
+            ReserveResult result = new ReserveResult(true, "ok", reservation.id, 200);
+            reservations.ensureCapacity(reservations.size() + 1);
+            // Linearization point: the request's success CAS must beat its cancellation CAS.
+            // No world read, wait, or allocation remains between this gate and publication.
+            if (!commitGate.test(result)) {
+                rejected += 1;
+                return new ReserveResult(false, "reserve_cancelled", "", 503);
+            }
+            reservations.add(reservation);
+            return result;
+        }
+    }
+
+    private boolean hasAction(String actionId) {
+        for (Reservation existing : reservations) {
+            if (!existing.consumed && existing.actionId.equals(actionId)
+                    && System.nanoTime() <= existing.expiresAtNanos) return true;
+        }
+        return false;
     }
 
     synchronized MatchResult match(Session session, String eventUuid, String eventDimension, String pos,

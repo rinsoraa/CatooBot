@@ -1,5 +1,7 @@
 # CatooBot Server-Side Block Attribution — P2 影子模式实施报告
 
+> **后续证据（2026-10-18，任务书 29）：** 下文保留各历史轮次原始 PASS/PARTIAL 及失败记录。最终 `p2-shadow-6` 已修复读取中超时竞态并取得严格同坐标跨维度配对、新构建 10/5/5 样本和回滚证据；受验证影子范围技术验收通过。详见 [任务书 29 实施报告](../TASK29_RESERVATION_AND_P2_REPORT.md)。N9-B 仍 BLOCKED、P3 未启用，服务器 HTTP 退出生命周期仍有已知限制。
+
 > 任务书：`docs/specs/CatooBot Server-Side Block Attribution — P2 Shadow Mode Taskbook.md`
 > （8461 bytes，SHA256 `41EE257B7E6D899B1E273FAFDE57E291B7B135FBF42AEAA94AF165B904933750`，归档 `identical=True`）。
 > 本轮**只实现影子模式**：未接入任务终态、未启用严格归因、未开始 P3、**未宣称 N9-B 关闭**。

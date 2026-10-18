@@ -3,10 +3,10 @@
 > **P2 影子模式**：只观察并记录证据，**不参与任何任务终态**。默认关闭（`enabled=false`）。
 
 ## 职责（仅此四项）
-1. 玩家 JOIN 时建立 `session_ref` / `session_seq`，记录服务端观察到的玩家名与 UUID；同名重连使旧会话与旧登记失效。
+1. 玩家 JOIN 时建立 `session_ref` / `session_seq`，记录服务端观察到的玩家名与 UUID；重连/断开使旧会话失效。
 2. `POST /reserve`（仅 127.0.0.1 + HMAC-SHA256）：校验会话、nonce 单次使用、`action_id` 唯一、目标坐标处服务端自读方块 == `expected_block`、TTL。
 3. `PlayerBlockBreakEvents.AFTER` 内做唯一匹配（消费即作废；多候选 → `AMBIGUOUS`；未登记 → `UNREGISTERED_BREAK`）。
-4. 把事件以 HMAC 签名 POST 给 CatooBot 回环地址（失败进 OUTBOX，绝不阻塞 STOP/CANCEL）。
+4. 经有界 OUTBOX 异步 HMAC 推送到回环接收端；失败计数和记录，影子结果不进入产品 STOP/CANCEL 或终态链。
 
 **禁止**：执行任何游戏动作、修改世界、判定任务成败、提供授权旁路。
 
@@ -17,9 +17,9 @@ Minecraft 1.21.1 / Fabric Loader 0.19.5 / Fabric API 0.116.17+1.21.1。
 脚本只读取测试服的 JAR，不修改、启动或部署服务器。
 
 ```powershell
-# 独立纯逻辑契约：Booking 23 + DimensionPolicy 12（CI 同一入口）
+# 独立纯逻辑契约：Booking 23 + DimensionPolicy 12 + RequestState 25（CI 同一入口）
 pwsh -NoProfile -File server_mod/test.ps1
-# 完整编译 + 上述契约 + EventJson 5 + ReserveBridge 6 + 类加载 Smoke
+# 完整编译 + 上述契约 + EventJson 5 + ReserveBridge 15 + 类加载 Smoke
 pwsh -NoProfile -File server_mod/test.ps1 -ServerDir "D:\Minecraft server\1.21.1"
 # 仅构建
 pwsh -NoProfile -File server_mod/build.ps1 -ServerDir "D:\Minecraft server\1.21.1"
@@ -29,7 +29,16 @@ Windows PowerShell 用户可将 `pwsh` 换成 `powershell.exe -ExecutionPolicy B
 产物：`server_mod/build/catoobot-attribution-2.0.0.jar`（打印 SHA256；固定归档时间戳）。
 编译/打包失败立即返回非零；旧的成功产物可保留，不代表本次构建成功，必须检查退出码。
 `server_mod/build/` 及依赖 classpath 不同步、不入库。
-CI 只运行不依赖 Minecraft 的 35 项契约；完整 Fabric 编译、类加载和真实服务端 E3 分开验证。
+CI 运行不依赖 Minecraft 的 60 项契约；完整入口共 80 项断言及类加载。真实服务端 E3 分开验证。
+
+## 预约请求的提交与取消
+
+`RequestState` 为每个请求保存唯一的终局结果。HTTP 超时/中断与预约成功提交竞争同一个 CAS；
+超时先胜出时，任何迟到的读取都不能创建有效预约；提交先胜出时，HTTP 返回同一成功结果，不能再改报超时。
+Booking 在不持有账本锁时读取世界，提交前重验会话和动作唯一性，并在账本锁内先通过请求提交门、再发布预约。
+该临界段没有世界读取或等待；nonce 在首次验证时消耗，失败请求也不能重放旧 nonce。
+服务端线程使用实际 Thread 对象识别，同名线程不能绕过调度。
+JOIN/DISCONNECT 绑定实际连接对象；旧连接的迟到退出不能撤销新会话，已退出会话不能预约。
 
 ## 部署 / 禁用 / 回滚
 1. 复制 jar 到服务器 `mods/`；
@@ -53,5 +62,6 @@ CI 只运行不依赖 Minecraft 的 35 项契约；完整 Fabric 编译、类加
 * 事件维度与 UUID 来自实际事件对象；预约验证通过有界主线程调度读取玩家当前世界；
 * `block_after` 依赖回调内 `world.getBlockState(pos)` 实读，其它模组可能抢先改动；
 * 独立接收端已实现于 `app/integrations/minecraft/attribution_shadow.py`，需显式启动，未接入产品任务终态；
-* 最新任务书 27 的 G4 严格同坐标配对证据仍缺失，P2 保持 PARTIAL。P3 未启用，N9-B 仍 BLOCKED；
-* 现有主线程桥测试覆盖排队超时；执行中读取世界后超时与提交的竞态仍需专项复核。
+* 任务书 29 已取得最终 v6 的 G4 严格同坐标配对及 10/5/5 新样本，受验证影子范围通过，详见 `docs/TASK29_RESERVATION_AND_P2_REPORT.md`；P3 未启用，N9-B 仍 BLOCKED；
+* 任务书 29 新增确定性读取中超时、提交/取消竞争、中断、会话替换及同名异线程测试；真机裁定见对应实施报告。
+* 已知退出限制：Minecraft 保存停服后，启用模式的 HTTP 线程可能保留 JVM；尚需独立生命周期修复。不得将本构建标为稳定 Release。
