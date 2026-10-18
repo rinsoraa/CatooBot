@@ -1,7 +1,7 @@
 # 任务书 29 实施报告：预约超时原子性与 P2 跨维度补证
 
 日期：2026-10-18。
-任务书：[Taskbook 29](specs/CatooBot%20Taskbook%2029%20%E2%80%94%20Reservation%20Timeout%20Atomicity%20and%20P2%20Cross-Dimension%20Closure.md)。先归档任务书，再修改实现和开展实验。
+任务书：[Taskbook 29](specs/CatooBot%20Minecraft%20P2.6%20%E2%80%94%E2%80%94%20Reservation%20Timeout%20Atomicity%20and%20Cross-Dimension%20Closure.md)。先归档任务书，再修改实现和开展实验。
 开工镜像 HEAD / origin/main：`5f5c0146a78f9a54029bff89fb7058ae2723814b`，起始镜像工作区干净；源/镜像的既有历史差异未混入本轮。
 
 ## 1. 裁定与边界

@@ -164,7 +164,7 @@ CI 首轮失败必须如实保留提交、job、失败步骤和重跑结果。�
 
 将本任务书归档至：
 
-`docs/specs/CatooBot R1 Residual Closure — N5 N6 N7 N8 N9 P1 Coverage UX.md`
+`docs/specs/CatooBot Minecraft R1.2 —— N5 N6 N7 N8 N9 P1 Coverage UX.md`
 
 更新 R1 报告时采用追加式记录，保留历史 PARTIAL、失败和 deviation。报告不应把自身提交 SHA 固化在正文；用“本文件所在提交，SHA 见 git log -1”。
 

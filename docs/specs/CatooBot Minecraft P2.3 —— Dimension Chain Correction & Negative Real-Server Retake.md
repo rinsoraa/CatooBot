@@ -16,7 +16,7 @@
 - `server_mod/src/main/java/catoo/attrib/Booking.java`
 - `server_mod/src/test/java/catoo/attrib/BookingTest.java`
 - `app/integrations/minecraft/attribution_shadow.py`
-- `docs/specs/CatooBot P2 Acceptance Fix Round — Dimension, Player Identity & Default-Off Semantics.md`
+- `docs/specs/CatooBot Minecraft P2.2 —— Dimension, Player Identity & Default-Off Semantics.md`
 
 ### 任务目标
 

@@ -397,7 +397,7 @@ R0 技术出口后才建议进入路线图 R1（导航可靠性专项）；不�
 5. **数据库演练报告**：隔离副本来源、前后 schema/version/integrity/row counts/hash 和最终状态；不得附数据库文件本身。
 6. **安全边界与仓库卫生报告**：受保护文件 diff、授权/双确认/STOP-CANCEL 审计、凭据扫描、scripts 是否保持 untracked、镜像/远端/dirty 状态。
 7. **文档与路线图状态更新**：追加 `docs/MINECRAFT_PHASE8I.md` 的 R0 总结；按实际范围更新 `docs/MINECRAFT_PHASE8D.md` / `docs/MINECRAFT_PHASE8H.md` 的当前边界（历史保留）；更新 `CHANGELOG.md`；提供可直接复制到路线图 v2.0 的状态文本。
-8. **归档**：将本任务书逐字节归档至 `docs/specs/CatooBot R0 Final Closure — Handoff Arbitration, Navigation Reliability, Evidence Reconciliation & Migration Drill.md`，报告源文件与归档文件的字节数/SHA256/`identical=True`；如仓库文件系统不允许该文件名，采用稳定 ASCII 文件名并记录映射。
+8. **归档**：将本任务书逐字节归档至 `docs/specs/CatooBot Minecraft R0 —— Handoff Arbitration, Navigation Reliability, Evidence Reconciliation & Migration Drill.md`，报告源文件与归档文件的字节数/SHA256/`identical=True`；如仓库文件系统不允许该文件名，采用稳定 ASCII 文件名并记录映射。
 
 最终报告首屏必须给出：
 

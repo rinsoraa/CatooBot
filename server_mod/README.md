@@ -17,9 +17,9 @@ Minecraft 1.21.1 / Fabric Loader 0.19.5 / Fabric API 0.116.17+1.21.1。
 脚本只读取测试服的 JAR，不修改、启动或部署服务器。
 
 ```powershell
-# 独立纯逻辑契约：Booking 23 + DimensionPolicy 12 + RequestState 25（CI 同一入口）
+# 独立纯逻辑契约：Booking 23 + DimensionPolicy 12 + RequestState 25 + Shutdown 26（CI 同一入口）
 pwsh -NoProfile -File server_mod/test.ps1
-# 完整编译 + 上述契约 + EventJson 5 + ReserveBridge 15 + 类加载 Smoke
+# 完整编译 + 上述契约 + EventJson 5 + ReserveBridge 15 + LifecycleBridge 10 + 类加载 Smoke
 pwsh -NoProfile -File server_mod/test.ps1 -ServerDir "D:\Minecraft server\1.21.1"
 # 仅构建
 pwsh -NoProfile -File server_mod/build.ps1 -ServerDir "D:\Minecraft server\1.21.1"
@@ -29,7 +29,7 @@ Windows PowerShell 用户可将 `pwsh` 换成 `powershell.exe -ExecutionPolicy B
 产物：`server_mod/build/catoobot-attribution-2.0.0.jar`（打印 SHA256；固定归档时间戳）。
 编译/打包失败立即返回非零；旧的成功产物可保留，不代表本次构建成功，必须检查退出码。
 `server_mod/build/` 及依赖 classpath 不同步、不入库。
-CI 运行不依赖 Minecraft 的 60 项契约；完整入口共 80 项断言及类加载。真实服务端 E3 分开验证。
+CI 运行不依赖 Minecraft 的 86 项契约（含真实回环 HTTP）；完整入口共 116 项断言及类加载。真实服务端 E3 分开验证。
 
 ## 预约请求的提交与取消
 
@@ -64,4 +64,12 @@ JOIN/DISCONNECT 绑定实际连接对象；旧连接的迟到退出不能撤销�
 * 独立接收端已实现于 `app/integrations/minecraft/attribution_shadow.py`，需显式启动，未接入产品任务终态；
 * 任务书 29 已取得最终 v6 的 G4 严格同坐标配对及 10/5/5 新样本，受验证影子范围通过，详见 `docs/TASK29_RESERVATION_AND_P2_REPORT.md`；P3 未启用，N9-B 仍 BLOCKED；
 * 任务书 29 新增确定性读取中超时、提交/取消竞争、中断、会话替换及同名异线程测试；真机裁定见对应实施报告。
-* 已知退出限制：Minecraft 保存停服后，启用模式的 HTTP 线程可能保留 JVM；尚需独立生命周期修复。不得将本构建标为稳定 Release。
+* P2.7 已修复所测 dedicated-server 的 HTTP/outbox 退出问题，四轮正常 stop 均自然 exit 0，详见 docs/MINECRAFT_P2_7_LIFECYCLE_REPORT.md；集成服务器与其它版本未验证，仍不标记稳定 Release。
+
+## 服务端生命周期（P2.7）
+
+启用时在 SERVER_STARTED 建立本代资源，SERVER_STOPPING 关闭接纳、取消未完成请求、失效会话、停 HTTP/执行器、释放投递连接并有界等待 worker；SERVER_STOPPED 幂等兜底。旧 handler 不能在重启后进入新代请求注册表。
+
+内存 outbox 停服取消，不保证必达或持久化。队列取消量 shutdown_dropped 与投递失败 push_fail 分别计数，日志报告实际 worker/executor 退出情况。/stats 可观察 outbox_pending 与 delivery_in_flight；它们不代表产品任务成功。
+
+可选本机真机夹具 src/test/resources/p27_lifecycle_real.js 依赖已备份的隔离离线测试服、测试 OP 身份 P27Bot/P27Mate、环境变量 CATOO_ATTRIBUTION_TOKEN/CATOOBOT_ROOT/P27_OUTPUT，以及独立 shadow 接收器；支持默认正向、--failure（接收器故意挂起）、--disabled。夹具会在固定测试区域建立房间，必须配合原世界备份和停服恢复；不会由 CI 自动部署或执行。

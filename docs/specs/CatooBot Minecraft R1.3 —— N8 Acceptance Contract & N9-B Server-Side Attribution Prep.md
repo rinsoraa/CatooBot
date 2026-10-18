@@ -18,7 +18,7 @@
 
 重点阅读：
 
-`docs/specs/CatooBot R1 Residual Gap Closure Taskbook.md` §5、§13
+`docs/specs/CatooBot Minecraft R1.1 —— Residual Gap Closure.md` §5、§13
 
 以及：
 

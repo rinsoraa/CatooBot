@@ -132,6 +132,7 @@ final class Booking {
 
     synchronized void invalidateAll() {
         for (Session session : byName.values()) session.valid = false;
+        byName.clear();
         byRef.clear();
         reservations.clear();
         seenNonces.clear();

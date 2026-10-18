@@ -79,6 +79,7 @@ public final class ReserveBridgeTest {
         ExecutorService pool = Executors.newSingleThreadExecutor();
         CatooAttributionMod.SERVER_EXECUTOR = pool;
         CatooAttributionMod.SERVER_THREAD = pool.submit(Thread::currentThread).get(2, TimeUnit.SECONDS);
+        CatooAttributionMod.REQUESTS.open(null);
 
         CatooAttributionMod.Reply fast = CatooAttributionMod.runOnServerThread(
                 expired -> CatooAttributionMod.refuse(200, "ok_fast"), 1000);

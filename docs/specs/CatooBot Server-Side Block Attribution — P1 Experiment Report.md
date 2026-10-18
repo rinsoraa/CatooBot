@@ -1,6 +1,6 @@
 # CatooBot Server-Side Block Attribution — P1 只读真实服务器实验报告
 
-> 任务书：`docs/specs/CatooBot Server-Side Block Attribution — P1 Read-Only Real-Server Experiment.md`
+> 任务书：`docs/specs/CatooBot Minecraft P1 —— Read-Only Real-Server Attribution Experiment.md`
 > （2485 bytes，SHA256 `5BC53A80786C899656A3208048055BB87B15CE4B2F3D10506D4232EC89705CD5`，归档 `identical=True`）。
 > 实验日期：2026-10-18（Asia/Shanghai）。**P1 已授权，P2/P3 未授权、未开始。**
 

@@ -859,7 +859,7 @@ FU5 的 `handoff_target_verdict()` 只比对**木材目标与数量**（`parse_w
 
 ## 16. R0 最终闭环：交接仲裁、导航可靠性、证据链与迁移演练（本轮新增）
 
-任务书：`docs/specs/CatooBot R0 Final Closure — Handoff Arbitration, Navigation Reliability, Evidence Reconciliation & Migration Drill.md`
+任务书：`docs/specs/CatooBot Minecraft R0 —— Handoff Arbitration, Navigation Reliability, Evidence Reconciliation & Migration Drill.md`
 （38919 bytes，SHA256 `9FB3E8E64CC43722B3E133E3CEE8BE254AA4D9685B20602B3E617A9496B6C4D1`，逐字节归档）。
 开工基线 `67ad74d976689a73a98f736cd2d46af9469b3950`。本节**追加**，§10–§15 的历史结论原样保留。
 

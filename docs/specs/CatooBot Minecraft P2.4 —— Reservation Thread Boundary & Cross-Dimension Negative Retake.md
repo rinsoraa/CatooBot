@@ -16,7 +16,7 @@
 - `server_mod/src/test/java/catoo/attrib/EventJsonTest.java`
 - `app/integrations/minecraft/attribution_shadow.py`
 - `docs/specs/CatooBot Server-Side Block Attribution — P2 Shadow Mode Report.md`
-- `docs/specs/CatooBot Taskbook 26 — P2 Dimension Chain Correction & Negative Real-Server Retake.md`
+- `docs/specs/CatooBot Minecraft P2.3 —— Dimension Chain Correction & Negative Real-Server Retake.md`
 
 ### 目标
 

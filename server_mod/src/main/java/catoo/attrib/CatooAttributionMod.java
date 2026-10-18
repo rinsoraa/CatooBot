@@ -5,22 +5,20 @@ import java.net.*;
 import java.nio.charset.StandardCharsets;
 import java.util.*;
 import java.util.concurrent.*;
-import java.util.concurrent.atomic.AtomicLong;
-import javax.crypto.Mac;
-import javax.crypto.spec.SecretKeySpec;
 
 import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpServer;
 import net.fabricmc.api.ModInitializer;
 import net.fabricmc.fabric.api.event.player.PlayerBlockBreakEvents;
+import net.fabricmc.fabric.api.event.lifecycle.v1.ServerLifecycleEvents;
 import net.fabricmc.fabric.api.networking.v1.ServerPlayConnectionEvents;
 import net.minecraft.class_2338;
 import net.minecraft.class_3218;
 import net.minecraft.class_3222;
 
-/** P2 shadow v6: atomic request cancellation/commit and current-connection sessions; default off. */
+/** P2 shadow v7: server-owned resources and cancellation on shutdown; default off. */
 public final class CatooAttributionMod implements ModInitializer {
-    static final String VER = "p2-shadow-6";
+    static final String VER = "p2-shadow-7";
     static final Booking BOOK = new Booking();
     static final Properties CFG = new Properties();
     static volatile boolean ENABLED = false;
@@ -30,10 +28,9 @@ public final class CatooAttributionMod implements ModInitializer {
     static final long RESERVE_TIMEOUT_MS = 2500L;
 
     static final int OUTBOX_CAPACITY = 1024;
-    static final BlockingQueue<String> OUTBOX = new ArrayBlockingQueue<>(OUTBOX_CAPACITY);
-    static final AtomicLong OUTBOX_OVERFLOW = new AtomicLong();
-    static final AtomicLong PUSH_OK = new AtomicLong();
-    static final AtomicLong PUSH_FAIL = new AtomicLong();
+    static volatile ShadowResources RESOURCES;
+    static volatile Object OWNER_SERVER;
+    static final RequestRegistry<Reply> REQUESTS = new RequestRegistry<>();
 
     static final class Reply {
         final int code;
@@ -59,41 +56,47 @@ public final class CatooAttributionMod implements ModInitializer {
      * compete for ONE immutable outcome; a timeout can never overwrite a committed success.
      */
     static Reply runOnServerThread(Work work, long timeoutMs) {
+        return runOnServerThread(work, timeoutMs, RESOURCES);
+    }
+
+    static Reply runOnServerThread(Work work, long timeoutMs, ShadowResources owner) {
         Executor executor = SERVER_EXECUTOR;
         if (executor == null) return refuse(503, "server_thread_unavailable");
-        final RequestState<Reply> request = new RequestState<>(timeoutMs, reason -> refuse(503, reason));
-        if (SERVER_THREAD == Thread.currentThread()) {
-            try {
-                if (request.isOpen()) request.complete(work.run(request));
-            } catch (Throwable error) {
-                request.complete(refuse(500, "work_error"));
-            }
-            return request.cancel("reserve_timeout");
-        }
-        final CountDownLatch latch = new CountDownLatch(1);
+        final RequestState<Reply> request = REQUESTS.begin(timeoutMs, reason -> refuse(503, reason), owner);
+        if (request == null) return refuse(503, "server_stopping");
         try {
-            executor.execute(() -> {
+            if (SERVER_THREAD == Thread.currentThread()) {
                 try {
-                    if (!request.isOpen()) return;
-                    request.complete(work.run(request));
+                    if (request.isOpen()) request.complete(work.run(request));
                 } catch (Throwable error) {
                     request.complete(refuse(500, "work_error"));
-                } finally {
-                    latch.countDown();
                 }
-            });
-        } catch (Throwable error) {
-            return request.cancel("server_thread_rejected");
-        }
-        try {
-            if (!latch.await(timeoutMs, TimeUnit.MILLISECONDS)) {
                 return request.cancel("reserve_timeout");
             }
-        } catch (InterruptedException interrupted) {
-            Thread.currentThread().interrupt();
-            return request.cancel("reserve_interrupted");
-        }
-        return request.cancel("reserve_timeout");
+            try {
+                executor.execute(() -> {
+                    try {
+                        if (!request.isOpen()) return;
+                        request.complete(work.run(request));
+                    } catch (Throwable error) {
+                        request.complete(refuse(500, "work_error"));
+                    } finally {
+                        request.finishWork();
+                    }
+                });
+            } catch (Throwable error) {
+                return request.cancel("server_thread_rejected");
+            }
+            try {
+                if (!request.await(timeoutMs)) {
+                    return request.cancel("reserve_timeout");
+                }
+            } catch (InterruptedException interrupted) {
+                Thread.currentThread().interrupt();
+                return request.cancel("reserve_interrupted");
+            }
+            return request.cancel("reserve_timeout");
+        } finally { REQUESTS.finish(request); }
     }
 
     static void log(String line) {
@@ -124,13 +127,15 @@ public final class CatooAttributionMod implements ModInitializer {
         log("INIT mod=catoobot-attribution version=" + VER + " shadow_enabled=" + ENABLED
                 + " outbox_capacity=" + OUTBOX_CAPACITY);
         if (!ENABLED) {
-            log("DISABLED listeners_not_registered (no JOIN/AFTER, no HTTP, no outbox, no match)");
+            log("DISABLED listeners_not_registered (no JOIN/DISCONNECT/AFTER, no HTTP, no outbox, no match)");
             return;
         }
+        ServerLifecycleEvents.SERVER_STARTED.register(server -> startRuntime(server, Thread.currentThread()));
+        ServerLifecycleEvents.SERVER_STOPPING.register(server -> stopRuntime(server));
+        ServerLifecycleEvents.SERVER_STOPPED.register(server -> stopRuntime(server));
         ServerPlayConnectionEvents.JOIN.register((handler, sender, server) -> {
             try {
-                SERVER_EXECUTOR = server;
-                SERVER_THREAD = Thread.currentThread();
+                if (OWNER_SERVER != server || !accepting()) return;
                 class_3222 player = handler.field_14140;
                 String name = player.method_5477().getString();
                 String uuid;
@@ -149,6 +154,7 @@ public final class CatooAttributionMod implements ModInitializer {
         });
         ServerPlayConnectionEvents.DISCONNECT.register((handler, server) -> {
             try {
+                if (OWNER_SERVER != server || !accepting()) return;
                 class_3222 player = handler.field_14140;
                 boolean closed = BOOK.disconnect(player.method_5477().getString(),
                         String.valueOf(player.method_5667()), player);
@@ -159,7 +165,8 @@ public final class CatooAttributionMod implements ModInitializer {
         });
         PlayerBlockBreakEvents.AFTER.register((world, player, pos, state, blockEntity) -> {
             try {
-                SERVER_THREAD = Thread.currentThread();
+                if (!accepting() || SERVER_THREAD != Thread.currentThread()) return;
+                ShadowResources resources = RESOURCES;
                 String name = player.method_5477().getString();
                 Booking.Session session = BOOK.currentSessionOf(name);
                 String eventUuid;
@@ -185,8 +192,7 @@ public final class CatooAttributionMod implements ModInitializer {
                 String eventId = UUID.randomUUID().toString();
                 String payload = eventJson(eventId, match, session, eventUuid, eventDim, posText,
                         String.valueOf(state), stateNow);
-                boolean queued = OUTBOX.offer(payload);
-                if (!queued) OUTBOX_OVERFLOW.incrementAndGet();
+                boolean queued = resources != null && resources.offer(payload);
                 log("AFTER name=" + name + " uuid=" + eventUuid + " session_ref="
                         + (session == null ? "" : session.ref) + " session_seq=" + (session == null ? -1 : session.seq)
                         + " dim=" + eventDim + " pos=" + posText + " state_before="
@@ -198,8 +204,6 @@ public final class CatooAttributionMod implements ModInitializer {
                 log("AFTER_ERROR " + error.getClass().getName() + ":" + error.getMessage());
             }
         });
-        startHttp();
-        startOutbox();
         log("LISTENER_REGISTERED PlayerBlockBreakEvents.AFTER; ServerPlayConnectionEvents.JOIN/DISCONNECT");
     }
 
@@ -245,97 +249,100 @@ public final class CatooAttributionMod implements ModInitializer {
                 + "\",\"shadow\":\"" + match.state + "\",\"reason\":\"" + match.reason + "\"}";
     }
 
-    static void startOutbox() {
-        Thread worker = new Thread(() -> {
-            while (true) {
-                try {
-                    String payload = OUTBOX.poll(1, TimeUnit.SECONDS);
-                    if (payload == null) continue;
-                    deliver(payload);
-                } catch (InterruptedException interrupted) {
-                    Thread.currentThread().interrupt();
-                    return;
-                } catch (Throwable error) {
-                    log("OUTBOX_ERROR " + error.getClass().getSimpleName());
-                }
-            }
-        }, "catoo-attrib-outbox");
-        worker.setDaemon(true);
-        worker.start();
-        log("OUTBOX_WORKER_STARTED");
+    static boolean accepting() {
+        ShadowResources resources = RESOURCES;
+        return resources != null && resources.isRunning();
     }
 
-    static void deliver(String payload) {
-        String url = CFG.getProperty("bot_url", "");
-        if (url.isEmpty()) return;
+    static void startRuntime(Executor server, Thread serverThread) {
+        if (OWNER_SERVER != null) throw new IllegalStateException("previous server still owns resources");
+        OWNER_SERVER = server;
+        BOOK.invalidateAll();
+        ShadowResources resources = null;
         try {
-            HttpURLConnection connection = (HttpURLConnection) new URL(url).openConnection();
-            connection.setRequestMethod("POST");
-            connection.setRequestProperty("Content-Type", "application/json");
-            connection.setRequestProperty("X-Signature", Hmac.sign(payload, CFG.getProperty("token", "")));
-            connection.setConnectTimeout(1500);
-            connection.setReadTimeout(1500);
-            connection.setDoOutput(true);
-            try (OutputStream out = connection.getOutputStream()) {
-                out.write(payload.getBytes(StandardCharsets.UTF_8));
-            }
-            int code = connection.getResponseCode();
-            if (code >= 300) {
-                PUSH_FAIL.incrementAndGet();
-                log("EVENT_DELIVERY_REJECTED code=" + code);
-            } else {
-                PUSH_OK.incrementAndGet();
-            }
-            connection.disconnect();
-        } catch (Throwable error) {
-            PUSH_FAIL.incrementAndGet();
-            log("EVENT_DELIVERY_FAILED " + error.getClass().getSimpleName());
+            resources = new ShadowResources(Integer.parseInt(CFG.getProperty("port", "19132")),
+                    CFG.getProperty("bot_url", ""), CFG.getProperty("token", ""),
+                    OUTBOX_CAPACITY, CatooAttributionMod::log);
+            RESOURCES = resources;
+            resources.start(CatooAttributionMod::configureHttp);
+            SERVER_EXECUTOR = server;
+            SERVER_THREAD = serverThread;
+            REQUESTS.open(resources);
+            log("RUNTIME_STARTED version=" + VER);
+        } catch (Exception | Error error) {
+            if (resources != null) resources.close();
+            REQUESTS.close();
+            SERVER_EXECUTOR = null;
+            SERVER_THREAD = null;
+            log("RUNTIME_START_FAILED " + error.getClass().getSimpleName());
         }
     }
 
-    static void startHttp() {
-        try {
-            int port = Integer.parseInt(CFG.getProperty("port", "19132"));
-            HttpServer server = HttpServer.create(new InetSocketAddress(InetAddress.getByName("127.0.0.1"), port), 8);
-            server.createContext("/reserve", CatooAttributionMod::handleReserve);
-            server.createContext("/health", exchange -> respond(exchange, 200, "{\"ok\":true}"));
-            server.createContext("/stats", exchange -> respond(exchange, 200, statsJson()));
-            server.createContext("/session", exchange -> {
-                String query = exchange.getRequestURI().getQuery();
-                String rawName = query != null && query.startsWith("name=") ? query.substring(5) : "";
-                String name = java.net.URLDecoder.decode(rawName, StandardCharsets.UTF_8);
-                String expected = Hmac.sign(name, CFG.getProperty("token", ""));
-                String given = exchange.getRequestHeaders().getFirst("X-Signature");
-                if (expected.isEmpty() || given == null || !expected.equalsIgnoreCase(given)) {
-                    respond(exchange, 401, "{\"ok\":false,\"reason\":\"hmac\"}");
-                    return;
-                }
-                Booking.Session session = BOOK.currentSessionOf(name);
-                if (session == null) {
-                    respond(exchange, 404, "{\"ok\":false,\"reason\":\"no_session\"}");
-                    return;
-                }
-                respond(exchange, 200, "{\"ok\":true,\"session_ref\":\"" + session.ref + "\",\"session_seq\":"
-                        + session.seq + ",\"player_uuid\":\"" + session.uuid + "\"}");
-            });
-            server.start();
-            log("HTTP_LISTEN 127.0.0.1:" + port);
-        } catch (Throwable error) {
-            log("HTTP_START_FAILED " + error.getClass().getSimpleName());
-        }
+    static void stopRuntime(Object server) {
+        if (OWNER_SERVER != server) return;
+        // Cancel before stopping HTTP: no handler may wait for this server thread.
+        REQUESTS.close();
+        SERVER_EXECUTOR = null;
+        SERVER_THREAD = null;
+        BOOK.invalidateAll();
+        ShadowResources resources = RESOURCES;
+        if (resources != null) resources.close();
+        OWNER_SERVER = null;
+        log("RUNTIME_STOPPED version=" + VER + " reservations_active=" + BOOK.activeReservations());
+    }
+
+    static void context(HttpServer server, ShadowResources owner, String path,
+            com.sun.net.httpserver.HttpHandler handler) {
+        server.createContext(path, exchange -> {
+            try {
+                if (RESOURCES != owner || !owner.isRunning()) {
+                    respond(exchange, 503, "{\"ok\":false,\"reason\":\"server_stopping\"}");
+                } else { handler.handle(exchange); }
+            } finally { exchange.close(); }
+        });
+    }
+
+    static void configureHttp(HttpServer server) {
+        // This filter captures a generation, so old HTTP callbacks cannot enter a new server.
+        ShadowResources owner = RESOURCES;
+        context(server, owner, "/reserve", exchange -> handleReserve(exchange, owner));
+        context(server, owner, "/health", exchange -> respond(exchange, 200, "{\"ok\":true}"));
+        context(server, owner, "/stats", exchange -> respond(exchange, 200, statsJson()));
+        context(server, owner, "/session", exchange -> {
+            String query = exchange.getRequestURI().getQuery();
+            String rawName = query != null && query.startsWith("name=") ? query.substring(5) : "";
+            String name = java.net.URLDecoder.decode(rawName, StandardCharsets.UTF_8);
+            String expected = Hmac.sign(name, CFG.getProperty("token", ""));
+            String given = exchange.getRequestHeaders().getFirst("X-Signature");
+            if (expected.isEmpty() || given == null || !expected.equalsIgnoreCase(given)) {
+                respond(exchange, 401, "{\"ok\":false,\"reason\":\"hmac\"}");
+                return;
+            }
+            Booking.Session session = BOOK.currentSessionOf(name);
+            if (session == null) {
+                respond(exchange, 404, "{\"ok\":false,\"reason\":\"no_session\"}");
+                return;
+            }
+            respond(exchange, 200, "{\"ok\":true,\"session_ref\":\"" + session.ref + "\",\"session_seq\":"
+                    + session.seq + ",\"player_uuid\":\"" + session.uuid + "\"}");
+        });
     }
 
     static String statsJson() {
+        ShadowResources resources = RESOURCES;
         return "{\"reservations_active\":" + BOOK.activeReservations()
                 + ",\"rejected\":" + BOOK.rejected + ",\"expired\":" + BOOK.expired
                 + ",\"ambiguous\":" + BOOK.ambiguous + ",\"unknown\":" + BOOK.unknown
                 + ",\"consumed\":" + BOOK.consumedCount + ",\"identity_rejected\":" + BOOK.identityRejected
                 + ",\"dimension_rejected\":" + BOOK.dimensionRejected
-                + ",\"push_ok\":" + PUSH_OK.get() + ",\"push_fail\":" + PUSH_FAIL.get()
-                + ",\"outbox_overflow\":" + OUTBOX_OVERFLOW.get() + "}";
+                + ",\"push_ok\":" + (resources == null ? 0 : resources.pushOk.get()) + ",\"push_fail\":" + (resources == null ? 0 : resources.pushFail.get())
+                + ",\"outbox_overflow\":" + (resources == null ? 0 : resources.overflow.get())
+                + ",\"shutdown_dropped\":" + (resources == null ? 0 : resources.shutdownDropped.get())
+                + ",\"outbox_pending\":" + (resources == null ? 0 : resources.pendingEvents())
+                + ",\"delivery_in_flight\":" + (resources != null && resources.deliveryInFlight()) + "}";
     }
 
-    static void handleReserve(HttpExchange exchange) throws IOException {
+    static void handleReserve(HttpExchange exchange, ShadowResources owner) throws IOException {
         if (!"POST".equals(exchange.getRequestMethod())) {
             respond(exchange, 405, "{\"error\":\"method\"}");
             return;
@@ -372,7 +379,7 @@ public final class CatooAttributionMod implements ModInitializer {
             return reserveForRequest(fields, f -> {
                 return String.valueOf(targetWorld.method_8320(posOf(f)));
             }, request);
-        }, RESERVE_TIMEOUT_MS);
+        }, RESERVE_TIMEOUT_MS, owner);
         respond(exchange, reply.code, reply.body);
         log("RESERVE code=" + reply.code + " reason=" + reply.reason
                 + " action=" + fields.getOrDefault("action_id", ""));

@@ -115,7 +115,7 @@
 
 # 修订版 v2（设计安全复审后）—— 保留 v1 全文，仅追加
 
-> 任务书：docs/specs/CatooBot Server-Side Block Attribution — Design Safety Review & Protocol Revision.md
+> 任务书：docs/specs/CatooBot Minecraft P0.1 —— Attribution Design Safety Review & Protocol Revision.md
 > （8407 bytes，SHA256 4C95FF904A9B058D337D5394AA3D18F767C595952615572969D3F7D60EC5E680，归档 identical=True）。
 > 本轮只修订设计与协议：不写/不部署 Fabric 模组、不改正式服务器、不改授权策略、不宣称 N9-B 已关闭。
 

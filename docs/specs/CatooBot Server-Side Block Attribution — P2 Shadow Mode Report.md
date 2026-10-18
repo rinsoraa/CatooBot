@@ -1,8 +1,10 @@
 # CatooBot Server-Side Block Attribution — P2 影子模式实施报告
 
+> **后续 P2.7（2026-10-18）：** 所测 dedicated-server HTTP/outbox 停服资源已清理，最终同一 JAR 四轮自然退出通过；历史退出限制和原失败记录保留下文。详见 [P2.7 实施报告](../MINECRAFT_P2_7_LIFECYCLE_REPORT.md)。P3 未启用，N9-B 仍 BLOCKED。
+
 > **后续证据（2026-10-18，任务书 29）：** 下文保留各历史轮次原始 PASS/PARTIAL 及失败记录。最终 `p2-shadow-6` 已修复读取中超时竞态并取得严格同坐标跨维度配对、新构建 10/5/5 样本和回滚证据；受验证影子范围技术验收通过。详见 [任务书 29 实施报告](../TASK29_RESERVATION_AND_P2_REPORT.md)。N9-B 仍 BLOCKED、P3 未启用，服务器 HTTP 退出生命周期仍有已知限制。
 
-> 任务书：`docs/specs/CatooBot Server-Side Block Attribution — P2 Shadow Mode Taskbook.md`
+> 任务书：`docs/specs/CatooBot Minecraft P2 —— Server-Side Attribution Shadow Mode.md`
 > （8461 bytes，SHA256 `41EE257B7E6D899B1E273FAFDE57E291B7B135FBF42AEAA94AF165B904933750`，归档 `identical=True`）。
 > 本轮**只实现影子模式**：未接入任务终态、未启用严格归因、未开始 P3、**未宣称 N9-B 关闭**。
 
@@ -151,7 +153,7 @@ E2：`tests/test_attribution_shadow.py` **8/8 通过**（签名三态、幂等�
 
 ## P2 修复轮（任务书 24）：管道修复 + E2 契约 + E3 重跑（结果如实）
 
-任务书归档：`docs/specs/CatooBot P2 Shadow Mode — Attribution Pipeline Audit, Coverage Localization & E3 Retest.md`
+任务书归档：`docs/specs/CatooBot Minecraft P2.1 —— Attribution Pipeline Audit, Coverage Localization & E3 Retest.md`
 （5384 bytes，SHA256 `1BB903B7333FEA9FED9620674B9B6C5BF43349CA4EE0F70FE8922BDFA3C1D7CC`，`identical=True`）。
 
 ### 1. 第一阶段：管道缺口已修（模组版本 `p2-shadow-2`）
@@ -363,7 +365,7 @@ R1 引入的 `move_to` 可站立性预检会**正确**快速拒绝落在平台�
 
 ## P2 验收修复轮（任务书 25）：维度 / 玩家身份 / 默认关闭
 
-任务书归档：`docs/specs/CatooBot P2 Acceptance Fix Round — Dimension, Player Identity & Default-Off Semantics.md`
+任务书归档：`docs/specs/CatooBot Minecraft P2.2 —— Dimension, Player Identity & Default-Off Semantics.md`
 （18627 bytes，SHA256 `8A113BA086FD451CE3EDCD807C12F3C5B7985237948AC6AC2C3C9C7A38D06BAD`，`identical=True`）。
 
 ### A. 最终裁定
@@ -436,7 +438,7 @@ port25565=True  port19132=False
 
 ## P2 验收修复轮 2（任务书 26）：真实维度输出 + 预约使用当前世界 + 负向真机复验
 
-任务书归档：`docs/specs/CatooBot Taskbook 26 — P2 Dimension Chain Correction & Negative Real-Server Retake.md`
+任务书归档：`docs/specs/CatooBot Minecraft P2.3 —— Dimension Chain Correction & Negative Real-Server Retake.md`
 （17357 bytes，SHA256 `3D4ED8387D8BACF910B4F295E19BF78C96ED81C6EC456FF9B7611DB0E18FD752`，`identical=True`）。
 
 ### A. 最终裁定
@@ -508,7 +510,7 @@ AFTER:  eventUuid := player.method_5667(); eventDim := world.method_27983().meth
 
 ## P2 验收修复轮 3（任务书 27）：预约线程边界 + 维度范围 + G4 补证
 
-任务书归档：docs/specs/CatooBot Taskbook 27 — P2 Reservation Thread Boundary & Cross-Dimension Negative Retake.md
+任务书归档：docs/specs/CatooBot Minecraft P2.4 —— Reservation Thread Boundary & Cross-Dimension Negative Retake.md
 （15265 bytes，SHA256 590DB86D059F8B0960901B647E192B53831AF62A7C611D9696DFB78BC939A7B8，identical=True）。
 
 ### A. 最终裁定：PARTIAL

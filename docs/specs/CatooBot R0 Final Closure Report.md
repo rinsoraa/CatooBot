@@ -21,7 +21,7 @@ DIRTY: 0
 FOLLOW-UP CREATED: NO
 ```
 
-任务书逐字节归档：`docs/specs/CatooBot R0 Final Closure — Handoff Arbitration, Navigation Reliability, Evidence Reconciliation & Migration Drill.md`
+任务书逐字节归档：`docs/specs/CatooBot Minecraft R0 —— Handoff Arbitration, Navigation Reliability, Evidence Reconciliation & Migration Drill.md`
 （源文件 38919 bytes，SHA256 `9FB3E8E64CC43722B3E133E3CEE8BE254AA4D9685B20602B3E617A9496B6C4D1`，`identical=True`）。
 
 ## 1. Step A：开工基线与真实 Git 状态

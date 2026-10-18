@@ -356,7 +356,7 @@ R1 不要求建立新的目标跟踪系统；应该先验证已有冻结计划�
 
 - 追加更新 `docs/MINECRAFT_PHASE_2.md`（仅当感知行为/契约发生变化）、`docs/MINECRAFT_PHASE_4H.1.md`（仅当 move_to 行为/事件合同变化）、`docs/MINECRAFT_PHASE_8D.md`/`8I.md`（只增加面向当前状态的 R1 交叉引用，不倒改历史实验记录）、`docs/README.md`（必要时）和 `CHANGELOG.md`。
 - 新增一份单一真相源报告：`docs/specs/CatooBot R1 Real-World Perception & Navigation Reliability Report.md`。
-- 将本任务书按字节一致的方式归档到：`docs/specs/CatooBot R1 Real-World Perception & Navigation Reliability Taskbook.md`。报告需记录源文件字节数、SHA-256、仓库归档文件字节数/SHA-256 与 `identical=True`。不能将任务书自身的 commit SHA 固化到任务书内容中。
+- 将本任务书按字节一致的方式归档到：`docs/specs/CatooBot Minecraft R1 —— Real-World Perception & Navigation Reliability.md`。报告需记录源文件字节数、SHA-256、仓库归档文件字节数/SHA-256 与 `identical=True`。不能将任务书自身的 commit SHA 固化到任务书内容中。
 - 不新增重复版本的路线图；若仓库里确有正式 roadmap 文件，按实际路径更新 R1 状态。若没有，最终报告仅提供可复制的状态文本，不随意创建第二份路线图。
 
 ### Step H — Final Verdict & Repository Hygiene
@@ -408,7 +408,7 @@ R1 不要求建立新的目标跟踪系统；应该先验证已有冻结计划�
 ## 10. 最终交付物清单
 
 1. **R1 最终报告**：`docs/specs/CatooBot R1 Real-World Perception & Navigation Reliability Report.md`。
-2. **任务书逐字节归档**：`docs/specs/CatooBot R1 Real-World Perception & Navigation Reliability Taskbook.md`。
+2. **任务书逐字节归档**：`docs/specs/CatooBot Minecraft R1 —— Real-World Perception & Navigation Reliability.md`。
 3. **统一缺陷矩阵**：放在报告内或以仓库内一份明确引用的文件记录；每项含根因/证据/修复/回归/真实复验/剩余风险。
 4. **自动化测试**：感知 freshness/merge/坐标、目标 stale、真实 ActionRuntime 事件顺序、路径失败分类、Goal cleanup、TaskRuntime 后续步骤抑制和迟到事件幂等。
 5. **本地专用真机门禁与日志**：留在 `CatooBot_backups/` 或既有本地取证位置，不提交 `scripts/`，不公开凭证。

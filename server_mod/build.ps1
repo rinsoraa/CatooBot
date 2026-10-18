@@ -41,7 +41,7 @@ try {
         if ($LASTEXITCODE -ne 0) { throw 'Fabric API extraction failed.' }
     } finally { Pop-Location }
     $nested = @(Get-ChildItem -LiteralPath (Join-Path $unpack 'META-INF/jars') -Filter '*.jar')
-    $parts = foreach ($module in @('fabric-api-base', 'fabric-events-interaction-v0', 'fabric-networking-api-v1')) {
+    $parts = foreach ($module in @('fabric-api-base', 'fabric-events-interaction-v0', 'fabric-networking-api-v1', 'fabric-lifecycle-events-v1')) {
         $matches = @($nested | Where-Object { $_.Name -like ($module + '-*') })
         if ($matches.Count -ne 1) { throw "Expected exactly one Fabric module: $module" }
         $matches[0].FullName

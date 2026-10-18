@@ -21,13 +21,13 @@ New-Item -ItemType Directory -Path $output | Out-Null
 try {
     $testRoot = Join-Path $PSScriptRoot 'src/test/java/catoo/attrib'
     $mainRoot = Join-Path $PSScriptRoot 'src/main/java/catoo/attrib'
-    $tests = @('BookingTest', 'DimensionPolicyTest', 'RequestStateTest')
-    $sources = @((Join-Path $mainRoot 'Booking.java'), (Join-Path $mainRoot 'Hmac.java'), (Join-Path $mainRoot 'RequestState.java'))
+    $tests = @('BookingTest', 'DimensionPolicyTest', 'RequestStateTest', 'ShutdownTest')
+    $sources = @('Booking.java', 'Hmac.java', 'RequestState.java', 'RequestRegistry.java', 'ShadowResources.java') | ForEach-Object { Join-Path $mainRoot $_ }
     $classpath = $output
     if ($ServerDir) {
         & (Join-Path $PSScriptRoot 'build.ps1') -ServerDir $ServerDir -JavaHome $JavaHome
         $classpath = @((Join-Path $buildRoot 'catoobot-attribution-2.0.0.jar'), (Get-Content -LiteralPath (Join-Path $buildRoot 'classpath.txt') -Raw).Trim(), $output) -join [IO.Path]::PathSeparator
-        $tests += @('EventJsonTest', 'ReserveBridgeTest', 'Smoke')
+        $tests += @('EventJsonTest', 'ReserveBridgeTest', 'LifecycleBridgeTest', 'Smoke')
         $sources = @()
     }
     $sources += @($tests | ForEach-Object { Join-Path $testRoot ($_.ToString() + '.java') })

@@ -16,7 +16,7 @@
 
 现有设计：
 
-`docs/specs/CatooBot Server-Side Block Attribution Design.md`
+`docs/specs/CatooBot Minecraft P0 —— Server-Side Block Attribution Design.md`
 
 只允许修订设计和协议，不修改正式服务器、不编写或部署 Fabric 模组、不修改现有授权策略，也不声称 N9-B 已关闭。
 

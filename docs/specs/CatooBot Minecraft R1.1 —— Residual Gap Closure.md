@@ -346,7 +346,7 @@ N7 继续作为真实 Java 服务器上的不可达 fail-closed 门禁：不成�
 
 - 更新 R1 现有报告 `docs/specs/CatooBot R1 Real-World Perception & Navigation Reliability Report.md`，保留当前 RC1…RC5 和原始 PARTIAL 证据，新增本任务闭环章节，不抹除历史失败。
 - 按项目规范更新受影响的 `docs/MINECRAFT_PHASE_2.md`（perception/coverage）、`docs/MINECRAFT_PHASE_4H.1.md`（只在 move_to 合同改变时）、`docs/MINECRAFT_PHASE_8D.md`/`8I.md`（追加当前目标 freshness/导航边界交叉引用）、`docs/README.md` 和 `CHANGELOG.md`（仅当实际需要）。不新增第二份路线图。
-- 将本任务书以逐字节归档方式保存到：`docs/specs/CatooBot R1 Residual Gap Closure Taskbook.md`。报告写明源文件 bytes/SHA-256、归档 bytes/SHA-256、`identical=True`。
+- 将本任务书以逐字节归档方式保存到：`docs/specs/CatooBot Minecraft R1.1 —— Residual Gap Closure.md`。报告写明源文件 bytes/SHA-256、归档 bytes/SHA-256、`identical=True`。
 - 本地 smoke/probe/scripts 留在 `CatooBot_backups/` 或规定的本地目录，不提交、不上传秘密。归档报告可引用文件名/哈希，但不要公开聊天全文或 provider 原始响应。
 - 最终给出一个总裁定及 P/N/F 全矩阵，不再以新建 Follow-up 代替本轮最终结论。
 

@@ -132,7 +132,7 @@ FOLLOW-UP CREATED: NO
 
 ## R1 残余缺口一次性闭环（R1-G1…G7，追加，不改写上文历史）
 
-任务书：`docs/specs/CatooBot R1 Residual Gap Closure Taskbook.md`（源文件 32822 bytes，SHA256
+任务书：`docs/specs/CatooBot Minecraft R1.1 —— Residual Gap Closure.md`（源文件 32822 bytes，SHA256
 `B5254DD6D907E7CDB056DF048A916494407B8532700F4B28D42EAD85F2BA2E4E`，归档 `identical=True`）。
 
 ### 裁决口径更正（任务书 §0.3 强制）
@@ -383,7 +383,7 @@ ratio 0.857 的正常挖掘与外部移除无法区分，这条门只会**误杀
 
 ## R1 闭环验收对账（追加更正，不改写历史）
 
-任务书：`docs/specs/CatooBot R1 Closure Adjudication — N8 Acceptance Contract & N9-B Server-Side Attribution Prep.md`
+任务书：`docs/specs/CatooBot Minecraft R1.3 —— N8 Acceptance Contract & N9-B Server-Side Attribution Prep.md`
 （5543 bytes，SHA256 `66481BC4260F34B11998A08F9E92870EF70B64280FF7016CE2D819958919AFB9`，归档 `identical=True`）。
 
 ### 基线核验（本轮实测）
@@ -398,7 +398,7 @@ ratio 0.857 的正常挖掘与外部移除无法区分，这条门只会**误杀
 
 ### N8 裁定更正：**PASS（E2 强制项），自然触发 DEVIATION** —— 五次受控真机**不属于** DoD
 
-重读原始任务书 `docs/specs/CatooBot R1 Residual Gap Closure Taskbook.md` §5.1 后确认：
+重读原始任务书 `docs/specs/CatooBot Minecraft R1.1 —— Residual Gap Closure.md` §5.1 后确认：
 强制验收项是**确定性 Node/运行时契约**（5 条），§5.1.5 只要求「**尝试**用锁定版本真实 pathfinder 重放探针；
 不稳定则把 E2 PASS 与自然触发 DEVIATION **分开记录**」。原文**没有**「五次受控真实触发」这一条 ——
 那是本人在后续轮次里自行追加的口径，**不构成正式 DoD**，本轮据实更正（保留 0/5 的原始证据，但不据此判失败）。
@@ -438,7 +438,7 @@ ratio 0.857 的正常挖掘与外部移除无法区分，这条门只会**误杀
 
 ### 服务端归因设计（只设计，未实现、未部署）
 
-见 `docs/specs/CatooBot Server-Side Block Attribution Design.md`：选 **fabric-api `PlayerBlockBreakEvents.AFTER`**
+见 `docs/specs/CatooBot Minecraft P0 —— Server-Side Block Attribution Design.md`：选 **fabric-api `PlayerBlockBreakEvents.AFTER`**
 （不假设 Bukkit 能原生运行），核心区分是「`/setblock` 类命令移除**不产生**该事件」→ 服务端可判定外部移除；
 含协议草案、关联规则、重复/迟到/并发/断线/STOP 竞态、认证/HMAC/防重放、fail-closed 退化为今日行为、
 部署回滚、测试矩阵与验收成本。
@@ -457,7 +457,7 @@ ratio 0.857 的正常挖掘与外部移除无法区分，这条门只会**误杀
 
 ## 服务端归因设计**安全复审与协议修订**（追加，v1 全文保留）
 
-任务书：`docs/specs/CatooBot Server-Side Block Attribution — Design Safety Review & Protocol Revision.md`
+任务书：`docs/specs/CatooBot Minecraft P0.1 —— Attribution Design Safety Review & Protocol Revision.md`
 （8407 bytes，SHA256 `4C95FF904A9B058D337D5394AA3D18F767C595952615572969D3F7D60EC5E680`，归档 `identical=True`）。
 
 本轮**只修订设计与协议**：未编写/未部署 Fabric 模组、未修改正式服务器、未改授权策略、**未宣称 N9-B 已关闭**。
@@ -478,7 +478,7 @@ ratio 0.857 的正常挖掘与外部移除无法区分，这条门只会**误杀
 
 | 要求 | 落点 |
 | --- | --- |
-| 更新后的设计稿 | [`CatooBot Server-Side Block Attribution Design.md`](CatooBot%20Server-Side%20Block%20Attribution%20Design.md) 的「修订版 v2」（v1 全文保留） |
+| 更新后的设计稿 | [`CatooBot Minecraft P0 —— Server-Side Block Attribution Design.md`](CatooBot%20Minecraft%20P0%20%E2%80%94%E2%80%94%20Server-Side%20Block%20Attribution%20Design.md) 的「修订版 v2」（v1 全文保留） |
 | 时钟与因果关联协议修订 | v2 §R2（登记/事件/消费三段式，废止跨进程时间比较） |
 | 完整状态转换与竞态矩阵 | v2 §R1.1 四态 + §R6 十二行矩阵（含 STOP/CANCEL、迟到、重复、重启、AMBIGUOUS） |
 | 实现前风险审查结论 | v2 §R8（8 项风险 + 等级 + 缓解；结论=可进入 P1 实验阶段，但本轮不实施） |
@@ -503,7 +503,7 @@ ratio 0.857 的正常挖掘与外部移除无法区分，这条门只会**误杀
 
 ## P1 只读真实服务器实验（服务端归因，追加）
 
-任务书：`docs/specs/CatooBot Server-Side Block Attribution — P1 Read-Only Real-Server Experiment.md`
+任务书：`docs/specs/CatooBot Minecraft P1 —— Read-Only Real-Server Attribution Experiment.md`
 （2485 bytes，SHA256 `5BC53A80…705CD5`，归档 `identical=True`）。完整报告：
 [P1 Experiment Report](CatooBot%20Server-Side%20Block%20Attribution%20%E2%80%94%20P1%20Experiment%20Report.md)。
 
