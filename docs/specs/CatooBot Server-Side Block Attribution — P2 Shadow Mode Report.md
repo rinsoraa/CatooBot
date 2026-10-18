@@ -199,3 +199,50 @@ E2：`tests/test_attribution_shadow.py` **8/8 通过**（签名三态、幂等�
 
 **P2 维持 PARTIAL**。下一步的最小必要工作（已定位）：给模组加认证回环 `GET /session?name=` 让客户端取到
 `session_ref`/`session_seq`，重新跑 10/5/5 并建立每次尝试的时间顺序表（Phase 3 要求的字段已全部具备）。
+
+---
+
+## P2 修复轮（续）：`/session` 端点 + 部署前类加载冒烟 + E3 再次受阻（新证据）
+
+### 1. 已落地的两项工程改进
+
+* **部署前类加载冒烟**（`server_mod/src/test/java/catoo/attrib/Smoke.java`）：`Class.forName` + 实例化入口类，
+  通过才允许部署。本轮验证 `[smoke] class_load_ok=true` —— 上一轮「类加载崩溃」若早做这一步就不会带到服务器上。
+* **认证回环 `GET /session?name=`**：`X-Signature = HMAC-SHA256(name, token)`，返回 `session_ref` / `session_seq` / `player_uuid`，
+  仅 `127.0.0.1`。客户端据此合法取得会话标识（上一轮 15/15 登记被拒的根因）。
+
+### 2. E3 本轮再次受阻（如实记录，不采纳为证据）
+
+客户端已能取得 `session_ref`，登记全部成功：
+
+```text
+mod /stats: reservations_active=15, rejected=0, expired=0, ambiguous=0, unknown=0, consumed=0, push_ok=0, push_fail=0
+receiver  : total_events=0
+```
+
+E3 20 个动作（10 挖掘 / 5 `/setblock` / 5 他人挖掘）**一个事件都没有产生**；
+而模组初始化日志显示监听器**已注册**：
+
+```text
+06:30:23.708 INIT mod=catoobot-attribution version=p2-shadow-2 shadow_enabled=true outbox_capacity=1024
+06:30:23.803 HTTP_LISTEN 127.0.0.1:19132
+06:30:23.805 OUTBOX_WORKER_STARTED
+06:30:23.805 LISTENER_REGISTERED PlayerBlockBreakEvents.AFTER; ServerPlayConnectionEvents.JOIN
+```
+
+**新证据**：日志里 8 条 `AFTER name=...` 全部来自 **`p2-shadow-1`（05:22–05:25）**，`p2-shadow-2` **一条都没有**，
+且 `AFTER_ERROR=0`（说明回调根本没有被调用，而不是回调内抛错）。
+→ 结论：**`p2-shadow-2` 的 AFTER 回调未生效**，这是一处**回归**，尚未定位；
+`JOIN` 监听器在同一实例里正常工作（`JOIN name=CatodayoMate` 有记录），所以问题局限在 AFTER 注册/回调本身。
+
+### 3. 下一步（已缩小到可执行的二分）
+
+1. 把 `p2-shadow-1` 与 `p2-shadow-2` 的 AFTER 回调做**逐行二分**（首要嫌疑：回调体内新增的 `pos.method_10263()` 等取值、
+   `eventJson()` 调用、`OUTBOX.offer()`；其次是注册顺序与 lambda 捕获）；
+2. 扩展 `Smoke`：用**合成事件**直接调用已注册的监听器（不依赖真实破坏），把「注册成功」升级为「回调可执行」；
+3. 两项都通过后再跑 10/5/5，并输出每次尝试的时间顺序表。
+
+### 4. 环境状态（已回退干净）
+
+删除 `mods/catoobot-attribution-2.0.0.jar` 与 `config/catoo-attribution.properties` 后重启：
+服务器 `Loading 42 mods`、25565 正常；模组 HTTP 端口 19132 关闭；Bot 25580/8500/8080 在线。

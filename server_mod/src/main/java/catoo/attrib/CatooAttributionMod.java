@@ -185,6 +185,25 @@ public final class CatooAttributionMod implements ModInitializer {
             server.createContext("/reserve", CatooAttributionMod::handleReserve);
             server.createContext("/health", exchange -> respond(exchange, 200, "{\"ok\":true}"));
             server.createContext("/stats", exchange -> respond(exchange, 200, statsJson()));
+            server.createContext("/session", exchange -> {
+                String query = exchange.getRequestURI().getQuery();
+                String rawName = query != null && query.startsWith("name=") ? query.substring(5) : "";
+                String name = java.net.URLDecoder.decode(rawName, java.nio.charset.StandardCharsets.UTF_8);
+                String expected = Hmac.sign(name, CFG.getProperty("token", ""));
+                String given = exchange.getRequestHeaders().getFirst("X-Signature");
+                if (expected.isEmpty() || given == null || !expected.equalsIgnoreCase(given)) {
+                    respond(exchange, 401, "{\"ok\":false,\"reason\":\"hmac\"}");
+                    return;
+                }
+                Booking.Session session = BOOK.currentSessionOf(name);
+                if (session == null) {
+                    respond(exchange, 404, "{\"ok\":false,\"reason\":\"no_session\"}");
+                    return;
+                }
+                respond(exchange, 200, "{\"ok\":true,\"session_ref\":\"" + session.ref + "\",\"session_seq\":"
+                        + session.seq + ",\"player_uuid\":\"" + session.uuid + "\"}");
+            });
+
             server.start();
             log("HTTP_LISTEN 127.0.0.1:" + port);
         } catch (Throwable error) {
