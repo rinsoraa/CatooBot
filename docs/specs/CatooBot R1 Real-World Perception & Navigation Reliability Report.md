@@ -498,3 +498,40 @@ ratio 0.857 的正常挖掘与外部移除无法区分，这条门只会**误杀
 * 未新增第二套授权系统、未扩大工具白名单、未在服务端执行任何游戏动作。
 
 **N9-B 状态不变：BLOCKED**。关闭条件：本方案 P3 落地并取得 `strict_self_proof=true` 的真实样本。
+
+---
+
+## P1 只读真实服务器实验（服务端归因，追加）
+
+任务书：`docs/specs/CatooBot Server-Side Block Attribution — P1 Read-Only Real-Server Experiment.md`
+（2485 bytes，SHA256 `5BC53A80…705CD5`，归档 `identical=True`）。完整报告：
+[P1 Experiment Report](CatooBot%20Server-Side%20Block%20Attribution%20%E2%80%94%20P1%20Experiment%20Report.md)。
+
+### 实测结论（真机，非推断）
+
+| 组 | 操作 | 目标 | 破坏前 → 后（独立读取） | `PlayerBlockBreakEvents.AFTER` |
+| --- | --- | --- | --- | --- |
+| A | op `/setblock ... air` | (-246,69,-145) | birch_leaves → air | **未触发** |
+| B | Catodayo 正常挖掘 | (-246,68,-145) | birch_leaves → air | **触发**，`player=Catodayo` |
+| C | CatodayoMate 正常挖掘 | (-277,67,-138) | oak_leaves → air | **触发**，`player=CatodayoMate` |
+
+事件原文含 `state_before=Block{minecraft:birch_leaves}…` 与回调内实读 `state_now=air`，
+证明：**AFTER 的 BlockState 参数是破坏前状态**、回调时方块已移除、玩家身份可信。
+
+环境：MC 1.21.1、Fabric Loader 0.19.5、fabric-api 0.116.17+1.21.1、Java 21.0.8；
+Stub jar 2813 bytes / SHA256 `589C184C…02259`；`Loading 43 mods`（含 stub）→ 回滚后 `Loading 42 mods` 且无 `catoo-attrib` 行。
+
+**失败与重试全部保留**：尝试 1（目标全是 air，判无效）、尝试 2（扫描不到实心目标，中止）、尝试 3（有效）。
+
+### 边界（关键）
+
+* P1 **只证明事件的可用性**：`/setblock` 不产生事件、玩家破坏产生事件且带身份；
+* P1 **没有**实现登记/关联/HMAC —— 因此**不能**产生 `SELF_CONFIRMED`，**不能**关闭 N9-B；
+* 推断但未验证：其它模组/外部系统修改、多人同刻破坏、取消路径、监听器异常、重启瞬间的丢事件窗口。
+
+### 约束与回滚
+
+零产品代码改动、零授权/Policy/schema 改动；模组只写自己的日志文件、不执行任何游戏动作。
+回滚已验证：删 jar → 重启 → `Loading 42 mods`、无 stub 日志、端口正常。**服务器当前未装 stub（保持生产干净）**。
+
+**P1 判定：PASS（只读实验）**。**N9-B 仍 BLOCKED**，关闭条件不变（需 P2/P3 且取得 `strict_self_proof=true` 的真实样本）。
