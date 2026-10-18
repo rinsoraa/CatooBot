@@ -429,3 +429,75 @@ port25565=True  port19132=False
 * 负向真机证据（维度不一致/身份不一致）未取得，原因已定位为**目标方块未触发回调**，不是匹配逻辑问题；
 * 历史 E3 样本 `10 / 5 / 9` 保持原样，本轮新增证据单列；
 * **N9-B 仍 BLOCKED**、**P3 未授权**；shadow 结果仍未接入任何任务终态。
+
+---
+
+## P2 验收修复轮 2（任务书 26）：真实维度输出 + 预约使用当前世界 + 负向真机复验
+
+任务书归档：`docs/specs/CatooBot Taskbook 26 — P2 Dimension Chain Correction & Negative Real-Server Retake.md`
+（17357 bytes，SHA256 `3D4ED8387D8BACF910B4F295E19BF78C96ED81C6EC456FF9B7611DB0E18FD752`，`identical=True`）。
+
+### A. 最终裁定
+
+**P2 ACCEPTANCE REPAIR (round 2): PARTIAL** —— G4（跨维度负向真机）**未取得真实 AFTER 事件**，其余门禁全部通过。
+
+| 门禁 | 结果 | 证据 |
+| --- | --- | --- |
+| G1 维度输出 | **PASS** | `eventJson()` 的 `dimension` 改用 `dimensionId` 参数；`EventJsonTest` **5/5**：真实 nether 值原样输出、配置 `dimension_label` 不再泄漏、overworld 正确、未知维度保持空串不回落 |
+| G2 预约世界 | **PASS** | `Session` 保存真实 `class_3222` 玩家对象，预留时**重新读取玩家当前世界** `((class_3222) session.player).method_51469()`，并用 `Booking.checkDimension(请求维度, 当前维度)` 做 `dimension_not_current` / `dimension_unknown` 拒绝；方块读取发生在该当前世界 |
+| G3 正向匹配 | **PASS** | 新 JAR（`46C494FB…17B9`）真机正向：`AFTER name=Catodayo uuid=f67b… dim=minecraft:overworld pos=-248,69,-140` → 接收端 `SELF_CONFIRMED` / `verified_correlation` |
+| G4 跨维度负向 | **NOT VERIFIED** | 两次尝试均未取得真实事件：第 1 次 tp 到 nether（y=80）后玩家死亡/重生回主世界；第 2 次搭建 y=59 石平台 + `setblock` 目标后 `bot.dig` 返回 `Digging aborted` 并重生回主世界。按任务书保留为 `NOT VERIFIED`，不臆造证据 |
+| G5 他人破坏负向 | **PASS** | 机器人预约 `pos=-246,69,-147`（stone）；`CatodayoMate` 实际破坏 → `AFTER name=CatodayoMate uuid=7ea555c4-… dim=minecraft:overworld`；接收端判定 **`UNKNOWN(stale_session)`**，机器人预约**未被消费成 SELF_CONFIRMED**，事件 UUID 为第二玩家真实身份 |
+| G6 默认关闭 | **PASS** | 新构建 `p2-shadow-3`：`INIT … shadow_enabled=false` + `DISABLED listeners_not_registered (no JOIN/AFTER, no HTTP, no outbox, no match)`；19132 未监听；2 次真实挖掘后日志仅 +2 行、无 AFTER 事件 |
+| G7 接收端 | **PASS** | Python 接收端未改动、契约未放宽（17/17 保持）；新事件 `verified_correlation`、`downgraded=0` |
+| G8 产品隔离 | **PASS** | 产品任务路径零改动；shadow 未进入终态链 |
+| G9 工程门禁 | **PASS（CI 见下）** | Java 构建 + `BookingTest 23/23` + `EventJsonTest 5/5` + `Smoke class_load_ok=true`；ruff 全绿；CI 结果见 `E` |
+| G10 回滚 | **PASS** | 删 jar + 配置后重启：`Loading 42 mods`、19132 关闭、25565 正常 |
+
+### B. 关键实现差异
+
+| 修复 | 文件/方法 | 说明 |
+| --- | --- | --- |
+| A 真实维度输出 | `CatooAttributionMod.eventJson()` | `dimension` 字段由 `dimensionId` 参数填充；`dimension_label` 不再参与任何事实字段 |
+| B 预约当前世界 | `CatooAttributionMod.handleReserve()` + `currentWorldOf/currentDimensionOf` + `Booking.checkDimension` | 预约前用**玩家当前世界**重算维度并拒绝不一致；方块读取用同一当前世界，不再使用 JOIN 缓存的世界对象 |
+| B 会话/身份 | `Booking.Session.player` + `attachPlayer` + `sessionOfRef` | JOIN 时把真实玩家对象绑定到会话，预约时据此取当前世界 |
+
+### C. 数据流（可审查）
+
+```text
+JOIN:   newSession(name,uuid,ref,currentWorldOfPlayer(player)); BOOK.attachPlayer(ref, player)
+RESERVE: sessionOfRef(ref) → session 有效？
+         Booking.checkDimension(请求 dimension, currentDimensionOf(session))  ← 玩家当前世界 registry key
+         非空错误 → 409 {reason: dimension_not_current | dimension_unknown}，**不在错误世界读方块**
+         通过 → BOOK.reserve(..., blockAt = 玩家当前世界.method_8320(pos))
+AFTER:  eventUuid := player.method_5667(); eventDim := world.method_27983().method_29177()
+         match(session, eventUuid, eventDim, pos, state) → 唯一才 SELF_CONFIRMED
+         eventJson(..., dimensionId=eventDim) → JSON 的 dimension **只**来自事件世界
+```
+
+### D. 测试与真机证据
+
+| 项 | 命令 | 结果 |
+| --- | --- | --- |
+| Java 契约 | `java catoo.attrib.BookingTest` | **23/23**（exit 0） |
+| 事件 JSON（缺口 A） | `java catoo.attrib.EventJsonTest` | **5/5**（exit 0） |
+| 类加载冒烟 | `java catoo.attrib.Smoke` | `class_load_ok=true`（exit 0） |
+| 构建 | `pwsh server_mod/build.ps1` | jar SHA256 **`46C494FB16C01F7C5E1C7CDE882A7D3027D66F164FC5699139C08784B08417B9`** |
+| 部署校验 | `Get-FileHash mods/catoobot-attribution-2.0.0.jar` | **与构建产物一致** |
+| Python 接收端 | `pytest tests/test_attribution_shadow.py` | 17/17（本轮未改动接收端） |
+| 真机正向 | 预约 `pos_1` → 破坏 oak_leaves | `SELF_CONFIRMED` / `verified_correlation` |
+| 真机负向 B | 机器人预约 stone → mate 破坏 | `UNKNOWN(stale_session)`，事件 UUID 为 mate |
+| 真机负向 A | nether 目标 | **NOT VERIFIED**（玩家死亡/重生，两次尝试记录在案） |
+| 真机关闭 | enabled=false + 2 次挖掘 | 无监听、无 HTTP、日志 +2 行、无事件 |
+
+### E. 本轮失败与重试记录（保留）
+
+1. 跨维度负向第 1 次：`/execute in minecraft:the_nether run tp Catodayo 8 80 8` → 玩家在 nether 死亡/重生，`dim` 回到 `overworld`，无事件；
+2. 跨维度负向第 2 次：先 `fill 6 59 6 12 59 12 minecraft:stone` 造平台、tp 到 `8 60 8`、`setblock 9 60 8 stone`，目标读数正确（stone）且 `dim=the_nether`，但 `bot.dig` 返回 `Digging aborted` 且随后重生回主世界 → 仍无真实事件。
+两次都**未**产生 `PlayerBlockBreakEvents.AFTER`，故不据此判负向通过。
+
+### F. 边界
+
+* G4 未完成 → 本轮 **PARTIAL**（按任务书规则：任一必要负向真机用例未触发事件即 PARTIAL）；
+* 历史样本 `10 / 5 / 9` 与本轮新增证据分开记录，未混写；
+* **N9-B 仍 BLOCKED**、**P3 未授权**；shadow 结果仍未进入任何任务终态。

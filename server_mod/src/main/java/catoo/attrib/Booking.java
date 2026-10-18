@@ -11,6 +11,7 @@ final class Booking {
         final String ref;
         final long seq;
         final Object world;
+        volatile Object player;
         boolean valid = true;
         Session(String name, String uuid, String ref, long seq, Object world) {
             this.name = name; this.uuid = uuid; this.ref = ref; this.seq = seq; this.world = world;
@@ -94,6 +95,23 @@ final class Booking {
         byName.put(name, session);
         byRef.put(ref, session);
         return session;
+    }
+
+    synchronized void attachPlayer(String ref, Object player) {
+        Session session = byRef.get(ref);
+        if (session != null) session.player = player;
+    }
+
+    synchronized Session sessionOfRef(String ref) {
+        return ref == null ? null : byRef.get(ref);
+    }
+
+    static String checkDimension(String requestDim, String currentDim) {
+        String want = normalizeDimension(requestDim);
+        String have = normalizeDimension(currentDim);
+        if (want.isEmpty() || have.isEmpty()) return "dimension_unknown";
+        if (!want.equals(have)) return "dimension_not_current";
+        return "";
     }
 
     synchronized Session currentSessionOf(String name) {

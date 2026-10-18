@@ -15,14 +15,13 @@ import net.fabricmc.fabric.api.event.player.PlayerBlockBreakEvents;
 import net.fabricmc.fabric.api.networking.v1.ServerPlayConnectionEvents;
 import net.minecraft.class_2338;
 import net.minecraft.class_3218;
+import net.minecraft.class_3222;
 
-/** P2 影子模式：只记录证据，不参与任何任务终态。修复轮：会话显式绑定、维度/精确方块/身份参与匹配、异步有界 OUTBOX。 */
 public final class CatooAttributionMod implements ModInitializer {
-    static final String VER = "p2-shadow-2";
+    static final String VER = "p2-shadow-3";
     static final Booking BOOK = new Booking();
     static final Properties CFG = new Properties();
     static volatile boolean ENABLED = false;
-    static final java.util.List<Booking.Session> SESSIONS = Collections.synchronizedList(new ArrayList<>());
 
     static final int OUTBOX_CAPACITY = 1024;
     static final BlockingQueue<String> OUTBOX = new ArrayBlockingQueue<>(OUTBOX_CAPACITY);
@@ -37,7 +36,6 @@ public final class CatooAttributionMod implements ModInitializer {
                 "logs/catoobot-attribution.log"), true)) {
             writer.write(text + System.lineSeparator());
         } catch (Throwable ignored) {
-            // 只读实验：日志失败不影响服务器
         }
     }
 
@@ -64,7 +62,7 @@ public final class CatooAttributionMod implements ModInitializer {
         }
         ServerPlayConnectionEvents.JOIN.register((handler, sender, server) -> {
             try {
-                var player = handler.field_14140;
+                class_3222 player = handler.field_14140;
                 String name = player.method_5477().getString();
                 String uuid;
                 try {
@@ -73,8 +71,8 @@ public final class CatooAttributionMod implements ModInitializer {
                     uuid = "unknown";
                 }
                 String ref = UUID.randomUUID().toString();
-                Booking.Session session = BOOK.newSession(name, uuid, ref, player.method_51469());
-                SESSIONS.add(session);
+                Booking.Session session = BOOK.newSession(name, uuid, ref, currentWorldOfPlayer(player));
+                BOOK.attachPlayer(ref, player);
                 log("JOIN name=" + name + " uuid=" + uuid + " session_ref=" + ref + " session_seq=" + session.seq);
             } catch (Throwable error) {
                 log("JOIN_ERROR " + error.getClass().getName() + ":" + error.getMessage());
@@ -90,6 +88,12 @@ public final class CatooAttributionMod implements ModInitializer {
                 } catch (Throwable error) {
                     eventUuid = "unknown";
                 }
+                String eventDim;
+                try {
+                    eventDim = Booking.normalizeDimension(String.valueOf(world.method_27983().method_29177()));
+                } catch (Throwable error) {
+                    eventDim = "";
+                }
                 String stateNow;
                 try {
                     stateNow = String.valueOf(world.method_8320(pos));
@@ -97,56 +101,68 @@ public final class CatooAttributionMod implements ModInitializer {
                     stateNow = "UNKNOWN";
                 }
                 String posText = pos.method_10263() + "," + pos.method_10264() + "," + pos.method_10260();
-                String eventDim;
-                try {
-                    eventDim = Booking.normalizeDimension(
-                            String.valueOf(world.method_27983().method_29177()));
-                } catch (Throwable error) {
-                    eventDim = "";
-                }
-                Booking.MatchResult match =
-                        BOOK.match(session, eventUuid, eventDim, posText, String.valueOf(state));
+                Booking.MatchResult match = BOOK.match(session, eventUuid, eventDim, posText, String.valueOf(state));
                 String eventId = UUID.randomUUID().toString();
-                String payload =
-                        eventJson(eventId, match, session, eventUuid, eventDim, posText, String.valueOf(state), stateNow);
+                String payload = eventJson(eventId, match, session, eventUuid, eventDim, posText,
+                        String.valueOf(state), stateNow);
                 boolean queued = OUTBOX.offer(payload);
                 if (!queued) OUTBOX_OVERFLOW.incrementAndGet();
                 log("AFTER name=" + name + " uuid=" + eventUuid + " session_ref="
                         + (session == null ? "" : session.ref) + " session_seq=" + (session == null ? -1 : session.seq)
-                        + " dim=" + eventDim + " pos=" + posText + " state_before=" + Booking.canonicalBlock(String.valueOf(state))
-                        + " state_now=" + Booking.canonicalBlock(stateNow) + " shadow=" + match.state
-                        + " reason=" + match.reason + " event=" + eventId + " queued=" + queued
-                        + " reservation=" + (match.reservation == null ? "null" : match.reservation.id));
+                        + " dim=" + eventDim + " pos=" + posText + " state_before="
+                        + Booking.canonicalBlock(String.valueOf(state)) + " state_now="
+                        + Booking.canonicalBlock(stateNow) + " shadow=" + match.state + " reason=" + match.reason
+                        + " event=" + eventId + " queued=" + queued + " reservation="
+                        + (match.reservation == null ? "null" : match.reservation.id));
             } catch (Throwable error) {
                 log("AFTER_ERROR " + error.getClass().getName() + ":" + error.getMessage());
             }
         });
-        if (ENABLED) {
-            startHttp();
-            startOutbox();
-        }
+        startHttp();
+        startOutbox();
         log("LISTENER_REGISTERED PlayerBlockBreakEvents.AFTER; ServerPlayConnectionEvents.JOIN");
     }
 
+    static class_3218 currentWorldOfPlayer(class_3222 player) {
+        try {
+            return player.method_51469();
+        } catch (Throwable error) {
+            return null;
+        }
+    }
+
+    static class_3218 currentWorldOf(Booking.Session session) {
+        if (session == null || !(session.player instanceof class_3222)) return null;
+        try {
+            return ((class_3222) session.player).method_51469();
+        } catch (Throwable error) {
+            return null;
+        }
+    }
+
+    static String currentDimensionOf(Booking.Session session) {
+        class_3218 world = currentWorldOf(session);
+        if (world == null) return "";
+        try {
+            return Booking.normalizeDimension(String.valueOf(world.method_27983().method_29177()));
+        } catch (Throwable error) {
+            return "";
+        }
+    }
+
     static String eventJson(String eventId, Booking.MatchResult match, Booking.Session session, String uuid,
-            String dimensionId,
-            String pos, String before, String after) {
+            String dimensionId, String pos, String before, String after) {
         String reservationId = match.reservation == null ? "" : match.reservation.id;
         String actionId = match.reservation == null ? "" : match.reservation.actionId;
         String sessionRef = session == null ? "" : session.ref;
         long sessionSeq = session == null ? -1 : session.seq;
-        return "{\"event_id\":\"" + eventId + "\","
-                + "\"reservation_id\":\"" + reservationId + "\","
-                + "\"action_id\":\"" + actionId + "\","
-                + "\"session_ref\":\"" + sessionRef + "\","
-                + "\"session_seq\":" + sessionSeq + ","
-                + "\"player_uuid\":\"" + uuid + "\","
-                + "\"dimension\":\"" + CFG.getProperty("dimension_label", "minecraft:overworld") + "\","
-                + "\"pos\":\"" + pos + "\","
-                + "\"block_before\":\"" + Booking.canonicalBlock(before) + "\","
-                + "\"block_after\":\"" + Booking.canonicalBlock(after) + "\","
-                + "\"shadow\":\"" + match.state + "\","
-                + "\"reason\":\"" + match.reason + "\"}";
+        return "{\"event_id\":\"" + eventId + "\",\"reservation_id\":\"" + reservationId
+                + "\",\"action_id\":\"" + actionId + "\",\"session_ref\":\"" + sessionRef
+                + "\",\"session_seq\":" + sessionSeq + ",\"player_uuid\":\"" + uuid
+                + "\",\"dimension\":\"" + dimensionId + "\",\"pos\":\"" + pos
+                + "\",\"block_before\":\"" + Booking.canonicalBlock(before)
+                + "\",\"block_after\":\"" + Booking.canonicalBlock(after)
+                + "\",\"shadow\":\"" + match.state + "\",\"reason\":\"" + match.reason + "\"}";
     }
 
     static void startOutbox() {
@@ -207,7 +223,7 @@ public final class CatooAttributionMod implements ModInitializer {
             server.createContext("/session", exchange -> {
                 String query = exchange.getRequestURI().getQuery();
                 String rawName = query != null && query.startsWith("name=") ? query.substring(5) : "";
-                String name = java.net.URLDecoder.decode(rawName, java.nio.charset.StandardCharsets.UTF_8);
+                String name = java.net.URLDecoder.decode(rawName, StandardCharsets.UTF_8);
                 String expected = Hmac.sign(name, CFG.getProperty("token", ""));
                 String given = exchange.getRequestHeaders().getFirst("X-Signature");
                 if (expected.isEmpty() || given == null || !expected.equalsIgnoreCase(given)) {
@@ -222,7 +238,6 @@ public final class CatooAttributionMod implements ModInitializer {
                 respond(exchange, 200, "{\"ok\":true,\"session_ref\":\"" + session.ref + "\",\"session_seq\":"
                         + session.seq + ",\"player_uuid\":\"" + session.uuid + "\"}");
             });
-
             server.start();
             log("HTTP_LISTEN 127.0.0.1:" + port);
         } catch (Throwable error) {
@@ -235,6 +250,7 @@ public final class CatooAttributionMod implements ModInitializer {
                 + ",\"rejected\":" + BOOK.rejected + ",\"expired\":" + BOOK.expired
                 + ",\"ambiguous\":" + BOOK.ambiguous + ",\"unknown\":" + BOOK.unknown
                 + ",\"consumed\":" + BOOK.consumedCount + ",\"identity_rejected\":" + BOOK.identityRejected
+                + ",\"dimension_rejected\":" + BOOK.dimensionRejected
                 + ",\"push_ok\":" + PUSH_OK.get() + ",\"push_fail\":" + PUSH_FAIL.get()
                 + ",\"outbox_overflow\":" + OUTBOX_OVERFLOW.get() + "}";
     }
@@ -252,23 +268,28 @@ public final class CatooAttributionMod implements ModInitializer {
             return;
         }
         Map<String, String> fields = Json.flat(body);
+        String sessionRef = fields.getOrDefault("session_ref", "").trim();
+        Booking.Session sessionNow = BOOK.sessionOfRef(sessionRef);
+        if (sessionNow == null || !sessionNow.valid) {
+            log("RESERVE ok=false reason=session_not_current action=" + fields.getOrDefault("action_id", ""));
+            respond(exchange, 409, "{\"ok\":false,\"reason\":\"session_not_current\"}");
+            return;
+        }
+        String dimErr = Booking.checkDimension(fields.getOrDefault("dimension", ""), currentDimensionOf(sessionNow));
+        if (!dimErr.isEmpty()) {
+            log("RESERVE ok=false reason=" + dimErr + " action=" + fields.getOrDefault("action_id", ""));
+            respond(exchange, 409, "{\"ok\":false,\"reason\":\"" + dimErr + "\"}");
+            return;
+        }
         Booking.ReserveResult result = BOOK.reserve(fields, f -> {
-            String ref = f.getOrDefault("session_ref", "").trim();
-            Booking.Session session = sessionOfRef(ref);
-            if (session == null || !(session.world instanceof class_3218)) return null;
-            return String.valueOf(((class_3218) session.world).method_8320(posOf(f)));
+            class_3218 targetWorld = currentWorldOf(sessionNow);
+            if (targetWorld == null) return null;
+            return String.valueOf(targetWorld.method_8320(posOf(f)));
         });
         respond(exchange, result.httpCode, "{\"ok\":" + result.ok + ",\"reason\":\"" + result.reason
                 + "\",\"reservation_id\":\"" + result.id + "\"}");
         log("RESERVE ok=" + result.ok + " reason=" + result.reason
                 + " action=" + fields.getOrDefault("action_id", ""));
-    }
-
-    static Booking.Session sessionOfRef(String ref) {
-        for (Booking.Session session : SESSIONS) {
-            if (session.ref.equals(ref)) return session;
-        }
-        return null;
     }
 
     static class_2338 posOf(Map<String, String> fields) {
