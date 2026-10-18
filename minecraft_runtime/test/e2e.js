@@ -591,16 +591,13 @@ async function main() {
         // Phase 4H.1 起：**不可达**的目标会立刻以 path.not_found 失败（不再"静默成功/挂到超时"），
         // 所以这里要靠**足够远**的可行目标来制造确定的超时窗口：40+ 格在假服务器上要走 9s 上下，
         // 远超 MC_MOVE_TIMEOUT_MS=2500。太远没路的那些会被上面的 try/catch 换掉。
-        for (const spec of [
-          { distance: 40, angle: 0 },
-          { distance: 32, angle: 0 },
-          { distance: 48, angle: 0 },
-          { distance: 24, angle: 0 },
-          { distance: 40, angle: 0.6 },
-          { distance: 32, angle: -0.6 },
-          { distance: 40, angle: 1.2 },
-          { distance: 32, angle: -1.2 },
-        ]) {
+        const timeoutCandidates = []
+        for (const distance of [40, 32, 48, 24, 56, 16]) {
+          for (const angle of [0, 0.6, -0.6, 1.2, -1.2, 1.8, -1.8, 2.4, -2.4, 3.0, -3.0]) {
+            timeoutCandidates.push({ distance, angle })
+          }
+        }
+        for (const spec of timeoutCandidates) {
           const distance = spec.distance
           const timeoutOrigin = (await request(runtimePort, 'GET', '/minecraft/status')).body.position
           // R1：目标方向的落点可能被判「站不到」而快速拒绝；换角度重试（不放宽断言、不改产品）。
