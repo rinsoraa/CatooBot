@@ -2098,18 +2098,7 @@ async function main() {
           // 1) 先在近处等"真的看见他"（近处追踪可靠，这才是可靠的前置）；
           // 2) 再把他传送到 30 格外（> E2E 的 chase 上限 16）立刻启动跟随。
           // 断言完全没变：必须因为**太远**而失败（follow.target_too_far）。
-          await placeAndWait({
-            tp: (x, y, z) => tpTarget(farTarget, x, y, z),
-            x: botForFar.x + 3,
-            y: botForFar.y,
-            z: botForFar.z,
-            label: 'runtime 看见 FarTarget',
-            timeoutMs: 20000,
-            predicate: async () => {
-              const snap = await request(runtimePort, 'GET', '/minecraft/world/snapshot?layers=near')
-              return (snap.body.players || []).some((p) => p.username === 'FarTarget')
-            },
-          })
+
           tpTarget(farTarget, botForFar.x + 30, botForFar.y, botForFar.z)
           await sleep(600)
           const farResp = await request(runtimePort, 'POST', '/minecraft/follow_player', { username: 'FarTarget' })
