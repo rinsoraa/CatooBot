@@ -4,6 +4,8 @@
 
 ## 当前裁定
 
+发布后核验：`ad9484cb284d1dabfb755028642d446e62775d26` 已发布，提交前 1306 文件快照逐项校验通过；[CI 39186718041](https://github.com/rinsoraa/CatooBot/actions/runs/39186718041) attempt 1 三 job success。P3 交付回执 COMPLETE；N9-B 在显式严格模式范围 PASS。后续 R1 出口逐项核验见 [R1 最终审计](MINECRAFT_R1_FINAL_AUDIT.md)，历史失败与下述发布前条件保留。
+
 G1 契约、G2 真机产品矩阵、G3 真实 Provider/QQ 语义复验及最终本地工程回归均 PASS。最终 Python **4705 项通过（631.31s）**；待提交镜像的全量 lint、format、mypy 与 Java 纯契约通过，凭据扫描通过。P3 发布出口仍受对应提交的备份校验与远端 CI 约束：CI 未成功前不进入下一阶段。N9-B 已有严格模式下的五次真实执行窗口负向和五次正向对照；对应提交 CI 成功后，才可按本报告证据关闭严格模式范围的缺口。R1 总体及 R8 均未宣称完成。
 
 ## 实现

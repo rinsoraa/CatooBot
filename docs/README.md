@@ -171,6 +171,8 @@ v0.4 行为引擎（回复延迟/分段/作息，规格不在 docs/specs/）标 
 
 ## 运维速查
 
+Rx v3.0 当前出口对账见 [持续执行状态](ROADMAP_EXECUTION_STATUS.md)、[P3 严格归因报告](MINECRAFT_P3_STRICT_ATTRIBUTION_REPORT.md) 与 [R1 最终审计](MINECRAFT_R1_FINAL_AUDIT.md)；历史报告保留原失败，最新裁定由这些追加证据和对应 CI 共同约束。
+
 ```bash
 python scripts/backup_db.py                 # 在线快照（VACUUM INTO + 校验）→ ../CatooBot_backups/
 python scripts/activity_smoke_real.py --phase report   # Phase 6A 真机门禁：当前 Episode / 最近活动（只读）
