@@ -1207,6 +1207,9 @@ class MinecraftConfig(BaseModel):
     #: 为空表示由 CatooBot 自动拉起时每进程生成，并经 MC_BRIDGE_TOKEN 注入 Node。
     #: 它**绝不**写入仓库 / 日志 / 错误响应 / 事件内容 / WebUI。
     external_bridge_token: str = ""
+    #: P3：严格破坏归因显式启用；密钥只从 CATOO_ATTRIBUTION_TOKEN 环境注入。
+    attribution_strict: bool = False
+    attribution_url: str = "http://127.0.0.1:19132"
     # ---- 世界感知（Phase 2，只读「眼睛」）
     #: 进入世界后持续获取 Raw World Snapshot 并构建语义模型
     perception_enabled: bool = True

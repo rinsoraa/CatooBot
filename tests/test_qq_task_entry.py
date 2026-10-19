@@ -255,6 +255,36 @@ async def test_b_normal_qq_chat_never_creates_a_task(text: str) -> None:
     assert stack.bot.api.sent == [], "不认领就不该由任务侧回话"
 
 
+@pytest.mark.parametrize(
+    "text",
+    [
+        (
+            "[P3-G3-询问01] 罐头，先别动手。我只是问问：如果要挖一个橡木原木，"
+            "你会先检查哪些条件？这条消息不要创建或执行 Minecraft 任务。"
+        ),
+        "不要砍两根橡木原木带回来",
+        "先别砍两根橡木原木带回来",
+        "不要砍橡木，改砍云杉原木带回来",
+        "假设帮我挖一个橡木，你需要哪些条件？",
+    ],
+)
+async def test_inquiry_and_negation_never_observe_or_plan(text: str) -> None:
+    stack = Stack()
+    observations: list[Any] = []
+
+    async def forbidden_observe(*args: Any, **kwargs: Any) -> Any:
+        observations.append((args, kwargs))
+        raise AssertionError("询问或否定不得开始世界观察")
+
+    stack.entry.handler._observe = forbidden_observe  # noqa: SLF001
+    assert await stack.say(private_event(text)) is False
+    assert observations == []
+    assert await current(stack) is None
+    assert stack.invoke.world_actions == []
+    assert stack.events.rows == []
+    assert stack.bot.api.sent == []
+
+
 async def test_c_qq_confirmation_starts_the_task() -> None:
     stack = Stack()
     await stack.say(private_event("帮我找附近的一块橡木"))

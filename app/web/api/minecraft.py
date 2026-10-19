@@ -116,6 +116,8 @@ _TOOL_STATUS: dict[str, int] = {
     "minecraft.block_not_diggable": 422,
     "minecraft.block_too_far": 422,
     "minecraft.block_break_unconfirmed": 500,
+    "minecraft.attribution_unavailable": 503,
+    "minecraft.attribution_unconfirmed": 409,
     # Phase 4C：place 的目标/手持物品校验
     "minecraft.held_item_missing": 409,
     "minecraft.held_item_changed": 409,

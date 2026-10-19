@@ -22,6 +22,7 @@ final class Hmac {
     static boolean verify(String body, String token, String signature) {
         if (token == null || token.isEmpty()) return false;
         String expected = sign(body, token);
-        return !expected.isEmpty() && expected.equalsIgnoreCase(signature);
+        return !expected.isEmpty() && signature != null && signature.matches("[a-fA-F0-9]{64}")
+                && java.security.MessageDigest.isEqual(HexFormat.of().parseHex(expected), HexFormat.of().parseHex(signature));
     }
 }

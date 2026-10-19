@@ -87,7 +87,8 @@ final class Booking {
     private final Map<String, Session> byName = new LinkedHashMap<>();
     private final Map<String, Session> byRef = new LinkedHashMap<>();
     private final ArrayList<Reservation> reservations = new ArrayList<>(16);
-    private final Set<String> seenNonces = new HashSet<>();
+    private final Map<String, Session> seenNonces = new HashMap<>();
+    static final int MAX_SESSIONS = 64, MAX_NONCES = 8192, MAX_RESERVATIONS = 4096;
     private long seqCounter = 0;
 
     int rejected = 0, expired = 0, ambiguous = 0, unknown = 0, consumedCount = 0;
@@ -95,9 +96,11 @@ final class Booking {
 
     synchronized Session newSession(String name, String uuid, String ref, Object world) {
         Session previous = byName.get(name);
+        if (previous == null && byName.size() >= MAX_SESSIONS) throw new IllegalStateException("session_capacity");
         if (previous != null) {
             previous.valid = false;
             byRef.remove(previous.ref);
+            seenNonces.values().removeIf(session -> session == previous);
         }
         seqCounter += 1;
         Session session = new Session(name, uuid, ref, seqCounter, world);
@@ -127,6 +130,8 @@ final class Booking {
         session.valid = false;
         byName.remove(name);
         byRef.remove(session.ref);
+        seenNonces.values().removeIf(owner -> owner == session);
+        prune();
         return true;
     }
 
@@ -148,6 +153,9 @@ final class Booking {
         return count;
     }
 
+    synchronized int retainedNonces() { return seenNonces.size(); }
+    synchronized int retainedReservations() { prune(); return reservations.size(); }
+
     ReserveResult reserve(Map<String, String> fields, Function<Map<String, String>, String> blockAt) {
         return reserve(fields, blockAt, candidate -> true);
     }
@@ -163,6 +171,7 @@ final class Booking {
         String pos = fields.getOrDefault("pos", "").trim();
         String expected = canonicalBlock(fields.getOrDefault("expected_block", ""));
         synchronized (this) {
+            prune();
             session = byRef.get(sessionRef);
             if (session == null || !session.valid) {
                 rejected += 1;
@@ -176,11 +185,21 @@ final class Booking {
                 rejected += 1;
                 return new ReserveResult(false, "nonce_too_short", "", 400);
             }
+            if (!nonce.matches("[A-Za-z0-9_-]{16,128}") || !actionId.matches("[A-Za-z0-9_-]{1,128}")
+                    || !sessionRef.matches("[A-Za-z0-9_-]{1,128}") || pos.length() > 64 || expected.length() > 64) {
+                rejected += 1;
+                return new ReserveResult(false, "field_shape", "", 400);
+            }
             // Preserve fail-closed replay semantics: even an unsuccessful attempt burns its nonce.
-            if (!seenNonces.add(nonce)) {
+            if (seenNonces.containsKey(nonce)) {
                 rejected += 1;
                 return new ReserveResult(false, "nonce_replay", "", 409);
             }
+            if (seenNonces.size() >= MAX_NONCES || reservations.size() >= MAX_RESERVATIONS) {
+                rejected += 1;
+                return new ReserveResult(false, "capacity", "", 503);
+            }
+            seenNonces.put(nonce, session);
             if (hasAction(actionId)) {
                 rejected += 1;
                 return new ReserveResult(false, "duplicate_action", "", 409);
@@ -195,6 +214,7 @@ final class Booking {
             ttl = 60000L;
         }
         synchronized (this) {
+            prune();
             if (!session.valid || byRef.get(sessionRef) != session || byName.get(session.name) != session) {
                 rejected += 1;
                 return new ReserveResult(false, "session_not_current", "", 409);
@@ -210,6 +230,10 @@ final class Booking {
             if (hasAction(actionId)) {
                 rejected += 1;
                 return new ReserveResult(false, "duplicate_action", "", 409);
+            }
+            if (reservations.size() >= MAX_RESERVATIONS) {
+                rejected += 1;
+                return new ReserveResult(false, "capacity", "", 503);
             }
             Reservation reservation = new Reservation(UUID.randomUUID().toString(), actionId, nonce, dim, pos, expected,
                     session.ref, session.seq, session.uuid, Math.max(1000L, Math.min(ttl, 600000L)));
@@ -232,6 +256,12 @@ final class Booking {
                     && System.nanoTime() <= existing.expiresAtNanos) return true;
         }
         return false;
+    }
+
+    private void prune() {
+        long now = System.nanoTime();
+        reservations.removeIf(reservation -> reservation.consumed || now > reservation.expiresAtNanos
+                || !byRef.containsKey(reservation.sessionRef));
     }
 
     synchronized MatchResult match(Session session, String eventUuid, String eventDimension, String pos,

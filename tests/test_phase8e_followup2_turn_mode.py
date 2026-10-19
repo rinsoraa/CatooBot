@@ -75,6 +75,31 @@ def build(chat: Any, handler: Any, runtime: Any, counter: dict[str, int], interp
 # ------------------------------------------------------------------ §6.1 工具面
 
 
+@pytest.mark.parametrize(
+    "message",
+    [
+        "先别动手。我只是问问：如果挖一个橡木原木，你会先检查哪些条件？",
+        "不要砍两根橡木原木带回来",
+        "不要砍橡木，改砍云杉原木带回来",
+    ],
+)
+async def test_normal_character_turn_blocks_explicit_non_action_wood(tmp_path, message):
+    """真实角色 NORMAL 路径也不得让 Agent/工具重新接管否定或询问。"""
+    from app.character.turn import TurnOrigin
+
+    async with stack(tmp_path, TOOL_CALL_JSON) as chat:
+        spy = SpyAgent()
+        chat.runtime.agent = spy
+        reply = await chat.runtime.respond(
+            "private:p3", "p3-user", message, turn_origin=TurnOrigin.USER
+        )
+        assert spy.control_calls == [] and spy.run_calls == []
+        assert chat.tools.executor.traces == []
+        assert '{"tool"' not in reply
+        assert chat.runtime.routes.last.reason_code == "minecraft_non_action_turn"
+        assert chat.tools.enabled is True
+
+
 async def test_query_turn_cannot_reach_the_tool_surface(tmp_path: Any, sentinel: list[Any]) -> None:
     """模型输出工具调用 JSON 也只当纯文本：本回合**零工具执行**（M1 反例）。"""
     async with stack(tmp_path, TOOL_CALL_JSON) as chat:

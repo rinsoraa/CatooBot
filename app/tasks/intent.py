@@ -96,7 +96,11 @@ FOLLOW_INTENT_KEYWORDS = (
 )
 
 #: 纯查询类请求：即使命中上面的词也**不**创建任务（§四十三）
+_NON_ACTION_WOOD_QUERY = re.compile(
+    r"(只是问|只问|问问|如果|假如|假设|会先检查|需要哪些条件|怎么挖|如何挖)"
+)
 _QUERY_PATTERNS = (
+    _NON_ACTION_WOOD_QUERY,
     re.compile(r"(在哪里|在哪儿|在哪|什么位置|坐标)"),
     re.compile(r"(有什么|有哪些|有没有|看见|看看|找得到|在哪找)"),
     re.compile(r"(背包里|身上有|手里拿|拿着什么)"),
@@ -796,6 +800,15 @@ class TaskIntent:
         return {"is_task": self.is_task, "reasons": list(self.reasons), "objective": self.objective}
 
 
+def is_non_action_wood_turn(text: str) -> bool:
+    """明确木材询问/否定只可聊天，不给其他执行入口补做任务的机会。"""
+    message = str(text or "").strip()
+    return mentions_wood(message) and (
+        bool(_NON_ACTION_WOOD_QUERY.search(message))
+        or classify_wood_negation(message) != WoodNegation.NOT_NEGATED
+    )
+
+
 class TaskIntentDetector:
     """确定性的多步骤任务识别（规则写死在代码里，不调用模型——可测试、可审计）。"""
 
@@ -812,6 +825,8 @@ class TaskIntentDetector:
         lowered = message.lower()
         if any(pattern.search(message) for pattern in _QUERY_PATTERNS):
             return TaskIntent(False, ("query_only",))
+        if classify_wood_negation(message) != WoodNegation.NOT_NEGATED:
+            return TaskIntent(False, ("wood_negation",))
         verbs = [verb for verb in _ACTION_VERBS if verb in message]
         markers = [
             marker for marker in _MULTI_STEP_MARKERS if marker in message or marker in lowered

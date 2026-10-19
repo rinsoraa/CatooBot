@@ -650,6 +650,19 @@ class MinecraftBlockBreakUnconfirmed(MinecraftBridgeError):
         super().__init__(message, code="minecraft.block_break_unconfirmed")
 
 
+class MinecraftAttributionError(MinecraftBridgeError):
+    """Strict evidence unavailable or unconfirmed; never described as action busy."""
+
+    def __init__(self, message: str, *, unavailable: bool = False) -> None:
+        self.status = 503 if unavailable else 409
+        super().__init__(
+            message,
+            code="minecraft.attribution_unavailable"
+            if unavailable
+            else "minecraft.attribution_unconfirmed",
+        )
+
+
 def canonical_block_name(name: str) -> str:
     """把方块名规范成裸名（Phase 4K §四）。
 
@@ -708,6 +721,8 @@ def _translate(exc: MinecraftRuntimeError) -> MinecraftBridgeError:
         return MinecraftBlockTooFar(str(exc))
     if exc.code == "block.break_unconfirmed":
         return MinecraftBlockBreakUnconfirmed(str(exc))
+    if exc.code in {"block.attribution_unavailable", "block.attribution_unconfirmed"}:
+        return MinecraftAttributionError(str(exc), unavailable=exc.code.endswith("unavailable"))
     # Phase 4C：place 的目标/手持物品校验（§九-§十二）
     if exc.code == "held.item_missing":
         return MinecraftHeldItemMissing(str(exc))
@@ -1155,6 +1170,9 @@ class MinecraftService:
         env = dict(os.environ)
         env["MC_RUNTIME_PORT"] = str(self.config.runtime_port)
         env["MC_CONNECT_TIMEOUT"] = str(self.config.connect_timeout_seconds)
+        env["MC_ATTRIBUTION_STRICT"] = "1" if self.config.attribution_strict else "0"
+        env["MC_ATTRIBUTION_URL"] = self.config.attribution_url
+        env["MC_ATTRIBUTION_TOKEN"] = os.environ.get("CATOO_ATTRIBUTION_TOKEN", "")
         # Phase 4B：dig 的安全门（超时/距离）随进程环境注入 runtime
         env["MC_DIG_TIMEOUT_MS"] = str(int(self.config.action.dig.timeout * 1000))
         env["MC_DIG_MAX_DISTANCE"] = str(self.config.action.dig.max_distance)

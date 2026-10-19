@@ -635,6 +635,9 @@ world:
 # （参考 auth.example.json；该文件已 gitignore，绝不进 Git、不经 QQ/WebUI 收取）。
 # ============================================================
 minecraft:
+  attribution_strict: false     # P3 严格破坏归因；启用后通道不可用不回退推断成功
+  attribution_url: http://127.0.0.1:19132
+  # 密钥只配置在私有环境变量 CATOO_ATTRIBUTION_TOKEN，不通过工具或 WebUI 传输
   enabled: false               # 总开关（WebUI /minecraft 页与 QQ 指令都依赖它）
   runtime_dir: minecraft_runtime
   node_executable: node        # Node.js ≥ 20

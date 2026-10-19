@@ -108,7 +108,7 @@ function createActionRuntime({
 
   function nextActionId() {
     seq += 1
-    return `act_${now().toString(36)}_${seq.toString(36)}`
+    return `act_${instanceId}_${now().toString(36)}_${seq.toString(36)}`
   }
 
   function makeToken() {

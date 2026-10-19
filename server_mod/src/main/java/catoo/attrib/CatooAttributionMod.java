@@ -18,7 +18,7 @@ import net.minecraft.class_3222;
 
 /** P2 shadow v7: server-owned resources and cancellation on shutdown; default off. */
 public final class CatooAttributionMod implements ModInitializer {
-    static final String VER = "p2-shadow-7";
+    static final String VER = "p3-evidence-1";
     static final Booking BOOK = new Booking();
     static final Properties CFG = new Properties();
     static volatile boolean ENABLED = false;
@@ -240,7 +240,7 @@ public final class CatooAttributionMod implements ModInitializer {
         String actionId = match.reservation == null ? "" : match.reservation.actionId;
         String sessionRef = session == null ? "" : session.ref;
         long sessionSeq = session == null ? -1 : session.seq;
-        return "{\"event_id\":\"" + eventId + "\",\"reservation_id\":\"" + reservationId
+        return "{\"schema\":1,\"source\":\"server_block_break\",\"event_id\":\"" + eventId + "\",\"reservation_id\":\"" + reservationId
                 + "\",\"action_id\":\"" + actionId + "\",\"session_ref\":\"" + sessionRef
                 + "\",\"session_seq\":" + sessionSeq + ",\"player_uuid\":\"" + uuid
                 + "\",\"dimension\":\"" + dimensionId + "\",\"pos\":\"" + pos
@@ -309,12 +309,22 @@ public final class CatooAttributionMod implements ModInitializer {
         context(server, owner, "/health", exchange -> respond(exchange, 200, "{\"ok\":true}"));
         context(server, owner, "/stats", exchange -> respond(exchange, 200, statsJson()));
         context(server, owner, "/session", exchange -> {
+            if (!"GET".equals(exchange.getRequestMethod())) {
+                respond(exchange, 405, "{\"ok\":false,\"reason\":\"method\"}"); return;
+            }
             String query = exchange.getRequestURI().getQuery();
-            String rawName = query != null && query.startsWith("name=") ? query.substring(5) : "";
-            String name = java.net.URLDecoder.decode(rawName, StandardCharsets.UTF_8);
-            String expected = Hmac.sign(name, CFG.getProperty("token", ""));
+            Map<String, String> queryFields = new HashMap<>();
+            if (query != null) for (String pair : query.split("&")) {
+                String[] parts = pair.split("=", 2);
+                if (parts.length == 2) queryFields.put(parts[0], java.net.URLDecoder.decode(parts[1], StandardCharsets.UTF_8));
+            }
+            String name = queryFields.getOrDefault("name", "");
+            String nonce = queryFields.getOrDefault("nonce", "");
+            if (!name.matches("[A-Za-z0-9_]{1,16}") || !nonce.matches("[A-Za-z0-9-]{0,128}")) {
+                respond(exchange, 400, "{\"ok\":false,\"reason\":\"query\"}"); return;
+            }
             String given = exchange.getRequestHeaders().getFirst("X-Signature");
-            if (expected.isEmpty() || given == null || !expected.equalsIgnoreCase(given)) {
+            if (!Hmac.verify(nonce.isEmpty() ? name : name + "\n" + nonce, CFG.getProperty("token", ""), given)) {
                 respond(exchange, 401, "{\"ok\":false,\"reason\":\"hmac\"}");
                 return;
             }
@@ -323,7 +333,7 @@ public final class CatooAttributionMod implements ModInitializer {
                 respond(exchange, 404, "{\"ok\":false,\"reason\":\"no_session\"}");
                 return;
             }
-            respond(exchange, 200, "{\"ok\":true,\"session_ref\":\"" + session.ref + "\",\"session_seq\":"
+            respond(exchange, 200, "{\"ok\":true,\"schema\":1,\"nonce\":\"" + nonce + "\",\"session_ref\":\"" + session.ref + "\",\"session_seq\":"
                     + session.seq + ",\"player_uuid\":\"" + session.uuid + "\"}");
         });
     }
@@ -339,6 +349,7 @@ public final class CatooAttributionMod implements ModInitializer {
                 + ",\"outbox_overflow\":" + (resources == null ? 0 : resources.overflow.get())
                 + ",\"shutdown_dropped\":" + (resources == null ? 0 : resources.shutdownDropped.get())
                 + ",\"outbox_pending\":" + (resources == null ? 0 : resources.pendingEvents())
+                + ",\"retained_nonces\":" + BOOK.retainedNonces() + ",\"retained_reservations\":" + BOOK.retainedReservations()
                 + ",\"delivery_in_flight\":" + (resources != null && resources.deliveryInFlight()) + "}";
     }
 
@@ -347,14 +358,26 @@ public final class CatooAttributionMod implements ModInitializer {
             respond(exchange, 405, "{\"error\":\"method\"}");
             return;
         }
-        String body = new String(exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8);
+        byte[] bytes = exchange.getRequestBody().readNBytes(8193);
+        if (bytes.length > 8192) { respond(exchange, 413, "{\"ok\":false,\"reason\":\"body_size\"}"); return; }
+        String body = new String(bytes, StandardCharsets.UTF_8);
         String signature = exchange.getRequestHeaders().getFirst("X-Signature");
         if (!Hmac.verify(body, CFG.getProperty("token", ""), signature)) {
             log("RESERVE_REJECTED reason=hmac");
             respond(exchange, 401, "{\"ok\":false,\"reason\":\"hmac\"}");
             return;
         }
-        Map<String, String> fields = Json.flat(body);
+        Map<String, String> fields;
+        try { fields = Json.flat(body); }
+        catch (IllegalArgumentException error) { respond(exchange, 400, "{\"ok\":false,\"reason\":\"json\"}"); return; }
+        String pos = fields.getOrDefault("pos", "");
+        try {
+            int x = Integer.parseInt(fields.getOrDefault("x", ""));
+            int y = Integer.parseInt(fields.getOrDefault("y", ""));
+            int z = Integer.parseInt(fields.getOrDefault("z", ""));
+            if (Math.abs((long) x) > 30000000 || Math.abs((long) z) > 30000000 || y < -512 || y > 2048
+                    || !pos.equals(x + "," + y + "," + z)) throw new IllegalArgumentException();
+        } catch (IllegalArgumentException error) { respond(exchange, 400, "{\"ok\":false,\"reason\":\"position\"}"); return; }
         Reply reply = runOnServerThread(request -> {
             if (!request.isOpen()) return request.outcome();
             String sessionRef = fields.getOrDefault("session_ref", "").trim();
@@ -389,14 +412,21 @@ public final class CatooAttributionMod implements ModInitializer {
             java.util.function.Function<Map<String, String>, String> blockAt, RequestState<Reply> request) {
         if (!request.isOpen()) return request.outcome();
         Booking.ReserveResult result = BOOK.reserve(fields, blockAt,
-                candidate -> request.complete(reserveReply(candidate)));
+                candidate -> request.complete(reserveReply(candidate, fields)));
         Reply winner = request.outcome();
-        return winner != null ? winner : reserveReply(result);
+        return winner != null ? winner : reserveReply(result, fields);
     }
 
     static Reply reserveReply(Booking.ReserveResult result) {
         return new Reply(result.httpCode, "{\"ok\":" + result.ok + ",\"reason\":\"" + result.reason
                 + "\",\"reservation_id\":\"" + result.id + "\"}", result.reason);
+    }
+
+    static Reply reserveReply(Booking.ReserveResult result, Map<String, String> fields) {
+        return new Reply(result.httpCode, "{\"ok\":" + result.ok + ",\"schema\":1,\"reason\":\"" + result.reason
+                + "\",\"reservation_id\":" + Json.quote(result.id) + ",\"action_id\":" + Json.quote(fields.getOrDefault("action_id", ""))
+                + ",\"nonce\":" + Json.quote(fields.getOrDefault("nonce", "")) + ",\"session_ref\":"
+                + Json.quote(fields.getOrDefault("session_ref", "")) + "}", result.reason);
     }
 
     static class_2338 posOf(Map<String, String> fields) {
@@ -412,6 +442,7 @@ public final class CatooAttributionMod implements ModInitializer {
     static void respond(HttpExchange exchange, int code, String body) throws IOException {
         byte[] bytes = body.getBytes(StandardCharsets.UTF_8);
         exchange.getResponseHeaders().add("Content-Type", "application/json");
+        exchange.getResponseHeaders().set("X-Signature", Hmac.sign(body, CFG.getProperty("token", "")));
         exchange.sendResponseHeaders(code, bytes.length);
         try (OutputStream out = exchange.getResponseBody()) {
             out.write(bytes);

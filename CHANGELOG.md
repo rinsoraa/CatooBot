@@ -1,5 +1,12 @@
 # Changelog
 
+### Minecraft P3 —— 严格服务端证据与询问安全边界
+
+- 默认关闭的严格 dig：派发前取得验签预约，成功须唯一关联服务端破坏事件；取消、超时、重连、迟到及不确定回执均保守处理。
+- schema 3 证据绑定实际任务步骤参数；协议、缓存和 HTTP 输入有界，HMAC 与产品 bearer 分离。
+- 最终候选真机产品矩阵 27 项、协议补验 3 项通过；真实 Provider 与 QQ 反例促成询问/否定回合的零 Agent、零工具约束。
+- 服务器恢复本轮 99 文件备份并回到原运行状态；4705 项 Python 回归、完整 Node/Java 与静态检查通过。最终发布及 CI 裁定见 `docs/MINECRAFT_P3_STRICT_ATTRIBUTION_REPORT.md`，不提前宣称 R1/R8 通过。
+
 ### Minecraft P2.7 —— 服务端退出生命周期与资源清理
 
 - 统一 15 份 Minecraft R/P 规格文件名并更新引用，保留历史 Phase 与失败记录。

@@ -21,13 +21,13 @@ New-Item -ItemType Directory -Path $output | Out-Null
 try {
     $testRoot = Join-Path $PSScriptRoot 'src/test/java/catoo/attrib'
     $mainRoot = Join-Path $PSScriptRoot 'src/main/java/catoo/attrib'
-    $tests = @('BookingTest', 'DimensionPolicyTest', 'RequestStateTest', 'ShutdownTest')
-    $sources = @('Booking.java', 'Hmac.java', 'RequestState.java', 'RequestRegistry.java', 'ShadowResources.java') | ForEach-Object { Join-Path $mainRoot $_ }
+    $tests = @('BookingTest', 'DimensionPolicyTest', 'RequestStateTest', 'ShutdownTest', 'ProtocolTest')
+    $sources = @('Booking.java', 'Hmac.java', 'Json.java', 'RequestState.java', 'RequestRegistry.java', 'ShadowResources.java') | ForEach-Object { Join-Path $mainRoot $_ }
     $classpath = $output
     if ($ServerDir) {
         & (Join-Path $PSScriptRoot 'build.ps1') -ServerDir $ServerDir -JavaHome $JavaHome
         $classpath = @((Join-Path $buildRoot 'catoobot-attribution-2.0.0.jar'), (Get-Content -LiteralPath (Join-Path $buildRoot 'classpath.txt') -Raw).Trim(), $output) -join [IO.Path]::PathSeparator
-        $tests += @('EventJsonTest', 'ReserveBridgeTest', 'LifecycleBridgeTest', 'Smoke')
+        $tests += @('EventJsonTest', 'ReserveBridgeTest', 'LifecycleBridgeTest', 'ProtocolBridgeTest', 'Smoke')
         $sources = @()
     }
     $sources += @($tests | ForEach-Object { Join-Path $testRoot ($_.ToString() + '.java') })

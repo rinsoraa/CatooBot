@@ -18,9 +18,9 @@ jobs:
         with:
           distribution: temurin
           java-version: '21'
-      # Booking/Dimension/request and loopback resource lifecycle contracts. Full Fabric compilation, event JSON,
+      # Booking/Dimension/request/protocol and loopback resource lifecycle contracts. Full Fabric compilation, event JSON,
       # thread bridge, class loading and E3 require the pinned local server dependencies.
-      - name: Booking, dimension, request and resource shutdown contracts
+      - name: Booking, dimension, request, authenticated protocol and resource shutdown contracts
         shell: pwsh
         run: ./server_mod/test.ps1
 

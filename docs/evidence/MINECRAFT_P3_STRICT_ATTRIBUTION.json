@@ -1,0 +1,2224 @@
+{
+  "scope": "P3 experimental dedicated Fabric 1.21.1, strict opt-in; not R1/R8 global acceptance",
+  "product_entry": "controlled USER TaskRuntime; real policy/confirmation/bridge/service; proposal and AgentPlan audit; fixture setup via RCON, not QQ execution",
+  "baseline": "ddb4eb44f417c0483903dea7771cd90e2cea610c",
+  "jar": {
+    "initial_server_running": true,
+    "backup_files": 99,
+    "backup_sha256": "8a52fbbae06706914ea11b9e460e1f77cf3dcf042aee0368a4c5201ccf636e49",
+    "jar_sha256": "4e6cbe2f71914317a68d394d788b0800cfa20739033a49566ef2e32e406dfb21",
+    "deployed_hash_matches": true,
+    "initial_mod_files": [],
+    "initial_config_present": false,
+    "backup_collected_while_stopped": true,
+    "rcon_temporarily_enabled_on_loopback": true,
+    "mod_version": "2.0.0-p3.1",
+    "runtime_source_files_current": true
+  },
+  "runtime_sha256": {
+    "runtime.js": "b31bdadb6e5482de7bd2a197221c0b058a66faa79961e2c5a794a26088698d5e",
+    "action_runtime.js": "330cb916a03c74874e0791916578747b88257d3dd1a9f5e1b0f207392659804a",
+    "dig_attribution.js": "39888863c7e0044bfbacbeed6074e7bbae60ad5dc0467e308254d68c41eb58dd",
+    "strict_attribution.js": "c297bbb07369b439cd2f03311fb8cc73268da8fcd2bef4609797a21cacbb545b"
+  },
+  "mod_source_sha256": {
+    "server_mod/src/main/java/catoo/attrib/Booking.java": "10f76f21c9a664ad61ba4352fbeae562a58e0a9c2162589065c8389f4b64e768",
+    "server_mod/src/main/java/catoo/attrib/CatooAttributionMod.java": "a4946f329a51ac3908a682e5078ae9ae2095eb4c950e382bc0b92a4ccd933beb",
+    "server_mod/src/main/java/catoo/attrib/Hmac.java": "ddbae706ce1bbbd089ff19d5c687cd679d2b30ff4cc8621d28ab61eb5bb7138d",
+    "server_mod/src/main/java/catoo/attrib/Json.java": "0279ffd68fbf750cf87a01798eb2cdc23cfc20d456f8e1a2fa420b10e6cceafe",
+    "server_mod/src/main/java/catoo/attrib/RequestRegistry.java": "d67a48b185d77d4217dc0c279b157f19154ae82ad540f098b23aba25e9fde231",
+    "server_mod/src/main/java/catoo/attrib/RequestState.java": "39a80f8e5ae3eb5348fb584cc2a6b28bad63df9e201e250abe4b0a3d816702e2",
+    "server_mod/src/main/java/catoo/attrib/ShadowResources.java": "fe3bbba092e69f79d8727fa8d974e4cba16cd0b7349b6c7af085784175827b20"
+  },
+  "cases": [
+    {
+      "case_id": "8a31450086133e82_1",
+      "kind": "normal",
+      "status": "PASS",
+      "target": {
+        "x": 12005,
+        "y": 100,
+        "z": 12023
+      },
+      "task_id": "task_c786da3124be",
+      "plan_hash": "45518c2ebd7e9dec9272",
+      "action_id": "act_rt_mve2hguq_15248388_mve2hiq3_2",
+      "task_state": "SUCCEEDED",
+      "step_state": "SUCCEEDED",
+      "event_seq": 6,
+      "plan_authorized": true,
+      "before_confirmation": "Test passed",
+      "independent_world_after": "Test passed",
+      "server_inventory_before": "P3Bot has the following entity data: []",
+      "server_inventory_after": "P3Bot has the following entity data: []",
+      "attribution": {
+        "kind": "dig_attribution",
+        "schema": 3,
+        "action_id": "act_rt_mve2hguq_15248388_mve2hiq3_2",
+        "session_id": "mc_mve2hgw3_vp2xce",
+        "target": {
+          "x": 12005,
+          "y": 100,
+          "z": 12023
+        },
+        "dimension": "minecraft:overworld",
+        "world_effect": "BLOCK_REMOVED",
+        "attribution": "SELF_CONFIRMED",
+        "assurance": "STRICT",
+        "confirm_basis": "server_block_break",
+        "strict_self_proof": true,
+        "reason_code": "unique_authenticated_server_event",
+        "server_proof": {
+          "schema": 1,
+          "source": "server_block_break",
+          "event_id": "c71834b6-24d6-40e2-b636-70e1f4d722b4",
+          "reservation_id": "71cebe1e-ca94-49e2-ac1d-f5619705fc1d",
+          "action_id": "act_rt_mve2hguq_15248388_mve2hiq3_2",
+          "session_ref": "6866c4b6-3e45-455d-9012-6b97c081d825",
+          "session_seq": 2,
+          "player_uuid": "29e391d4-26dd-30d2-ba35-27fd7d6713f3",
+          "dimension": "minecraft:overworld",
+          "pos": "12005,100,12023",
+          "block_before": "minecraft:oak_log",
+          "block_after": "minecraft:air"
+        }
+      },
+      "independent_break_animation": [
+        {
+          "case_id": "8a31450086133e82_1",
+          "stage": 0,
+          "actor_name": "P3Bot",
+          "actor_uuid": "29e391d4-26dd-30d2-ba35-27fd7d6713f3",
+          "entity_id": 191,
+          "pos": "12005,100,12023",
+          "source": "server_break_animation_to_independent_client"
+        },
+        {
+          "case_id": "8a31450086133e82_1",
+          "stage": 1,
+          "actor_name": "P3Bot",
+          "actor_uuid": "29e391d4-26dd-30d2-ba35-27fd7d6713f3",
+          "entity_id": 191,
+          "pos": "12005,100,12023",
+          "source": "server_break_animation_to_independent_client"
+        },
+        {
+          "case_id": "8a31450086133e82_1",
+          "stage": 2,
+          "actor_name": "P3Bot",
+          "actor_uuid": "29e391d4-26dd-30d2-ba35-27fd7d6713f3",
+          "entity_id": 191,
+          "pos": "12005,100,12023",
+          "source": "server_break_animation_to_independent_client"
+        },
+        {
+          "case_id": "8a31450086133e82_1",
+          "stage": 3,
+          "actor_name": "P3Bot",
+          "actor_uuid": "29e391d4-26dd-30d2-ba35-27fd7d6713f3",
+          "entity_id": 191,
+          "pos": "12005,100,12023",
+          "source": "server_break_animation_to_independent_client"
+        },
+        {
+          "case_id": "8a31450086133e82_1",
+          "stage": 4,
+          "actor_name": "P3Bot",
+          "actor_uuid": "29e391d4-26dd-30d2-ba35-27fd7d6713f3",
+          "entity_id": 191,
+          "pos": "12005,100,12023",
+          "source": "server_break_animation_to_independent_client"
+        },
+        {
+          "case_id": "8a31450086133e82_1",
+          "stage": 5,
+          "actor_name": "P3Bot",
+          "actor_uuid": "29e391d4-26dd-30d2-ba35-27fd7d6713f3",
+          "entity_id": 191,
+          "pos": "12005,100,12023",
+          "source": "server_break_animation_to_independent_client"
+        },
+        {
+          "case_id": "8a31450086133e82_1",
+          "stage": 6,
+          "actor_name": "P3Bot",
+          "actor_uuid": "29e391d4-26dd-30d2-ba35-27fd7d6713f3",
+          "entity_id": 191,
+          "pos": "12005,100,12023",
+          "source": "server_break_animation_to_independent_client"
+        },
+        {
+          "case_id": "8a31450086133e82_1",
+          "stage": 7,
+          "actor_name": "P3Bot",
+          "actor_uuid": "29e391d4-26dd-30d2-ba35-27fd7d6713f3",
+          "entity_id": 191,
+          "pos": "12005,100,12023",
+          "source": "server_break_animation_to_independent_client"
+        },
+        {
+          "case_id": "8a31450086133e82_1",
+          "stage": 8,
+          "actor_name": "P3Bot",
+          "actor_uuid": "29e391d4-26dd-30d2-ba35-27fd7d6713f3",
+          "entity_id": 191,
+          "pos": "12005,100,12023",
+          "source": "server_break_animation_to_independent_client"
+        },
+        {
+          "case_id": "8a31450086133e82_1",
+          "stage": 9,
+          "actor_name": "P3Bot",
+          "actor_uuid": "29e391d4-26dd-30d2-ba35-27fd7d6713f3",
+          "entity_id": 191,
+          "pos": "12005,100,12023",
+          "source": "server_break_animation_to_independent_client"
+        }
+      ]
+    },
+    {
+      "case_id": "8a31450086133e82_2",
+      "kind": "normal",
+      "status": "PASS",
+      "target": {
+        "x": 12005,
+        "y": 100,
+        "z": 12043
+      },
+      "task_id": "task_71389f968882",
+      "plan_hash": "999d4838376991463ad2",
+      "action_id": "act_rt_mve2hguq_15248388_mve2hlxg_4",
+      "task_state": "SUCCEEDED",
+      "step_state": "SUCCEEDED",
+      "event_seq": 6,
+      "plan_authorized": true,
+      "before_confirmation": "Test passed",
+      "independent_world_after": "Test passed",
+      "server_inventory_before": "P3Bot has the following entity data: []",
+      "server_inventory_after": "P3Bot has the following entity data: []",
+      "attribution": {
+        "kind": "dig_attribution",
+        "schema": 3,
+        "action_id": "act_rt_mve2hguq_15248388_mve2hlxg_4",
+        "session_id": "mc_mve2hgw3_vp2xce",
+        "target": {
+          "x": 12005,
+          "y": 100,
+          "z": 12043
+        },
+        "dimension": "minecraft:overworld",
+        "world_effect": "BLOCK_REMOVED",
+        "attribution": "SELF_CONFIRMED",
+        "assurance": "STRICT",
+        "confirm_basis": "server_block_break",
+        "strict_self_proof": true,
+        "reason_code": "unique_authenticated_server_event",
+        "server_proof": {
+          "schema": 1,
+          "source": "server_block_break",
+          "event_id": "b5b1b45f-cfa4-480c-b23a-0f6cebad3aa3",
+          "reservation_id": "1fe7923f-a0ef-4fe6-9e72-4bcc968ccc66",
+          "action_id": "act_rt_mve2hguq_15248388_mve2hlxg_4",
+          "session_ref": "6866c4b6-3e45-455d-9012-6b97c081d825",
+          "session_seq": 2,
+          "player_uuid": "29e391d4-26dd-30d2-ba35-27fd7d6713f3",
+          "dimension": "minecraft:overworld",
+          "pos": "12005,100,12043",
+          "block_before": "minecraft:oak_log",
+          "block_after": "minecraft:air"
+        }
+      },
+      "independent_break_animation": [
+        {
+          "case_id": "8a31450086133e82_2",
+          "stage": 0,
+          "actor_name": "P3Bot",
+          "actor_uuid": "29e391d4-26dd-30d2-ba35-27fd7d6713f3",
+          "entity_id": 191,
+          "pos": "12005,100,12043",
+          "source": "server_break_animation_to_independent_client"
+        },
+        {
+          "case_id": "8a31450086133e82_2",
+          "stage": 1,
+          "actor_name": "P3Bot",
+          "actor_uuid": "29e391d4-26dd-30d2-ba35-27fd7d6713f3",
+          "entity_id": 191,
+          "pos": "12005,100,12043",
+          "source": "server_break_animation_to_independent_client"
+        },
+        {
+          "case_id": "8a31450086133e82_2",
+          "stage": 2,
+          "actor_name": "P3Bot",
+          "actor_uuid": "29e391d4-26dd-30d2-ba35-27fd7d6713f3",
+          "entity_id": 191,
+          "pos": "12005,100,12043",
+          "source": "server_break_animation_to_independent_client"
+        },
+        {
+          "case_id": "8a31450086133e82_2",
+          "stage": 3,
+          "actor_name": "P3Bot",
+          "actor_uuid": "29e391d4-26dd-30d2-ba35-27fd7d6713f3",
+          "entity_id": 191,
+          "pos": "12005,100,12043",
+          "source": "server_break_animation_to_independent_client"
+        },
+        {
+          "case_id": "8a31450086133e82_2",
+          "stage": 4,
+          "actor_name": "P3Bot",
+          "actor_uuid": "29e391d4-26dd-30d2-ba35-27fd7d6713f3",
+          "entity_id": 191,
+          "pos": "12005,100,12043",
+          "source": "server_break_animation_to_independent_client"
+        },
+        {
+          "case_id": "8a31450086133e82_2",
+          "stage": 5,
+          "actor_name": "P3Bot",
+          "actor_uuid": "29e391d4-26dd-30d2-ba35-27fd7d6713f3",
+          "entity_id": 191,
+          "pos": "12005,100,12043",
+          "source": "server_break_animation_to_independent_client"
+        },
+        {
+          "case_id": "8a31450086133e82_2",
+          "stage": 6,
+          "actor_name": "P3Bot",
+          "actor_uuid": "29e391d4-26dd-30d2-ba35-27fd7d6713f3",
+          "entity_id": 191,
+          "pos": "12005,100,12043",
+          "source": "server_break_animation_to_independent_client"
+        },
+        {
+          "case_id": "8a31450086133e82_2",
+          "stage": 7,
+          "actor_name": "P3Bot",
+          "actor_uuid": "29e391d4-26dd-30d2-ba35-27fd7d6713f3",
+          "entity_id": 191,
+          "pos": "12005,100,12043",
+          "source": "server_break_animation_to_independent_client"
+        },
+        {
+          "case_id": "8a31450086133e82_2",
+          "stage": 8,
+          "actor_name": "P3Bot",
+          "actor_uuid": "29e391d4-26dd-30d2-ba35-27fd7d6713f3",
+          "entity_id": 191,
+          "pos": "12005,100,12043",
+          "source": "server_break_animation_to_independent_client"
+        },
+        {
+          "case_id": "8a31450086133e82_2",
+          "stage": 9,
+          "actor_name": "P3Bot",
+          "actor_uuid": "29e391d4-26dd-30d2-ba35-27fd7d6713f3",
+          "entity_id": 191,
+          "pos": "12005,100,12043",
+          "source": "server_break_animation_to_independent_client"
+        }
+      ]
+    },
+    {
+      "case_id": "8a31450086133e82_3",
+      "kind": "normal",
+      "status": "PASS",
+      "target": {
+        "x": 12005,
+        "y": 100,
+        "z": 12063
+      },
+      "task_id": "task_3cfff17b9c40",
+      "plan_hash": "c4cc0782c258d11b4716",
+      "action_id": "act_rt_mve2hguq_15248388_mve2hoz7_6",
+      "task_state": "SUCCEEDED",
+      "step_state": "SUCCEEDED",
+      "event_seq": 6,
+      "plan_authorized": true,
+      "before_confirmation": "Test passed",
+      "independent_world_after": "Test passed",
+      "server_inventory_before": "P3Bot has the following entity data: []",
+      "server_inventory_after": "P3Bot has the following entity data: []",
+      "attribution": {
+        "kind": "dig_attribution",
+        "schema": 3,
+        "action_id": "act_rt_mve2hguq_15248388_mve2hoz7_6",
+        "session_id": "mc_mve2hgw3_vp2xce",
+        "target": {
+          "x": 12005,
+          "y": 100,
+          "z": 12063
+        },
+        "dimension": "minecraft:overworld",
+        "world_effect": "BLOCK_REMOVED",
+        "attribution": "SELF_CONFIRMED",
+        "assurance": "STRICT",
+        "confirm_basis": "server_block_break",
+        "strict_self_proof": true,
+        "reason_code": "unique_authenticated_server_event",
+        "server_proof": {
+          "schema": 1,
+          "source": "server_block_break",
+          "event_id": "413d808f-d993-4094-9239-55b727ee78f8",
+          "reservation_id": "ebfeb69f-01c5-47a3-b37a-b099a9cdd4c3",
+          "action_id": "act_rt_mve2hguq_15248388_mve2hoz7_6",
+          "session_ref": "6866c4b6-3e45-455d-9012-6b97c081d825",
+          "session_seq": 2,
+          "player_uuid": "29e391d4-26dd-30d2-ba35-27fd7d6713f3",
+          "dimension": "minecraft:overworld",
+          "pos": "12005,100,12063",
+          "block_before": "minecraft:oak_log",
+          "block_after": "minecraft:air"
+        }
+      },
+      "independent_break_animation": [
+        {
+          "case_id": "8a31450086133e82_3",
+          "stage": 0,
+          "actor_name": "P3Bot",
+          "actor_uuid": "29e391d4-26dd-30d2-ba35-27fd7d6713f3",
+          "entity_id": 191,
+          "pos": "12005,100,12063",
+          "source": "server_break_animation_to_independent_client"
+        },
+        {
+          "case_id": "8a31450086133e82_3",
+          "stage": 1,
+          "actor_name": "P3Bot",
+          "actor_uuid": "29e391d4-26dd-30d2-ba35-27fd7d6713f3",
+          "entity_id": 191,
+          "pos": "12005,100,12063",
+          "source": "server_break_animation_to_independent_client"
+        },
+        {
+          "case_id": "8a31450086133e82_3",
+          "stage": 2,
+          "actor_name": "P3Bot",
+          "actor_uuid": "29e391d4-26dd-30d2-ba35-27fd7d6713f3",
+          "entity_id": 191,
+          "pos": "12005,100,12063",
+          "source": "server_break_animation_to_independent_client"
+        },
+        {
+          "case_id": "8a31450086133e82_3",
+          "stage": 3,
+          "actor_name": "P3Bot",
+          "actor_uuid": "29e391d4-26dd-30d2-ba35-27fd7d6713f3",
+          "entity_id": 191,
+          "pos": "12005,100,12063",
+          "source": "server_break_animation_to_independent_client"
+        },
+        {
+          "case_id": "8a31450086133e82_3",
+          "stage": 4,
+          "actor_name": "P3Bot",
+          "actor_uuid": "29e391d4-26dd-30d2-ba35-27fd7d6713f3",
+          "entity_id": 191,
+          "pos": "12005,100,12063",
+          "source": "server_break_animation_to_independent_client"
+        },
+        {
+          "case_id": "8a31450086133e82_3",
+          "stage": 5,
+          "actor_name": "P3Bot",
+          "actor_uuid": "29e391d4-26dd-30d2-ba35-27fd7d6713f3",
+          "entity_id": 191,
+          "pos": "12005,100,12063",
+          "source": "server_break_animation_to_independent_client"
+        },
+        {
+          "case_id": "8a31450086133e82_3",
+          "stage": 6,
+          "actor_name": "P3Bot",
+          "actor_uuid": "29e391d4-26dd-30d2-ba35-27fd7d6713f3",
+          "entity_id": 191,
+          "pos": "12005,100,12063",
+          "source": "server_break_animation_to_independent_client"
+        },
+        {
+          "case_id": "8a31450086133e82_3",
+          "stage": 7,
+          "actor_name": "P3Bot",
+          "actor_uuid": "29e391d4-26dd-30d2-ba35-27fd7d6713f3",
+          "entity_id": 191,
+          "pos": "12005,100,12063",
+          "source": "server_break_animation_to_independent_client"
+        },
+        {
+          "case_id": "8a31450086133e82_3",
+          "stage": 8,
+          "actor_name": "P3Bot",
+          "actor_uuid": "29e391d4-26dd-30d2-ba35-27fd7d6713f3",
+          "entity_id": 191,
+          "pos": "12005,100,12063",
+          "source": "server_break_animation_to_independent_client"
+        },
+        {
+          "case_id": "8a31450086133e82_3",
+          "stage": 9,
+          "actor_name": "P3Bot",
+          "actor_uuid": "29e391d4-26dd-30d2-ba35-27fd7d6713f3",
+          "entity_id": 191,
+          "pos": "12005,100,12063",
+          "source": "server_break_animation_to_independent_client"
+        }
+      ]
+    },
+    {
+      "case_id": "8a31450086133e82_4",
+      "kind": "normal",
+      "status": "PASS",
+      "target": {
+        "x": 12005,
+        "y": 100,
+        "z": 12083
+      },
+      "task_id": "task_f9644d44e867",
+      "plan_hash": "f0b4ee691b3f1db60078",
+      "action_id": "act_rt_mve2hguq_15248388_mve2hs17_8",
+      "task_state": "SUCCEEDED",
+      "step_state": "SUCCEEDED",
+      "event_seq": 6,
+      "plan_authorized": true,
+      "before_confirmation": "Test passed",
+      "independent_world_after": "Test passed",
+      "server_inventory_before": "P3Bot has the following entity data: []",
+      "server_inventory_after": "P3Bot has the following entity data: []",
+      "attribution": {
+        "kind": "dig_attribution",
+        "schema": 3,
+        "action_id": "act_rt_mve2hguq_15248388_mve2hs17_8",
+        "session_id": "mc_mve2hgw3_vp2xce",
+        "target": {
+          "x": 12005,
+          "y": 100,
+          "z": 12083
+        },
+        "dimension": "minecraft:overworld",
+        "world_effect": "BLOCK_REMOVED",
+        "attribution": "SELF_CONFIRMED",
+        "assurance": "STRICT",
+        "confirm_basis": "server_block_break",
+        "strict_self_proof": true,
+        "reason_code": "unique_authenticated_server_event",
+        "server_proof": {
+          "schema": 1,
+          "source": "server_block_break",
+          "event_id": "09326afa-7955-4f0d-932e-b0dfa4107ff5",
+          "reservation_id": "01a29301-0c4b-47df-b0c1-54a9e9bebc7c",
+          "action_id": "act_rt_mve2hguq_15248388_mve2hs17_8",
+          "session_ref": "6866c4b6-3e45-455d-9012-6b97c081d825",
+          "session_seq": 2,
+          "player_uuid": "29e391d4-26dd-30d2-ba35-27fd7d6713f3",
+          "dimension": "minecraft:overworld",
+          "pos": "12005,100,12083",
+          "block_before": "minecraft:oak_log",
+          "block_after": "minecraft:air"
+        }
+      },
+      "independent_break_animation": [
+        {
+          "case_id": "8a31450086133e82_4",
+          "stage": 0,
+          "actor_name": "P3Bot",
+          "actor_uuid": "29e391d4-26dd-30d2-ba35-27fd7d6713f3",
+          "entity_id": 191,
+          "pos": "12005,100,12083",
+          "source": "server_break_animation_to_independent_client"
+        },
+        {
+          "case_id": "8a31450086133e82_4",
+          "stage": 1,
+          "actor_name": "P3Bot",
+          "actor_uuid": "29e391d4-26dd-30d2-ba35-27fd7d6713f3",
+          "entity_id": 191,
+          "pos": "12005,100,12083",
+          "source": "server_break_animation_to_independent_client"
+        },
+        {
+          "case_id": "8a31450086133e82_4",
+          "stage": 2,
+          "actor_name": "P3Bot",
+          "actor_uuid": "29e391d4-26dd-30d2-ba35-27fd7d6713f3",
+          "entity_id": 191,
+          "pos": "12005,100,12083",
+          "source": "server_break_animation_to_independent_client"
+        },
+        {
+          "case_id": "8a31450086133e82_4",
+          "stage": 3,
+          "actor_name": "P3Bot",
+          "actor_uuid": "29e391d4-26dd-30d2-ba35-27fd7d6713f3",
+          "entity_id": 191,
+          "pos": "12005,100,12083",
+          "source": "server_break_animation_to_independent_client"
+        },
+        {
+          "case_id": "8a31450086133e82_4",
+          "stage": 4,
+          "actor_name": "P3Bot",
+          "actor_uuid": "29e391d4-26dd-30d2-ba35-27fd7d6713f3",
+          "entity_id": 191,
+          "pos": "12005,100,12083",
+          "source": "server_break_animation_to_independent_client"
+        },
+        {
+          "case_id": "8a31450086133e82_4",
+          "stage": 5,
+          "actor_name": "P3Bot",
+          "actor_uuid": "29e391d4-26dd-30d2-ba35-27fd7d6713f3",
+          "entity_id": 191,
+          "pos": "12005,100,12083",
+          "source": "server_break_animation_to_independent_client"
+        },
+        {
+          "case_id": "8a31450086133e82_4",
+          "stage": 6,
+          "actor_name": "P3Bot",
+          "actor_uuid": "29e391d4-26dd-30d2-ba35-27fd7d6713f3",
+          "entity_id": 191,
+          "pos": "12005,100,12083",
+          "source": "server_break_animation_to_independent_client"
+        },
+        {
+          "case_id": "8a31450086133e82_4",
+          "stage": 7,
+          "actor_name": "P3Bot",
+          "actor_uuid": "29e391d4-26dd-30d2-ba35-27fd7d6713f3",
+          "entity_id": 191,
+          "pos": "12005,100,12083",
+          "source": "server_break_animation_to_independent_client"
+        },
+        {
+          "case_id": "8a31450086133e82_4",
+          "stage": 8,
+          "actor_name": "P3Bot",
+          "actor_uuid": "29e391d4-26dd-30d2-ba35-27fd7d6713f3",
+          "entity_id": 191,
+          "pos": "12005,100,12083",
+          "source": "server_break_animation_to_independent_client"
+        },
+        {
+          "case_id": "8a31450086133e82_4",
+          "stage": 9,
+          "actor_name": "P3Bot",
+          "actor_uuid": "29e391d4-26dd-30d2-ba35-27fd7d6713f3",
+          "entity_id": 191,
+          "pos": "12005,100,12083",
+          "source": "server_break_animation_to_independent_client"
+        }
+      ]
+    },
+    {
+      "case_id": "8a31450086133e82_5",
+      "kind": "normal",
+      "status": "PASS",
+      "target": {
+        "x": 12005,
+        "y": 100,
+        "z": 12103
+      },
+      "task_id": "task_353c8044d4a2",
+      "plan_hash": "beca4ba1423706ea20ce",
+      "action_id": "act_rt_mve2hguq_15248388_mve2hv2w_a",
+      "task_state": "SUCCEEDED",
+      "step_state": "SUCCEEDED",
+      "event_seq": 6,
+      "plan_authorized": true,
+      "before_confirmation": "Test passed",
+      "independent_world_after": "Test passed",
+      "server_inventory_before": "P3Bot has the following entity data: []",
+      "server_inventory_after": "P3Bot has the following entity data: []",
+      "attribution": {
+        "kind": "dig_attribution",
+        "schema": 3,
+        "action_id": "act_rt_mve2hguq_15248388_mve2hv2w_a",
+        "session_id": "mc_mve2hgw3_vp2xce",
+        "target": {
+          "x": 12005,
+          "y": 100,
+          "z": 12103
+        },
+        "dimension": "minecraft:overworld",
+        "world_effect": "BLOCK_REMOVED",
+        "attribution": "SELF_CONFIRMED",
+        "assurance": "STRICT",
+        "confirm_basis": "server_block_break",
+        "strict_self_proof": true,
+        "reason_code": "unique_authenticated_server_event",
+        "server_proof": {
+          "schema": 1,
+          "source": "server_block_break",
+          "event_id": "7704c760-1c08-434e-9fed-fba1b932790e",
+          "reservation_id": "1e5b12e6-37ed-436f-9a60-720a063259bd",
+          "action_id": "act_rt_mve2hguq_15248388_mve2hv2w_a",
+          "session_ref": "6866c4b6-3e45-455d-9012-6b97c081d825",
+          "session_seq": 2,
+          "player_uuid": "29e391d4-26dd-30d2-ba35-27fd7d6713f3",
+          "dimension": "minecraft:overworld",
+          "pos": "12005,100,12103",
+          "block_before": "minecraft:oak_log",
+          "block_after": "minecraft:air"
+        }
+      },
+      "independent_break_animation": [
+        {
+          "case_id": "8a31450086133e82_5",
+          "stage": 0,
+          "actor_name": "P3Bot",
+          "actor_uuid": "29e391d4-26dd-30d2-ba35-27fd7d6713f3",
+          "entity_id": 191,
+          "pos": "12005,100,12103",
+          "source": "server_break_animation_to_independent_client"
+        },
+        {
+          "case_id": "8a31450086133e82_5",
+          "stage": 1,
+          "actor_name": "P3Bot",
+          "actor_uuid": "29e391d4-26dd-30d2-ba35-27fd7d6713f3",
+          "entity_id": 191,
+          "pos": "12005,100,12103",
+          "source": "server_break_animation_to_independent_client"
+        },
+        {
+          "case_id": "8a31450086133e82_5",
+          "stage": 2,
+          "actor_name": "P3Bot",
+          "actor_uuid": "29e391d4-26dd-30d2-ba35-27fd7d6713f3",
+          "entity_id": 191,
+          "pos": "12005,100,12103",
+          "source": "server_break_animation_to_independent_client"
+        },
+        {
+          "case_id": "8a31450086133e82_5",
+          "stage": 3,
+          "actor_name": "P3Bot",
+          "actor_uuid": "29e391d4-26dd-30d2-ba35-27fd7d6713f3",
+          "entity_id": 191,
+          "pos": "12005,100,12103",
+          "source": "server_break_animation_to_independent_client"
+        },
+        {
+          "case_id": "8a31450086133e82_5",
+          "stage": 4,
+          "actor_name": "P3Bot",
+          "actor_uuid": "29e391d4-26dd-30d2-ba35-27fd7d6713f3",
+          "entity_id": 191,
+          "pos": "12005,100,12103",
+          "source": "server_break_animation_to_independent_client"
+        },
+        {
+          "case_id": "8a31450086133e82_5",
+          "stage": 5,
+          "actor_name": "P3Bot",
+          "actor_uuid": "29e391d4-26dd-30d2-ba35-27fd7d6713f3",
+          "entity_id": 191,
+          "pos": "12005,100,12103",
+          "source": "server_break_animation_to_independent_client"
+        },
+        {
+          "case_id": "8a31450086133e82_5",
+          "stage": 6,
+          "actor_name": "P3Bot",
+          "actor_uuid": "29e391d4-26dd-30d2-ba35-27fd7d6713f3",
+          "entity_id": 191,
+          "pos": "12005,100,12103",
+          "source": "server_break_animation_to_independent_client"
+        },
+        {
+          "case_id": "8a31450086133e82_5",
+          "stage": 7,
+          "actor_name": "P3Bot",
+          "actor_uuid": "29e391d4-26dd-30d2-ba35-27fd7d6713f3",
+          "entity_id": 191,
+          "pos": "12005,100,12103",
+          "source": "server_break_animation_to_independent_client"
+        },
+        {
+          "case_id": "8a31450086133e82_5",
+          "stage": 8,
+          "actor_name": "P3Bot",
+          "actor_uuid": "29e391d4-26dd-30d2-ba35-27fd7d6713f3",
+          "entity_id": 191,
+          "pos": "12005,100,12103",
+          "source": "server_break_animation_to_independent_client"
+        },
+        {
+          "case_id": "8a31450086133e82_5",
+          "stage": 9,
+          "actor_name": "P3Bot",
+          "actor_uuid": "29e391d4-26dd-30d2-ba35-27fd7d6713f3",
+          "entity_id": 191,
+          "pos": "12005,100,12103",
+          "source": "server_break_animation_to_independent_client"
+        }
+      ]
+    },
+    {
+      "case_id": "8a31450086133e82_6",
+      "kind": "external",
+      "status": "PASS",
+      "target": {
+        "x": 12005,
+        "y": 100,
+        "z": 12123
+      },
+      "task_id": "task_701cb91411fd",
+      "plan_hash": "815e53ea5a72deb4c03d",
+      "action_id": "act_rt_mve2hguq_15248388_mve2hy5r_c",
+      "task_state": "PAUSED",
+      "step_state": "FAILED",
+      "event_seq": 6,
+      "plan_authorized": true,
+      "before_confirmation": "Test passed",
+      "independent_world_after": "Test passed",
+      "server_inventory_before": "P3Bot has the following entity data: []",
+      "server_inventory_after": "P3Bot has the following entity data: []",
+      "attribution": {},
+      "independent_break_animation": [
+        {
+          "case_id": "8a31450086133e82_6",
+          "stage": 0,
+          "actor_name": "P3Bot",
+          "actor_uuid": "29e391d4-26dd-30d2-ba35-27fd7d6713f3",
+          "entity_id": 191,
+          "pos": "12005,100,12123",
+          "source": "server_break_animation_to_independent_client"
+        }
+      ]
+    },
+    {
+      "case_id": "8a31450086133e82_7",
+      "kind": "external",
+      "status": "PASS",
+      "target": {
+        "x": 12005,
+        "y": 100,
+        "z": 12143
+      },
+      "task_id": "task_be94667137d1",
+      "plan_hash": "489eb56138849dfa0001",
+      "action_id": "act_rt_mve2hguq_15248388_mve2i177_e",
+      "task_state": "PAUSED",
+      "step_state": "FAILED",
+      "event_seq": 6,
+      "plan_authorized": true,
+      "before_confirmation": "Test passed",
+      "independent_world_after": "Test passed",
+      "server_inventory_before": "P3Bot has the following entity data: []",
+      "server_inventory_after": "P3Bot has the following entity data: []",
+      "attribution": {},
+      "independent_break_animation": [
+        {
+          "case_id": "8a31450086133e82_7",
+          "stage": 0,
+          "actor_name": "P3Bot",
+          "actor_uuid": "29e391d4-26dd-30d2-ba35-27fd7d6713f3",
+          "entity_id": 191,
+          "pos": "12005,100,12143",
+          "source": "server_break_animation_to_independent_client"
+        }
+      ]
+    },
+    {
+      "case_id": "8a31450086133e82_8",
+      "kind": "external",
+      "status": "PASS",
+      "target": {
+        "x": 12005,
+        "y": 100,
+        "z": 12163
+      },
+      "task_id": "task_ff1e2b1f2f61",
+      "plan_hash": "afa636a1a323c6b07a35",
+      "action_id": "act_rt_mve2hguq_15248388_mve2i483_g",
+      "task_state": "PAUSED",
+      "step_state": "FAILED",
+      "event_seq": 6,
+      "plan_authorized": true,
+      "before_confirmation": "Test passed",
+      "independent_world_after": "Test passed",
+      "server_inventory_before": "P3Bot has the following entity data: []",
+      "server_inventory_after": "P3Bot has the following entity data: []",
+      "attribution": {},
+      "independent_break_animation": [
+        {
+          "case_id": "8a31450086133e82_8",
+          "stage": 0,
+          "actor_name": "P3Bot",
+          "actor_uuid": "29e391d4-26dd-30d2-ba35-27fd7d6713f3",
+          "entity_id": 191,
+          "pos": "12005,100,12163",
+          "source": "server_break_animation_to_independent_client"
+        }
+      ]
+    },
+    {
+      "case_id": "8a31450086133e82_9",
+      "kind": "external",
+      "status": "PASS",
+      "target": {
+        "x": 12005,
+        "y": 100,
+        "z": 12183
+      },
+      "task_id": "task_cb4934003315",
+      "plan_hash": "29a99f392b0d0ee9fadb",
+      "action_id": "act_rt_mve2hguq_15248388_mve2i79n_i",
+      "task_state": "PAUSED",
+      "step_state": "FAILED",
+      "event_seq": 6,
+      "plan_authorized": true,
+      "before_confirmation": "Test passed",
+      "independent_world_after": "Test passed",
+      "server_inventory_before": "P3Bot has the following entity data: []",
+      "server_inventory_after": "P3Bot has the following entity data: []",
+      "attribution": {},
+      "independent_break_animation": [
+        {
+          "case_id": "8a31450086133e82_9",
+          "stage": 0,
+          "actor_name": "P3Bot",
+          "actor_uuid": "29e391d4-26dd-30d2-ba35-27fd7d6713f3",
+          "entity_id": 191,
+          "pos": "12005,100,12183",
+          "source": "server_break_animation_to_independent_client"
+        }
+      ]
+    },
+    {
+      "case_id": "8a31450086133e82_10",
+      "kind": "external",
+      "status": "PASS",
+      "target": {
+        "x": 12005,
+        "y": 100,
+        "z": 12203
+      },
+      "task_id": "task_6f90ccfd241a",
+      "plan_hash": "81d32195ca2107b0e492",
+      "action_id": "act_rt_mve2hguq_15248388_mve2iacg_k",
+      "task_state": "PAUSED",
+      "step_state": "FAILED",
+      "event_seq": 6,
+      "plan_authorized": true,
+      "before_confirmation": "Test passed",
+      "independent_world_after": "Test passed",
+      "server_inventory_before": "P3Bot has the following entity data: []",
+      "server_inventory_after": "P3Bot has the following entity data: []",
+      "attribution": {},
+      "independent_break_animation": [
+        {
+          "case_id": "8a31450086133e82_10",
+          "stage": 0,
+          "actor_name": "P3Bot",
+          "actor_uuid": "29e391d4-26dd-30d2-ba35-27fd7d6713f3",
+          "entity_id": 191,
+          "pos": "12005,100,12203",
+          "source": "server_break_animation_to_independent_client"
+        }
+      ]
+    },
+    {
+      "case_id": "8a31450086133e82_11",
+      "kind": "other",
+      "status": "PASS",
+      "target": {
+        "x": 12005,
+        "y": 100,
+        "z": 12223
+      },
+      "task_id": "task_f928067723bb",
+      "plan_hash": "500d0425f7d00ef85088",
+      "action_id": "act_rt_mve2hguq_15248388_mve2idd3_m",
+      "task_state": "PAUSED",
+      "step_state": "FAILED",
+      "event_seq": 6,
+      "plan_authorized": true,
+      "before_confirmation": "Test passed",
+      "independent_world_after": "Test passed",
+      "server_inventory_before": "P3Bot has the following entity data: []",
+      "server_inventory_after": "P3Bot has the following entity data: []",
+      "attribution": {},
+      "independent_break_animation": [
+        {
+          "case_id": "8a31450086133e82_11",
+          "stage": 0,
+          "actor_name": "P3Bot",
+          "actor_uuid": "29e391d4-26dd-30d2-ba35-27fd7d6713f3",
+          "entity_id": 191,
+          "pos": "12005,100,12223",
+          "source": "server_break_animation_to_independent_client"
+        },
+        {
+          "case_id": "8a31450086133e82_11",
+          "stage": 1,
+          "actor_name": "P3Bot",
+          "actor_uuid": "29e391d4-26dd-30d2-ba35-27fd7d6713f3",
+          "entity_id": 191,
+          "pos": "12005,100,12223",
+          "source": "server_break_animation_to_independent_client"
+        }
+      ]
+    },
+    {
+      "case_id": "8a31450086133e82_12",
+      "kind": "other",
+      "status": "PASS",
+      "target": {
+        "x": 12005,
+        "y": 100,
+        "z": 12243
+      },
+      "task_id": "task_50595dce8993",
+      "plan_hash": "6e044be30bcecca28b0e",
+      "action_id": "act_rt_mve2hguq_15248388_mve2igpe_o",
+      "task_state": "PAUSED",
+      "step_state": "FAILED",
+      "event_seq": 6,
+      "plan_authorized": true,
+      "before_confirmation": "Test passed",
+      "independent_world_after": "Test passed",
+      "server_inventory_before": "P3Bot has the following entity data: []",
+      "server_inventory_after": "P3Bot has the following entity data: []",
+      "attribution": {},
+      "independent_break_animation": [
+        {
+          "case_id": "8a31450086133e82_12",
+          "stage": 0,
+          "actor_name": "P3Bot",
+          "actor_uuid": "29e391d4-26dd-30d2-ba35-27fd7d6713f3",
+          "entity_id": 191,
+          "pos": "12005,100,12243",
+          "source": "server_break_animation_to_independent_client"
+        },
+        {
+          "case_id": "8a31450086133e82_12",
+          "stage": 1,
+          "actor_name": "P3Bot",
+          "actor_uuid": "29e391d4-26dd-30d2-ba35-27fd7d6713f3",
+          "entity_id": 191,
+          "pos": "12005,100,12243",
+          "source": "server_break_animation_to_independent_client"
+        }
+      ]
+    },
+    {
+      "case_id": "8a31450086133e82_13",
+      "kind": "other",
+      "status": "PASS",
+      "target": {
+        "x": 12005,
+        "y": 100,
+        "z": 12263
+      },
+      "task_id": "task_48b7ee0078aa",
+      "plan_hash": "d7b83c477021533ea487",
+      "action_id": "act_rt_mve2hguq_15248388_mve2ik1f_q",
+      "task_state": "PAUSED",
+      "step_state": "FAILED",
+      "event_seq": 6,
+      "plan_authorized": true,
+      "before_confirmation": "Test passed",
+      "independent_world_after": "Test passed",
+      "server_inventory_before": "P3Bot has the following entity data: []",
+      "server_inventory_after": "P3Bot has the following entity data: [{count: 1, Slot: 0b, id: \"minecraft:oak_log\"}]",
+      "attribution": {},
+      "independent_break_animation": [
+        {
+          "case_id": "8a31450086133e82_13",
+          "stage": 0,
+          "actor_name": "P3Bot",
+          "actor_uuid": "29e391d4-26dd-30d2-ba35-27fd7d6713f3",
+          "entity_id": 191,
+          "pos": "12005,100,12263",
+          "source": "server_break_animation_to_independent_client"
+        },
+        {
+          "case_id": "8a31450086133e82_13",
+          "stage": 1,
+          "actor_name": "P3Bot",
+          "actor_uuid": "29e391d4-26dd-30d2-ba35-27fd7d6713f3",
+          "entity_id": 191,
+          "pos": "12005,100,12263",
+          "source": "server_break_animation_to_independent_client"
+        }
+      ]
+    },
+    {
+      "case_id": "8a31450086133e82_14",
+      "kind": "other",
+      "status": "PASS",
+      "target": {
+        "x": 12005,
+        "y": 100,
+        "z": 12283
+      },
+      "task_id": "task_6fbd305c5faa",
+      "plan_hash": "18c77846fe3953082f14",
+      "action_id": "act_rt_mve2hguq_15248388_mve2inek_s",
+      "task_state": "PAUSED",
+      "step_state": "FAILED",
+      "event_seq": 6,
+      "plan_authorized": true,
+      "before_confirmation": "Test passed",
+      "independent_world_after": "Test passed",
+      "server_inventory_before": "P3Bot has the following entity data: []",
+      "server_inventory_after": "P3Bot has the following entity data: []",
+      "attribution": {},
+      "independent_break_animation": [
+        {
+          "case_id": "8a31450086133e82_14",
+          "stage": 0,
+          "actor_name": "P3Bot",
+          "actor_uuid": "29e391d4-26dd-30d2-ba35-27fd7d6713f3",
+          "entity_id": 191,
+          "pos": "12005,100,12283",
+          "source": "server_break_animation_to_independent_client"
+        },
+        {
+          "case_id": "8a31450086133e82_14",
+          "stage": 1,
+          "actor_name": "P3Bot",
+          "actor_uuid": "29e391d4-26dd-30d2-ba35-27fd7d6713f3",
+          "entity_id": 191,
+          "pos": "12005,100,12283",
+          "source": "server_break_animation_to_independent_client"
+        }
+      ]
+    },
+    {
+      "case_id": "8a31450086133e82_15",
+      "kind": "other",
+      "status": "PASS",
+      "target": {
+        "x": 12005,
+        "y": 100,
+        "z": 12303
+      },
+      "task_id": "task_8da894660ec5",
+      "plan_hash": "c1c6836e6d2a392c3765",
+      "action_id": "act_rt_mve2hguq_15248388_mve2iqq6_u",
+      "task_state": "PAUSED",
+      "step_state": "FAILED",
+      "event_seq": 6,
+      "plan_authorized": true,
+      "before_confirmation": "Test passed",
+      "independent_world_after": "Test passed",
+      "server_inventory_before": "P3Bot has the following entity data: []",
+      "server_inventory_after": "P3Bot has the following entity data: [{count: 1, Slot: 0b, id: \"minecraft:oak_log\"}]",
+      "attribution": {},
+      "independent_break_animation": [
+        {
+          "case_id": "8a31450086133e82_15",
+          "stage": 0,
+          "actor_name": "P3Bot",
+          "actor_uuid": "29e391d4-26dd-30d2-ba35-27fd7d6713f3",
+          "entity_id": 191,
+          "pos": "12005,100,12303",
+          "source": "server_break_animation_to_independent_client"
+        },
+        {
+          "case_id": "8a31450086133e82_15",
+          "stage": 1,
+          "actor_name": "P3Bot",
+          "actor_uuid": "29e391d4-26dd-30d2-ba35-27fd7d6713f3",
+          "entity_id": 191,
+          "pos": "12005,100,12303",
+          "source": "server_break_animation_to_independent_client"
+        }
+      ]
+    },
+    {
+      "case_id": "8a31450086133e82_16",
+      "kind": "cancel",
+      "status": "PASS",
+      "target": {
+        "x": 12005,
+        "y": 100,
+        "z": 12323
+      },
+      "task_id": "task_0c8d867c7787",
+      "plan_hash": "bf8b2029b5ca046b9a72",
+      "action_id": "act_rt_mve2hguq_15248388_mve2iu18_w",
+      "task_state": "CANCELLED",
+      "step_state": "WAITING_ACTION",
+      "event_seq": 5,
+      "plan_authorized": true,
+      "before_confirmation": "Test passed",
+      "independent_world_after": "Test passed",
+      "server_inventory_before": "P3Bot has the following entity data: []",
+      "server_inventory_after": "P3Bot has the following entity data: []",
+      "attribution": {},
+      "independent_break_animation": [
+        {
+          "case_id": "8a31450086133e82_16",
+          "stage": 0,
+          "actor_name": "P3Bot",
+          "actor_uuid": "29e391d4-26dd-30d2-ba35-27fd7d6713f3",
+          "entity_id": 191,
+          "pos": "12005,100,12323",
+          "source": "server_break_animation_to_independent_client"
+        }
+      ]
+    },
+    {
+      "case_id": "8a31450086133e82_17",
+      "kind": "cancel",
+      "status": "PASS",
+      "target": {
+        "x": 12005,
+        "y": 100,
+        "z": 12343
+      },
+      "task_id": "task_08fabfb0da88",
+      "plan_hash": "39e34fa815cd0d3fd8dc",
+      "action_id": "act_rt_mve2hguq_15248388_mve2ixg3_y",
+      "task_state": "CANCELLED",
+      "step_state": "WAITING_ACTION",
+      "event_seq": 5,
+      "plan_authorized": true,
+      "before_confirmation": "Test passed",
+      "independent_world_after": "Test passed",
+      "server_inventory_before": "P3Bot has the following entity data: []",
+      "server_inventory_after": "P3Bot has the following entity data: []",
+      "attribution": {},
+      "independent_break_animation": [
+        {
+          "case_id": "8a31450086133e82_17",
+          "stage": 0,
+          "actor_name": "P3Bot",
+          "actor_uuid": "29e391d4-26dd-30d2-ba35-27fd7d6713f3",
+          "entity_id": 191,
+          "pos": "12005,100,12343",
+          "source": "server_break_animation_to_independent_client"
+        }
+      ]
+    },
+    {
+      "case_id": "8a31450086133e82_18",
+      "kind": "drop",
+      "status": "PASS",
+      "target": {
+        "x": 12005,
+        "y": 100,
+        "z": 12363
+      },
+      "task_id": "task_64ae554551d7",
+      "plan_hash": "a36677786618a271838f",
+      "action_id": "act_rt_mve2hguq_15248388_mve2j0th_10",
+      "task_state": "PAUSED",
+      "step_state": "FAILED",
+      "event_seq": 6,
+      "plan_authorized": true,
+      "before_confirmation": "Test passed",
+      "independent_world_after": "Test passed",
+      "server_inventory_before": "P3Bot has the following entity data: []",
+      "server_inventory_after": "P3Bot has the following entity data: [{count: 1, Slot: 0b, id: \"minecraft:oak_log\"}]",
+      "attribution": {},
+      "independent_break_animation": [
+        {
+          "case_id": "8a31450086133e82_18",
+          "stage": 0,
+          "actor_name": "P3Bot",
+          "actor_uuid": "29e391d4-26dd-30d2-ba35-27fd7d6713f3",
+          "entity_id": 191,
+          "pos": "12005,100,12363",
+          "source": "server_break_animation_to_independent_client"
+        },
+        {
+          "case_id": "8a31450086133e82_18",
+          "stage": 1,
+          "actor_name": "P3Bot",
+          "actor_uuid": "29e391d4-26dd-30d2-ba35-27fd7d6713f3",
+          "entity_id": 191,
+          "pos": "12005,100,12363",
+          "source": "server_break_animation_to_independent_client"
+        },
+        {
+          "case_id": "8a31450086133e82_18",
+          "stage": 2,
+          "actor_name": "P3Bot",
+          "actor_uuid": "29e391d4-26dd-30d2-ba35-27fd7d6713f3",
+          "entity_id": 191,
+          "pos": "12005,100,12363",
+          "source": "server_break_animation_to_independent_client"
+        },
+        {
+          "case_id": "8a31450086133e82_18",
+          "stage": 3,
+          "actor_name": "P3Bot",
+          "actor_uuid": "29e391d4-26dd-30d2-ba35-27fd7d6713f3",
+          "entity_id": 191,
+          "pos": "12005,100,12363",
+          "source": "server_break_animation_to_independent_client"
+        },
+        {
+          "case_id": "8a31450086133e82_18",
+          "stage": 4,
+          "actor_name": "P3Bot",
+          "actor_uuid": "29e391d4-26dd-30d2-ba35-27fd7d6713f3",
+          "entity_id": 191,
+          "pos": "12005,100,12363",
+          "source": "server_break_animation_to_independent_client"
+        },
+        {
+          "case_id": "8a31450086133e82_18",
+          "stage": 5,
+          "actor_name": "P3Bot",
+          "actor_uuid": "29e391d4-26dd-30d2-ba35-27fd7d6713f3",
+          "entity_id": 191,
+          "pos": "12005,100,12363",
+          "source": "server_break_animation_to_independent_client"
+        },
+        {
+          "case_id": "8a31450086133e82_18",
+          "stage": 6,
+          "actor_name": "P3Bot",
+          "actor_uuid": "29e391d4-26dd-30d2-ba35-27fd7d6713f3",
+          "entity_id": 191,
+          "pos": "12005,100,12363",
+          "source": "server_break_animation_to_independent_client"
+        },
+        {
+          "case_id": "8a31450086133e82_18",
+          "stage": 7,
+          "actor_name": "P3Bot",
+          "actor_uuid": "29e391d4-26dd-30d2-ba35-27fd7d6713f3",
+          "entity_id": 191,
+          "pos": "12005,100,12363",
+          "source": "server_break_animation_to_independent_client"
+        },
+        {
+          "case_id": "8a31450086133e82_18",
+          "stage": 8,
+          "actor_name": "P3Bot",
+          "actor_uuid": "29e391d4-26dd-30d2-ba35-27fd7d6713f3",
+          "entity_id": 191,
+          "pos": "12005,100,12363",
+          "source": "server_break_animation_to_independent_client"
+        },
+        {
+          "case_id": "8a31450086133e82_18",
+          "stage": 9,
+          "actor_name": "P3Bot",
+          "actor_uuid": "29e391d4-26dd-30d2-ba35-27fd7d6713f3",
+          "entity_id": 191,
+          "pos": "12005,100,12363",
+          "source": "server_break_animation_to_independent_client"
+        }
+      ]
+    },
+    {
+      "case_id": "8a31450086133e82_19",
+      "kind": "bad_signature",
+      "status": "PASS",
+      "target": {
+        "x": 12005,
+        "y": 100,
+        "z": 12383
+      },
+      "task_id": "task_498a31db63de",
+      "plan_hash": "085492e97185804ee12e",
+      "action_id": "act_rt_mve2hguq_15248388_mve2j66b_12",
+      "task_state": "PAUSED",
+      "step_state": "FAILED",
+      "event_seq": 6,
+      "plan_authorized": true,
+      "before_confirmation": "Test passed",
+      "independent_world_after": "Test passed",
+      "server_inventory_before": "P3Bot has the following entity data: []",
+      "server_inventory_after": "P3Bot has the following entity data: []",
+      "attribution": {},
+      "independent_break_animation": [
+        {
+          "case_id": "8a31450086133e82_19",
+          "stage": 0,
+          "actor_name": "P3Bot",
+          "actor_uuid": "29e391d4-26dd-30d2-ba35-27fd7d6713f3",
+          "entity_id": 191,
+          "pos": "12005,100,12383",
+          "source": "server_break_animation_to_independent_client"
+        },
+        {
+          "case_id": "8a31450086133e82_19",
+          "stage": 1,
+          "actor_name": "P3Bot",
+          "actor_uuid": "29e391d4-26dd-30d2-ba35-27fd7d6713f3",
+          "entity_id": 191,
+          "pos": "12005,100,12383",
+          "source": "server_break_animation_to_independent_client"
+        },
+        {
+          "case_id": "8a31450086133e82_19",
+          "stage": 2,
+          "actor_name": "P3Bot",
+          "actor_uuid": "29e391d4-26dd-30d2-ba35-27fd7d6713f3",
+          "entity_id": 191,
+          "pos": "12005,100,12383",
+          "source": "server_break_animation_to_independent_client"
+        },
+        {
+          "case_id": "8a31450086133e82_19",
+          "stage": 3,
+          "actor_name": "P3Bot",
+          "actor_uuid": "29e391d4-26dd-30d2-ba35-27fd7d6713f3",
+          "entity_id": 191,
+          "pos": "12005,100,12383",
+          "source": "server_break_animation_to_independent_client"
+        },
+        {
+          "case_id": "8a31450086133e82_19",
+          "stage": 4,
+          "actor_name": "P3Bot",
+          "actor_uuid": "29e391d4-26dd-30d2-ba35-27fd7d6713f3",
+          "entity_id": 191,
+          "pos": "12005,100,12383",
+          "source": "server_break_animation_to_independent_client"
+        },
+        {
+          "case_id": "8a31450086133e82_19",
+          "stage": 5,
+          "actor_name": "P3Bot",
+          "actor_uuid": "29e391d4-26dd-30d2-ba35-27fd7d6713f3",
+          "entity_id": 191,
+          "pos": "12005,100,12383",
+          "source": "server_break_animation_to_independent_client"
+        },
+        {
+          "case_id": "8a31450086133e82_19",
+          "stage": 6,
+          "actor_name": "P3Bot",
+          "actor_uuid": "29e391d4-26dd-30d2-ba35-27fd7d6713f3",
+          "entity_id": 191,
+          "pos": "12005,100,12383",
+          "source": "server_break_animation_to_independent_client"
+        },
+        {
+          "case_id": "8a31450086133e82_19",
+          "stage": 7,
+          "actor_name": "P3Bot",
+          "actor_uuid": "29e391d4-26dd-30d2-ba35-27fd7d6713f3",
+          "entity_id": 191,
+          "pos": "12005,100,12383",
+          "source": "server_break_animation_to_independent_client"
+        },
+        {
+          "case_id": "8a31450086133e82_19",
+          "stage": 8,
+          "actor_name": "P3Bot",
+          "actor_uuid": "29e391d4-26dd-30d2-ba35-27fd7d6713f3",
+          "entity_id": 191,
+          "pos": "12005,100,12383",
+          "source": "server_break_animation_to_independent_client"
+        },
+        {
+          "case_id": "8a31450086133e82_19",
+          "stage": 9,
+          "actor_name": "P3Bot",
+          "actor_uuid": "29e391d4-26dd-30d2-ba35-27fd7d6713f3",
+          "entity_id": 191,
+          "pos": "12005,100,12383",
+          "source": "server_break_animation_to_independent_client"
+        }
+      ]
+    },
+    {
+      "case_id": "8a31450086133e82_20",
+      "kind": "duplicate",
+      "status": "PASS",
+      "target": {
+        "x": 12005,
+        "y": 100,
+        "z": 12403
+      },
+      "task_id": "task_a9efe83ee420",
+      "plan_hash": "8b5d073d3a3b11cb13f5",
+      "action_id": "act_rt_mve2hguq_15248388_mve2jbiz_14",
+      "task_state": "SUCCEEDED",
+      "step_state": "SUCCEEDED",
+      "event_seq": 6,
+      "plan_authorized": true,
+      "before_confirmation": "Test passed",
+      "independent_world_after": "Test passed",
+      "server_inventory_before": "P3Bot has the following entity data: []",
+      "server_inventory_after": "P3Bot has the following entity data: []",
+      "attribution": {
+        "kind": "dig_attribution",
+        "schema": 3,
+        "action_id": "act_rt_mve2hguq_15248388_mve2jbiz_14",
+        "session_id": "mc_mve2hgw3_vp2xce",
+        "target": {
+          "x": 12005,
+          "y": 100,
+          "z": 12403
+        },
+        "dimension": "minecraft:overworld",
+        "world_effect": "BLOCK_REMOVED",
+        "attribution": "SELF_CONFIRMED",
+        "assurance": "STRICT",
+        "confirm_basis": "server_block_break",
+        "strict_self_proof": true,
+        "reason_code": "unique_authenticated_server_event",
+        "server_proof": {
+          "schema": 1,
+          "source": "server_block_break",
+          "event_id": "e177025b-284e-48f9-8600-a91404a54b62",
+          "reservation_id": "a2b9b53c-0a8e-49fe-b524-1ec4258fc852",
+          "action_id": "act_rt_mve2hguq_15248388_mve2jbiz_14",
+          "session_ref": "6866c4b6-3e45-455d-9012-6b97c081d825",
+          "session_seq": 2,
+          "player_uuid": "29e391d4-26dd-30d2-ba35-27fd7d6713f3",
+          "dimension": "minecraft:overworld",
+          "pos": "12005,100,12403",
+          "block_before": "minecraft:oak_log",
+          "block_after": "minecraft:air"
+        }
+      },
+      "independent_break_animation": [
+        {
+          "case_id": "8a31450086133e82_20",
+          "stage": 0,
+          "actor_name": "P3Bot",
+          "actor_uuid": "29e391d4-26dd-30d2-ba35-27fd7d6713f3",
+          "entity_id": 191,
+          "pos": "12005,100,12403",
+          "source": "server_break_animation_to_independent_client"
+        },
+        {
+          "case_id": "8a31450086133e82_20",
+          "stage": 1,
+          "actor_name": "P3Bot",
+          "actor_uuid": "29e391d4-26dd-30d2-ba35-27fd7d6713f3",
+          "entity_id": 191,
+          "pos": "12005,100,12403",
+          "source": "server_break_animation_to_independent_client"
+        },
+        {
+          "case_id": "8a31450086133e82_20",
+          "stage": 2,
+          "actor_name": "P3Bot",
+          "actor_uuid": "29e391d4-26dd-30d2-ba35-27fd7d6713f3",
+          "entity_id": 191,
+          "pos": "12005,100,12403",
+          "source": "server_break_animation_to_independent_client"
+        },
+        {
+          "case_id": "8a31450086133e82_20",
+          "stage": 3,
+          "actor_name": "P3Bot",
+          "actor_uuid": "29e391d4-26dd-30d2-ba35-27fd7d6713f3",
+          "entity_id": 191,
+          "pos": "12005,100,12403",
+          "source": "server_break_animation_to_independent_client"
+        },
+        {
+          "case_id": "8a31450086133e82_20",
+          "stage": 4,
+          "actor_name": "P3Bot",
+          "actor_uuid": "29e391d4-26dd-30d2-ba35-27fd7d6713f3",
+          "entity_id": 191,
+          "pos": "12005,100,12403",
+          "source": "server_break_animation_to_independent_client"
+        },
+        {
+          "case_id": "8a31450086133e82_20",
+          "stage": 5,
+          "actor_name": "P3Bot",
+          "actor_uuid": "29e391d4-26dd-30d2-ba35-27fd7d6713f3",
+          "entity_id": 191,
+          "pos": "12005,100,12403",
+          "source": "server_break_animation_to_independent_client"
+        },
+        {
+          "case_id": "8a31450086133e82_20",
+          "stage": 6,
+          "actor_name": "P3Bot",
+          "actor_uuid": "29e391d4-26dd-30d2-ba35-27fd7d6713f3",
+          "entity_id": 191,
+          "pos": "12005,100,12403",
+          "source": "server_break_animation_to_independent_client"
+        },
+        {
+          "case_id": "8a31450086133e82_20",
+          "stage": 7,
+          "actor_name": "P3Bot",
+          "actor_uuid": "29e391d4-26dd-30d2-ba35-27fd7d6713f3",
+          "entity_id": 191,
+          "pos": "12005,100,12403",
+          "source": "server_break_animation_to_independent_client"
+        },
+        {
+          "case_id": "8a31450086133e82_20",
+          "stage": 8,
+          "actor_name": "P3Bot",
+          "actor_uuid": "29e391d4-26dd-30d2-ba35-27fd7d6713f3",
+          "entity_id": 191,
+          "pos": "12005,100,12403",
+          "source": "server_break_animation_to_independent_client"
+        },
+        {
+          "case_id": "8a31450086133e82_20",
+          "stage": 9,
+          "actor_name": "P3Bot",
+          "actor_uuid": "29e391d4-26dd-30d2-ba35-27fd7d6713f3",
+          "entity_id": 191,
+          "pos": "12005,100,12403",
+          "source": "server_break_animation_to_independent_client"
+        }
+      ]
+    },
+    {
+      "case_id": "8a31450086133e82_21",
+      "kind": "late",
+      "status": "PASS",
+      "target": {
+        "x": 12005,
+        "y": 100,
+        "z": 12423
+      },
+      "task_id": "task_3a7de1b9b767",
+      "plan_hash": "6a89867c3252eb75ddfb",
+      "action_id": "act_rt_mve2hguq_15248388_mve2jeji_16",
+      "task_state": "PAUSED",
+      "step_state": "FAILED",
+      "event_seq": 6,
+      "plan_authorized": true,
+      "before_confirmation": "Test passed",
+      "independent_world_after": "Test passed",
+      "server_inventory_before": "P3Bot has the following entity data: []",
+      "server_inventory_after": "P3Bot has the following entity data: []",
+      "attribution": {},
+      "independent_break_animation": [
+        {
+          "case_id": "8a31450086133e82_21",
+          "stage": 0,
+          "actor_name": "P3Bot",
+          "actor_uuid": "29e391d4-26dd-30d2-ba35-27fd7d6713f3",
+          "entity_id": 191,
+          "pos": "12005,100,12423",
+          "source": "server_break_animation_to_independent_client"
+        },
+        {
+          "case_id": "8a31450086133e82_21",
+          "stage": 1,
+          "actor_name": "P3Bot",
+          "actor_uuid": "29e391d4-26dd-30d2-ba35-27fd7d6713f3",
+          "entity_id": 191,
+          "pos": "12005,100,12423",
+          "source": "server_break_animation_to_independent_client"
+        },
+        {
+          "case_id": "8a31450086133e82_21",
+          "stage": 2,
+          "actor_name": "P3Bot",
+          "actor_uuid": "29e391d4-26dd-30d2-ba35-27fd7d6713f3",
+          "entity_id": 191,
+          "pos": "12005,100,12423",
+          "source": "server_break_animation_to_independent_client"
+        },
+        {
+          "case_id": "8a31450086133e82_21",
+          "stage": 3,
+          "actor_name": "P3Bot",
+          "actor_uuid": "29e391d4-26dd-30d2-ba35-27fd7d6713f3",
+          "entity_id": 191,
+          "pos": "12005,100,12423",
+          "source": "server_break_animation_to_independent_client"
+        },
+        {
+          "case_id": "8a31450086133e82_21",
+          "stage": 4,
+          "actor_name": "P3Bot",
+          "actor_uuid": "29e391d4-26dd-30d2-ba35-27fd7d6713f3",
+          "entity_id": 191,
+          "pos": "12005,100,12423",
+          "source": "server_break_animation_to_independent_client"
+        },
+        {
+          "case_id": "8a31450086133e82_21",
+          "stage": 5,
+          "actor_name": "P3Bot",
+          "actor_uuid": "29e391d4-26dd-30d2-ba35-27fd7d6713f3",
+          "entity_id": 191,
+          "pos": "12005,100,12423",
+          "source": "server_break_animation_to_independent_client"
+        },
+        {
+          "case_id": "8a31450086133e82_21",
+          "stage": 6,
+          "actor_name": "P3Bot",
+          "actor_uuid": "29e391d4-26dd-30d2-ba35-27fd7d6713f3",
+          "entity_id": 191,
+          "pos": "12005,100,12423",
+          "source": "server_break_animation_to_independent_client"
+        },
+        {
+          "case_id": "8a31450086133e82_21",
+          "stage": 7,
+          "actor_name": "P3Bot",
+          "actor_uuid": "29e391d4-26dd-30d2-ba35-27fd7d6713f3",
+          "entity_id": 191,
+          "pos": "12005,100,12423",
+          "source": "server_break_animation_to_independent_client"
+        },
+        {
+          "case_id": "8a31450086133e82_21",
+          "stage": 8,
+          "actor_name": "P3Bot",
+          "actor_uuid": "29e391d4-26dd-30d2-ba35-27fd7d6713f3",
+          "entity_id": 191,
+          "pos": "12005,100,12423",
+          "source": "server_break_animation_to_independent_client"
+        },
+        {
+          "case_id": "8a31450086133e82_21",
+          "stage": 9,
+          "actor_name": "P3Bot",
+          "actor_uuid": "29e391d4-26dd-30d2-ba35-27fd7d6713f3",
+          "entity_id": 191,
+          "pos": "12005,100,12423",
+          "source": "server_break_animation_to_independent_client"
+        }
+      ]
+    },
+    {
+      "case_id": "8a31450086133e82_22",
+      "kind": "uncertain",
+      "status": "PASS",
+      "target": {
+        "x": 12005,
+        "y": 100,
+        "z": 12443
+      },
+      "task_id": "task_54fe5c9c56a7",
+      "plan_hash": "37419587174dbed86ed1",
+      "action_id": "act_rt_mve2hguq_15248388_mve2jk3x_18",
+      "task_state": "PAUSED",
+      "step_state": "FAILED",
+      "event_seq": 6,
+      "plan_authorized": true,
+      "before_confirmation": "Test passed",
+      "independent_world_after": "Test passed",
+      "server_inventory_before": "P3Bot has the following entity data: []",
+      "server_inventory_after": "P3Bot has the following entity data: []",
+      "attribution": {},
+      "independent_break_animation": []
+    },
+    {
+      "case_id": "8a31450086133e82_23",
+      "kind": "reconnect",
+      "status": "PASS",
+      "target": {
+        "x": 12005,
+        "y": 100,
+        "z": 12463
+      },
+      "task_id": "task_5ff14902df55",
+      "plan_hash": "bd64fe93a08165262c00",
+      "action_id": "act_rt_mve2hguq_15248388_mve2jnhz_1a",
+      "task_state": "CANCELLED",
+      "step_state": "CANCELLED",
+      "event_seq": 6,
+      "plan_authorized": true,
+      "before_confirmation": "Test passed",
+      "independent_world_after": "Test passed",
+      "server_inventory_before": "P3Bot has the following entity data: []",
+      "server_inventory_after": "P3Bot has the following entity data: []",
+      "attribution": {},
+      "independent_break_animation": [
+        {
+          "case_id": "8a31450086133e82_23",
+          "stage": 0,
+          "actor_name": "P3Bot",
+          "actor_uuid": "29e391d4-26dd-30d2-ba35-27fd7d6713f3",
+          "entity_id": 191,
+          "pos": "12005,100,12463",
+          "source": "server_break_animation_to_independent_client"
+        }
+      ]
+    },
+    {
+      "case_id": "8a31450086133e82_24",
+      "kind": "restart",
+      "status": "PASS",
+      "target": {
+        "x": 12005,
+        "y": 100,
+        "z": 12483
+      },
+      "task_id": "task_6473183f7fac",
+      "plan_hash": "e76e9d8f3eaa84ea323c",
+      "action_id": "act_rt_mve2hguq_15248388_mve2jqws_1c",
+      "task_state": "CANCELLED",
+      "step_state": "CANCELLED",
+      "event_seq": 6,
+      "plan_authorized": true,
+      "before_confirmation": "Test passed",
+      "independent_world_after": "Test passed",
+      "server_inventory_before": "P3Bot has the following entity data: []",
+      "server_inventory_after": "P3Bot has the following entity data: []",
+      "attribution": {},
+      "independent_break_animation": []
+    },
+    {
+      "case_id": "8a31450086133e82_25",
+      "kind": "timeout",
+      "status": "PASS",
+      "target": {
+        "x": 12005,
+        "y": 100,
+        "z": 12503
+      },
+      "task_id": "task_a278b3783dcd",
+      "plan_hash": "bc8d73a245548d87eae0",
+      "action_id": "act_rt_mve2k7z2_71e95981_mve2kagb_2",
+      "task_state": "PAUSED",
+      "step_state": "FAILED",
+      "event_seq": 6,
+      "plan_authorized": true,
+      "before_confirmation": "Test passed",
+      "independent_world_after": "Test passed",
+      "server_inventory_before": "P3Bot has the following entity data: []",
+      "server_inventory_after": "P3Bot has the following entity data: []",
+      "attribution": {},
+      "independent_break_animation": [
+        {
+          "case_id": "8a31450086133e82_25",
+          "stage": 0,
+          "actor_name": "P3Bot",
+          "actor_uuid": "29e391d4-26dd-30d2-ba35-27fd7d6713f3",
+          "entity_id": 462,
+          "pos": "12005,100,12503",
+          "source": "server_break_animation_to_independent_client"
+        },
+        {
+          "case_id": "8a31450086133e82_25",
+          "stage": 1,
+          "actor_name": "P3Bot",
+          "actor_uuid": "29e391d4-26dd-30d2-ba35-27fd7d6713f3",
+          "entity_id": 462,
+          "pos": "12005,100,12503",
+          "source": "server_break_animation_to_independent_client"
+        },
+        {
+          "case_id": "8a31450086133e82_25",
+          "stage": 2,
+          "actor_name": "P3Bot",
+          "actor_uuid": "29e391d4-26dd-30d2-ba35-27fd7d6713f3",
+          "entity_id": 462,
+          "pos": "12005,100,12503",
+          "source": "server_break_animation_to_independent_client"
+        },
+        {
+          "case_id": "8a31450086133e82_25",
+          "stage": 3,
+          "actor_name": "P3Bot",
+          "actor_uuid": "29e391d4-26dd-30d2-ba35-27fd7d6713f3",
+          "entity_id": 462,
+          "pos": "12005,100,12503",
+          "source": "server_break_animation_to_independent_client"
+        }
+      ]
+    },
+    {
+      "case_id": "8a31450086133e82_26",
+      "kind": "disabled",
+      "status": "PASS",
+      "target": {
+        "x": 12005,
+        "y": 100,
+        "z": 12523
+      },
+      "task_id": "task_742ae2e1bd35",
+      "plan_hash": "08797e297be2beb56503",
+      "action_id": "act_rt_mve2ked6_21dae177_mve2kgse_2",
+      "task_state": "SUCCEEDED",
+      "step_state": "SUCCEEDED",
+      "event_seq": 6,
+      "plan_authorized": true,
+      "before_confirmation": "Test passed",
+      "independent_world_after": "Test passed",
+      "server_inventory_before": "P3Bot has the following entity data: []",
+      "server_inventory_after": "P3Bot has the following entity data: []",
+      "attribution": {
+        "kind": "dig_attribution",
+        "schema": 2,
+        "action_id": "act_rt_mve2ked6_21dae177_mve2kgse_2",
+        "target": {
+          "x": 12005,
+          "y": 100,
+          "z": 12523,
+          "block_before": "oak_log"
+        },
+        "session_id": "mc_mve2kegg_8eor34",
+        "dimension": "overworld",
+        "world_effect": "BLOCK_REMOVED",
+        "attribution": "SELF_INFERRED",
+        "assurance": "INFERRED",
+        "confirm_basis": "dig_lifecycle_timing",
+        "reason_code": "self_dig_completed_at_expected_time",
+        "strict_self_proof": false,
+        "expected_dig_ms": 3000,
+        "action_window": {
+          "started_at_ms": 1792342703102,
+          "finished_at_ms": 1792342706156,
+          "elapsed_ms": 3054
+        },
+        "removal": {
+          "observed_at_ms": 1792342706104,
+          "elapsed_ms": 3002,
+          "ratio": 1.001,
+          "source": "server"
+        },
+        "flags": {
+          "external_break_observed": false,
+          "external_break_entities": [],
+          "unresolved_break_observed": false,
+          "self_break_observed": false,
+          "self_dig_completed": true,
+          "self_dig_aborted": false,
+          "server_block_update_observed": true,
+          "server_block_update_says_air": true,
+          "server_block_update_says_present": false,
+          "server_block_update_conflict": false,
+          "server_block_update_replaced": false,
+          "conflict": false,
+          "local_block_after": "air",
+          "local_view_only": false,
+          "block_after": "air"
+        },
+        "evidence": [
+          {
+            "kind": "block_became_air",
+            "at_ms": 1792342706104,
+            "elapsed_ms": 3002,
+            "source": "local_or_server"
+          },
+          {
+            "kind": "self_dig_completed",
+            "at_ms": 1792342706104,
+            "elapsed_ms": 3002
+          },
+          {
+            "kind": "server_block_update",
+            "at_ms": 1792342706143,
+            "elapsed_ms": 3041,
+            "to_air": true,
+            "state_id": 0,
+            "block_name_after": "air"
+          },
+          {
+            "kind": "block_became_air",
+            "at_ms": 1792342706143,
+            "elapsed_ms": 3041,
+            "source": "server_confirmed_local"
+          }
+        ]
+      },
+      "independent_break_animation": [
+        {
+          "case_id": "8a31450086133e82_26",
+          "stage": 0,
+          "actor_name": "P3Bot",
+          "actor_uuid": "29e391d4-26dd-30d2-ba35-27fd7d6713f3",
+          "entity_id": 503,
+          "pos": "12005,100,12523",
+          "source": "server_break_animation_to_independent_client"
+        },
+        {
+          "case_id": "8a31450086133e82_26",
+          "stage": 1,
+          "actor_name": "P3Bot",
+          "actor_uuid": "29e391d4-26dd-30d2-ba35-27fd7d6713f3",
+          "entity_id": 503,
+          "pos": "12005,100,12523",
+          "source": "server_break_animation_to_independent_client"
+        },
+        {
+          "case_id": "8a31450086133e82_26",
+          "stage": 2,
+          "actor_name": "P3Bot",
+          "actor_uuid": "29e391d4-26dd-30d2-ba35-27fd7d6713f3",
+          "entity_id": 503,
+          "pos": "12005,100,12523",
+          "source": "server_break_animation_to_independent_client"
+        },
+        {
+          "case_id": "8a31450086133e82_26",
+          "stage": 3,
+          "actor_name": "P3Bot",
+          "actor_uuid": "29e391d4-26dd-30d2-ba35-27fd7d6713f3",
+          "entity_id": 503,
+          "pos": "12005,100,12523",
+          "source": "server_break_animation_to_independent_client"
+        },
+        {
+          "case_id": "8a31450086133e82_26",
+          "stage": 4,
+          "actor_name": "P3Bot",
+          "actor_uuid": "29e391d4-26dd-30d2-ba35-27fd7d6713f3",
+          "entity_id": 503,
+          "pos": "12005,100,12523",
+          "source": "server_break_animation_to_independent_client"
+        },
+        {
+          "case_id": "8a31450086133e82_26",
+          "stage": 5,
+          "actor_name": "P3Bot",
+          "actor_uuid": "29e391d4-26dd-30d2-ba35-27fd7d6713f3",
+          "entity_id": 503,
+          "pos": "12005,100,12523",
+          "source": "server_break_animation_to_independent_client"
+        },
+        {
+          "case_id": "8a31450086133e82_26",
+          "stage": 6,
+          "actor_name": "P3Bot",
+          "actor_uuid": "29e391d4-26dd-30d2-ba35-27fd7d6713f3",
+          "entity_id": 503,
+          "pos": "12005,100,12523",
+          "source": "server_break_animation_to_independent_client"
+        },
+        {
+          "case_id": "8a31450086133e82_26",
+          "stage": 7,
+          "actor_name": "P3Bot",
+          "actor_uuid": "29e391d4-26dd-30d2-ba35-27fd7d6713f3",
+          "entity_id": 503,
+          "pos": "12005,100,12523",
+          "source": "server_break_animation_to_independent_client"
+        },
+        {
+          "case_id": "8a31450086133e82_26",
+          "stage": 8,
+          "actor_name": "P3Bot",
+          "actor_uuid": "29e391d4-26dd-30d2-ba35-27fd7d6713f3",
+          "entity_id": 503,
+          "pos": "12005,100,12523",
+          "source": "server_break_animation_to_independent_client"
+        },
+        {
+          "case_id": "8a31450086133e82_26",
+          "stage": 9,
+          "actor_name": "P3Bot",
+          "actor_uuid": "29e391d4-26dd-30d2-ba35-27fd7d6713f3",
+          "entity_id": 503,
+          "pos": "12005,100,12523",
+          "source": "server_break_animation_to_independent_client"
+        }
+      ]
+    },
+    {
+      "case_id": "8a31450086133e82_27",
+      "kind": "missing_key",
+      "status": "PASS",
+      "target": {
+        "x": 12005,
+        "y": 100,
+        "z": 12543
+      },
+      "task_id": "task_1eff01c99348",
+      "plan_hash": "16c5640161a023684555",
+      "action_id": "act_rt_mve2kjj2_16a38288_mve2kly9_2",
+      "task_state": "PAUSED",
+      "step_state": "FAILED",
+      "event_seq": 6,
+      "plan_authorized": true,
+      "before_confirmation": "Test passed",
+      "independent_world_after": "Test passed",
+      "server_inventory_before": "P3Bot has the following entity data: []",
+      "server_inventory_after": "P3Bot has the following entity data: []",
+      "attribution": {},
+      "independent_break_animation": []
+    }
+  ],
+  "protocol_only_supplement": [
+    {
+      "case": "expired_nonce_replay",
+      "status": 409,
+      "reason": "nonce_replay",
+      "passed": true
+    },
+    {
+      "case": "real_break_after_ttl",
+      "event": {
+        "schema": 1,
+        "source": "server_block_break",
+        "event_id": "b5ac22e6-dc20-4545-b128-e7de3b7b2dad",
+        "reservation_id": "",
+        "action_id": "",
+        "session_ref": "21cefe18-9238-4853-8664-5127e6f067cf",
+        "session_seq": 1,
+        "player_uuid": "7e05062f-3e1d-3c73-8dfa-4eb7aea6adb8",
+        "dimension": "minecraft:overworld",
+        "pos": "12005,100,13003",
+        "block_before": "minecraft:oak_log",
+        "block_after": "minecraft:air",
+        "shadow": "UNREGISTERED_BREAK",
+        "reason": "no_reservation"
+      },
+      "passed": true
+    },
+    {
+      "case": "old_session_after_reconnect",
+      "status": 409,
+      "reason": "session_not_current",
+      "passed": true
+    }
+  ],
+  "server_lifecycle": [
+    {
+      "generation": 1,
+      "pid": 40448,
+      "log": "server-1.log",
+      "exit_code": 0,
+      "stop_ms": 2062.0,
+      "all_dimensions_saved": true,
+      "resources_closed": true
+    },
+    {
+      "generation": 2,
+      "pid": 34664,
+      "log": "server-2.log",
+      "exit_code": 0,
+      "stop_ms": 1328.0,
+      "all_dimensions_saved": true,
+      "resources_closed": true
+    },
+    {
+      "generation": 1,
+      "pid": 39912,
+      "log": "server-1.log",
+      "exit_code": 0,
+      "stop_ms": 1547.0,
+      "all_dimensions_saved": true,
+      "resources_closed": true
+    }
+  ],
+  "rollback": {
+    "restored_files": 99,
+    "all_original_hashes_match": true,
+    "extra_world_files": 0,
+    "test_mod_removed": true,
+    "test_config_removed": true,
+    "server_stopped": true
+  },
+  "real_provider_semantics": [
+    {
+      "case": "request",
+      "message": "帮我挖一个橡木原木并捡回来",
+      "decision": {
+        "kind": "task_proposal",
+        "reply_text": "好，我去砍一个橡木原木并捡回来。",
+        "capability_id": "",
+        "arguments": {},
+        "task_goal": "采集 1 个橡木原木并捡起",
+        "clarification_question": ""
+      },
+      "reason": "decision_ok",
+      "attempts": 1,
+      "latency_ms": 4360.000000000582,
+      "passed": true
+    },
+    {
+      "case": "inquiry",
+      "message": "罐头，先别动手。我只是问问：如果要挖一个橡木原木，你会先检查哪些条件？这条消息不要创建或执行 Minecraft 任务。",
+      "decision": {
+        "kind": "chat",
+        "reply_text": "放心，这条我只回答不动手，不会创建或执行任何任务。真要去挖一根橡木原木，我会先看这几件事：1）目标方块在不在——用 minecraft_find_blocks 找附近的 oak_log，确认位置和距离；2）够不够得着——距离太远就先走近，看路径上有没有阻挡（水、悬崖、方块墙）；3）手上有没有合适的工具——空手也能撸原木，但有斧头会快很多，我会先查背包 minecraft_inventory 看有没有斧；4）周围安全不安全——附近有没有敌对生物、脚下会不会踩空、头顶有没有沙子砾石掉落；5）背包有没有空位放木头，以及这块木头是不是玩家自己要的那一棵。这些都确认了才会开始挖。",
+        "capability_id": "",
+        "arguments": {},
+        "task_goal": "",
+        "clarification_question": ""
+      },
+      "reason": "decision_ok",
+      "attempts": 1,
+      "latency_ms": 4546.999999998661,
+      "passed": true
+    },
+    {
+      "case": "negation",
+      "message": "不要砍两根橡木原木带回来",
+      "decision": {
+        "kind": "cancel",
+        "reply_text": "好，取消砍橡木原木，不去了。",
+        "capability_id": "",
+        "arguments": {},
+        "task_goal": "",
+        "clarification_question": ""
+      },
+      "reason": "decision_ok",
+      "attempts": 1,
+      "latency_ms": 3703.000000001339,
+      "passed": true
+    },
+    {
+      "case": "ambiguous",
+      "message": "不要砍橡木，改砍云杉，或者还是先等等？",
+      "decision": {
+        "kind": "clarify",
+        "reply_text": "听起来你有点犹豫，我先不动手。",
+        "capability_id": "",
+        "arguments": {},
+        "task_goal": "",
+        "clarification_question": "你是想改成采集云杉，还是先暂停采集、等我下一步再说？"
+      },
+      "reason": "decision_ok",
+      "attempts": 1,
+      "latency_ms": 3656.9999999992433,
+      "passed": true
+    },
+    {
+      "case": "cancel",
+      "message": "停止这个任务",
+      "decision": {
+        "kind": "stop",
+        "reply_text": "好，已经停下了。",
+        "capability_id": "",
+        "arguments": {},
+        "task_goal": "",
+        "clarification_question": ""
+      },
+      "reason": "decision_ok",
+      "attempts": 1,
+      "latency_ms": 3000.0,
+      "passed": true
+    }
+  ],
+  "qq_inquiry_retest": {
+    "test_message_id": "P3-G3-询问03",
+    "route": {
+      "route_id": "rt_3259d4e8ab3e",
+      "source": "",
+      "turn_origin": "user",
+      "route_target": "CHAT_ONLY",
+      "reason_code": "minecraft_non_action_turn",
+      "candidates": [],
+      "selected": "",
+      "tool_called": false,
+      "policy_outcome": "",
+      "task_id": "",
+      "action_id": "",
+      "action_state": "",
+      "duration_ms": 4194.8,
+      "text_chars": 73,
+      "fallbacks": []
+    },
+    "recipient": "authorized bot private chat",
+    "other_chats_used": false,
+    "reply": "跟刚才说的一样啊，距离、工具、耗时，够用就行",
+    "first_failure": "01: legacy task entry observed world; 02: generic Agent created analysis plan; both retained privately"
+  },
+  "raw_evidence_sha256": {
+    "matrix-8a31450086133e82/results.json": "fe55d9376b7e7c8646235d72a1bbd33b806a84b4f1f7b63c1615192b95337067",
+    "matrix-8a31450086133e82/bridge-events.jsonl": "4da45fb144d7b5f1b01d9712b6d897d218294977780b65d01c61618b127b198e",
+    "matrix-8a31450086133e82/task-events.json": "e533d65ce930827584361f8eada1e67bbb0cfdcbdcc97955eaa8117940fdfff5",
+    "matrix-8a31450086133e82/relay-evidence.json": "c48d12ae5047d744137ebd02e90713bf06496de30e3ca2105fe64846f9b93457",
+    "protocol-735faa3d24ac/events.json": "1f54bee28e874e7c3184038f79821ea43e9bed90e256ed90cae3c661fc367e5d",
+    "provider-semantics.json": "587d273e681e564e4ed5fbe8612d2176d7f4615de465b50a86a94b3c8c0d94ab",
+    "bot-restarted-second.log": "33eb44b3e0dce43a877c8d1e0481d5edc83392a95d4f2e9b95b5ac52adc628c3"
+  }
+}

@@ -108,6 +108,7 @@ const pathfinder = require('mineflayer-pathfinder')
 const { Movements, goals } = pathfinder
 const { createActionRuntime, ActionError } = require('./action_runtime')
 const { createDigAttribution, worldEffectOf } = require('./dig_attribution')
+const { StrictAttribution, dimensionOf, MAX_BYTES: ATTRIBUTION_MAX_BYTES } = require('./strict_attribution')
 
 // --------------------------------------------------------------- configuration
 
@@ -118,6 +119,11 @@ const CALLBACK_TOKEN = process.env.MC_CALLBACK_TOKEN || ''
 const AUTH_FILE = process.env.MC_AUTH_FILE || path.join(__dirname, 'auth.json')
 const CONNECT_TIMEOUT_S = Number.parseFloat(process.env.MC_CONNECT_TIMEOUT || '75')
 const BRIDGE_TOKEN = process.env.MC_BRIDGE_TOKEN || ''
+const strictAttribution = new StrictAttribution({
+  enabled: process.env.MC_ATTRIBUTION_STRICT === '1',
+  url: process.env.MC_ATTRIBUTION_URL || 'http://127.0.0.1:19132',
+  token: process.env.MC_ATTRIBUTION_TOKEN || '',
+})
 
 // Phase 7F.5：**运行时实例标识** —— 进程启动时生成一次，本进程生命周期内稳定。
 // 它只解决「这条事件/这个动作属于哪个实例」的**关联唯一性**：
@@ -2424,7 +2430,7 @@ const ACTION_REGISTRY = {
           selfEntityId: bot.entity && bot.entity.id !== undefined ? bot.entity.id : null,
         })
         attributionCollector.attach(bot)
-        if (controller) controller.digAttribution = attributionCollector
+        if (controller) { controller.digAttribution = attributionCollector; controller.digCollector = attributionCollector }
         return {
           block,
           position,
@@ -2433,6 +2439,7 @@ const ACTION_REGISTRY = {
           toolExpected,
           toolActual,
           attributionCollector,
+          connectionStillCurrent: () => state.bot === bot && state.sessionId === attributionCollector.session_id,
         }
       },
       async wait(bot, params, token, state, controller) {
@@ -2468,10 +2475,35 @@ const ACTION_REGISTRY = {
         }
         try {
           try {
+            if (strictAttribution.enabled) {
+              const proof = strictAttribution.begin({
+                actionId: controller && controller.record ? controller.record.action_id : '',
+                sessionId: state.sessionId || (collector ? collector.session_id : ''),
+                name: bot.username, uuid: bot.player && bot.player.uuid,
+                dimension: bot.game && bot.game.dimension,
+                target: { x: params.x, y: params.y, z: params.z }, block: state.blockName,
+              })
+              controller.strictProof = proof
+              await proof.prepare()
+              if (token && token.cancelled) throw new ActionCancelled(token.reason)
+              // Registration is not authority to use a stale target or a new connection.
+              const current = bot.blockAt(state.position)
+              if (!state.connectionStillCurrent() || dimensionOf(bot.game && bot.game.dimension) !== proof.state.dimension ||
+                  !bot.player || bot.player.uuid !== proof.state.uuid ||
+                  (state.toolExpected !== null && normalizeItemName(bot.heldItem && bot.heldItem.name) !== state.toolExpected) ||
+                  !current || current.name !== state.blockName || !bot.entity ||
+                  bot.entity.position.offset(0, 1.65, 0).distanceTo(state.position.offset(0.5, 0.5, 0.5)) > digMaxDistance()) {
+                throw new ActionError('登记期间目标或距离已变化', 'block.changed', 409)
+              }
+            }
             // forceLook=true：由 Mineflayer 负责朝向（Python 层绝不碰 yaw/pitch）
             await bot.dig(state.block, true)
           } catch (error) {
             if (token && token.cancelled) throw new ActionCancelled(token.reason)
+            if (error && error.code === 'block.attribution_unavailable') {
+              throw new ActionError('严格服务端归因登记失败，未开始挖掘', error.code, 503)
+            }
+            if (error instanceof ActionError) throw error
             const message = String(error && error.message ? error.message : error)
             if (/digging aborted|Digging aborted/i.test(message)) {
               // §三十一：被中断（stop/disconnect/超时）由上面的 cancelled 分支处理；
@@ -2545,6 +2577,21 @@ const ACTION_REGISTRY = {
             blockAfter: afterName,
             localViewOnly,
           })
+          if (strictAttribution.enabled) {
+            const proof = controller.strictProof
+            const confirmed = proof ? await proof.wait(digConfirmBudgetMs(controller)) : null
+            if (token && token.cancelled) throw new ActionCancelled(token.reason)
+            const live = bot.blockAt(state.position)
+            if (!confirmed || !live || !isAir(live.name) || !state.connectionStillCurrent() ||
+                dimensionOf(bot.game && bot.game.dimension) !== proof.state.dimension ||
+                !bot.player || bot.player.uuid !== proof.state.uuid) {
+              throw new ActionError('缺少当前动作的唯一服务端破坏证明', 'block.attribution_unconfirmed', 409, {
+                attribution: { ...(payload || {}), attribution: 'AMBIGUOUS', assurance: 'AMBIGUOUS',
+                  strict_self_proof: false, reason_code: 'server_attribution_unconfirmed' },
+              })
+            }
+            payload = confirmed
+          }
           if (controller && controller.digAttribution) {
             controller.digAttribution.world_effect = worldEffect
             controller.digAttribution.server_confirmed = serverConfirmed
@@ -2570,13 +2617,16 @@ const ACTION_REGISTRY = {
           // 摘掉之后的迟到事件一律忽略（cleanup 再摘一次也是幂等的）。
           detachUpdateWatcher()
           if (collector) collector.detach()
+          if (controller && controller.strictProof) controller.strictProof.close()
         }
       },
       cleanup(bot, controller) {
+        if (controller && controller.strictProof) controller.strictProof.close()
         // Phase 7D Follow-up：取消/超时/断开/退出时同样摘掉归因监听器（幂等，至多一次）
-        if (controller && controller.digAttribution) {
+        if (controller && (controller.digCollector || controller.digAttribution)) {
           try {
-            controller.digAttribution.detach()
+            const collector = controller.digCollector || controller.digAttribution
+            if (typeof collector.detach === 'function') collector.detach()
           } catch (error) {
             log('warn', 'dig cleanup detach attribution failed', { error: error.message })
           }
@@ -4169,6 +4219,14 @@ function statusPayload() {
     uptime_seconds: Math.round((Date.now() - state.startedAt) / 1000),
     // Phase 3B：当前动作（前台优先，否则最近一次终态；从未有过 → IDLE）
     action: { ...action.current, active_count: action.active_count },
+    ...(strictAttribution.enabled ? {
+      // Diagnostic only: in the pinned Mineflayer, targetDigBlock is set after the start packet is written.
+      // It locates the live N9-B test window; it never supplies a success proof.
+      digging_target: state.bot && state.bot.targetDigBlock ? {
+        x: state.bot.targetDigBlock.position.x, y: state.bot.targetDigBlock.position.y,
+        z: state.bot.targetDigBlock.position.z,
+      } : null,
+    } : {}),
     // Phase 3C：Pathfinder 诊断（goal 类型 / 目标坐标 / 是否在移动）——只读
     pathfinder: pathfinderStatus(),
   }
@@ -4178,21 +4236,22 @@ function statusPayload() {
 
 const MAX_BODY_BYTES = 1 << 16
 
-function readBody(request) {
+function readBody(request, rawBody = false, maxBytes = MAX_BODY_BYTES) {
   return new Promise((resolve, reject) => {
     let size = 0
     const chunks = []
     request.on('data', (chunk) => {
       size += chunk.length
-      if (size > MAX_BODY_BYTES) {
+      if (size > maxBytes) {
         reject(new BridgeError('请求体过大', 'request.too_large'))
-        request.destroy()
+        if (rawBody) { chunks.length = 0; request.resume() } else { request.destroy() }
         return
       }
       chunks.push(chunk)
     })
     request.on('end', () => {
       const raw = Buffer.concat(chunks).toString('utf8')
+      if (rawBody) { resolve(raw); return }
       if (!raw) {
         resolve({})
         return
@@ -4233,13 +4292,28 @@ function parseTarget(body) {
   return { host, port }
 }
 
-const server = http.createServer((request, response) => {
+const server = http.createServer(strictAttribution.enabled ? {
+  requestTimeout: 5000, headersTimeout: 5000, connectionsCheckingInterval: 1000, maxHeaderSize: 8192,
+} : {}, (request, response) => {
   void handleRequest(request, response)
 })
+if (strictAttribution.enabled) { server.maxConnections = 32; server.maxHeadersCount = 64 }
 
 async function handleRequest(request, response) {
   const path = (request.url || '/').split('?')[0]
   try {
+    // Independent HMAC evidence channel; it never accepts the product bridge bearer as proof.
+    if (request.method === 'POST' && path === '/minecraft/attribution/event') {
+      if (!strictAttribution.enabled) { jsonResponse(response, 503, { ok: false, reason: 'disabled' }); return }
+      try {
+        const raw = await readBody(request, true, ATTRIBUTION_MAX_BYTES)
+        const result = strictAttribution.receive(raw, request.headers['x-signature'])
+        jsonResponse(response, result.code, { ok: result.code === 200, reason: result.reason })
+      } catch {
+        if (!response.headersSent && !response.destroyed) jsonResponse(response, 413, { ok: false, reason: 'invalid_or_oversized_body' })
+      }
+      return
+    }
     if (BRIDGE_TOKEN) {
       const supplied = request.headers.authorization || ''
       if (supplied !== `Bearer ${BRIDGE_TOKEN}`) {
@@ -4556,6 +4630,7 @@ if (require.main === module) {
 
 // 供测试 require（不监听端口、不注册信号处理）：注册表 / Movements 配置 / 诊断
 module.exports = {
+  strictAttribution,
   ACTION_REGISTRY,
   actionRuntime,
   configureMovements,

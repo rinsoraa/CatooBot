@@ -30,6 +30,7 @@ from app.character.response import CharacterResponseProcessor
 from app.character.state import StateManager
 from app.character.turn import TurnOrigin
 from app.memory.manager import MemoryManager
+from app.tasks.intent import is_non_action_wood_turn
 from app.tools.models import RouteJournal, RouteTarget, RouteTrace, new_route_id
 from app.utils.narrator import narrate
 
@@ -342,9 +343,10 @@ class CharacterRuntime:
         # Phase 8E Follow-up 2 §4.2：**单回合能力模式必须在任何能力分支之前生效**。
         # CHAT_ONLY：只生成自然语言 —— 绝不进入 Agent、绝不进入 ToolOrchestrator，
         # 本回合不产生工具调用 / action_id / 任务创建。这是**每回合参数**，不写回共享配置。
-        if mode is CharacterTurnMode.CHAT_ONLY:
+        non_action_wood = mode is CharacterTurnMode.NORMAL and is_non_action_wood_turn(user_text)
+        if mode is CharacterTurnMode.CHAT_ONLY or non_action_wood:
             route.route_target = RouteTarget.CHAT_ONLY.value
-            route.reason_code = "chat_only_turn"
+            route.reason_code = "minecraft_non_action_turn" if non_action_wood else "chat_only_turn"
             response = await self.engine.chat(AIRequest(messages=messages, temperature=temperature))
             self._narrate_thinking(response)
             return self.record_route(route, _chat_only_text(response.content), started=started)

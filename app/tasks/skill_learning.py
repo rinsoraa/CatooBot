@@ -102,7 +102,7 @@ ATTRIBUTION_AMBIGUOUS = "AMBIGUOUS"
 #: 只有这些归因依据才算**严格**自证（时序推断 ``dig_lifecycle_timing`` 不在内）
 STRICT_SELF_CONFIRM_BASES = frozenset({"self_break_progress"})
 #: 能读懂的归因契约版本（1 = 历史的过宽契约，2 = 引入 SELF_INFERRED 分级）
-SUPPORTED_ATTRIBUTION_SCHEMAS = frozenset({1, 2})
+SUPPORTED_ATTRIBUTION_SCHEMAS = frozenset({1, 2, 3})
 
 
 def _is_plain_bool(value: Any) -> bool:
@@ -177,7 +177,7 @@ def dig_attribution(step: Any) -> dict[str, Any] | None:
     reason = payload.get("reason_code")
     if reason is not None and not isinstance(reason, str):
         return None
-    return {
+    parsed = {
         "schema": schema,
         "world_effect": world_effect,
         "attribution": verdict,
@@ -188,6 +188,53 @@ def dig_attribution(step: Any) -> dict[str, Any] | None:
         "assurance": str(payload.get("assurance") or ""),
         "target": {axis: target[axis] for axis in ("x", "y", "z")},
     }
+    if schema == 3:
+        proof = payload.get("server_proof")
+        if not isinstance(proof, Mapping):
+            return None
+        if any(
+            isinstance(target[axis], bool) or not isinstance(target[axis], int)
+            for axis in ("x", "y", "z")
+        ):
+            return None
+        if (
+            abs(target["x"]) > 30_000_000
+            or abs(target["z"]) > 30_000_000
+            or not -512 <= target["y"] <= 2048
+        ):
+            return None
+        for field in ("event_id", "reservation_id", "session_ref", "player_uuid"):
+            value = proof.get(field)
+            if not isinstance(value, str) or not value or len(value) > 128:
+                return None
+        seq = proof.get("session_seq")
+        dimension = payload.get("dimension")
+        if (
+            proof.get("schema") != 1
+            or isinstance(proof.get("schema"), bool)
+            or proof.get("source") != "server_block_break"
+            or proof.get("action_id") != parsed["action_id"]
+            or not isinstance(seq, int)
+            or isinstance(seq, bool)
+            or seq <= 0
+            or dimension not in {"minecraft:overworld", "minecraft:the_nether", "minecraft:the_end"}
+            or proof.get("dimension") != dimension
+            or proof.get("pos") != ",".join(str(target[axis]) for axis in ("x", "y", "z"))
+            or proof.get("block_after")
+            not in {"minecraft:air", "minecraft:cave_air", "minecraft:void_air"}
+            or not isinstance(result.get("block_before"), str)
+            or proof.get("block_before")
+            != "minecraft:" + str(result["block_before"]).removeprefix("minecraft:")
+            or not isinstance(payload.get("session_id"), str)
+            or not payload.get("session_id")
+            or payload.get("assurance") != "STRICT"
+            or basis != "server_block_break"
+        ):
+            return None
+        parsed["server_proof"] = dict(proof)
+        parsed["dimension"] = dimension
+        parsed["session_id"] = payload["session_id"]
+    return parsed
 
 
 def _dig_attribution_verdict(step: Any) -> tuple[str, dict[str, Any]]:
@@ -222,6 +269,23 @@ def _dig_attribution_verdict(step: Any) -> tuple[str, dict[str, Any]]:
         return "world_effect_not_removed", detail
     if payload["attribution"] != ATTRIBUTION_SELF_CONFIRMED:
         return payload["reason_code"] or payload["attribution"].lower(), detail
+    if payload["schema"] == 3:
+        arguments = getattr(step, "effective_arguments", None)
+        if not isinstance(arguments, Mapping):
+            arguments = getattr(step, "arguments", None)
+        if not isinstance(arguments, Mapping) or any(
+            isinstance(arguments.get(axis), bool)
+            or not isinstance(arguments.get(axis), int)
+            or arguments.get(axis) != payload["target"][axis]
+            for axis in ("x", "y", "z")
+        ):
+            return "target_mismatch", detail
+        expected = str(arguments.get("expected_block") or "").removeprefix("minecraft:")
+        if not expected or payload["server_proof"]["block_before"] != "minecraft:" + expected:
+            return "target_block_mismatch", detail
+        if payload["strict_self_proof"] is not True:
+            return "strict_self_proof_false", detail
+        return "", detail
     if payload["confirm_basis"] not in STRICT_SELF_CONFIRM_BASES:
         # ``SELF_CONFIRMED`` + ``dig_lifecycle_timing``（历史过宽契约）不能被当成严格自证。
         return "confirm_basis_not_strict", detail

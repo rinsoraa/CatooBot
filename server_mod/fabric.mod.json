@@ -1,8 +1,8 @@
 {
   "schemaVersion": 1,
   "id": "catoobot-attribution",
-  "version": "2.0.0",
-  "name": "CatooBot Server-Side Attribution (P2 shadow)",
+  "version": "2.0.0-p3.1",
+  "name": "CatooBot Server Evidence (P3 experimental)",
   "environment": "server",
   "entrypoints": {
     "main": [

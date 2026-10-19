@@ -840,6 +840,10 @@ _NOTES: dict[str, str] = {
     "agent.budget.max_execution_seconds": "一个任务的最长墙钟时间",
     "agent.evaluator.use_llm": "任务完成度用 LLM 评估",
     "minecraft.enabled": "Minecraft 集成总开关",
+    "minecraft.attribution_strict": (
+        "挖掘成功须匹配服务端破坏证据；启用前配置模组与私有密钥，变更后重启桥接"
+    ),
+    "minecraft.attribution_url": "本机服务端证据接口地址，仅支持 127.0.0.1；变更后重启桥接",
     "minecraft.perception_enabled": "世界感知：把游戏世界读成她的感知",
     "minecraft.runtime_dir": "Node 桥接运行时目录",
     "minecraft.node_executable": "Node 可执行文件路径",

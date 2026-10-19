@@ -66,6 +66,20 @@ JOIN/DISCONNECT 绑定实际连接对象；旧连接的迟到退出不能撤销�
 * 任务书 29 新增确定性读取中超时、提交/取消竞争、中断、会话替换及同名异线程测试；真机裁定见对应实施报告。
 * P2.7 已修复所测 dedicated-server 的 HTTP/outbox 退出问题，四轮正常 stop 均自然 exit 0，详见 docs/MINECRAFT_P2_7_LIFECYCLE_REPORT.md；集成服务器与其它版本未验证，仍不标记稳定 Release。
 
+## P3 实验性严格产品归因
+
+P3 增加默认关闭的产品成功门禁；上述 P2 的“影子、N9-B BLOCKED”描述保留历史范围，当前证据与限制见 [P3 报告](../docs/MINECRAFT_P3_STRICT_ATTRIBUTION_REPORT.md)。
+
+1. 构建 `./server_mod/build.ps1 -ServerDir '<隔离测试服目录>' -JavaHome '<JDK21目录>'`，正常停服并备份当前世界/配置，再安装 JAR。
+2. 在私有 `config/catoo-attribution.properties` 设置 `enabled=true`、`port=19132`、随机 `token`（至少 16 字符），将 `bot_url` 指向实际 runtime 的 `http://127.0.0.1:<runtime_port>/minecraft/attribution/event`，不是 Python shadow 接收器。
+3. CatooBot 环境设置同一 `CATOO_ATTRIBUTION_TOKEN`；YAML 设置 `minecraft.attribution_strict: true` 与 `minecraft.attribution_url: http://127.0.0.1:19132`，重启服务端与桥接。模组仅支持本机回环接口；不要公开 token 或端口。
+4. 正常产品任务仍需原有风险许可、计划确认及步骤授权。没有签名服务端证明的 dig 不能在严格模式成功；单纯方块消失或库存变化不够。
+5. 禁用产品门禁：`attribution_strict: false` 后重启桥接，回到已有客户端行为，该模式没有严格证明。禁用整个模组：正常停服，移除本轮 JAR/私有配置并恢复当前备份，重启验证；不要直接覆盖在线世界。
+
+`/session` 的 HMAC 输入是 `name + "\n" + nonce`；`/reserve` 对原始请求体验签；响应 `X-Signature` 对原始响应体验签，消费者校验 nonce/关联字段。破坏事件含 schema 1/source=server_block_break，旧字段名 `shadow` 承载服务端匹配状态，只有唯一 `SELF_CONFIRMED` 才可成为严格产品证据。Bearer 无法替代事件 HMAC。
+
+当前完整 Java 门禁为 160 项断言及 Smoke；纯契约入口新增 ProtocolTest。JAR 版本 `2.0.0-p3.1` 为实验候选，文件名保持构建脚本兼容，不是稳定发布。
+
 ## 服务端生命周期（P2.7）
 
 启用时在 SERVER_STARTED 建立本代资源，SERVER_STOPPING 关闭接纳、取消未完成请求、失效会话、停 HTTP/执行器、释放投递连接并有界等待 worker；SERVER_STOPPED 幂等兜底。旧 handler 不能在重启后进入新代请求注册表。
