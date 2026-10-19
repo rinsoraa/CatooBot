@@ -653,10 +653,14 @@ class TaskRuntime:
         """
         if session_id:
             return await self._store.active(session_id)
-        for record in await self._store.list_recent(20):
-            if not record.state.terminal:
-                return record
-        return None
+        records = await self._store.list_pending(limit=1)
+        return records[0] if records else None
+
+    async def execution_blockers(self, *, ignore_task_id: str = "") -> list[TaskRecord]:
+        """Bounded read of other pending tasks and unsettled external dispatches."""
+        records = await self._store.list_pending(limit=2)
+        records += await self._store.list_outstanding(limit=2)
+        return list({r.task_id: r for r in records if r.task_id != ignore_task_id}.values())
 
     async def checkpoints(self, task_id: str, limit: int = 50) -> list[dict[str, Any]]:
         return await self._store.checkpoints(task_id, limit)

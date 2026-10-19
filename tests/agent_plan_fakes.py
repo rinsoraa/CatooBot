@@ -215,6 +215,11 @@ class PlanRig:
             allow_medium=self.allow_medium,
             follow_timeout_seconds=120.0,
         )
+
+        async def known_unit_life_context(**kwargs: Any) -> dict[str, Any]:
+            # These tests exercise plan structure/state, not real-world admission or execution.
+            return {"allowed": True, "reason": "explicit_unit_fixture"}
+
         self.service = AgentPlanService(
             store=self.store,
             planner=planner,
@@ -224,6 +229,7 @@ class PlanRig:
             plan_ttl_seconds=600.0,
             replan_budget=2,
             clock=lambda: self.clock_now,
+            life_guard=known_unit_life_context,
         )
 
     def advance(self, seconds: float) -> None:

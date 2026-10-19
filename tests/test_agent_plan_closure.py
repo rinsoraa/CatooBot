@@ -337,6 +337,7 @@ class TestSqliteCasAndPayload:
             planner=rig.planner or BoundedAgentPlanner(),
             task_runtime=rig.runtime,
             character_id="罐头@x",
+            life_guard=getattr(rig.service, "life_guard", None),
             plan_ttl_seconds=600.0,
             reserve_lease_seconds=120.0,
             clock=lambda: rig.clock_now,

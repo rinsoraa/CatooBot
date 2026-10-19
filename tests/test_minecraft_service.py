@@ -733,6 +733,18 @@ async def test_leave_is_idempotent_even_when_runtime_dead(make_service):
     assert service.snapshot()["connection"]["status"] == "DISCONNECTED"
 
 
+async def test_live_connection_status_does_not_use_stale_online_mirror(
+    fake_runtime: FakeRuntime, make_service
+):
+    service = make_service(make_config(fake_runtime))
+    fake_runtime.online = True
+    assert (await service.status())["connection"]["status"] == "ONLINE"
+    fake_runtime.online = False
+    assert service.snapshot()["connection"]["status"] == "ONLINE"
+    live = await service.live_connection_status()
+    assert live is not None and live["status"] == "DISCONNECTED"
+
+
 async def test_disabled_config_raises_disabled(make_service):
     service = make_service(make_config(None, enabled=False))
     with pytest.raises(MinecraftDisabled):

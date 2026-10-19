@@ -9,7 +9,9 @@ time — so "happy → sad" inside one message is impossible.
 
 from __future__ import annotations
 
+import json
 import logging
+import math
 import time
 from typing import TYPE_CHECKING, Any
 
@@ -92,14 +94,10 @@ class CharacterState(BaseModel):
         )
 
     def to_json(self) -> str:
-        import json
-
         return json.dumps(self.model_dump(), ensure_ascii=False)
 
     @classmethod
     def from_json(cls, raw: str) -> CharacterState:
-        import json
-
         return cls.model_validate(json.loads(raw))
 
 
@@ -132,6 +130,27 @@ class StateManager:
                 self._log.exception("Failed to load character state, using defaults")
             self._loaded = True
         return self.state
+
+    async def read_for_admission(self) -> CharacterState | None:
+        """Read validated persisted role facts; chat fallback defaults are not evidence."""
+        if self._db is None:
+            return None
+        try:
+            row = await self._db.fetchone("SELECT data FROM character_states WHERE id = 1")
+            if row is None:
+                return None
+            payload = json.loads(row["data"])
+            energy = payload.get("energy") if isinstance(payload, dict) else None
+            if (
+                isinstance(energy, bool)
+                or not isinstance(energy, int | float)
+                or not math.isfinite(energy)
+                or not 0 <= energy <= 1
+            ):
+                return None
+            return CharacterState.from_json(row["data"]).decayed(int(self._clock()))
+        except Exception:  # noqa: BLE001 - unavailable role facts never become healthy defaults
+            return None
 
     async def update(
         self,

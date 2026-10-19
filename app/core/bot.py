@@ -10,6 +10,7 @@ mounts QQ user commands.
 from __future__ import annotations
 
 import asyncio
+import math
 import time
 from typing import TYPE_CHECKING, Any
 
@@ -864,6 +865,7 @@ class Bot:
                     config=self.config.task,
                     # §十三：任务事件走现有事件流；QQ 侧订阅它，而不是自己轮询
                     publish=self._publish_task_event,
+                    life_guard=self._life_goal_guard,
                     logger=self.log,
                 )
                 # Phase 7F.5 §五：Runtime 实例换了（成功的身份响应证明）→ 主动对账旧实例的
@@ -1310,6 +1312,7 @@ class Bot:
             else (lambda tool, arguments: invoker(tool, dict(arguments))),
             character_id=self._activity_character_id(),
             plan_ttl_seconds=float(getattr(task_config, "ttl_seconds", 600.0)),
+            life_guard=self._life_goal_guard,
             replan_budget=int(getattr(task_config, "max_replans", 2)),
             view_limit=int(getattr(plan_config, "view_limit", 10)),
             logger=self.log,
@@ -1463,19 +1466,104 @@ class Bot:
     async def _active_task_states(self) -> tuple[str, ...]:
         """只读地问一句"现在有没有用户任务占着她"（§十一/§十二）。
 
-        拿不到就返回空表 —— 守卫层会把"读不到"当作没有任务，而不是当作有任务。
+        读取失败必须标为 UNKNOWN，不能向 Life 声称空闲。
         """
         tasks = getattr(self, "tasks", None)
         if tasks is None:
             return ()
         try:
             record = await tasks.current()
-        except Exception:  # noqa: BLE001 - 只读探针，失败即空
-            return ()
+        except Exception:  # noqa: BLE001 - unknown is not idle
+            return ("UNKNOWN",)
         if record is None:
             return ()
         state = getattr(getattr(record, "state", None), "value", "")
         return (str(state).upper(),)
+
+    async def _life_goal_guard(
+        self, *, ignore_task_id: str = "", intent_id: str = ""
+    ) -> dict[str, Any]:
+        """Fresh read-only LIFE preconditions; never create, approve or execute a task."""
+        from dataclasses import replace
+
+        from app.tasks.life_guard import assess_life_facts
+
+        initiative = getattr(self, "initiative", None)
+        provider = getattr(initiative, "context_provider", None)
+        states = getattr(getattr(self, "character", None), "states", None)
+        tasks = getattr(self, "tasks", None)
+        minecraft = getattr(self, "minecraft", None)
+        presence = getattr(self, "presence", None)
+        if (
+            initiative is None
+            or provider is None
+            or states is None
+            or tasks is None
+            or minecraft is None
+        ):
+            return {"allowed": False, "reason": "life_context_unavailable"}
+        moment = time.time()
+        try:
+            if ignore_task_id and not intent_id:
+                plans = getattr(self, "agent_plans", None)
+                linked = await plans.plan_for_task(ignore_task_id) if plans is not None else None
+                if linked is None or linked.source != "LIFE":
+                    return {"allowed": False, "reason": "life_origin_unavailable"}
+                intent_id = str(linked.intent_id)
+            intent = await initiative.store.get(str(intent_id)) if intent_id else None
+            if intent is None or intent.character_id != self._activity_character_id():
+                return {"allowed": False, "reason": "life_origin_unavailable"}
+            if intent.expired_at(moment):
+                return {"allowed": False, "reason": "life_intent_expired"}
+            if str(getattr(intent.status, "value", intent.status)) != "PROPOSED":
+                return {"allowed": False, "reason": "life_intent_not_open"}
+            reader = getattr(states, "read_for_admission", None)
+            state = await reader() if callable(reader) else None
+            if state is None:
+                return {"allowed": False, "reason": "role_state_unavailable"}
+            if presence is None:
+                return {"allowed": False, "reason": "role_state_unavailable"}
+            sleeping = presence.is_sleeping()
+            quiet = presence.in_dnd() or presence.is_night()
+            if not isinstance(sleeping, bool) or not isinstance(quiet, bool):
+                return {"allowed": False, "reason": "role_state_unavailable"}
+            if sleeping:
+                return {"allowed": False, "reason": "role_sleeping"}
+            if quiet:
+                return {"allowed": False, "reason": "role_quiet_hours"}
+            context = await provider(moment)
+            if context is not None and not context.recovered_at:
+                context = replace(
+                    context, recovered_at=float(getattr(initiative, "recovered_at", 0.0))
+                )
+            blockers = await tasks.execution_blockers(ignore_task_id=ignore_task_id)
+            connection = await minecraft.live_connection_status()
+            world = minecraft.world_view()
+            connected_at = connection.get("connected_at") if isinstance(connection, dict) else None
+            layers = world.get("layers") if isinstance(world, dict) else None
+            near = layers.get("near") if isinstance(layers, dict) else None
+            captured_at = near.get("captured_at") if isinstance(near, dict) else None
+            if (
+                not isinstance(connection, dict)
+                or connection.get("status") != "ONLINE"
+                or isinstance(connected_at, bool)
+                or not isinstance(connected_at, int | float)
+                or not math.isfinite(connected_at)
+                or isinstance(captured_at, bool)
+                or not isinstance(captured_at, int | float)
+                or not math.isfinite(captured_at)
+                or captured_at + 0.5 < connected_at
+            ):
+                world = {"online": False, "available": False}
+        except Exception:  # noqa: BLE001 - no inference from unreadable state
+            return {"allowed": False, "reason": "life_context_unavailable"}
+        return assess_life_facts(
+            context,
+            energy=getattr(state, "energy", None),
+            world=world,
+            blockers=blockers,
+            now=moment,
+        )
 
     async def _probe_task_state(self, task_id: str) -> str:
         """只读地问一句"这个任务现在什么状态"（活动重启对账用；拿不到就返回空串）。"""

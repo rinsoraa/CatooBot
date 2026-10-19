@@ -69,6 +69,22 @@ HARD_GUARD_ORDER: tuple[str, ...] = (
     SuppressionReason.DUPLICATE_INTENT.value,
 )
 
+# 这些现场阻碍消失后，同一个时间桶里的旧 SUPPRESSED 记录不得封死候选。
+# 冷却、爆发保护和本轮优先级抑制仍按原有低噪声去重处理。
+RETRYABLE_SUPPRESSION_REASONS = frozenset(
+    {
+        SuppressionReason.CHARACTER_RECOVERY.value,
+        SuppressionReason.SYSTEM_DEGRADED.value,
+        SuppressionReason.ACTIVE_USER_TASK.value,
+        SuppressionReason.PENDING_CONFIRMATION.value,
+        SuppressionReason.SLEEPING.value,
+        SuppressionReason.QUIET_HOURS.value,
+        SuppressionReason.HIGH_SOCIAL_FATIGUE.value,
+        SuppressionReason.MINECRAFT_OFFLINE.value,
+        SuppressionReason.RECENT_USER_INTERACTION.value,
+    }
+)
+
 #: 任务状态里"用户任务正占着她"的那几个（§十一）
 ACTIVE_TASK_STATES = ("RUNNING", "WAITING_ACTION", "PAUSED")
 #: 需要确认的任务状态（§十二）—— 绝不允许自动确认，也不允许旁边冒出新方向
@@ -190,12 +206,21 @@ class InitiativeGate:
         )
         # ---- 冷却 / 去重 / 防爆（依赖 bounded 的最近意图）
         # §二十五/§二十六：**被抑制不算"产生过"**（SUPPRESSED != FAILED），
-        # 所以冷却与防爆只看 PROPOSED；而去重看**所有**状态（同一个指纹绝不重复建行）。
+        # 所以冷却与防爆只看 PROPOSED；现场阻碍清除后可再提出。
+        # 存储层保留旧 SUPPRESSED 行，重提行带确定性后缀；去重时还原原指纹。
         proposed = [item for item in recent if item.status is LifeIntentStatus.PROPOSED]
         proposals_last_hour = self._count_since(proposed, now=now, window=3600.0)
         burst = self._burst_state(proposed, now=now, max_per_hour=max_per_hour, guards=guards)
         last_by_type = self._last_by_type(proposed)
-        fingerprints = {item.fingerprint for item in recent if item.fingerprint}
+        fingerprints = {
+            self._base_fingerprint(item.fingerprint)
+            for item in recent
+            if item.fingerprint
+            and (
+                item.status is not LifeIntentStatus.SUPPRESSED
+                or item.suppression_reason not in RETRYABLE_SUPPRESSION_REASONS
+            )
+        }
         # §六十"低噪声"：同一个**想法**只要还挂着（open），就不重复提。
         # 指纹去掉时间桶就是"词干"（character|type|goal|activity|semantic_key），
         # 所以这里判定的是"同一个念头"，而不是"同一个小时的同一个念头"。
@@ -341,7 +366,7 @@ class InitiativeGate:
         )
         recovered_ago = now - float(context.recovered_at or 0.0)
         blocked_recovery = bool(context.recovered_at) and recovered_ago < RECOVERY_GRACE_SECONDS
-        blocked_degraded = bool(str(context.degraded or "").strip())
+        blocked_degraded = bool(str(context.degraded or "").strip()) or "UNKNOWN" in states
         blocked_interaction = (
             bool(context.user_interaction_at)
             and interaction_window > 0
@@ -353,7 +378,10 @@ class InitiativeGate:
             "recovered_ago_seconds": round(recovered_ago, 1),
             "grace_seconds": RECOVERY_GRACE_SECONDS,
         }
-        guards["_SYSTEM_DEGRADED"] = {"degraded": str(context.degraded or "")}
+        guards["_SYSTEM_DEGRADED"] = {
+            "degraded": str(context.degraded or ""),
+            "task_state_unknown": "UNKNOWN" in states,
+        }
         guards["_ACTIVE_USER_TASK"] = {"task_states": sorted(states)}
         guards["_PENDING_CONFIRMATION"] = {"pending": bool(blocked_confirmation)}
         guards["_SLEEPING"] = {"sleeping": bool(context.sleeping)}
@@ -433,9 +461,13 @@ class InitiativeGate:
         return burst
 
     @staticmethod
+    def _base_fingerprint(fingerprint: str) -> str:
+        return str(fingerprint or "").split("|after_suppression:", 1)[0]
+
+    @staticmethod
     def _stem(fingerprint: str) -> str:
         """指纹去掉时间桶 = "同一个想法"（§二十 的指纹前六段）。"""
-        return str(fingerprint or "").rsplit("|", 1)[0]
+        return InitiativeGate._base_fingerprint(fingerprint).rsplit("|", 1)[0]
 
     @staticmethod
     def _last_by_type(intents: Sequence[LifeIntent]) -> dict[str, LifeIntent]:

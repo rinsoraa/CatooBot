@@ -2145,6 +2145,13 @@ class MinecraftService:
             pass  # 保留镜像，快照里以 runtime_alive=False 呈现
         return self.snapshot()
 
+    async def live_connection_status(self) -> dict[str, Any] | None:
+        """只读直查 runtime；失败时不把可能过时的镜像当作当前在线证明。"""
+        try:
+            return await self._client.status()
+        except MinecraftRuntimeError:
+            return None
+
     def snapshot(self) -> dict[str, Any]:
         """同步只读投影（WebUI/QQ 兜底），不发网络请求。"""
         mirror = dict(self._mirror)

@@ -21,6 +21,7 @@ from typing import Any
 
 from app.integrations.minecraft.agent import MinecraftAgentBridge
 from app.integrations.minecraft.confirmation import ConfirmationStore
+from app.tasks.life_guard import LifeGuard, check_life_guard
 from app.tasks.runtime import TaskConfig, TaskInvocation, TaskRuntime
 from app.tasks.store import SqliteTaskStore
 from app.tasks.validation import default_step_label
@@ -103,9 +104,13 @@ class MinecraftTaskInvoker:
         bridge: MinecraftAgentBridge,
         *,
         runtime_instance_of: Callable[[], str] | None = None,
+        life_guard: LifeGuard | None = None,
+        task_reader: Callable[[str], Awaitable[Any]] | None = None,
     ) -> None:
         self._bridge = bridge
         self._runtime_instance_of = runtime_instance_of
+        self.life_guard = life_guard
+        self.task_reader = task_reader
 
     def runtime_instance(self) -> str:
         """当前 Runtime 实例（Phase 7F.5.1）：读不到就返回空串，绝不抛。"""
@@ -131,6 +136,26 @@ class MinecraftTaskInvoker:
         # Phase 7F.5.1 §三.1：调用**前后**各读一次实例 —— 调用期间 Service 的
         # _ensure_runtime() 会做一次成功的身份探测，所以调用后的读数是「真正服务这次
         # 请求的那个实例」；调用前那次则用来发现「调用过程中换了人」。
+        if tool != "minecraft_stop" and task_id and self.task_reader is not None:
+            try:
+                record = await self.task_reader(task_id)
+            except Exception:  # noqa: BLE001 - unreadable authorization context is not permission
+                return TaskInvocation(
+                    ok=False, code="task.context_unavailable", error="无法读取当前任务，未派发动作"
+                )
+            if record is None:
+                return TaskInvocation(
+                    ok=False, code="task.context_unavailable", error="当前任务不存在，未派发动作"
+                )
+            if str(getattr(record, "source", "")) == "qq_life_plan":
+                admission = await check_life_guard(self.life_guard, ignore_task_id=task_id)
+                if not admission["allowed"]:
+                    return TaskInvocation(
+                        ok=False,
+                        code="life.precondition_changed",
+                        error="生活计划的当前前提不满足，未派发动作",
+                        detail={"reason": admission["reason"]},
+                    )
         before = self.runtime_instance()
         if tool == "minecraft_stop" or not task_id:
             # 控制面调用（取消/过期时停动作）与 SAFE 读取：走正常的 SAFE 通道
@@ -355,6 +380,7 @@ async def build_minecraft_task_runtime(
     config: Any = None,
     publish: Callable[[str, dict[str, Any]], None] | None = None,
     store: Any = None,
+    life_guard: LifeGuard | None = None,
     logger: Any = None,
 ) -> TaskRuntime:
     """按当前配置组装 TaskRuntime（并给它装上"这一步有没有授权"的校验器）。"""
@@ -379,9 +405,10 @@ async def build_minecraft_task_runtime(
     # FakeService）不该被当成"有身份追踪"，否则会假装自己在做实例校验（那才是静默降级）。
     instance_of = getattr(service, "runtime_instance", None)
     identity_probe = getattr(service, "probe_runtime_instance", None)
+    invoker = MinecraftTaskInvoker(bridge, runtime_instance_of=instance_of, life_guard=life_guard)
     runtime = TaskRuntime(
         store=task_store,
-        invoke=MinecraftTaskInvoker(bridge, runtime_instance_of=instance_of),
+        invoke=invoker,
         confirmations=MinecraftPlanConfirmation(bridge.confirmations),
         config=_task_config(config),
         publish=publish,
@@ -401,4 +428,5 @@ async def build_minecraft_task_runtime(
         logger=logger,
     )
     bridge.set_task_authorizer(runtime.authorize_step)
+    invoker.task_reader = runtime.get
     return runtime

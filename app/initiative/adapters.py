@@ -369,11 +369,11 @@ class InitiativeContextAdapter:
         try:
             value = await self._await(self.task_states_provider())
         except Exception:  # noqa: BLE001
-            return ()
+            return ("UNKNOWN",)
         try:
             return tuple(str(getattr(item, "value", item) or "").upper() for item in value)
         except TypeError:
-            return ()
+            return ("UNKNOWN",)
 
     def _user_interaction_at(self) -> float:
         observation = getattr(self.activity, "last_observation", None)

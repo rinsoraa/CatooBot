@@ -1,0 +1,399 @@
+{
+  "stage": "R2",
+  "baseline": "1d2bf36e608c6f59ddd992d60d8c440d21958c26",
+  "live_run": "life-80966d49fc4e",
+  "status": "G1/G2/G3 local verification passed; publication CI tracked separately",
+  "role_source": "actual configured Bible compiled into isolated scenario databases",
+  "scenario_sources": "persisted controlled Goal and conversation-interest memory; not a long-session claim",
+  "default_medium_enabled": false,
+  "task_ttl_seconds": 600,
+  "max_steps": 16,
+  "max_replans": 2,
+  "max_no_progress": 3,
+  "life_cooldown_minutes": 20,
+  "max_life_per_hour": 3,
+  "max_life_per_pass": 1,
+  "recovery_grace_seconds": 300,
+  "world_near_max_age_seconds": 5,
+  "source_files_frozen": 647,
+  "source_manifest_sha256": "d963422d1ac9cdff3c8789c374afad0f64b9d283cc181715adb8c20d8e45cc09",
+  "cases": [
+    {
+      "case_id": "80966d49fc4e_complete",
+      "kind": "complete",
+      "status": "PASS",
+      "candidate_sources": [
+        "GOAL",
+        "MEMORY"
+      ],
+      "intent_source": "GOAL",
+      "intent_id": "INT-20261019-005",
+      "goal_id": "goal_97c146748a",
+      "proposal_id": "TP-20261019-001",
+      "plan_id": "AP-20261019-001",
+      "task_id": "task_5709581b734b",
+      "plan_hash": "fb5527f6be8221debd8e",
+      "state": "SUCCEEDED",
+      "task_source": "qq_life_plan",
+      "user_id": "r2_owner",
+      "session_id": "r2_complete",
+      "transport": "controlled product-service user boundary; no QQ message in this matrix",
+      "preapproval_pending_task_count": 0,
+      "world_actions_before_confirmation": 0,
+      "startup": {
+        "cold_reason": "CHARACTER_RECOVERY",
+        "cold_created_count": 0,
+        "cold_suppressed_count": 4,
+        "cold_intent_ids": [
+          "INT-20261019-004",
+          "INT-20261019-003",
+          "INT-20261019-002",
+          "INT-20261019-001"
+        ],
+        "grace_seconds": 300.0,
+        "wait_elapsed_seconds": 301.0075716972351,
+        "warm_created": [
+          "INT-20261019-005"
+        ],
+        "cold_unchanged": true
+      },
+      "negative_checks": [
+        {
+          "kind": "missing_role",
+          "reason": "role_state_unavailable"
+        },
+        {
+          "kind": "low_energy",
+          "reason": "role_low_energy"
+        },
+        {
+          "kind": "offline",
+          "reason": "world_unavailable"
+        },
+        {
+          "kind": "conflict",
+          "reason": "active_task_conflict"
+        },
+        {
+          "kind": "medium_default_off",
+          "reason": "BLOCKED_BY_POLICY"
+        }
+      ],
+      "wrong_owner": {
+        "type": "TaskAuthorizationError",
+        "code": "task.confirmation_wrong_owner"
+      },
+      "safe_observations_before_approval": [
+        "find_blocks"
+      ],
+      "confirmation_expiry_elapsed_seconds": 60.20300000000134,
+      "server_before": {
+        "x": 12032.5,
+        "y": 100.0,
+        "z": 16032.5
+      },
+      "server_after": {
+        "x": 12032.5,
+        "y": 100.0,
+        "z": 16023.577125874359
+      },
+      "observer_after": {
+        "source": "independent_client_server_entity",
+        "player_name": "R2Bot",
+        "player_uuid": "62c3af8a-e005-3312-9813-dda3bdf67214",
+        "entity_id": 85,
+        "position": {
+          "x": 12032.5,
+          "y": 100,
+          "z": 16023.5771484375
+        }
+      },
+      "displacement": 8.922874125641101,
+      "moving_before_cancel": null,
+      "late_server_position": null,
+      "immediate_to_late_settling_distance": null,
+      "late_pair_stability": null,
+      "steps": [
+        {
+          "step_id": "step_1",
+          "tool": "minecraft_move_to",
+          "risk": "LOW",
+          "state": "SUCCEEDED",
+          "action_id": "act_rt_mvex21y5_a9b2f349_mvex9wnm_3"
+        },
+        {
+          "step_id": "step_2",
+          "tool": "minecraft_look_at",
+          "risk": "SAFE",
+          "state": "SUCCEEDED",
+          "action_id": ""
+        },
+        {
+          "step_id": "step_3",
+          "tool": "minecraft_world",
+          "risk": "SAFE",
+          "state": "SUCCEEDED",
+          "action_id": ""
+        }
+      ],
+      "component_recovery": {
+        "action": "recovered",
+        "loaded": 5,
+        "proposed": 1,
+        "expired": 0,
+        "skipped_generation": true
+      },
+      "recovery_scope": "real SQLite/service reconstruction; not an OS process restart"
+    },
+    {
+      "case_id": "80966d49fc4e_cancel",
+      "kind": "cancel",
+      "status": "PASS",
+      "candidate_sources": [
+        "GOAL",
+        "MEMORY"
+      ],
+      "intent_source": "GOAL",
+      "intent_id": "INT-20261019-005",
+      "goal_id": "goal_a23935490d",
+      "proposal_id": "TP-20261019-001",
+      "plan_id": "AP-20261019-001",
+      "task_id": "task_8c9df134a113",
+      "plan_hash": "fb5527f6be8221debd8e",
+      "state": "CANCELLED",
+      "task_source": "qq_life_plan",
+      "user_id": "r2_owner",
+      "session_id": "r2_cancel",
+      "transport": "controlled product-service user boundary; no QQ message in this matrix",
+      "preapproval_pending_task_count": 0,
+      "world_actions_before_confirmation": 0,
+      "startup": {
+        "cold_reason": "CHARACTER_RECOVERY",
+        "cold_created_count": 0,
+        "cold_suppressed_count": 4,
+        "cold_intent_ids": [
+          "INT-20261019-004",
+          "INT-20261019-003",
+          "INT-20261019-002",
+          "INT-20261019-001"
+        ],
+        "grace_seconds": 300.0,
+        "wait_elapsed_seconds": 301.0154883861542,
+        "warm_created": [
+          "INT-20261019-005"
+        ],
+        "cold_unchanged": true
+      },
+      "negative_checks": [],
+      "wrong_owner": null,
+      "safe_observations_before_approval": [],
+      "confirmation_expiry_elapsed_seconds": null,
+      "server_before": {
+        "x": 12032.5,
+        "y": 100.0,
+        "z": 16032.5
+      },
+      "server_after": {
+        "x": 12032.5,
+        "y": 100.0,
+        "z": 16030.157918832945
+      },
+      "observer_after": {
+        "source": "independent_client_server_entity",
+        "player_name": "R2Bot",
+        "player_uuid": "62c3af8a-e005-3312-9813-dda3bdf67214",
+        "entity_id": 85,
+        "position": {
+          "x": 12032.5,
+          "y": 100,
+          "z": 16030.157958984375
+        }
+      },
+      "displacement": 2.3420811670548574,
+      "moving_before_cancel": {
+        "x": 12032.5,
+        "y": 100.0,
+        "z": 16030.31047487871
+      },
+      "late_server_position": {
+        "x": 12032.5,
+        "y": 100.0,
+        "z": 16029.979309306436
+      },
+      "immediate_to_late_settling_distance": 0.1786095265088079,
+      "late_pair_stability": "frozen driver asserted <0.01 between t+1s and t+2s; first late coordinate not persisted",
+      "steps": [
+        {
+          "step_id": "step_1",
+          "tool": "minecraft_move_to",
+          "risk": "LOW",
+          "state": "WAITING_ACTION",
+          "action_id": "act_rt_mvex21y5_a9b2f349_mvexggjo_5"
+        },
+        {
+          "step_id": "step_2",
+          "tool": "minecraft_look_at",
+          "risk": "SAFE",
+          "state": "PENDING",
+          "action_id": ""
+        },
+        {
+          "step_id": "step_3",
+          "tool": "minecraft_world",
+          "risk": "SAFE",
+          "state": "PENDING",
+          "action_id": ""
+        }
+      ],
+      "component_recovery": null,
+      "recovery_scope": null
+    }
+  ],
+  "server_lifecycle": [
+    {
+      "generation": 1,
+      "pid": 58264,
+      "log": "server-1.log",
+      "exit_code": 0,
+      "stop_ms": 734.0,
+      "all_dimensions_saved": true,
+      "resources_closed": true
+    }
+  ],
+  "rollback": {
+    "restored_files": 99,
+    "all_original_hashes_match": true,
+    "extra_world_files": 0,
+    "test_mod_removed": true,
+    "test_config_removed": true,
+    "server_stopped": true
+  },
+  "original_server_restart": {
+    "initial_server_running": true,
+    "ready": true,
+    "process_alive": true,
+    "pid": 58708,
+    "loaded_mods": 42,
+    "test_mod_absent": true,
+    "test_config_absent": true,
+    "stdout_log": "original-server-restarted.log"
+  },
+  "python": {
+    "passed": 4732,
+    "seconds": 667.82,
+    "log_sha256": "08444aab4d00431360a9d2be1d958a9cae8a08a2d2bb213008da9374e16721b5"
+  },
+  "static_checks": {
+    "ruff-final.log": "a4443afdcfb6d7363adb285762515ccf7cf50473b1a05c20c1a50f6bed4d26b0",
+    "format-final.log": "fad42b30cda176dcd53350aac811360188d10e24785a3da392fcd9e8ca9bff7a",
+    "mypy-final.log": "6d53e496bcaae05a3377000ff7c8873756458d4fac529d2c1d623408ce8bcf56"
+  },
+  "provider": [
+    {
+      "case": "request",
+      "decision": {
+        "kind": "task_proposal",
+        "reply_text": "好，我这就到附近走走看看。",
+        "capability_id": "",
+        "arguments": {},
+        "task_goal": "探索附近，四处走走看看周围环境",
+        "clarification_question": ""
+      },
+      "reason": "decision_ok",
+      "attempts": 1,
+      "latency_ms": 3546.999999998661,
+      "passed": true
+    },
+    {
+      "case": "inquiry",
+      "decision": {
+        "kind": "chat",
+        "reply_text": "放心，这条消息我不创建也不执行任何任务，只回答你。如果真要动手挖一根橡木原木，我会先检查这些： 1. 目标是否存在：先用 minecraft_find_blocks 查找附近（比如半径 16 格内）的 oak_log，确认方向和距离。 2. 位置是否安全：脚下有没有悬空或水/岩浆，头顶是否有沙子、砂砾这类会塌的方块，周围有没有敌对生物。 3. 能否走到：到树干旁边有没有可通行的路径，需不需要垫脚或绕路。 4. 工具与背包：确认「有个镐子？不，原木用手就能挖」——主要是确认背包还有空位，免得捡不起来。 5. 是否挡路：这棵树是不是我正走路或建东西的要道，要不要换一棵。 确认这些之后，才会靠近并挖掘。",
+        "capability_id": "",
+        "arguments": {},
+        "task_goal": "",
+        "clarification_question": ""
+      },
+      "reason": "decision_ok",
+      "attempts": 1,
+      "latency_ms": 4141.00000000326,
+      "passed": true
+    },
+    {
+      "case": "negation",
+      "decision": {
+        "kind": "cancel",
+        "reply_text": "好，那就不去砍橡木原木了，已取消。",
+        "capability_id": "",
+        "arguments": {},
+        "task_goal": "",
+        "clarification_question": ""
+      },
+      "reason": "decision_ok",
+      "attempts": 1,
+      "latency_ms": 2921.0000000020955,
+      "passed": true
+    },
+    {
+      "case": "ambiguous",
+      "decision": {
+        "kind": "clarify",
+        "reply_text": "你是想停下砍橡木、改成去砍云杉，还是先什么都别做、等你决定？告诉我一个就行。",
+        "capability_id": "",
+        "arguments": {},
+        "task_goal": "",
+        "clarification_question": "要改成采集云杉，还是先暂停所有采集等你决定？"
+      },
+      "reason": "decision_ok",
+      "attempts": 1,
+      "latency_ms": 3610.000000000582,
+      "passed": true
+    },
+    {
+      "case": "cancel",
+      "decision": {
+        "kind": "stop",
+        "reply_text": "好，已停下当前动作。",
+        "capability_id": "",
+        "arguments": {},
+        "task_goal": "",
+        "clarification_question": ""
+      },
+      "reason": "decision_ok",
+      "attempts": 1,
+      "latency_ms": 3343.9999999973224,
+      "passed": true
+    }
+  ],
+  "unchanged_components": {
+    "baseline": "1d2bf36e608c6f59ddd992d60d8c440d21958c26",
+    "reused_test_commit": "ad9484cb284d1dabfb755028642d446e62775d26",
+    "all_current_component_bytes_match_published_baseline": true,
+    "files": 55,
+    "scope": "unchanged Node/Java tests reused; not claimed as a new test run"
+  },
+  "private_configuration_unchanged": {
+    "verified_files": 2,
+    "all_hashes_match": true
+  },
+  "raw_evidence_sha256": {
+    "life-80966d49fc4e/bridge-events.json": "c899cae3d04d43d5a3acfe93ecc13aab55aa67540839b21223ac327895e9d5d5",
+    "life-80966d49fc4e/cancel/startup-gate.json": "202a3efddf5bf25428f4907769e19852da5249d84b1b608001679425cb31c23e",
+    "life-80966d49fc4e/complete/startup-gate.json": "2691175ad74c5ba2e36093fe8cdd56a74c55914d6ba6fda7b5351a15d14de29d",
+    "life-80966d49fc4e/fixture.json": "dcf4b06a1fa70f2b21593220c7badcebaa2e513623e94935fdacee87aa1e381b",
+    "life-80966d49fc4e/observer/command.json": "3b5a5c0038d7577a9fc7317967958c221a3530c86ad1f67390bc1f099f4f7103",
+    "life-80966d49fc4e/observer/ready.json": "d193ba96b1056070d045dae9a45b339fa9a092aa5dda6fc0afc968eae808c238",
+    "life-80966d49fc4e/observer/result.json": "c6b8b379c995bab31b31ad08b98fc473e22d816fb03c6463544ec58281db485e",
+    "life-80966d49fc4e/results.json": "206177cd471e549b77c3d13dba84bca4f52222cb67cbd23e139644eff87009cf",
+    "life-80966d49fc4e/server-lifecycle.json": "9cc8e80f950e79cfc11e70ee1ff7c903b54164d96a088fe4df6ec08d7b382ffd",
+    "life-80966d49fc4e/source-hashes-after.json": "d963422d1ac9cdff3c8789c374afad0f64b9d283cc181715adb8c20d8e45cc09",
+    "life-80966d49fc4e/source-hashes-before.json": "d963422d1ac9cdff3c8789c374afad0f64b9d283cc181715adb8c20d8e45cc09",
+    "life-80966d49fc4e/task-events.json": "d8eb61706f1f26a377310a3a23849a08aafb4d8dcd25825b74488ff9cdfd10ec"
+  },
+  "limits": [
+    "isolated scenarios are not long sessions",
+    "component reconstruction is not an OS process restart",
+    "observer trajectory buffer is bounded; independent final entity snapshots verify final coordinates",
+    "Integrated/LAN and R3-R8 remain separate uncompleted gates"
+  ]
+}

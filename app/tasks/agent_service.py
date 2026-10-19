@@ -31,7 +31,9 @@ from app.tasks.agent_plan import (
 from app.tasks.agent_planner import (
     BoundedAgentPlanner,
     PlanningOutcome,
+    PlanningResult,
 )
+from app.tasks.life_guard import LifeGuard, check_life_guard
 from app.tasks.proposal import ProposalStatus, TaskProposal
 from app.tasks.proposal_service import (  # noqa: F401 - 语义复用
     NO_TARGET,
@@ -76,6 +78,7 @@ class AgentPlanService:
         reserve_lease_seconds: float = DEFAULT_RESERVE_LEASE_SECONDS,
         #: Phase 7E.1：技能服务（只用于"任务建立后登记技能绑定"；鸭子类型，None = 不登记）
         skills: Any = None,
+        life_guard: LifeGuard | None = None,
         clock: Callable[[], float] = time.time,
         logger: Any = None,
     ) -> None:
@@ -86,6 +89,7 @@ class AgentPlanService:
         self.observe = observe
         #: Phase 7E.1：技能服务（仅绑定用；None = 不登记绑定，行为与 7E 之前一致）
         self.skills = skills
+        self.life_guard = life_guard
         self.character_id = str(character_id or "")
         self.plan_ttl_seconds = float(plan_ttl_seconds)
         self.replan_budget = int(replan_budget)
@@ -691,7 +695,24 @@ class AgentPlanService:
         if not objective:
             return {"action": "skipped", "reason": "empty_objective"}
         target = self._target_of_proposal(proposal)
-        result = await self.planner.plan(objective, target=target, observe=self.observe)
+        admission = await check_life_guard(self.life_guard, intent_id=str(proposal.intent_id))
+        if admission["allowed"]:
+            result = await self.planner.plan(objective, target=target, observe=self.observe)
+        else:
+            result = PlanningResult(
+                outcome=PlanningOutcome.BLOCKED_BY_PRECONDITION, reason=admission["reason"]
+            )
+        result.checks = (
+            *result.checks,
+            {
+                "check": "life_admission",
+                "ok": admission["allowed"],
+                "detail": {"reason": admission["reason"]},
+            },
+        )
+        moment = self._now(now)
+        if proposal.expired_at(moment):
+            return {"action": "skipped", "reason": "proposal_not_open"}
         status_map = {
             PlanningOutcome.READY_FOR_APPROVAL: PlanStatus.READY_FOR_APPROVAL,
             PlanningOutcome.NEEDS_MORE_INFORMATION: PlanStatus.NEEDS_MORE_INFORMATION,
@@ -790,6 +811,26 @@ class AgentPlanService:
                 "action": "degraded",
                 "reply": "任务系统现在不可用。",
                 "plan": plan,
+                "record": None,
+            }
+        admission = await check_life_guard(self.life_guard, intent_id=str(plan.intent_id))
+        if not admission["allowed"]:
+            return {
+                "action": "not_approvable",
+                "reason": admission["reason"],
+                "reply": "现在的角色状态、世界事实或任务占用不满足这份生活计划，先不建立任务。",
+                "plan": plan,
+                "record": None,
+            }
+        moment = self._now(now)
+        if plan.expired_at(moment):
+            expired = await self.store.update_status(
+                plan.plan_id, PlanStatus.EXPIRED, reason="approved_after_ttl", now=moment
+            )
+            return {
+                "action": "not_approvable",
+                "reply": "这份计划已经过期了，不能批准。",
+                "plan": expired or plan,
                 "record": None,
             }
         from app.tasks.models import TaskPlan

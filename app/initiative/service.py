@@ -344,6 +344,15 @@ class LifeIntentService:
                     LifeIntentStatus.SUPPRESSED, suppression_reason=verdict.reason
                 )
             stored, fresh = await self.store.create(payload)
+            if verdict.allowed and not fresh and stored.status is LifeIntentStatus.SUPPRESSED:
+                # 抑制历史不可改写；恢复后以确定性新指纹记一次真实提议。
+                # 并发 / 重试沿用同一后缀，仍由 store 的唯一约束保证幂等。
+                stored, fresh = await self.store.create(
+                    replace(
+                        payload,
+                        fingerprint=f"{payload.fingerprint}|after_suppression:{stored.intent_id}",
+                    )
+                )
             if not fresh:
                 continue  # §四十六：同一个指纹只写一次
             if verdict.allowed:
