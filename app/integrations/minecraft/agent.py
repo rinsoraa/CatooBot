@@ -98,6 +98,8 @@ ACTION_RISK: dict[str, str] = {
     "minecraft_entities": "SAFE",
     "minecraft_attack": "MEDIUM",
     "minecraft_combat_verify": "SAFE",
+    "minecraft_drop_item": "MEDIUM",
+    "minecraft_delivery_verify": "SAFE",
 }
 
 #: Tool → Action Runtime 动作名（chat 也走统一生命周期）
@@ -148,6 +150,7 @@ NON_EXCLUSIVE_TOOLS: frozenset[str] = frozenset(
         "minecraft_find_blocks",
         "minecraft_entities",
         "minecraft_combat_verify",
+        "minecraft_delivery_verify",
     }
 )
 

@@ -361,7 +361,7 @@ class TestCapabilityGaps:
         from app.integrations.minecraft.agent import ACTION_RISK
 
         catalog = capability_catalog(minecraft_online=True)
-        assert len(catalog) == len(ACTION_RISK) == 22
+        assert len(catalog) == len(ACTION_RISK) == 24
         for name, risk in ACTION_RISK.items():
             assert catalog[name].risk_class == risk
         assert all(item.available for item in catalog.values())

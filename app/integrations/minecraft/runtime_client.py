@@ -124,6 +124,12 @@ class MinecraftRuntimeClient:
         """读附近的掉落物实体（Phase 4H：同步只读语义投影）。"""
         return await self._request("POST", "/minecraft/dropped_items", body={})
 
+    async def drop_item(self, item: str, count: int = 1) -> dict[str, Any]:
+        """R6: one explicit main-hand drop (MEDIUM; no auto-equip)."""
+        return await self._request(
+            "POST", "/minecraft/drop_item", body={"item": item, "count": count}
+        )
+
     async def entities(self) -> dict[str, Any]:
         """R5: read nearby living entities (SAFE; synchronous projection)."""
         return await self._request("POST", "/minecraft/entities", body={})

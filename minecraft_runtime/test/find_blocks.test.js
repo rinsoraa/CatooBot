@@ -73,7 +73,7 @@ function main() {
     assert(def.detached === undefined, '不是持续型动作')
     assert(
       Object.keys(ACTION_REGISTRY).sort().join(',') ===
-        'attack,chat,container_inspect,container_transfer,craft,dig,dig_capability,dropped_items,entities,equip,find_blocks,follow_player,inventory_move,look_at,move_to,pickup_item,place,recipe_lookup,stop',
+        'attack,chat,container_inspect,container_transfer,craft,dig,dig_capability,drop_item,dropped_items,entities,equip,find_blocks,follow_player,inventory_move,look_at,move_to,pickup_item,place,recipe_lookup,stop',
       `注册表只多了 find_blocks（得到 ${Object.keys(ACTION_REGISTRY).sort().join(',')}）`,
     )
     assert(

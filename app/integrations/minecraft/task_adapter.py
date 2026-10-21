@@ -242,6 +242,19 @@ async def _entities(service: Any, args: Mapping[str, Any]) -> dict[str, Any]:
     return await service.entities()
 
 
+async def _drop_item(service: Any, args: Mapping[str, Any]) -> dict[str, Any]:
+    return await service.drop_item(args.get("item"), args.get("count"))
+
+
+async def _delivery_verify(service: Any, args: Mapping[str, Any]) -> dict[str, Any]:
+    return await service.delivery_verify(
+        args.get("item"),
+        args.get("count"),
+        args.get("entity_id"),
+        args.get("expected_uuid"),
+    )
+
+
 async def _combat_verify(service: Any, args: Mapping[str, Any]) -> dict[str, Any]:
     return await service.combat_verify(
         args.get("entity_id"),
@@ -346,6 +359,8 @@ _SERVICE_ROUTES: dict[str, Callable[[Any, Mapping[str, Any]], Awaitable[dict[str
     "minecraft_dig": _dig,
     "minecraft_attack": _attack,
     "minecraft_combat_verify": _combat_verify,
+    "minecraft_drop_item": _drop_item,
+    "minecraft_delivery_verify": _delivery_verify,
     "minecraft_place": _place,
     "minecraft_equip": _equip,
     "minecraft_pickup_item": _pickup,

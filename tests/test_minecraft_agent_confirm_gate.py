@@ -369,8 +369,10 @@ async def test_production_registry_has_exactly_the_approved_tools() -> None:
         "minecraft_container_inspect",
         "minecraft_container_transfer",
         "minecraft_craft",
+        "minecraft_delivery_verify",
         "minecraft_dig",
         "minecraft_dig_capability",
+        "minecraft_drop_item",
         "minecraft_dropped_items",
         "minecraft_entities",
         "minecraft_equip",
@@ -435,8 +437,10 @@ async def test_risk_table_matches_the_production_tools() -> None:
         "minecraft_container_inspect",
         "minecraft_container_transfer",
         "minecraft_craft",
+        "minecraft_delivery_verify",
         "minecraft_dig",
         "minecraft_dig_capability",
+        "minecraft_drop_item",
         "minecraft_dropped_items",
         "minecraft_entities",
         "minecraft_find_blocks",
@@ -450,6 +454,8 @@ async def test_risk_table_matches_the_production_tools() -> None:
     assert ACTION_RISK["minecraft_attack"] == "MEDIUM"
     assert ACTION_RISK["minecraft_entities"] == "SAFE"
     assert ACTION_RISK["minecraft_combat_verify"] == "SAFE"
+    assert ACTION_RISK["minecraft_drop_item"] == "MEDIUM"
+    assert ACTION_RISK["minecraft_delivery_verify"] == "SAFE"
     assert ACTION_RISK["minecraft_dig"] == "MEDIUM"
     assert ACTION_RISK["minecraft_place"] == "MEDIUM"
     assert ACTION_RISK["minecraft_equip"] == "MEDIUM"

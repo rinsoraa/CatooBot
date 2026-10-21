@@ -388,6 +388,8 @@ async def test_minecraft_projection_includes_agent_block(tmp_path):
             "minecraft_attack",
             "minecraft_chat",
             "minecraft_combat_verify",
+            "minecraft_delivery_verify",
+            "minecraft_drop_item",
             "minecraft_look_at",
             "minecraft_move_to",
             "minecraft_follow_player",

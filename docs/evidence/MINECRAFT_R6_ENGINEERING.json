@@ -1,0 +1,49 @@
+{
+  "status": "PASS",
+  "generated_at": "2026-10-21T21:12:46.786Z",
+  "source": {
+    "files": 691,
+    "drift": []
+  },
+  "pytest": {
+    "command": ".venv/Scripts/python.exe -m pytest tests -q --tb=short",
+    "result": "5106 passed in 614.53s (0:10:14)",
+    "exit_code": 0,
+    "log": "pytest.log"
+  },
+  "node": {
+    "command": "npm test (minecraft_runtime)",
+    "exit_code": 0,
+    "result": "ALL CHECKS PASSED; unit suites + E2E",
+    "log": "node-test.log"
+  },
+  "java": {
+    "status": "UNCHANGED_SINCE_R3_RELEASE",
+    "note": "R6 did not change server_mod Java source or candidate JAR; R3 158 assertions remain valid."
+  },
+  "static_checks": {
+    "ruff": "ruff check app tests PASS",
+    "ruff_format": "657 files already formatted",
+    "mypy": "359 source files PASS"
+  },
+  "first_failures": [
+    {
+      "check": "R6 attempts 1-5",
+      "resolution": "observer health auth, TaskStep references, reference path, bot auto-pickup race; preserved under attempts."
+    },
+    {
+      "check": "Node e2e flake",
+      "resolution": "first R6 node run failed player distance; retry passed; first log preserved as node-attempt-01.log."
+    }
+  ],
+  "artifacts": {
+    "pytest.log": "5d93e0edb9cc1fb159c1da3457993cfaa6a935f1ab683c853c0ddbd62e5b7d82",
+    "pytest.exit": "9aca8dfce962538fb8131d73f84cada05e4dc79f5a0d3612c511b1150f3e33e2",
+    "node-test.log": "109afbbc4d42412ca9a5810444ea84e19d1054624d8475690b9427597dcdbd4a",
+    "node-test.exit": "9aca8dfce962538fb8131d73f84cada05e4dc79f5a0d3612c511b1150f3e33e2",
+    "ruff-check.log": "0d7c2597f6c95bac027c4bccd30792aee2aaaf9faa54454999335f7426b16d86",
+    "ruff-format.log": "acf961694764e02c45b7cc99462afb80d82b19924ea97d417fe9f9b44322a2dc",
+    "mypy.log": "db6e4762450a7477f358eff847d357d8f6b8e3656d64eaf257a6d3bf5750c7d2"
+  },
+  "report": "docs/MINECRAFT_R6_DELIVERY_REPORT.md"
+}

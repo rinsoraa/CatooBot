@@ -555,7 +555,9 @@ async def test_all_tools_share_one_risk_table() -> None:
         tool = runtime.registry.maybe_get(name)
         assert tool is not None, name
         # 通用 Tool Runtime 的风险词表是 low/medium/high；真正的动作分级在 ACTION_RISK
-        assert tool.metadata.risk_level == ("medium" if name == "minecraft_attack" else "low")
+        assert tool.metadata.risk_level == (
+            "medium" if name in {"minecraft_attack", "minecraft_drop_item"} else "low"
+        )
         assert tool.metadata.description
     assert runtime.registry.names() == [
         "calculator",
@@ -565,8 +567,10 @@ async def test_all_tools_share_one_risk_table() -> None:
         "minecraft_container_inspect",
         "minecraft_container_transfer",
         "minecraft_craft",
+        "minecraft_delivery_verify",
         "minecraft_dig",
         "minecraft_dig_capability",
+        "minecraft_drop_item",
         "minecraft_dropped_items",
         "minecraft_entities",
         "minecraft_equip",

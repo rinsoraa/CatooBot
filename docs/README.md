@@ -14,6 +14,10 @@ LIFE 双门、错误 owner 拒绝、记忆与技能复用已取证。剩余 G3 �
 
 2026-10-22 **R5 COMPLETE**：[R5 战斗安全验收报告](MINECRAFT_R5_BOUNDED_COMBAT_REPORT.md) 与 [证据](evidence/MINECRAFT_R5_BOUNDED_COMBAT.json)、[工程证据](evidence/MINECRAFT_R5_ENGINEERING.json)。真实矩阵 9/9 PASS；5099 Python passed、Node 全链、ruff/format/mypy 通过；发布 `3b7f40b`，CI [39663573182](https://github.com/rinsoraa/CatooBot/actions/runs/39663573182) 三 job success。R6 待制定任务书。
 
+2026-10-22 R6 补证：[R6 交付验收报告](MINECRAFT_R6_DELIVERY_REPORT.md) 与 [证据](evidence/MINECRAFT_R6_DELIVERY.json)、[工程证据](evidence/MINECRAFT_R6_ENGINEERING.json)。真实矩阵 6/6 PASS；5106 Python passed、Node 全链、ruff/format/mypy 通过；发布/CI 待补。
+
+2026-10-22 当前任务书：[R6 玩家物品交付与合作交互](specs/CatooBot%20Minecraft%20R6%20%E2%80%94%E2%80%94%20Player%20Item%20Delivery%20and%20Cooperative%20Interaction.md)。R5 已完成并发布；R6 门禁见任务书。
+
 2026-10-22 当前任务书：[R5 有界敌对交互与战斗安全](specs/CatooBot%20Minecraft%20R5%20%E2%80%94%E2%80%94%20Bounded%20Hostile%20Interaction%20and%20Combat%20Safety.md)。R4 已完成并发布；R5 门禁见任务书。
 
 2026-10-21 当前任务书：[R4 受限放置与简单建造](specs/CatooBot%20Minecraft%20R4%20%E2%80%94%E2%80%94%20Bounded%20Placement%20and%20Simple%20Building.md)。R3 已完成并发布；R4 门禁见任务书。

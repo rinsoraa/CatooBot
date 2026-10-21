@@ -5,6 +5,7 @@
 - 修复正常 AgentPlanService 经技能包装调用规划器时 shape_hint 不兼容的问题。
 - 修复任务开始与终态事件并发投影导致 Activity Episode 状态顺序错误的问题。
 - 正常 Bot.start 装配真实服完成 24 项资源任务，并形成 24 个完成活动、24 条记忆事实和 12 个有效技能；真实 QQ、LIFE 与剩余阶段门禁尚未完成。
+- R6：玩家物品交付首期；真实矩阵 6/6 PASS（attempt-06），5106 Python passed（614.53s）、Node 全链、ruff/format/mypy 通过；发布/CI 待补。详见 docs/MINECRAFT_R6_DELIVERY_REPORT.md。
 - R5 正式完成：有界敌对交互与战斗安全首期；真实矩阵 9/9 PASS（attempt-07），5099 Python passed（823.71s）、Node 全链、ruff/format/mypy 通过；发布 `3b7f40b`，CI 39663573182 三 job success。详见 docs/MINECRAFT_R5_BOUNDED_COMBAT_REPORT.md。
 - R4 正式完成：受限放置与简单建造首期；真实服务器 10/10 PASS（attempt-12），5088 Python passed（661.08s）、Node 全链、ruff/format/mypy 通过；发布 `7c3a5a4`，CI 39638936965 三 job success。详见 docs/MINECRAFT_R4_BOUNDED_BUILD_REPORT.md。
 - R3 正式完成：G1–G4 全部 PASS；发布提交 `804f35f`，CI 39592796282 attempt 1 三 job success；R4–R8 尚未开始。详见 docs/MINECRAFT_R3_FINAL_REPORT.md。

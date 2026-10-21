@@ -1932,6 +1932,75 @@ class MinecraftService:
                 raise MinecraftActionFailed("目标实体仍然存在，不能宣告击杀")
             await asyncio.sleep(0.25)
 
+    async def drop_item(self, item: Any, count: Any = 1) -> dict[str, Any]:
+        """R6: one explicit main-hand drop (MEDIUM; no auto-equip)."""
+        self._require_enabled()
+        if not isinstance(item, str) or not item.strip():
+            raise MinecraftActionInvalid("item 不能为空")
+        name = item.strip().lower().removeprefix("minecraft:")
+        if not isinstance(count, int) or isinstance(count, bool) or not 1 <= count <= 64:
+            raise MinecraftActionInvalid("count 必须是 1 到 64 之间的整数")
+        try:
+            await self._ensure_runtime()
+            return await self._client.drop_item(name, count)
+        except MinecraftRuntimeError as exc:
+            if exc.unreachable:
+                self._mark_runtime_down(str(exc))
+            raise _translate(exc) from exc
+
+    async def delivery_verify(
+        self,
+        item: Any,
+        count: Any,
+        entity_id: Any = None,
+        expected_uuid: Any = None,
+    ) -> dict[str, Any]:
+        """R6: confirm the dropped item entity still exists; state = DROPPED."""
+        self._require_enabled()
+        if not isinstance(item, str) or not item.strip():
+            raise MinecraftActionInvalid("item 不能为空")
+        name = item.strip().lower().removeprefix("minecraft:")
+        if not isinstance(count, int) or isinstance(count, bool) or not 1 <= count <= 64:
+            raise MinecraftActionInvalid("count 必须是 1 到 64 之间的整数")
+        try:
+            await self._ensure_runtime()
+            view = await self._client.dropped_items()
+        except MinecraftRuntimeError as exc:
+            if exc.unreachable:
+                self._mark_runtime_down(str(exc))
+            raise _translate(exc) from exc
+        payload = (
+            view.get("result")
+            if isinstance(view, dict) and isinstance(view.get("result"), dict)
+            else view
+        )
+        rows = payload.get("items") if isinstance(payload, dict) else None
+        match = None
+        if isinstance(rows, list):
+            for row in rows:
+                if not isinstance(row, dict):
+                    continue
+                if entity_id is not None and row.get("entity_id") != entity_id:
+                    continue
+                if expected_uuid and str(row.get("entity_uuid") or "") != str(expected_uuid):
+                    continue
+                stack_raw = row.get("item")
+                stack = stack_raw if isinstance(stack_raw, dict) else {}
+                if stack.get("name") == name and int(stack.get("count") or 0) == count:
+                    match = row
+                    break
+        if match is None:
+            raise MinecraftActionFailed("掉落物实体已不存在，无法确认 DROPPED")
+        return {
+            "ok": True,
+            "state": "DROPPED",
+            "item": name,
+            "count": count,
+            "entity_id": match.get("entity_id"),
+            "entity_uuid": match.get("entity_uuid"),
+            "position": match.get("position"),
+        }
+
     async def attack(
         self,
         entity_id: Any,

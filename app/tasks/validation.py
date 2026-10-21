@@ -456,6 +456,11 @@ def default_step_label(step: TaskStep) -> str:
         return f"攻击 {arguments.get('expected_type')} 一次"
     if tool == "minecraft_combat_verify":
         return "重新读实体列表，确认目标已经消失"
+    if tool == "minecraft_drop_item":
+        item = canonical_item_name(arguments.get("item"))
+        return f"丢出 {arguments.get('count')} 个 {item}"
+    if tool == "minecraft_delivery_verify":
+        return "重新读掉落物，确认 DROPPED 状态"
     if tool == "minecraft_inventory":
         return "重新读一次背包"
     return tool

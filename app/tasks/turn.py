@@ -22,6 +22,7 @@ from typing import Any
 from app.character.turn import TurnOrigin
 from app.tasks.build_plan import parse_build_request, plan_build_task
 from app.tasks.combat_plan import parse_combat_request, plan_combat_task
+from app.tasks.delivery_plan import parse_delivery_request, plan_delivery_task
 from app.tasks.intent import TaskIntentDetector
 from app.tasks.models import ReplanReason, TaskState
 from app.tasks.planner import ObservationFailed, plan_collection_task
@@ -93,6 +94,24 @@ def _combat_input_reply(problem: str) -> str:
     if "weapon_required" in problem:
         return "主手需要先拿一把剑，我才会开始攻击。"
     return "这次战斗请求现在不能执行，请检查目标和自身状态。"
+
+
+def _delivery_input_reply(problem: str) -> str:
+    if "target_missing" in problem:
+        return "要把东西给谁还不明确。"
+    if "target_not_found" in problem:
+        return "附近没有看到这个玩家，先让他靠近一点。"
+    if "target_identity_unknown" in problem:
+        return "目标玩家身份还不完整，不能交付。"
+    if "unsupported_item" in problem:
+        return "这个物品暂不支持交付；首期只支持主手常见物品。"
+    if "count_invalid" in problem:
+        return "数量必须是一到六十四之间的整数。"
+    if "item_not_held" in problem:
+        return "主手拿的不是要交付的物品。"
+    if "item_insufficient" in problem:
+        return "主手数量不够。"
+    return "这次交付请求现在不能执行，请检查目标和主手物品。"
 
 
 #: Compatibility export, derived from the single resource registry.
@@ -303,6 +322,21 @@ class TaskTurnHandler:
                     ),
                 )
             return await self._create_combat(session_id, user_id, message, combat, origin=origin)
+        delivery = parse_delivery_request(message)
+        if delivery is not None:
+            if current is not None and not current.state.terminal:
+                return TaskTurnOutcome(
+                    True,
+                    action="busy",
+                    task_id=current.task_id,
+                    state=current.state.value,
+                    reply=self._replies.busy.format(
+                        objective=current.objective, state=STATE_LABELS.get(current.state.value, "")
+                    ),
+                )
+            return await self._create_delivery(
+                session_id, user_id, message, delivery, origin=origin
+            )
         intent = self._detector.detect(message)
         if not intent.is_task:
             return TaskTurnOutcome(False)
@@ -408,6 +442,65 @@ class TaskTurnHandler:
             log.exception("[Task] combat planning failed (%s)", message)
             return TaskTurnOutcome(
                 True, action="plan_failed", reply="这次战斗请求现在做不了，请稍后再试。"
+            )
+        try:
+            record = await self._runtime.create_task(
+                message,
+                session_id=session_id,
+                user_id=user_id,
+                origin=str(origin or TurnOrigin.USER.value),
+                plan=planned.plan,
+                source=self._source,
+            )
+        except TaskBusy:
+            return TaskTurnOutcome(
+                True, action="busy", reply="我手上还有一件事没做完，先做完这个再说。"
+            )
+        await self._record_agent_plan(message, record, session_id=session_id, user_id=user_id)
+        summary = self._runtime.summary_of(record)
+        reply = self._replies.created.format(
+            summary=summary,
+            version=record.plan_version,
+            hint=self._replies.created_hint,
+        ).strip()
+        return TaskTurnOutcome(
+            True,
+            action="created",
+            task_id=record.task_id,
+            state=record.state.value,
+            reply=reply,
+            detail={"plan_hash": record.plan_hash, "plan_version": record.plan_version},
+        )
+
+    async def _create_delivery(
+        self,
+        session_id: str,
+        user_id: str,
+        message: str,
+        delivery: Any,
+        *,
+        origin: str = TurnOrigin.USER.value,
+    ) -> TaskTurnOutcome:
+        if delivery.problem:
+            return TaskTurnOutcome(
+                True,
+                action="plan_failed",
+                reply=_delivery_input_reply(delivery.problem),
+                detail={"reason_code": f"delivery.{delivery.problem}"},
+            )
+        try:
+            planned = await plan_delivery_task(message, delivery, observe=self._observe)
+        except ObservationFailed as exc:
+            return TaskTurnOutcome(
+                True,
+                action="plan_failed",
+                reply=_delivery_input_reply(str(exc)),
+                detail={"reason_code": str(exc)},
+            )
+        except Exception:  # noqa: BLE001 - delivery planning must not break chat
+            log.exception("[Task] delivery planning failed (%s)", message)
+            return TaskTurnOutcome(
+                True, action="plan_failed", reply="这次交付请求现在做不了，请稍后再试。"
             )
         try:
             record = await self._runtime.create_task(

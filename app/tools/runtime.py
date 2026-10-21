@@ -90,8 +90,10 @@ class ToolRuntime:
             MinecraftContainerInspectTool,
             MinecraftContainerTransferTool,
             MinecraftCraftTool,
+            MinecraftDeliveryVerifyTool,
             MinecraftDigCapabilityTool,
             MinecraftDigTool,
+            MinecraftDropItemTool,
             MinecraftDroppedItemsTool,
             MinecraftEntitiesTool,
             MinecraftEquipTool,
@@ -141,6 +143,8 @@ class ToolRuntime:
             # Phase 4J：挖掘能力只读查询（SAFE；只回答「现在能不能挖、多久」）
             ("minecraft_dig_capability", lambda: MinecraftDigCapabilityTool()),
             # Phase 4K：找方块（SAFE 只读；只定位，不移动/不装备/不挖/不拾取）
+            ("minecraft_delivery_verify", lambda: MinecraftDeliveryVerifyTool()),
+            ("minecraft_drop_item", lambda: MinecraftDropItemTool()),
             ("minecraft_entities", lambda: MinecraftEntitiesTool()),
             ("minecraft_attack", lambda: MinecraftAttackTool()),
             ("minecraft_combat_verify", lambda: MinecraftCombatVerifyTool()),

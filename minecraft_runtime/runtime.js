@@ -3575,6 +3575,57 @@ const ACTION_REGISTRY = {
         return droppedItemsView(bot)
       },
     },
+    drop_item: {
+      // R6: exactly one main-hand item drop; no auto-equip, no auto-pickup.
+      exclusive: true,
+      timeout_ms: 10000,
+      risk: 'MEDIUM',
+      detached: true,
+      validate(params) {
+        const item = String(params.item || '').trim().toLowerCase().replace(/^minecraft:/, '')
+        if (!item) throw new ActionError('item 不能为空', 'item.invalid', 400)
+        const count = params.count === undefined ? 1 : Number(params.count)
+        if (!Number.isInteger(count) || count < 1 || count > 64) {
+          throw new ActionError('count 必须是 1 到 64 之间的整数', 'action.invalid', 400)
+        }
+        return { item, count }
+      },
+      start(bot, params) {
+        if (bot === null || bot.entity === null) throw new ActionError('罐头还没有进入世界', 'action.not_online', 400)
+        const held = bot.heldItem
+        if (!held || !held.name) throw new ActionError('主手没有拿任何物品（不会自动装备）', 'held.item_missing', 400)
+        const heldName = normalizeItemName(held.name)
+        if (heldName !== params.item) {
+          throw new ActionError('主手物品与确认物品不一致', 'held.item_changed', 409, { expected: params.item, actual: heldName })
+        }
+        if ((held.count || 0) < params.count) {
+          throw new ActionError('主手物品数量不足', 'held.item_insufficient', 400)
+        }
+        return { item: heldName, item_type: held.type, count: params.count, before: held.count || 0 }
+      },
+      async wait(bot, params, token, state) {
+        if (token && token.cancelled) throw new ActionCancelled(token.reason)
+        bot.toss(state.item_type, null, state.count)
+        await new Promise((resolve) => setTimeout(resolve, 400))
+        const after = bot.heldItem ? (bot.heldItem.count || 0) : 0
+        const rows = droppedItemsView(bot).items || []
+        const drop = rows.find((row) => row.item && row.item.name === state.item && row.item.count === state.count)
+        if (!drop) throw new ActionError('丢出后没有观察到掉落物实体', 'drop.unconfirmed', 500)
+        return {
+          dropped: true,
+          item: state.item,
+          count: state.count,
+          entity_id: drop.entity_id,
+          entity_uuid: drop.entity_uuid || '',
+          position: drop.position,
+          held_before: state.before,
+          held_after: after,
+        }
+      },
+      cleanup(bot) {
+        if (bot && typeof bot.clearControlStates === 'function') bot.clearControlStates()
+      },
+    },
     entities: {
       // R5: read nearby living entities (SAFE; non-exclusive).
       exclusive: false,
@@ -4722,6 +4773,13 @@ async function handleRequest(request, response) {
         item: body.item,
         count: body.count,
       })
+      jsonResponse(response, 200, { ok: true, ...result })
+      return
+    }
+    if (request.method === 'POST' && path === '/minecraft/drop_item') {
+      // R6: one explicit main-hand drop (MEDIUM; confirmation stays in product).
+      const body = await readBody(request)
+      const result = await actionRuntime.execute('drop_item', { item: body.item, count: body.count })
       jsonResponse(response, 200, { ok: true, ...result })
       return
     }

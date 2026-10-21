@@ -18,8 +18,10 @@ from app.tools.builtins.minecraft_combat_verify import MinecraftCombatVerifyTool
 from app.tools.builtins.minecraft_container import MinecraftContainerInspectTool
 from app.tools.builtins.minecraft_container_transfer import MinecraftContainerTransferTool
 from app.tools.builtins.minecraft_craft import MinecraftCraftTool
+from app.tools.builtins.minecraft_delivery_verify import MinecraftDeliveryVerifyTool
 from app.tools.builtins.minecraft_dig import MinecraftDigTool
 from app.tools.builtins.minecraft_dig_capability import MinecraftDigCapabilityTool
+from app.tools.builtins.minecraft_drop_item import MinecraftDropItemTool
 from app.tools.builtins.minecraft_dropped_items import MinecraftDroppedItemsTool
 from app.tools.builtins.minecraft_entities import MinecraftEntitiesTool
 from app.tools.builtins.minecraft_equip import MinecraftEquipTool
@@ -42,6 +44,8 @@ __all__ = [
     "MinecraftCraftTool",
     "MinecraftDigCapabilityTool",
     "MinecraftFindBlocksTool",
+    "MinecraftDropItemTool",
+    "MinecraftDeliveryVerifyTool",
     "MinecraftDroppedItemsTool",
     "MinecraftDigTool",
     "MinecraftEntitiesTool",

@@ -1,0 +1,152 @@
+{
+  "status": "PASS",
+  "stage": "R6",
+  "generated_at": "2026-10-21T21:12:46.758Z",
+  "attempt": 6,
+  "matrix": "PASS",
+  "cases_total": 6,
+  "cases_passed": 6,
+  "cases": [
+    {
+      "case_id": "deliver-pickup",
+      "status": "PASS",
+      "action": "created",
+      "reason_code": "",
+      "task_state": "SUCCEEDED",
+      "delivery_state": "DROPPED",
+      "picked_up": true,
+      "error": ""
+    },
+    {
+      "case_id": "target-not-found",
+      "status": "PASS",
+      "action": "plan_failed",
+      "reason_code": "delivery.target_not_found",
+      "task_state": "",
+      "delivery_state": "",
+      "picked_up": null,
+      "error": ""
+    },
+    {
+      "case_id": "item-not-held",
+      "status": "PASS",
+      "action": "plan_failed",
+      "reason_code": "delivery.item_not_held",
+      "task_state": "",
+      "delivery_state": "",
+      "picked_up": null,
+      "error": ""
+    },
+    {
+      "case_id": "count-insufficient",
+      "status": "PASS",
+      "action": "plan_failed",
+      "reason_code": "delivery.item_insufficient",
+      "task_state": "",
+      "delivery_state": "",
+      "picked_up": null,
+      "error": ""
+    },
+    {
+      "case_id": "deliver-no-pickup",
+      "status": "PASS",
+      "action": "created",
+      "reason_code": "",
+      "task_state": "SUCCEEDED",
+      "delivery_state": "DROPPED",
+      "picked_up": false,
+      "error": ""
+    },
+    {
+      "case_id": "stop-before-drop",
+      "status": "PASS",
+      "action": "created",
+      "reason_code": "",
+      "task_state": "CANCELLED",
+      "delivery_state": "",
+      "picked_up": null,
+      "error": ""
+    }
+  ],
+  "source": {
+    "files": 691,
+    "drift": [],
+    "frozen_sha256": "9fb2bf0b470075d1141e9569824660f69ef498d7c2e3a43a6165db25750771d5"
+  },
+  "driver": {
+    "path": "data/r6/delivery-20261022/r6_matrix.py",
+    "sha256": "488bfd9c501364430270c64b8340d4febcafd5d1818ca62aea130f673a6e61f8"
+  },
+  "backup": {
+    "archive": "server-before.zip",
+    "sha256": "f2d995827caf9caedfc5f53a566e64ae17b8327eeae76f7497315183f5713d30",
+    "files": 108
+  },
+  "candidate": {
+    "jar_sha256": "59b5c9393b4f2f24472fa3c73d732646b317e95fcdaa5c544d493f67045e3a2c"
+  },
+  "restore": {
+    "restored_files": 108,
+    "all_hashes_match_before_restart": true,
+    "removed_extra_world_files": [
+      "world/advancements/31e3dba1-e19b-3af5-b922-3cf2e2c2958f.json",
+      "world/data/chunks.dat",
+      "world/entities/r.23.30.mca",
+      "world/playerdata/31e3dba1-e19b-3af5-b922-3cf2e2c2958f.dat",
+      "world/poi/r.23.30.mca",
+      "world/region/r.22.30.mca",
+      "world/region/r.22.31.mca",
+      "world/region/r.22.32.mca",
+      "world/region/r.23.30.mca",
+      "world/region/r.23.31.mca",
+      "world/region/r.23.32.mca",
+      "world/region/r.24.30.mca",
+      "world/region/r.24.31.mca",
+      "world/region/r.24.32.mca",
+      "world/stats/31e3dba1-e19b-3af5-b922-3cf2e2c2958f.json"
+    ],
+    "restored_snapshot": "server-before.zip",
+    "initial_server_running": true,
+    "restored_server_running": true,
+    "restored_server_pid": 47776
+  },
+  "artifacts": {
+    "r6.log": "c5d94be6265d0e2ac159496eda2a5052006bcd69bc37fd82a78d414a0e1f7239",
+    "r6.stderr.log": "d12d7e8c3c9e60b7093df33a7c6bf65b2b380e3280389380def10334f2f3fcb2",
+    "r6-results.json": "b14dff24e03ad0e7ecfe4a8f1786b40970256eb60cf70acef2227d24f556b532",
+    "task-events.json": "35c7a7f2798000f0dee48f2de329f551c77dfe7944825dcdf946c3f05635b31e",
+    "bridge-events.json": "75149a7b6da4ba4525de5bb5405048b1dfc90b866c102edb75a91a31d8139d06",
+    "observer-runtime.log": "9bed109bb6999aa63548e8236b3e92a026e94a6ae03122cf1e01fb48ad038521",
+    "assembly-receipt.json": "9d04276b948fcb1a93ef7da1d70db6aebea0258b3697ebabd3748acabd141826"
+  },
+  "preserved_attempts": [
+    "attempt-01",
+    "attempt-02",
+    "attempt-03",
+    "attempt-04",
+    "attempt-05"
+  ],
+  "product_changes": [
+    "minecraft_runtime/runtime.js (drop_item action)",
+    "app/tasks/delivery_plan.py",
+    "app/tasks/turn.py",
+    "app/tasks/validation.py",
+    "app/integrations/minecraft/service.py (drop_item/delivery_verify)",
+    "app/integrations/minecraft/runtime_client.py",
+    "app/integrations/minecraft/task_adapter.py",
+    "app/integrations/minecraft/agent.py",
+    "app/tools/builtins/minecraft_drop_item.py",
+    "minecraft_delivery_verify.py",
+    "tests/test_delivery_plan.py"
+  ],
+  "scope": "R6 first phase: one main-hand item, one observed player target, DROPPED verified by item entity, PICKED_UP observed by second Mineflayer client inventory; no batch/trade/PVP.",
+  "notes": [
+    "deliver-pickup: task SUCCEEDED/DROPPED; GuanTou picked up dirt; recorded PICKED_UP.",
+    "deliver-no-pickup: task SUCCEEDED/DROPPED; observer did not pick up; no PICKED_UP claim.",
+    "target-not-found/item-not-held/count-insufficient: plan_failed.",
+    "stop-before-drop: CANCELLED.",
+    "Other-player-first-pickup and mid-drop disconnect are not covered."
+  ],
+  "report": "docs/MINECRAFT_R6_DELIVERY_REPORT.md",
+  "raw_private_artifacts": "data/r6/delivery-20261022/ (local; product.db/private config not published)"
+}
