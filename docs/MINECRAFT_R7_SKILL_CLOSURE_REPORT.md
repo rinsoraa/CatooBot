@@ -1,6 +1,6 @@
 # CatooBot Minecraft R7 正式验收报告
 
-日期：2026-10-22。状态：**IN_PROGRESS，真实技能矩阵已 PASS，等待发布/CI 回执。**
+日期：2026-10-22。状态：**COMPLETE**。
 
 ## 1. 范围
 
@@ -43,7 +43,12 @@ R7 没有新增生产代码；复用已发布 R6 冻结字节中的 SkillService
 | R7-A3 适用性判断 | PASS | 检索时检查服务器/工具面/资源类；不适用回退；真实 not-applicable |
 | R7-A4 受控复现 | PASS | 复用仍走既有规划/确认/执行/核验；真实复用成功；失败不宣告成功 |
 | R7-A5 真实服务器矩阵 | PASS | 5/5；世界恢复 108 文件、哈希一致 |
-| R7-A6 工程与发布 | PASS（发布待补） | 81 项技能测试通过；生产代码自 R6 发布未变，R6 全量 5106 pytest/Node/静态证据适用；发布/CI 待补 |
+| R7-A6 工程与发布 | PASS | 81 项技能测试通过；生产代码自 R6 发布未变，R6 全量 5106 pytest/Node/静态证据适用；发布 `4e797ca`，CI 39684566873 三 job success |
+
+## 5. 发布
+
+- 发布提交：`4e797ca1deebf9c442625a3fc55ebd26b94bbb03`
+- CI：https://github.com/rinsoraa/CatooBot/actions/runs/39684566873 ，三 job 全部 success
 
 ## 5. 边界
 

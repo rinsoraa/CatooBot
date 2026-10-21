@@ -123,5 +123,13 @@
     "not-applicable -> plan_failed for cobblestone with no stone"
   ],
   "report": "docs/MINECRAFT_R7_SKILL_CLOSURE_REPORT.md",
-  "raw_private_artifacts": "data/r7/skills-20261022/ (local; product.db/private config not published)"
+  "raw_private_artifacts": "data/r7/skills-20261022/ (local; product.db/private config not published)",
+  "release": {
+    "commit": "4e797ca1deebf9c442625a3fc55ebd26b94bbb03",
+    "ci_run": 39684566873,
+    "ci_url": "https://github.com/rinsoraa/CatooBot/actions/runs/39684566873",
+    "conclusion": "success",
+    "jobs": 3,
+    "status": "PASS"
+  }
 }
