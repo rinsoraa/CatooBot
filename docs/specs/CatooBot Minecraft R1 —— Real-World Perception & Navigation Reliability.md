@@ -1,12 +1,12 @@
 # CatooBot R1 综合任务书：真实世界感知与导航可靠性
 
-**任务名称：** CatooBot R1 — Real-World Perception Integrity & Navigation Reliability
-**任务目标：** 在现有 CatooBot / Mineflayer / TaskRuntime 架构内，建立“世界观察可信、目标坐标可追溯、导航结果可验证、失败原因可诊断、失败与取消不会产生幽灵动作”的真实世界基线，并修复通过复现证实的根因。
-**仓库：** `rinsoraa/CatooBot`
-**任务书参考基线：** `32649eb1856feba56e970d51026f79cf6ad477fc`（R0 最终文档校正提交）
-**参考提交：** https://github.com/rinsoraa/CatooBot/commit/32649eb1856feba56e970d51026f79cf6ad477fc
-**R0 最终报告：** `docs/specs/CatooBot R0 Final Closure Report.md`
-**工作性质：** 一个综合、可终止的 R1 工作周期；不是按每项新发现依次拆成 Follow-up 的任务序列。
+**任务名称：** CatooBot R1 — Real-World Perception Integrity & Navigation Reliability  
+**任务目标：** 在现有 CatooBot / Mineflayer / TaskRuntime 架构内，建立“世界观察可信、目标坐标可追溯、导航结果可验证、失败原因可诊断、失败与取消不会产生幽灵动作”的真实世界基线，并修复通过复现证实的根因。  
+**仓库：** `rinsoraa/CatooBot`  
+**任务书参考基线：** `32649eb1856feba56e970d51026f79cf6ad477fc`（R0 最终文档校正提交）  
+**参考提交：** https://github.com/rinsoraa/CatooBot/commit/32649eb1856feba56e970d51026f79cf6ad477fc  
+**R0 最终报告：** `docs/specs/CatooBot R0 Final Closure Report.md`  
+**工作性质：** 一个综合、可终止的 R1 工作周期；不是按每项新发现依次拆成 Follow-up 的任务序列。  
 **初始裁定：** 尚未开始 R1 实测；本任务书定义验收契约，不预设根因，也不预设任何场景必然失败或通过。
 
 > **基线纪律：** 参考 SHA 仅表示任务书编写时的主线基线。开工必须读取当时真实 `origin/main`、镜像 HEAD、ahead/behind、dirty 状态和 CI。若远端已前进，应在最新可安全继续的提交上工作并记录差异；禁止 reset、force-push、覆盖用户变更或将旧 SHA 假称为当前 HEAD。R0 已关闭，不得为此任务重复重做 R0。

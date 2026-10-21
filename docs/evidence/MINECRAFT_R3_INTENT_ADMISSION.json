@@ -1,0 +1,309 @@
+{
+  "phase": "R3",
+  "status": "IN_PROGRESS",
+  "goal_R8_achieved": false,
+  "date": "2026-10-20",
+  "baseline": "d121127ef5b78016430c56a6c3f15f9d2a4cb6a4",
+  "gate_status": {
+    "G1": "PARTIAL",
+    "G2": "PARTIAL",
+    "G3": "PARTIAL",
+    "G4": "PARTIAL"
+  },
+  "specification": "docs/specs/CatooBot Minecraft R3 Unified Collection Intent and Skill Admission.md",
+  "specification_sha256": "1d984a7957d43286a4eeb6b01c8bc62aad90c24c20a4e5e6f33021c9469402d4",
+  "python": {
+    "passed": 4947,
+    "seconds": 597.95,
+    "first_full": {
+      "passed": 4887,
+      "failed": 22,
+      "errors": 10,
+      "seconds": 663.89
+    },
+    "second_full": {
+      "passed": 4926,
+      "failed": 19,
+      "seconds": 610.67
+    }
+  },
+  "static": {
+    "ruff": "PASS",
+    "format_files": 635,
+    "mypy_source_files": 350
+  },
+  "source_manifest": {
+    "file": "data/r3/intent-20261020/final-source-manifest-v2.json",
+    "files": 629,
+    "sha256": "4949311959e46c81f2b2a1b362f4f258ee524e244840c0e15a5a793abe7a83e5"
+  },
+  "source_changes": {
+    "changed": [
+      "app/character/runtime.py",
+      "app/tasks/agent_planner.py",
+      "app/tasks/intent.py",
+      "app/tasks/planner.py",
+      "app/tasks/runtime.py",
+      "app/tasks/skill_planner.py",
+      "app/tasks/skill_service.py",
+      "app/tasks/turn.py",
+      "app/tasks/turn_decision.py",
+      "app/tasks/validation.py",
+      "app/integrations/minecraft/chat_bridge.py",
+      "tests/agent_plan_fakes.py",
+      "tests/skill_fakes.py",
+      "tests/test_dig_attribution.py",
+      "tests/test_phase8d_wood_plan.py",
+      "tests/test_phase8d_wood_routing.py",
+      "tests/test_phase8e_followup2_turn_mode.py",
+      "tests/test_phase8e_followup_routing_closure.py",
+      "tests/test_skill_learning.py",
+      "tests/test_skill_service.py",
+      "tests/test_skill_wiring.py",
+      "tests/test_task_authorization.py",
+      "tests/test_task_recovery.py",
+      "tests/test_task_replanning_security.py",
+      "tests/test_task_runtime.py",
+      "tests/test_web_api_minecraft_task.py"
+    ],
+    "added": [
+      "app/tasks/resource_intent.py",
+      "tests/test_r3_collection_intent.py"
+    ],
+    "missing": []
+  },
+  "provider": {
+    "scope": "Configured real Provider + direct current BoundedAgentPlanner with synthetic SAFE facts. No channel dispatch, world action or QQ message.",
+    "first_raw_passed": 7,
+    "first_guard_passed": 9,
+    "second_raw_passed": 9,
+    "second_guard_passed": 9,
+    "second_cases": [
+      {
+        "case": "log_request",
+        "message": "罐头，采集一块白桦原木并捡回来。",
+        "kind": "task_proposal",
+        "raw_passed": true,
+        "guard": {
+          "outcome": "READY_FOR_APPROVAL",
+          "reason": "wood_plan_ready",
+          "observation_tools": [
+            "minecraft_find_blocks",
+            "minecraft_world",
+            "minecraft_dig_capability"
+          ],
+          "task_detected": true,
+          "passed": true
+        },
+        "world_actions": 0
+      },
+      {
+        "case": "stone_request",
+        "message": "罐头，去挖一块石头并捡回来。",
+        "kind": "task_proposal",
+        "raw_passed": true,
+        "guard": {
+          "outcome": "READY_FOR_APPROVAL",
+          "reason": "resource_plan_ready",
+          "observation_tools": [
+            "minecraft_find_blocks",
+            "minecraft_world",
+            "minecraft_inventory",
+            "minecraft_dig_capability"
+          ],
+          "task_detected": true,
+          "passed": true
+        },
+        "world_actions": 0
+      },
+      {
+        "case": "ore_request",
+        "message": "罐头，去挖一块铁矿石并捡回来。",
+        "kind": "task_proposal",
+        "raw_passed": true,
+        "guard": {
+          "outcome": "READY_FOR_APPROVAL",
+          "reason": "resource_plan_ready",
+          "observation_tools": [
+            "minecraft_find_blocks",
+            "minecraft_world",
+            "minecraft_inventory",
+            "minecraft_dig_capability"
+          ],
+          "task_detected": true,
+          "passed": true
+        },
+        "world_actions": 0
+      },
+      {
+        "case": "soil_request",
+        "message": "罐头，去挖一块泥土并捡回来。",
+        "kind": "task_proposal",
+        "raw_passed": true,
+        "guard": {
+          "outcome": "READY_FOR_APPROVAL",
+          "reason": "resource_plan_ready",
+          "observation_tools": [
+            "minecraft_find_blocks",
+            "minecraft_world",
+            "minecraft_inventory",
+            "minecraft_dig_capability"
+          ],
+          "task_detected": true,
+          "passed": true
+        },
+        "world_actions": 0
+      },
+      {
+        "case": "sand_request",
+        "message": "罐头，去采集一块沙子并捡回来。",
+        "kind": "task_proposal",
+        "raw_passed": true,
+        "guard": {
+          "outcome": "READY_FOR_APPROVAL",
+          "reason": "resource_plan_ready",
+          "observation_tools": [
+            "minecraft_find_blocks",
+            "minecraft_world",
+            "minecraft_inventory",
+            "minecraft_dig_capability"
+          ],
+          "task_detected": true,
+          "passed": true
+        },
+        "world_actions": 0
+      },
+      {
+        "case": "inquiry",
+        "message": "罐头，我只是问问：采集铁矿需要什么工具？不要创建或执行任务。",
+        "kind": "chat",
+        "raw_passed": true,
+        "guard": {
+          "outcome": "NEEDS_MORE_INFORMATION",
+          "reason": "resource.intent.query_only",
+          "observation_tools": [],
+          "task_detected": false,
+          "passed": true
+        },
+        "world_actions": 0
+      },
+      {
+        "case": "negation",
+        "message": "不要挖一块铁矿石并带回来，现在不要执行任何采集。",
+        "kind": "cancel",
+        "raw_passed": true,
+        "guard": {
+          "outcome": "NEEDS_MORE_INFORMATION",
+          "reason": "resource.intent.negated_or_ambiguous",
+          "observation_tools": [],
+          "task_detected": false,
+          "passed": true
+        },
+        "world_actions": 0
+      },
+      {
+        "case": "ambiguous",
+        "message": "采集一块木头，白桦还是云杉我没决定。",
+        "kind": "clarify",
+        "raw_passed": true,
+        "guard": {
+          "outcome": "NEEDS_MORE_INFORMATION",
+          "reason": "resource.intent.target_or_instruction_unresolved",
+          "observation_tools": [],
+          "task_detected": true,
+          "passed": true
+        },
+        "world_actions": 0
+      },
+      {
+        "case": "cancel",
+        "message": "停止这个任务，别继续采集。",
+        "kind": "stop",
+        "raw_passed": true,
+        "guard": {
+          "outcome": "UNSUPPORTED",
+          "reason": "no_plan_template",
+          "observation_tools": [],
+          "task_detected": false,
+          "passed": true
+        },
+        "world_actions": 0
+      }
+    ]
+  },
+  "unchanged_node_java": {
+    "previous_manifest_sha256": "feb4db39786400c02f6ee150b1c763c35c472795b294681ca73d9ad14598b5df",
+    "checked_runtime_and_server_files": 65,
+    "mismatches": [],
+    "scope": "Byte equality for prior Node/Java sources/tests/build metadata, not a new live-server acceptance run."
+  },
+  "server_and_daily_runtime": {
+    "deployed": false,
+    "qq_messages_sent": 0,
+    "modified_configuration": false,
+    "observed_pids": {
+      "daily_bot": 48848,
+      "daily_bridge": 43188,
+      "restored_test_server": 51204
+    },
+    "scope": "Read-only listener/PID check; previous restored server kept running. No current live collection acceptance run."
+  },
+  "historical_live_evidence": {
+    "path": "docs/evidence/MINECRAFT_R3_CONTINUATION.json",
+    "positive": 24,
+    "negative": 84,
+    "scope": "Previous Python checkpoint only. New intent/plan changes require final normal-assembly live acceptance; historical results are not promoted to current PASS."
+  },
+  "remaining": [
+    "real normal Life/Goal/Memory resource assembly and channel validation",
+    "old/new collection capability negotiation and protocol/consumer adversarial gates",
+    "remaining per-ID real-server matrix and final source retest",
+    "real allowlisted QQ, final restore/publication/CI and COMPLETE receipt",
+    "all R4-R8 and Integrated/LAN/long-term Life/Play/Learning requirements"
+  ],
+  "artifacts": {
+    "data/r3/intent-20261020/check_checkpoint.py": "21b3c37b7c1c033b6dd1d995982cd949b5ad6b17c72a9e6cce22215c5f1afd43",
+    "data/r3/intent-20261020/export_checkpoint.py": "cebd37f93abd071041563385e375ae7ee3bf3a6f5820699d12d3845ce7f7de2d",
+    "data/r3/intent-20261020/final-source-manifest-v2.json": "4949311959e46c81f2b2a1b362f4f258ee524e244840c0e15a5a793abe7a83e5",
+    "data/r3/intent-20261020/final-source-manifest.json": "28f7635c2b8d3f0d3b54a539446b4533d84b4aac5b1bc71fd73381138a5e1ba4",
+    "data/r3/intent-20261020/final-targeted-first.log": "f91d8b395a5bce457c61226c9dbc2eb60afc9269b5194cf8d3d857638d7f88ad",
+    "data/r3/intent-20261020/format-final-v2.log": "a6f39be5d80cb9cbae79c031a0788d50741ba8cd4ac3d67f24a5d43a0d9d3be4",
+    "data/r3/intent-20261020/format-final.log": "a6f39be5d80cb9cbae79c031a0788d50741ba8cd4ac3d67f24a5d43a0d9d3be4",
+    "data/r3/intent-20261020/format-first.log": "a6f39be5d80cb9cbae79c031a0788d50741ba8cd4ac3d67f24a5d43a0d9d3be4",
+    "data/r3/intent-20261020/full-first-source-manifest.json": "2177195b0c38a2153df228eb81840dc2fdfeed24c4143a33303a81ca2e38f283",
+    "data/r3/intent-20261020/full-repair-first.log": "df565bdc6fab843d500d5ce60f152de59ab764d7d7a687aadf011e067519b5cf",
+    "data/r3/intent-20261020/full-repair-second.log": "66dddb5c5ebf7a0d4e478cdd37449cc712400faf3eae1d93445748d35a44ece5",
+    "data/r3/intent-20261020/mypy-final-v2.log": "e436b5889153c1a2b11b4d39308bdec19d251cbc51955cdfef39d600ed19c821",
+    "data/r3/intent-20261020/mypy-final.log": "e436b5889153c1a2b11b4d39308bdec19d251cbc51955cdfef39d600ed19c821",
+    "data/r3/intent-20261020/mypy-first.log": "e436b5889153c1a2b11b4d39308bdec19d251cbc51955cdfef39d600ed19c821",
+    "data/r3/intent-20261020/new-contract-first.log": "d58f819f5898fb740d3bf1d4349358d928d3d4a1ed0c158cd08cc8717ca4b84f",
+    "data/r3/intent-20261020/obsolete-sandbox-processes.json": "888298f9bcf6c9d94117c27284a429e6599b6a3d02c3734e03ea31d75be397a8",
+    "data/r3/intent-20261020/prior-evidence-integrity.json": "fd685fb147fb041659d01288e781431196767d03bbf76be2552acc7331d37e9d",
+    "data/r3/intent-20261020/provider-01/probe.py": "8d2361743a4b6a6406050dc757c624b4f927edf2d4749a56c6e468e426a714b5",
+    "data/r3/intent-20261020/provider-01/provider-and-guard.json": "00b948f7cbaf8263704e0e04865f6da43ab43c3d05466ba6d6925d6b47678091",
+    "data/r3/intent-20261020/provider-01/run.log": "82e4ee3fd1c3ff96880ab7aa84815e200d967f5dd36ce80ac409bc69ae0d1098",
+    "data/r3/intent-20261020/provider-02/probe.py": "8d2361743a4b6a6406050dc757c624b4f927edf2d4749a56c6e468e426a714b5",
+    "data/r3/intent-20261020/provider-02/provider-and-guard.json": "edc06a56aa7731e0a79f8449c8839228a6bd3698b781ee1cd7962810badab1a2",
+    "data/r3/intent-20261020/provider-02/run.log": "d18e862571e24328146c6079e632be164aca643c74b864efb539a1f5fa27e6ad",
+    "data/r3/intent-20261020/python-all-first.log": "dc4a8e0bc0ab48af216bb33ff7675e26d1b6e0655d91e433b83397e9acd15248",
+    "data/r3/intent-20261020/python-all-second.log": "a29fa07febde21a861278c51efceffb72fb694dbae5b4affe4c25dc4b70d4e68",
+    "data/r3/intent-20261020/python-all-third.log": "5c11b4d3718088fb0b7a230e2edfaf883977d94dbb0a70c3d818e24e401d9172",
+    "data/r3/intent-20261020/ruff-final-v2.log": "a4443afdcfb6d7363adb285762515ccf7cf50473b1a05c20c1a50f6bed4d26b0",
+    "data/r3/intent-20261020/ruff-final.log": "a4443afdcfb6d7363adb285762515ccf7cf50473b1a05c20c1a50f6bed4d26b0",
+    "data/r3/intent-20261020/ruff-first.log": "a4443afdcfb6d7363adb285762515ccf7cf50473b1a05c20c1a50f6bed4d26b0",
+    "data/r3/intent-20261020/runtime-status.json": "da2c9237f93d3db23928593494d9e62328a63842f16817cffefb3429004f649e",
+    "data/r3/intent-20261020/second-full-repair-first.log": "7fd24d511c64b6a351a0ace7210e06849ad95bc6bcf6986e02c221a438507b9d",
+    "data/r3/intent-20261020/source-before.sha256": "b811538f12dd0c9c1733a8d8998a1ea341e04b226c301cd194f49064cd915ebe",
+    "data/r3/intent-20261020/source-before.zip": "d7110255ca7da96905fa470cea82b0525cbc5cf4a4bbaffd6f15814cfb328c4e",
+    "data/r3/intent-20261020/source-binding-first.log": "7ea871b97532e04ab1d1253c005c21bc7491f53b10ca361412e967336bb34d80",
+    "data/r3/intent-20261020/source-diff-final.json": "91254a9bb90ac8030ef5f9d667e18bd4923a9db0df8e4312761b2ff95d304a13",
+    "data/r3/intent-20261020/source-diff.json": "6aee9c744cfc4cbdd0f7916ec534bbed3e4eb795303b34619226daa93d434a42",
+    "data/r3/intent-20261020/targeted-elevated-first.log": "9cd0bbfb694d48ff23578821bf589c7ae9f51836b542ed017b1cd842e03cf01c",
+    "data/r3/intent-20261020/targeted-elevated-fourth.log": "bae583250a00ad7bd5571f683a1301b693098c259771c2b0c5c9c090b7ccf01c",
+    "data/r3/intent-20261020/targeted-elevated-second.log": "fa5efa070a739d66c32da994c2e09084eb72b8726d6cd5c000efcbf7f3976152",
+    "data/r3/intent-20261020/targeted-elevated-third.log": "fb8576744d2167255c5f5695bc015244bdb6386a7c8906178559d16cc6fa9458",
+    "data/r3/intent-20261020/targeted-first.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "data/r3/intent-20261020/targeted-validator-first.log": "5a3978de813d21e0b222c8e6e9f105de33f0e04eca40e7cbb18d67d9f9812b34",
+    "data/r3/intent-20261020/unchanged-runtime-and-server.json": "61d679003f1f32036ba834d57cd514d3eb434bb52ca9fe312862da113905147b"
+  }
+}

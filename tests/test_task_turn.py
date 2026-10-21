@@ -20,6 +20,7 @@ from app.tasks.models import StepState, TaskPlan, TaskState
 from app.tasks.runtime import TaskAuthorizationError, TaskInvocation, TaskRuntime
 from app.tasks.store import InMemoryTaskStore
 from app.tasks.turn import TaskTurnHandler, block_for
+from tests.resource_facts import unit_harvest_facts
 
 SESSION = "minecraft:127.0.0.1:25565:空凛"
 USER = "空凛"
@@ -54,6 +55,23 @@ class Recorder:
 
     async def __call__(self, tool: str, arguments: Any, **kwargs: Any) -> TaskInvocation:
         self.calls.append({"tool": tool, "arguments": dict(arguments), **kwargs})
+        if tool == "minecraft_world":
+            return TaskInvocation(ok=True, result={"ok": True, "dimension": "minecraft:overworld"})
+        if tool == "minecraft_dig" and tool not in self._detached:
+            return TaskInvocation(
+                ok=True,
+                status="SUCCEEDED",
+                result={
+                    "attribution": {
+                        "action_id": "unit-control-sequence-dig",
+                        "server_collection": {
+                            "drops": [
+                                {"entity_id": 42, "uuid": "11111111-1111-4111-8111-111111111111"}
+                            ]
+                        },
+                    }
+                },
+            )
         if tool in self._detached:
             return TaskInvocation(ok=True, status="RUNNING", action_id=f"act_{tool}")
         if tool == "minecraft_dropped_items":
@@ -133,7 +151,17 @@ def observations(
             )
         if tool == "minecraft_find_blocks":
             return TaskInvocation(
-                ok=True, result={"ok": True, "matches": found, "truncated": False}
+                ok=True,
+                result={
+                    "ok": True,
+                    "matches": found,
+                    "truncated": False,
+                    "observation": {
+                        "coverage": "COMPLETE",
+                        "dimension": "minecraft:overworld",
+                        "captured_at": time.time(),
+                    },
+                },
             )
         if tool == "minecraft_inventory":
             return TaskInvocation(
@@ -147,7 +175,17 @@ def observations(
         if tool == "minecraft_dig_capability":
             return TaskInvocation(
                 ok=True,
-                result={"ok": True, "can_dig": can_dig, "reason": reason, "dig_time_ms": 900},
+                result={
+                    "ok": True,
+                    "can_dig": can_dig,
+                    "reason": reason,
+                    "dig_time_ms": 900,
+                    "held_item": {"name": "stone_pickaxe", "count": 1},
+                    "harvest": unit_harvest_facts(
+                        name="stone_pickaxe", damageable=True, remaining=10
+                    ),
+                    "safety": {"known": True, "allowed": True},
+                },
             )
         raise AssertionError(f"不该观察到这里：{tool}")
 

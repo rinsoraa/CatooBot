@@ -9,6 +9,7 @@
 
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -17,6 +18,7 @@ from app.tasks.agent_plan_store import InMemoryAgentPlanStore
 from app.tasks.agent_planner import BoundedAgentPlanner
 from app.tasks.agent_service import AgentPlanService
 from app.tasks.proposal import TaskProposal
+from tests.resource_facts import unit_harvest_facts
 
 #: 常用时间点（确定性；不用机器时钟）
 T0 = 1_800_000_000.0
@@ -140,7 +142,18 @@ def observe_ok(**extra: Any) -> Any:
                 {
                     "result": {
                         "ok": True,
-                        "matches": [{"position": {"x": -10, "y": 70, "z": 5}, "distance": 3.0}],
+                        "matches": [
+                            {
+                                "block": {"name": "oak_log"},
+                                "position": {"x": -10, "y": 70, "z": 5},
+                                "distance": 3.0,
+                            }
+                        ],
+                        "observation": {
+                            "coverage": "COMPLETE",
+                            "dimension": "minecraft:overworld",
+                            "captured_at": time.time(),
+                        },
                     },
                     "summary": "found",
                 },
@@ -180,7 +193,18 @@ def observe_ok(**extra: Any) -> Any:
             return type(
                 "R",
                 (),
-                {"result": {"can_dig": True, "reason": ""}, "summary": "can dig"},
+                {
+                    "result": {
+                        "can_dig": True,
+                        "reason": "",
+                        "safety": {"known": True, "allowed": True},
+                        "held_item": {"name": "netherite_axe", "count": 1},
+                        "harvest": unit_harvest_facts(
+                            name="netherite_axe", damageable=True, remaining=10
+                        ),
+                    },
+                    "summary": "can dig",
+                },
             )()
         raise AssertionError(f"意外工具 {tool}")
 

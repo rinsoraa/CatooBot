@@ -1,0 +1,52 @@
+{
+  "status": "PASS",
+  "scope": "real QQNT private chat 杏仁罐头; only ambiguity and negation non-action turns; no positive collection or LIFE execution claimed",
+  "recorded_at": "2026-10-21T10:57:45.643Z",
+  "pre_fix_reproduction": {
+    "observed_at": "2026-10-21T10:50:32.513Z",
+    "bot_process": {
+      "ProcessId": 60660,
+      "CreationDate": "/Date(1792554069303)/",
+      "CommandLine": "C:\\Users\\HP\\AppData\\Local\\Programs\\Python\\Python312\\python.exe run.py"
+    },
+    "turn_py_mtime": "2026-10-21T04:42:58.348Z",
+    "observed_reply": "我看了一圈，现在做不了：resource.intent.target_or_instruction_unresolved。",
+    "input": "采集一块木头，白桦还是云杉我没决定。",
+    "interpretation": "Running bot process started before the 12:42 turn.py wording fix; it reproduced the old internal reason code. Restart required to load current source. Historical reply is not a post-fix result."
+  },
+  "restarted_bot": {
+    "pid": 52676,
+    "started_at": "2026-10-21T18:51:43+08:00",
+    "napcat_connected": true,
+    "ready_log": "CatooBot 已就绪"
+  },
+  "ambiguity": {
+    "input": "采集一块木头，白桦还是云杉我没决定。",
+    "reply": "采集目标或数量还不明确，请先选定一种资源并说明数量，我再规划。",
+    "internal_reason_code_present": false,
+    "claims_observation": false,
+    "task_action_log": "[Task/QQ] action=plan_failed task=- state=- user=2731431246 session=private:2731431246",
+    "task_rows_created": 0,
+    "screenshot": "qq-1.png"
+  },
+  "negation": {
+    "input": "不要挖一块铁矿石并带回来，现在不要执行任何采集。",
+    "reply": "收到，不执行任何采集，铁矿石不动。",
+    "turn_id": "turn_1792580075_0001",
+    "turn_status": "delivered",
+    "route": "CHAT_ONLY",
+    "reason_code": "minecraft_non_action_turn",
+    "tool_called": false,
+    "task_rows_created": 0,
+    "screenshot": "qq-2.png"
+  },
+  "artifacts": {
+    "qq-1.png": "bf7dfacb3aa725993840bd36c6239044e854375068358558854e77adac442a2c",
+    "qq-2.png": "aefebea89e33f0412bd40462bf524e837b31e1a3a212ef0acbc3bee9454c08ce",
+    "qq-3.png": "0956ff7236ea7f07cb32a5a6555388d233794ecf36721304a21e3fb78833af34",
+    "old-runtime-reproduction.json": "92c8da1a93b3d0077ffa074b173b7985616aadd398db75c949f1e789d0409df0"
+  },
+  "note": "The pre-fix reply was produced by the old daily bot process started at 11:41, before turn.py fix at 12:42. Restarted bot at 18:51 loaded current source; post-fix ambiguity/negation replies contain no internal reason code.",
+  "report": "docs/MINECRAFT_R3_3_G4_ENGINEERING_AND_QQ_REPORT.md",
+  "raw_private_artifacts": "data\\r3\\qq-recheck-20261021/ (local)"
+}

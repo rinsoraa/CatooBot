@@ -22,9 +22,15 @@ if ($LASTEXITCODE -ne 0 -or "$version" -notmatch '^javac 21\.') {
 }
 $serverJar = Join-Path $ServerDir '.fabric/remappedJars/minecraft-1.21.1-0.19.5/server-intermediary.jar'
 $loaderJar = Join-Path $ServerDir 'libraries/net/fabricmc/fabric-loader/0.19.5/fabric-loader-0.19.5.jar'
+$mixinJar = @(Get-ChildItem -LiteralPath (Join-Path $ServerDir 'libraries/net/fabricmc/sponge-mixin') `
+    -Recurse -Filter 'sponge-mixin-*.jar')
 $apiJar = Join-Path $ServerDir 'mods/fabric-api-0.116.17+1.21.1.jar'
 $brigadier = @(Get-ChildItem -LiteralPath (Join-Path $ServerDir 'libraries/com/mojang/brigadier') -Recurse -Filter '*.jar')
+$dataFixer = @(Get-ChildItem -LiteralPath (Join-Path $ServerDir 'libraries/com/mojang/datafixerupper') `
+    -Recurse -Filter 'datafixerupper-*.jar')
 if ($brigadier.Count -ne 1) { throw 'Expected exactly one Brigadier JAR.' }
+if ($dataFixer.Count -ne 1) { throw 'Expected exactly one DataFixerUpper JAR.' }
+if ($mixinJar.Count -ne 1) { throw 'Expected exactly one Sponge Mixin JAR.' }
 foreach ($file in @($serverJar, $loaderJar, $apiJar)) {
     if (-not (Test-Path -LiteralPath $file -PathType Leaf)) { throw "Missing pinned dependency: $file" }
 }
@@ -54,13 +60,27 @@ try {
         Copy-Item -LiteralPath $part -Destination $destination -Force
         $destination
     }
-    $classpath = (@($serverJar, $loaderJar, $brigadier[0].FullName) + @($dependencyPaths)) -join [IO.Path]::PathSeparator
+    $mixinExtras = Join-Path $dependencyDir 'mixinextras-fabric-0.5.5.jar'
+    Add-Type -AssemblyName System.IO.Compression.FileSystem
+    $extrasArchive = [IO.Compression.ZipFile]::OpenRead($loaderJar)
+    try {
+        $entry = $extrasArchive.GetEntry('META-INF/jars/mixinextras-fabric-0.5.5.jar')
+        if (-not $entry) { throw 'Pinned MixinExtras entry missing from Fabric Loader.' }
+        [IO.Compression.ZipFileExtensions]::ExtractToFile($entry, $mixinExtras, $true)
+    } finally { $extrasArchive.Dispose() }
+    $classpath = (@($serverJar, $loaderJar, $mixinJar[0].FullName, $brigadier[0].FullName,
+        $dataFixer[0].FullName, $mixinExtras) `
+        + @($dependencyPaths)) -join [IO.Path]::PathSeparator
     $classes = Join-Path $stage 'classes'
     New-Item -ItemType Directory -Path $classes | Out-Null
     $sources = @(Get-ChildItem -LiteralPath (Join-Path $modRoot 'src/main/java') -Recurse -Filter '*.java' | Sort-Object FullName | ForEach-Object { $_.FullName })
     & $javacPath --release 21 -nowarn -proc:none -encoding UTF-8 -cp $classpath -d $classes @sources
     if ($LASTEXITCODE -ne 0) { throw 'Java compilation failed; no new JAR was packaged.' }
     Copy-Item -LiteralPath (Join-Path $modRoot 'fabric.mod.json') -Destination (Join-Path $classes 'fabric.mod.json')
+    $resources = Join-Path $modRoot 'src/main/resources'
+    if (Test-Path -LiteralPath $resources) {
+        Copy-Item -Path (Join-Path $resources '*') -Destination $classes -Recurse -Force
+    }
     $candidate = Join-Path $stage 'candidate.jar'
     Push-Location $classes
     try {

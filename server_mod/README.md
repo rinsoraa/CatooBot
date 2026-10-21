@@ -1,6 +1,6 @@
-# CatooBot Server-Side Attribution (Fabric mod, P2 shadow)
+# CatooBot Server-Side Evidence (Fabric mod)
 
-> **P2 影子模式**：只观察并记录证据，**不参与任何任务终态**。默认关闭（`enabled=false`）。
+> 默认关闭（省略 `enabled` 或设置 `enabled=false`）。服务端只提供真实事件证据；计划、授权和任务终态由客户端负责。下列 P2 章节保留历史范围，当前严格归因和采集协议见文末 P3/R3 说明。
 
 ## 职责（仅此四项）
 1. 玩家 JOIN 时建立 `session_ref` / `session_seq`，记录服务端观察到的玩家名与 UUID；重连/断开使旧会话失效。
@@ -29,7 +29,7 @@ Windows PowerShell 用户可将 `pwsh` 换成 `powershell.exe -ExecutionPolicy B
 产物：`server_mod/build/catoobot-attribution-2.0.0.jar`（打印 SHA256；固定归档时间戳）。
 编译/打包失败立即返回非零；旧的成功产物可保留，不代表本次构建成功，必须检查退出码。
 `server_mod/build/` 及依赖 classpath 不同步、不入库。
-CI 运行不依赖 Minecraft 的 86 项契约（含真实回环 HTTP）；完整入口共 116 项断言及类加载。真实服务端 E3 分开验证。
+纯契约入口运行 7 套测试；完整固定依赖入口运行 12 套（含 Smoke 类加载），断言数以该次输出为准。真实服务端 E3 分开验证。
 
 ## 预约请求的提交与取消
 
@@ -78,7 +78,25 @@ P3 增加默认关闭的产品成功门禁；上述 P2 的“影子、N9-B BLOCK
 
 `/session` 的 HMAC 输入是 `name + "\n" + nonce`；`/reserve` 对原始请求体验签；响应 `X-Signature` 对原始响应体验签，消费者校验 nonce/关联字段。破坏事件含 schema 1/source=server_block_break，旧字段名 `shadow` 承载服务端匹配状态，只有唯一 `SELF_CONFIRMED` 才可成为严格产品证据。Bearer 无法替代事件 HMAC。
 
-当前完整 Java 门禁为 160 项断言及 Smoke；纯契约入口新增 ProtocolTest。JAR 版本 `2.0.0-p3.1` 为实验候选，文件名保持构建脚本兼容，不是稳定发布。
+P3 的历史候选为 `2.0.0-p3.1`，其验证范围见上述 P3 报告。当前 R3 候选信息见下节；构建产物文件名保留脚本兼容，实际版本由 `fabric.mod.json` 与该次 SHA-256 确认。
+
+## R3 采集证据协议（实验候选 2.1.0-r3.1）
+
+`catoobot.collection.v1` 是签名证据合同，不是权限。客户端只对当前白名单、真实工具/地形事实与冻结任务执行有界采集；模组本身不会挖掘、拾取或授予 MEDIUM。
+
+| 调用 | 合同 |
+|---|---|
+| `GET /session` | 当前本代 ledger 可用时，在已签名、带 nonce 的响应中声明 `collection_protocol: "catoobot.collection.v1"`；关闭时不声明 |
+| `POST /reserve`，采集 | 请求必须带同一字符串；签名回执再次确认，预约冻结该字段。缺声明/未知版本/类型错误/回执降级时，新客户端在 dig 前拒绝 |
+| `POST /reserve`，旧 P3 原子破坏 | 不带该字段仍按旧 schema 1 工作；这种预约不生成 collection lineage，不能冒充采集入库证明 |
+| `POST /collection/pickup-reserve` | 必须声明当前协议，并绑定 drop UUID 和原 break action；回执包含 booking、原 break event/reservation/action |
+| drop / pickup 回调 | 原始体 HMAC；协议、actor/session/dimension、准确实体和规定物品/数量必须一致；pickup 还对照原破坏预约。未知或不完整证据保持非成功 |
+
+新采集客户端遇到没有该声明的旧服务端不会自动降级；旧 P3 原子协议保留兼容。整个计划可能先有合法导航，不能把“未开始 dig/pickup”扩大称为“整个任务零移动”。
+
+JSON 仍为有界输入，协议字段只接受字符串；HMAC、nonce/会话、提交/取消竞争、outbox 和停机代次边界继续生效。关闭整个模组或切换版本前先正常保存停服，恢复本次操作前的当前世界/配置/JAR 快照；不要使用更早阶段的世界覆盖后续状态。
+
+实现与当前未完成门禁见 [R3 协议任务书](../docs/specs/CatooBot%20Minecraft%20R3%20Collection%20Protocol%20Negotiation%20and%20Compatibility.md)。R3 尚未正式交付，不能把本候选的协议验证当作 R8 长期验收。
 
 ## 服务端生命周期（P2.7）
 

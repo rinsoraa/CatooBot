@@ -22,33 +22,34 @@ from typing import Any
 from app.character.turn import TurnOrigin
 from app.tasks.intent import TaskIntentDetector
 from app.tasks.models import ReplanReason, TaskState
-from app.tasks.planner import ObservationFailed, plan_resource_task
+from app.tasks.planner import ObservationFailed, plan_collection_task
+from app.tasks.resource_contract import RESOURCE_SPECS
+from app.tasks.resource_intent import collection_block_for, parse_collection_request
 from app.tasks.runtime import TaskAuthorizationError, TaskBusy, TaskRuntime
+from app.tasks.validation import collection_plan_problems
 
 log = logging.getLogger("CatooBot.Tasks.Turn")
 
-#: 用户口语 → 方块名（确定性的小词表；认不出来的就别开任务）
-BLOCK_ALIASES: dict[str, str] = {
-    "原木": "minecraft:oak_log",
-    "木头": "minecraft:oak_log",
-    "木块": "minecraft:oak_log",
-    "橡木": "minecraft:oak_log",
-    "橡树": "minecraft:oak_log",
-    "树": "minecraft:oak_log",
-    "log": "minecraft:oak_log",
-    "圆石": "minecraft:cobblestone",
-    "石头": "minecraft:stone",
-    "煤": "minecraft:coal_ore",
-    "铁矿": "minecraft:iron_ore",
-    "沙子": "minecraft:sand",
-    "土": "minecraft:dirt",
-}
 
-#: 方块 → 挖出来的东西（默认同名；这里只写不一致的）
-DROP_OVERRIDES: dict[str, str] = {
-    "minecraft:coal_ore": "minecraft:coal",
-    "minecraft:iron_ore": "minecraft:raw_iron",
-    "minecraft:stone": "minecraft:cobblestone",
+def _collection_input_reply(problem: str) -> str:
+    if problem == "negated_or_ambiguous":
+        return "收到，这条请求先不执行采集。如果需要采集，请重新明确目标和数量。"
+    if problem == "query_only":
+        return "这条按询问处理，不会创建采集任务。"
+    if problem == "unsupported_target":
+        return "这个采集目标暂不支持。请选已支持的原木、石头、圆石、煤矿、铁矿、泥土或沙子。"
+    if problem == "quantity_out_of_budget":
+        return "这次数量超出范围：原木每次最多两根，其他已支持资源每次一块。请明确数量后再试。"
+    if problem == "text_too_long":
+        return "采集说明太长，请简短说明一种资源和数量。"
+    return "采集目标或数量还不明确，请先选定一种资源并说明数量，我再规划。"
+
+
+#: Compatibility export, derived from the single resource registry.
+DROP_OVERRIDES = {
+    "minecraft:" + name: "minecraft:" + spec.drop
+    for name, spec in RESOURCE_SPECS.items()
+    if name != spec.drop
 }
 
 
@@ -161,12 +162,8 @@ class TaskTurnOutcome:
 
 
 def block_for(text: str) -> str:
-    """从用户的话里认出要挖的方块（认不出来返回空串）。"""
-    message = str(text or "").lower()
-    for alias, block in BLOCK_ALIASES.items():
-        if alias in message:
-            return block
-    return ""
+    """Only a single resolved target; generic logs must use the candidate planner."""
+    return collection_block_for(text)
 
 
 class TaskTurnHandler:
@@ -396,8 +393,8 @@ class TaskTurnHandler:
 
         仍然**只做 SAFE 查询**（§五）：新计划里任何世界动作都要等这次的新确认。
         """
-        block = block_for(record.objective)
-        if not block:
+        request = parse_collection_request(record.objective)
+        if request is None:
             return TaskTurnOutcome(
                 True,
                 action="replan_failed",
@@ -405,13 +402,10 @@ class TaskTurnHandler:
                 state=record.state.value,
                 reply="原来那件事的目标已经不在了，而且我没听出你想改做什么。再说一次要什么吧。",
             )
-        drop = DROP_OVERRIDES.get(block, block)
         try:
-            planned = await plan_resource_task(
+            planned = await plan_collection_task(
                 record.objective,
                 observe=self._observe,
-                block_name=block,
-                drop_item=drop,
             )
         except ObservationFailed as exc:
             return TaskTurnOutcome(
@@ -476,7 +470,13 @@ class TaskTurnHandler:
         if skills is None:
             return None
         try:
-            return await skills.suggest(objective)
+            planned = await skills.suggest(objective)
+            if planned is not None and (
+                collection_plan_problems(planned.plan)
+                or collection_plan_problems(planned.plan, objective=objective, required=True)
+            ):
+                return None
+            return planned
         except Exception:  # noqa: BLE001 - 技能异常绝不改变既有行为
             log.exception("[Task] 技能复用失败（忽略，按原模板规划）")
             return None
@@ -489,22 +489,28 @@ class TaskTurnHandler:
         *,
         origin: str = TurnOrigin.USER.value,
     ) -> TaskTurnOutcome:
-        block = block_for(message)
-        if not block:
+        request = parse_collection_request(message)
+        if request is None:
             # 认不出具体目标 → 不开任务，交给正常对话（模型可以用 SAFE 工具去查）
             return TaskTurnOutcome(False)
-        objective = message[: self._limit]
-        drop = DROP_OVERRIDES.get(block, block)
+        if request.problem:
+            log.info("[Task] collection input rejected reason=%s", request.problem)
+            return TaskTurnOutcome(
+                True,
+                action="plan_failed",
+                reply=_collection_input_reply(request.problem),
+                detail={"reason_code": f"resource.intent.{request.problem}"},
+            )
+        # Parse the full original text before any display truncation.
+        objective = message
         try:
             # Phase 7E §7.5：先问一次技能（适用 → 用它的计划候选；不适用/异常 → 原样回退）。
             # 技能只是**计划候选**：下面照旧走 create_task → validate_plan → 确认门。
             planned = await self._skill_plan(objective)
             if planned is None:
-                planned = await plan_resource_task(
+                planned = await plan_collection_task(
                     objective,
                     observe=self._observe,
-                    block_name=block,
-                    drop_item=drop,
                 )
         except ObservationFailed as exc:
             return TaskTurnOutcome(

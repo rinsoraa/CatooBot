@@ -17,6 +17,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 
 from app.activity.model import (
@@ -120,9 +121,17 @@ class TaskActivityAdapter:
         self._runtime = runtime
         self._log = logger
         self.degraded_reason = ""
+        self._event_lock = asyncio.Lock()
 
     async def on_task_event(self, event: str, payload: dict[str, Any]) -> Any:
         """订阅 ``Bot._publish_task_event`` 的事件（同步钩子 → 这里只入队/直接 await）。"""
+        # Bot publishes these as separate background tasks. Episode creation
+        # includes awaits before activation; a terminal event must not overtake
+        # that transition or race the next task's start against its predecessor.
+        async with self._event_lock:
+            return await self._handle_task_event(event, payload)
+
+    async def _handle_task_event(self, event: str, payload: dict[str, Any]) -> Any:
         name = str(event or "")
         task_id = str((payload or {}).get("task_id") or "")
         if not task_id:

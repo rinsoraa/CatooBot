@@ -1229,6 +1229,9 @@ class Bot:
             identity=identity,
             registry=getattr(getattr(self, "tools", None), "registry", None),
             minecraft=getattr(self, "minecraft", None),
+            goal_source=getattr(
+                getattr(getattr(self, "sandbox", None), "goals", None), "open_goals", None
+            ),
             logger=self.log,
         )
         self.proposals = service

@@ -54,9 +54,19 @@ def dig_result(attribution: Any) -> dict[str, Any]:
 class Step:
     """最小的"步骤"替身：只需要 ``result`` / ``action_id``（读归因只认这两个字段）。"""
 
-    def __init__(self, result: Any, *, action_id: str = "act_dig_1") -> None:
+    def __init__(
+        self,
+        result: Any,
+        *,
+        action_id: str = "act_dig_1",
+        arguments: dict[str, Any] | None = None,
+    ) -> None:
         self.result = result
         self.action_id = action_id
+        # schema 3 的严格自证还要核对"这一步的参数目标"是否与证明一致
+        self.arguments = (
+            arguments if arguments is not None else {**POSITION, "expected_block": BLOCK}
+        )
 
 
 # ------------------------------------------------------------------ 载荷读法
@@ -66,11 +76,11 @@ class TestAttributionPayload:
     def test_reads_a_well_formed_payload(self) -> None:
         payload = dig_attribution(Step(dig_result(DIG_ATTRIBUTION_PRESETS["self"])))
         assert payload is not None
-        assert payload["schema"] == 2
+        assert payload["schema"] == 3
         assert payload["world_effect"] == "BLOCK_REMOVED"
         assert payload["attribution"] == "SELF_CONFIRMED"
         assert payload["assurance"] == "STRICT"
-        assert payload["confirm_basis"] == "self_break_progress"
+        assert payload["confirm_basis"] == "server_block_break"
         assert payload["strict_self_proof"] is True
 
     def test_tolerates_json_text(self) -> None:
@@ -146,7 +156,10 @@ class TestAttributionPayload:
 
     def test_action_id_mismatch_is_not_attribution(self) -> None:
         """归因载荷必须精确属于这一步：串号/缺失 → 无法归因（fail-closed）。"""
+        # schema 3 的证明本身也绑定 action_id：串号必须在载荷内部一致才读得出来，
+        # 这样拒绝原因才是"绑错了这一步"，而不是"载荷不可读"。
         payload = {**DIG_ATTRIBUTION_PRESETS["self"], "action_id": "act_other"}
+        payload["server_proof"] = {**payload["server_proof"], "action_id": "act_other"}
         step = Step(dig_result(payload), action_id="act_dig_1")
         assert self_dig_confirmed(step) is False
         reason, detail = dig_attribution_reason(step)
@@ -157,11 +170,11 @@ class TestAttributionPayload:
         assert dig_attribution_reason(Step(dig_result(payload), action_id=""))[0] == (
             "action_id_missing"
         )
-        # 载荷没有 action_id → fail-closed（不能凭空使用）
+        # 载荷没有 action_id → 结构上就不可读（fail-closed；绝不凭空补一个）
         bare = {k: v for k, v in DIG_ATTRIBUTION_PRESETS["self"].items() if k != "action_id"}
         assert self_dig_confirmed(Step(dig_result(bare), action_id="act_dig_1")) is False
         assert dig_attribution_reason(Step(dig_result(bare), action_id="act_dig_1"))[0] == (
-            "action_id_mismatch"
+            "missing"
         )
 
     def test_missing_identity_fields_fail_closed(self) -> None:
@@ -234,6 +247,7 @@ class TestSkillGateRequiresAttribution:
     async def test_action_id_mismatch_is_rejected(self) -> None:
         service = make_service(observe=FakeObserve())
         payload = {**DIG_ATTRIBUTION_PRESETS["self"], "action_id": "act_other"}
+        payload["server_proof"] = {**payload["server_proof"], "action_id": "act_other"}
         out = await service.on_task_finished(resource_record(dig_attribution=payload))
         assert out["reason"] == f"dig_attribution_unproven:{DIG_STEP_ID}"
         evidence = await service.store.evidence_for_task("task_skill_1")
@@ -459,13 +473,13 @@ class TestAttributionTravelsThroughActionEvents:
         assert finished is not None
         service = make_service(observe=FakeObserve())
         out = await service.on_task_finished(finished)
-        # 任务可能成功、也可能在后续步骤停住；只要**没有**被当成"罐头亲手挖过"
-        assert out.get("reason") != "QUALIFIED"
-        if out["action"] == "rejected":
-            assert out["reason"] in {
-                f"dig_attribution_unproven:{DIG_STEP_ID}",
-                "dig_attribution_unproven:step_5",
-            } or out["reason"].startswith("step_not_run")
+        # R3 requires this break's drop, so this intentionally incomplete event
+        # stops before pickup. The original external attribution still persists.
+        assert finished.state is TaskState.REPLANNING
+        dig = next(step for step in finished.steps if step.tool == "minecraft_dig")
+        assert dig.result["attribution"]["attribution"] == "EXTERNAL_INDICATED"
+        assert self_dig_confirmed(dig) is False
+        assert out["action"] == "rejected" and out["reason"] == "not_terminal"
 
 
 def test_public_api_is_exported() -> None:

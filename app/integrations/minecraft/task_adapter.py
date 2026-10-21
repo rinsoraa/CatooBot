@@ -258,12 +258,19 @@ async def _follow_player(service: Any, args: Mapping[str, Any]) -> dict[str, Any
 
 
 async def _dig(service: Any, args: Mapping[str, Any]) -> dict[str, Any]:
+    extra = (
+        {"expected_empty_hand": args["expected_empty_hand"]}
+        if "expected_empty_hand" in args
+        else {}
+    )
     return await service.dig(
         args.get("x"),
         args.get("y"),
         args.get("z"),
         args.get("expected_block"),
         args.get("expected_tool"),
+        require_collection=args.get("require_collection") is True,
+        **extra,
     )
 
 
@@ -272,7 +279,17 @@ async def _equip(service: Any, args: Mapping[str, Any]) -> dict[str, Any]:
 
 
 async def _pickup(service: Any, args: Mapping[str, Any]) -> dict[str, Any]:
-    return await service.pickup_item(args.get("entity_id"), args.get("expected_item"))
+    extra = (
+        {"expected_break_action": args["expected_break_action"]}
+        if "expected_break_action" in args
+        else {}
+    )
+    return await service.pickup_item(
+        args.get("entity_id"),
+        args.get("expected_item"),
+        entity_uuid=args.get("entity_uuid"),
+        **extra,
+    )
 
 
 async def _craft(service: Any, args: Mapping[str, Any]) -> dict[str, Any]:

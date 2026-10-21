@@ -23,6 +23,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_valida
 
 from app.ai.engine import AIEngine
 from app.ai.models import AIRequest, ChatMessage
+from app.tasks.resource_contract import RESOURCE_SPECS
 
 log = logging.getLogger("CatooBot.Minecraft.TurnDecision")
 
@@ -227,12 +228,18 @@ SYSTEM_PROMPT = (
     "直接对我说话（问候、道谢、情绪、追问、闲聊）用 chat；"
     "单步行动用 atomic_action 并给出 capability_id 与 arguments；"
     "需要完成一个有限目标用 task_proposal 并给出 task_goal；"
-    "例如采集木材（砍点木头/砍两根橡木）、跟随玩家（跟着我/过来我身边）、"
+    "例如采集木材（砍点木头/砍两根橡木）、石头/圆石、煤矿石/铁矿石、泥土/沙子，"
+    "以及跟随玩家（跟着我/过来我身边）、"
     "走到某处、探索附近（到处走走看看）、做物品/合成"
     "（用橡木原木做一根木棍、把这两块木板合成木棍、做几块橡木木板；"
     "需要工作台的配方，例如在工作台上合成，同样是受管任务）"
     "—— **即使没说数量或树种也要用 task_proposal**，"
-    "缺的参数交给系统按默认值处理，不要改成 query、narration 或 unsupported；"
+    "未指定采集数量时按一件提出，未指定木种时由系统观察候选，不猜成橡木。"
+    "采集任务的已验证目标白名单是："
+    f"{'、'.join(RESOURCE_SPECS)}。"
+    "工具与实际采收条件由系统观察校验，不要把尚无工具信息当成能力不支持；"
+    "明确多个树种/资源而未选定、零数量、原木超过两根或其他资源超过一块时用 clarify，"
+    "绝不擅自选种类或削减数量。未知树种、去皮木/木板作为采集目标不支持；"
     "信息不足或目标不明确用 clarify 并给出 clarification_question；"
     "当前能力做不到（建造、战斗、交付等）用 unsupported"
     "（**做物品/合成不属于这一类**：它是受管任务，用 task_proposal）；"

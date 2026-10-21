@@ -91,6 +91,14 @@ DIG_METADATA = ToolMetadata(
                     "不传 = 不对手持工具提额外要求。"
                 ),
             },
+            "require_collection": {
+                "type": "boolean",
+                "description": "（资源采集用）要求本次破坏同时取得精确掉落实体证据。",
+            },
+            "expected_empty_hand": {
+                "type": "boolean",
+                "description": "明确冻结空手状态；不能同时指定 expected_tool。",
+            },
         },
         "required": ["x", "y", "z", "expected_block"],
         "additionalProperties": False,
@@ -127,4 +135,9 @@ class MinecraftDigTool(ActionTool):
         if tool is not None:
             # 只有真的要求了工具才多传一个参数 —— 没要求时与 Phase 4B 的调用完全一致
             call_args.append(tool)
-        return await service.dig(*call_args)
+        extra = {
+            key: arguments[key]
+            for key in ("require_collection", "expected_empty_hand")
+            if key in arguments
+        }
+        return await service.dig(*call_args, **extra)

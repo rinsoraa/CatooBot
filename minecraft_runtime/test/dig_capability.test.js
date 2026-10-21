@@ -216,10 +216,12 @@ async function main() {
           'can_dig',
           'dig_time_ms',
           'distance',
+          'harvest',
           'held_item',
           'ok',
           'position',
           'reason',
+          'safety',
         ]),
       '输出字段固定（绝不夹带 recommended_tool / best_tool 之类）',
     )
@@ -228,6 +230,26 @@ async function main() {
         !("best_tool" in digCapabilityView(bot, PARAMS)),
       '没有推荐字段（§十七）',
     )
+  }
+
+  console.log('[dig-capability-test] R3. breakability is distinct from current-tool harvestability')
+  {
+    let observedType = null
+    const wrongTool = makeBot({
+      block: { name: 'stone', canHarvest(type) { observedType = type; return false } },
+      heldItem: { name: 'wooden_shovel', count: 1, type: 7 },
+    })
+    const blocked = digCapabilityView(wrongTool, PARAMS)
+    assert(blocked.can_dig === true, 'a breakable block may still yield no expected drop')
+    assert(blocked.harvest.known && blocked.harvest.can_harvest === false, 'known wrong tool is not harvestable')
+    assert(observedType === 7, 'predicate receives the actual held item type')
+    const unknown = digCapabilityView(makeBot(), PARAMS)
+    assert(!unknown.harvest.known && unknown.harvest.can_harvest === null, 'missing predicate is unknown')
+    const failed = digCapabilityView(makeBot({ block: { name: 'stone', canHarvest() { throw new Error('metadata unavailable') } } }), PARAMS)
+    assert(!failed.harvest.known && failed.harvest.can_harvest === null, 'failed metadata is unknown')
+    const handBot = makeBot({ heldItem: null, block: { name: 'dirt', canHarvest(type) { return type === null } } })
+    assert(digCapabilityView(handBot, PARAMS).harvest.can_harvest === true, 'hand harvesting uses the same predicate')
+    assert(wrongTool.sideEffects.length === 0 && handBot.sideEffects.length === 0, 'harvest facts have no side effects')
   }
 
   console.log('[dig-capability-test] L. 前台动作在跑时，只读查询照样能执行')

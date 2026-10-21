@@ -43,6 +43,7 @@ from app.memory.minecraft import (
     MinecraftMemoryStore,
     MinecraftMemoryWriter,
 )
+from app.tasks.collection_evidence import collection_evidence
 from app.tasks.exploration import (
     ExplorationResult,
     arrival_fact,
@@ -310,12 +311,17 @@ class MinecraftMemoryBridge:
         state = str(getattr(getattr(record, "state", None), "value", "") or "")
         if not server_id or state not in {"SUCCEEDED", "FAILED", "EXPIRED", "CANCELLED"}:
             return
+        collection = collection_evidence(record)
+        if state == "SUCCEEDED" and not collection["ok"]:
+            return
         gained: dict[str, Any] = {}
         verification = getattr(record, "verification", None) or {}
         if isinstance(verification, Mapping) and isinstance(
             verification.get("inventory_delta"), Mapping
         ):
             gained = {str(k): v for k, v in verification["inventory_delta"].items()}
+        if not collection["ok"]:
+            gained = {}
         # Phase 7F.2：只有带 position_within 后置条件的有界探索才走结构化投影；
         # 其它任务保持原样（绝不把"过来"这类移动任务当成探索）。
         exploration: ExplorationResult | None = None

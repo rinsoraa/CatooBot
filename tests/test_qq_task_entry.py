@@ -13,6 +13,7 @@
 
 from __future__ import annotations
 
+import time
 from typing import Any
 
 import pytest
@@ -21,6 +22,7 @@ from app.adapters.onebot_v11.parser import parse_event
 from app.core.event_bus import EventBus
 from app.tasks.models import TASK_AUTHORIZATION_EXPIRED, TASK_CONFIRMATION_REQUIRED
 from app.tasks.qq_entry import QQIdentity, QQTaskEntry, session_target
+from tests.resource_facts import unit_harvest_facts
 from tests.test_task_recovery import Clock, FakeInvoke, make_runtime
 
 SELF_ID = 10001
@@ -154,6 +156,11 @@ class Stack:
                     ok=True,
                     result={
                         "ok": True,
+                        "observation": {
+                            "coverage": "COMPLETE",
+                            "dimension": "minecraft:overworld",
+                            "captured_at": time.time(),
+                        },
                         "matches": [
                             {
                                 "block": {"name": "oak_log"},
@@ -170,7 +177,17 @@ class Stack:
                 )
             if tool == "minecraft_dig_capability":
                 return TaskInvocation(
-                    ok=True, result={"ok": True, "can_dig": False, "reason": "too_far"}
+                    ok=True,
+                    result={
+                        "ok": True,
+                        "can_dig": False,
+                        "reason": "too_far",
+                        "held_item": {"name": "stone_pickaxe", "count": 1},
+                        "harvest": unit_harvest_facts(
+                            name="stone_pickaxe", damageable=True, remaining=10
+                        ),
+                        "safety": {"known": True, "allowed": True},
+                    },
                 )
             raise AssertionError(f"不该观察到这里：{tool}")
 

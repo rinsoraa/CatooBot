@@ -124,6 +124,10 @@ WOOD_SPECIES: tuple[tuple[tuple[str, ...], str], ...] = (
 
 #: 明确不支持的木材相关词 → 稳定原因码（要么不是树干原木，要么是派生木制品）。
 WOOD_UNSUPPORTED: tuple[tuple[tuple[str, ...], str], ...] = (
+    (
+        ("樱花", "cherry", "红树", "mangrove", "苍白橡木", "pale_oak", "pale oak"),
+        "unverified_species",
+    ),
     (("竹子", "bamboo"), "bamboo"),
     (("菌柄", "绯红", "诡异", "下界木"), "nether_stem"),
     (("去皮", "stripped"), "stripped_wood"),
@@ -236,7 +240,7 @@ def parse_wood_request(text: str) -> WoodRequest | None:
         # 明确不支持的木材（竹子/菌柄/去皮/木板/树叶/木头方块）→ **先**如实拒绝：
         # 不能因为它没写"原木/树"就当成与木材无关的话放过（§5.1：要么验证，要么拒绝）。
         return WoodRequest(requested=requested, problem="unsupported_species", detail=unsupported)
-    has_generic_wood = any(word in raw for word in ("原木", "木头", "树", "log", "wood"))
+    has_generic_wood = any(word in raw for word in _GENERIC_WOOD_NOUNS)
     if not hits and not has_generic_wood:
         return None  # 有动作词但没有木材名词：不是木材请求（交给既有路径）
     if len(hits) > 1:
@@ -269,14 +273,9 @@ def _parse_log_count(text: str) -> int | None:
     * 返回 ``None`` = 这句话没给数量（调用方取默认 1 根）；返回 ``0`` = 明确说了 0 根
       （调用方必须澄清，不得静默当成 1 根）。
     """
-    units = "|".join(_LOG_COUNT_UNITS)
-    match = re.search(rf"(\d+)\s*(?:{units})", text)
-    if match:
-        return int(match.group(1))
-    match = re.search(rf"([零一二两三四五六七八九十])\s*(?:{units})", text)
-    if match:
-        return _CHINESE_NUMERALS.get(match.group(1), 0)
-    return None
+    from app.tasks.resource_intent import explicit_collection_count
+
+    return explicit_collection_count(text)
 
 
 def explicit_log_count(text: str) -> int | None:
@@ -442,7 +441,7 @@ _ACCEPTANCE_KIND_FILLER = "filler"
 _ACCEPTANCE_KIND_COUNT = "count"
 
 #: 通用木材名词（与 parse_wood_request 的判定保持一致）。
-_GENERIC_WOOD_NOUNS = ("原木", "木头", "树", "log", "wood")
+_GENERIC_WOOD_NOUNS = ("原木", "木头", "木块", "树干", "树", "logs", "log", "wood")
 
 #: 词元 → 类别（最长优先），供结构校验使用。
 _ACCEPTANCE_TOKEN_KINDS: tuple[tuple[str, str], ...] = tuple(
@@ -816,11 +815,49 @@ class TaskIntentDetector:
         self.enabled = enabled
 
     def detect(self, text: str) -> TaskIntent:
+        from app.tasks.resource_intent import parse_collection_request
+
         message = str(text or "").strip()
         if not self.enabled or not message:
             return TaskIntent(False)
         if len(message) > 200:  # 长文多半是在聊天/解释，不是一条行动指令
             return TaskIntent(False)
+        collection = parse_collection_request(message)
+        if collection is not None:
+            if collection.problem in {"query_only", "negated_or_ambiguous", "not_a_request"}:
+                return TaskIntent(False, (collection.problem,))
+            if not any(
+                marker in message for marker in _MULTI_STEP_MARKERS
+            ) and not message.startswith(
+                (
+                    "挖",
+                    "砍",
+                    "采",
+                    "收集",
+                    "撸",
+                    "请",
+                    "给我",
+                    "mine",
+                    "collect",
+                    "gather",
+                    "get",
+                    "harvest",
+                    "chop",
+                )
+            ):
+                return TaskIntent(False, ("not_a_collection_command",))
+            # Invalid parameters still belong to this entry, so it can explicitly
+            # clarify instead of falling through to another execution route.
+            return TaskIntent(
+                True,
+                (
+                    "collection_contract",
+                    "verb:collection",
+                    "multi:collection_sequence",
+                    "resource:" + ",".join(collection.candidates),
+                ),
+                message,
+            )
         reasons: list[str] = []
         lowered = message.lower()
         if any(pattern.search(message) for pattern in _QUERY_PATTERNS):

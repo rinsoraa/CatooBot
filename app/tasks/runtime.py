@@ -30,6 +30,7 @@ from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 
+from app.tasks.collection_evidence import collection_evidence
 from app.tasks.models import (
     ALLOWED_TASK_TRANSITIONS,
     TASK_AUTHORIZATION_EXPIRED,
@@ -67,9 +68,11 @@ from app.tasks.models import (
     finite_number,
     new_task_id,
 )
+from app.tasks.resource_intent import parse_collection_request
 from app.tasks.validation import (
     MAX_ACTION_STEPS,
     MAX_STEPS,
+    collection_plan_problems,
     resolve_arguments,
     summarize_plan,
     validate_plan,
@@ -78,6 +81,12 @@ from app.tasks.validation import (
 log = logging.getLogger("CatooBot.Tasks")
 
 SAFE_RISKS = frozenset({"SAFE"})
+
+#: 采集证据图里"归因本身有缺陷"的失败原因：沿用既有语义（世界变了 → 等新计划，
+#: 不在这里硬失败）；只有掉落/拾取/连接/身份复用这类**证据图**缺陷才是本项新增的硬失败门。
+COLLECTION_DEFERRED_REASONS = frozenset(
+    {"collection.evidence.break_attribution", "collection.evidence.break_proof"}
+)
 
 #: Phase 7F.1 §八十三：位置后置条件读的是**感知层**世界视图（near 层按固定间隔轮询一次，
 #: 默认约 1s）。刚到达时缓存可能还没追上真实位置，因此对同一份 SAFE 世界读做**有界重试**
@@ -701,7 +710,9 @@ class TaskRuntime:
         # 5A.1 §七：计划版本历史从第 1 版开始（旧计划永不覆盖，只 mark superseded）
         record.record_plan(
             now=record.created_at,
-            summary=self.summary_of(record) if not self._validate_plan(record.plan) else "",
+            summary=self.summary_of(record)
+            if not self._validate_plan(record.plan, objective=objective)
+            else "",
             status=PlanStatus.PENDING_CONFIRMATION.value,
             reason="",
         )
@@ -714,7 +725,7 @@ class TaskRuntime:
             ),
         )
         await self._publish(TASK_CREATED, self._event_payload(record))
-        problems = self._validate_plan(record.plan)
+        problems = self._validate_plan(record.plan, objective=objective)
         if problems:
             record.state = TaskState.FAILED
             record.failure = TaskFailure.VALIDATION.value
@@ -757,6 +768,16 @@ class TaskRuntime:
             raise TaskAuthorizationError(
                 "确认必须来自发起这个任务的人与会话", code="task.confirmation_wrong_owner"
             )
+        collection_problems = collection_plan_problems(record.plan)
+        if parse_collection_request(record.objective) is not None:
+            collection_problems.extend(
+                collection_plan_problems(record.plan, objective=record.objective)
+            )
+        if collection_problems:
+            if record.confirmation_id:
+                await self._confirmations.cancel(record.confirmation_id)
+            record.authorization = None
+            return await self._fail(record, TaskFailure.VALIDATION, "；".join(collection_problems))
         # R1-G5：维度一致性守卫 —— 计划里冻结的观察若带有可信 dimension，确认前必须只读重查
         # 当前维度；不一致/缺失一律 fail-closed（不消费确认、不派发任何世界动作）。
         # 不新增跨维度能力：只保证相同 x/y/z 绝不会被当成另一个维度的坐标执行。
@@ -2810,6 +2831,18 @@ class TaskRuntime:
         * 前面的步没成功、或缺少基线 → fail-closed（绝不"跳过验证"继续派发）；
         * 计划里没有逐步后置条件时是纯粹 no-op —— 8G 之前的计划行为一字不改。
         """
+        collection = collection_evidence(
+            record, before_step_id=before_step.step_id if before_step is not None else None
+        )
+        if collection.get("checked"):
+            record.result["collection_verification"] = collection
+            if not collection["ok"]:
+                deferred = str(collection.get("reason") or "") in COLLECTION_DEFERRED_REASONS
+                if not deferred:
+                    failed = record.step(collection["step_id"])
+                    assert failed is not None
+                    await self._fail_step_verification(record, failed, collection)
+                    return False
         baselines = record.result.setdefault("inventory_baselines", {})
         if not isinstance(baselines, dict):  # pragma: no cover - 旧记录格式兜底
             baselines = {}
@@ -2930,28 +2963,44 @@ class TaskRuntime:
         """所有 required 步骤完成后：用 SAFE 读**重新验证**最终状态（§八十二/§八十三）。"""
         # Phase 8G：最后一步的逐步后置条件也必须先验证（否则"最后一步没验证"会被漏掉）。
         if not await self._ensure_steps_verified(record, before_step=None):
-            return record
+            return await self._require(record.task_id)
         expected = record.plan.expected_final_state
         verification: dict[str, Any] = {"checked": False}
         if not expected.empty:
             verification = await self._verify_final_state(record, expected)
-            if not verification.get("ok"):
+        collection_verification = record.result.get("collection_verification")
+        # SAFE reads above can await external I/O. Cancellation, expiry, pause
+        # or replanning during that window takes precedence over this snapshot.
+        # Commit and publish under the same lifecycle lock; never hold it over
+        # the observation itself, which must remain interruptible.
+        async with self._lifecycle(record.task_id):
+            latest = await self._require(record.task_id)
+            if (
+                latest.state is not TaskState.RUNNING
+                or latest.plan_version != record.plan_version
+                or latest.plan_hash != record.plan_hash
+                or latest.next_step() is not None
+            ):
+                return latest
+            record = latest
+            if collection_verification is not None:
+                record.result["collection_verification"] = collection_verification
+            record.verification = verification
+            if not expected.empty and not verification.get("ok"):
                 record.state = TaskState.FAILED
                 record.failure = TaskFailure.VERIFICATION.value
                 record.message = verification.get("message", "最终校验没通过")
-                record.verification = verification
                 await self._save(record, event=TASK_FAILED)
                 await self._publish(TASK_FAILED, self._event_payload(record))
                 return record
-        record.verification = verification
-        record.mark_plan_completed()
-        record.state = TaskState.SUCCEEDED
-        record.updated_at = self._clock()
-        record.result["completed_steps"] = record.progress()["completed"]
-        record.result["summary"] = self._success_summary(record, verification)
-        await self._save(record, event=TASK_SUCCEEDED)
-        await self._publish(TASK_SUCCEEDED, self._event_payload(record))
-        return record
+            record.mark_plan_completed()
+            record.state = TaskState.SUCCEEDED
+            record.updated_at = self._clock()
+            record.result["completed_steps"] = record.progress()["completed"]
+            record.result["summary"] = self._success_summary(record, verification)
+            await self._save(record, event=TASK_SUCCEEDED)
+            await self._publish(TASK_SUCCEEDED, self._event_payload(record))
+            return record
 
     async def _verify_final_state(
         self, record: TaskRecord, expected: ExpectedFinalState
@@ -3234,7 +3283,7 @@ class TaskRuntime:
         为什么放在这一个点上：不是所有转换路径都能持锁完成（_run_step 里有外部调用、
         _finish/_fail/_settle_blocked/pause/resume/recover/replan 各自读-改-写）。但它们**都**
         经过这里。只要在写之前、在**同一把按任务锁内**复核一次持久化状态，就能保证：
-        CANCELLED/EXPIRED 之后，任何旧快照都不可能把任务写回非终态。
+        已终态之后，旧快照既不能写回非终态，也不能改成另一终态。
         """
         task_id = str(record.task_id or "")
         if not task_id:
@@ -3251,16 +3300,21 @@ class TaskRuntime:
     async def _save_absorbing_terminal(
         self, record: TaskRecord, *, event: str = "", step_id: str = "", detail: str = ""
     ) -> None:
-        """写之前复核持久化真相：**已终态就绝不写回非终态**（旧快照绝不复活任务）。
+        """写之前复核持久化真相：已落盘终态不得被旧快照替换。
 
         检查与写入都在同一把按任务锁内完成，因此不存在 TOCTOU 窗口。被吸收时：采纳终态真相
         （状态 / 授权 / pending 关联 / 恢复证据），**保留调用方想写的步骤证据**，并把被丢弃的
         旧证据记进 recovery.detail 供人工核对 —— 绝不静默丢信息。
         """
         latest = await self._store.load(str(record.task_id))
-        if latest is not None and latest.state.terminal and not record.state.terminal:
+        if latest is not None and latest.state.terminal and record.state is not latest.state:
             evidence = record.recovery if isinstance(record.recovery, Mapping) else {}
             self._adopt_lifecycle(record, latest)
+            record.plan_history = latest.plan_history
+            record.verification = latest.verification
+            record.result = latest.result
+            if event in {TASK_SUCCEEDED, TASK_FAILED, TASK_CANCELLED, TASK_EXPIRED}:
+                event = ""
             if evidence:
                 merged = dict(latest.recovery) if isinstance(latest.recovery, Mapping) else {}
                 base = dict(merged.get("detail") or {})
@@ -3272,6 +3326,14 @@ class TaskRuntime:
         await self._store.save(record, event=event, step_id=step_id, detail=detail)
 
     async def _publish(self, event: str, payload: dict[str, Any]) -> None:
+        terminal_states = {
+            TASK_SUCCEEDED: TaskState.SUCCEEDED.value,
+            TASK_FAILED: TaskState.FAILED.value,
+            TASK_CANCELLED: TaskState.CANCELLED.value,
+            TASK_EXPIRED: TaskState.EXPIRED.value,
+        }
+        if event in terminal_states and payload.get("state") != terminal_states[event]:
+            return  # A stale writer may have been absorbed by a persisted terminal state.
         try:
             self._publish_fn(event, payload)
         except Exception:  # noqa: BLE001 - 事件总线出问题不该让任务挂掉
@@ -3305,8 +3367,8 @@ class TaskRuntime:
     def summary_of(self, record: TaskRecord) -> str:
         return summarize_plan(record.plan, label_of=self._label_of)
 
-    def _validate_plan(self, plan: TaskPlan) -> list[str]:
-        return validate_plan(
+    def _validate_plan(self, plan: TaskPlan, *, objective: str | None = None) -> list[str]:
+        problems = validate_plan(
             plan,
             risk_of=self._risk_of,
             is_registered=self._is_registered,
@@ -3315,6 +3377,9 @@ class TaskRuntime:
             online=True,
             max_steps=self.config.max_steps,
         )
+        if objective is not None and parse_collection_request(objective) is not None:
+            problems.extend(collection_plan_problems(plan, objective=objective))
+        return list(dict.fromkeys(problems))
 
     async def _world_facts_snapshot(self) -> dict[str, Any]:
         if self._world_facts is None:
@@ -3491,7 +3556,7 @@ class TaskRuntime:
             return await self._fail(
                 record, TaskFailure.INTERNAL, f"重规划次数超过上限（{self.config.max_replans}）"
             )
-        problems = self._validate_plan(plan)
+        problems = self._validate_plan(plan, objective=record.objective)
         if problems:
             return await self._fail(record, TaskFailure.VALIDATION, "；".join(problems))
         now = self._clock()

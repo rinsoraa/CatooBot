@@ -1,0 +1,119 @@
+{
+  "status": "PARTIAL",
+  "frozen_source_count": 665,
+  "source_mismatches": [],
+  "task_count": 24,
+  "task_statuses": [
+    "PASS",
+    "PASS",
+    "PASS",
+    "PASS",
+    "PASS",
+    "PASS",
+    "PASS",
+    "PASS",
+    "PASS",
+    "PASS",
+    "PASS",
+    "PASS",
+    "PASS",
+    "PASS",
+    "PASS",
+    "PASS",
+    "PASS",
+    "PASS",
+    "PASS",
+    "PASS",
+    "PASS",
+    "PASS",
+    "PASS",
+    "PASS"
+  ],
+  "episodes": [
+    [
+      "COMPLETED",
+      24
+    ]
+  ],
+  "memory_facts": 24,
+  "skill_counts": {
+    "ACTIVE": 12
+  },
+  "artifacts": {
+    "data\\r3\\normal-assembly-20261021\\live-03\\source-frozen.json": "3b673529f0ea29027c1dbce4dc6e0959f2f87c4d4c1a1a75f8e6ceef94394f7e",
+    "data\\r3\\normal-assembly-20261021\\live-03\\product-results.json": "4669080ba0e2486c95f67f66fc6bc8a8f282fd0854a402f26cc1a3d991e49999",
+    "data\\r3\\normal-assembly-20261021\\live-03\\normal-memory-skill.json": "4316fef793e2722dfa3b82abad74af4e7ee06b59f532504e405df89a7528a992",
+    "data\\r3\\normal-assembly-20261021\\live-03\\restore-receipt.json": "db73985553695cabab28f4283a307fb674fce7636153b6c81cd3f0612dd41984",
+    "data\\r3\\normal-assembly-20261021\\live-03\\assembly-receipt.json": "d1ee63bb595ff1a9c57c6cbe8f869b5500da8f9ca3d6e56c2a8f30d9f6fa13f0",
+    "data\\r3\\normal-assembly-20261021\\live-03\\task-events.json": "f8cf4a5f2066edde8682f4afddbbb49a7baf946eaf8b2787d79d0dd20023a3ba",
+    "data/r3/normal-assembly-20261021/live-03/verification.json": "c7180db9006cca9d50f8b4494ed2476de91d2c1435eaf65a694f4f1af0cf6558",
+    "data/r3/normal-assembly-20261021/live-03/independent-inventory-verification.json": "8a111de06e7f5634e4335330495165743d83cd3fc8b5fbeb079d3dd8943d3c00",
+    "data/r3/normal-assembly-20261021/provider-03/provider-health.json": "7c50de0d8e0d353e188e3009929508f724d2ccf880c3be3fd707862b3cb0a828",
+    "data/r3/normal-assembly-20261021/provider-03/provider-and-guard.json": "78d7fbc3a1db7e535b3f7710736433d6c2d958085494341f52163cf267157280",
+    "data/r3/normal-assembly-20261021/logs/node-resume-provider02.log": "78b595cd3a5a89e9b101a6dd7c1550f1f121f995298b24f043d99eeaa5eeec03",
+    "data/r3/normal-assembly-20261021/logs/life-origin-final.log": "8d9316150cd360759aa5f8519d10d9e7e4ab506ebcaddd20bd3f3eedc27b1fa8",
+    "data/r3/normal-assembly-20261021/logs/ruff-resume-provider02.log": "a4443afdcfb6d7363adb285762515ccf7cf50473b1a05c20c1a50f6bed4d26b0",
+    "data/r3/normal-assembly-20261021/logs/format-resume-provider02.log": "c0aa773af76030f67ec392817e53d9679e3695f0603a2c2e623b465764289128",
+    "data/r3/normal-assembly-20261021/logs/mypy-resume-provider02.log": "680d481cc62731d2fd04d8210927e7bd5809d6ac50c76e04c215cd8ff6cdcec8",
+    "data\\r3\\normal-assembly-20261021\\provider-03\\models.json": "c819806f9934faf752c370126e7eadccbf6fb5198566d7e30a0d4ab02707626c",
+    "data\\r3\\normal-assembly-20261021\\provider-03\\decision-diagnostic.json": "9a1a0b9c6c8cdd56ebb8753442afda09ddae2c8a08fe43d6f80ba26fffd1b2be",
+    "data\\r3\\normal-assembly-20261021\\provider-03\\model-decision-diagnostic.json": "206f14e463c414ae8367f409e931a5efd85c9e6a550503feff769ebb36d21657",
+    "data\\r3\\normal-assembly-20261021\\provider-03\\protocol-diagnostic.json": "13e7494e1d3b516b04585f54bcf8ae383401959d0f06c80d6e092407103272e5",
+    "data\\r3\\normal-assembly-20261021\\provider-03\\system-role-reproduction.json": "9785e947c01eda48dfb78e111a96400717dcb6eb7d5127a78bbf6313e6429247",
+    "data\\r3\\normal-assembly-20261021\\logs\\full-resume-provider03.log": "39cc6c46b3ec4649681e3c4ae288d4dad5c5a6d237a0610bd92c9b3428f8a72c",
+    "data\\r3\\normal-assembly-20261021\\provider-04\\provider-and-guard.json": "62a993d4881f93e855d9dc897c12363d34e971febecc07003c9d60963b0a6412",
+    "data\\r3\\normal-assembly-20261021\\minimal-retest-20261021-120940\\results.json": "7e70ad61590c09662379002605265f124812f046479ea9cb156dd2e26aae2800",
+    "data\\r3\\normal-assembly-20261021\\logs\\provider-semantic-fourth.log": "d18e862571e24328146c6079e632be164aca643c74b864efb539a1f5fa27e6ad"
+  },
+  "unverified": [
+    "real QQ",
+    "real Provider",
+    "LIFE/Goal real-server two-gate flow",
+    "remaining negative matrix",
+    "final full regression and release CI"
+  ],
+  "additional_test_sources": {
+    "tests/test_r3_life_normal_admission.py": "3d2beb81ff77419f28c71ce111ef7d2615647b0b17d22d0ae74a349f252071d0"
+  },
+  "provider_health": {
+    "Workbuddy2API": {
+      "reachable_chat_models": 4
+    },
+    "SiliconFlow": {
+      "model": "BAAI/bge-m3",
+      "vectors": 3,
+      "dimensions": 1024,
+      "passed": true
+    }
+  },
+  "semantic_provider_gate": {
+    "status": "PASS",
+    "valid_decisions": 9,
+    "cases": 9,
+    "deterministic_guard_passed": 9,
+    "world_actions": 0,
+    "scope": "real Provider, synthetic SAFE facts; not QQ or Minecraft execution",
+    "minimal_retest_passed": 3
+  },
+  "full_python_regression": {
+    "first": "5049 passed, 1 teardown error: real .env changed during user configuration update",
+    "retry": "PASS: 5053 passed in 922.12s; process exit 0; real .env guard passed",
+    "private_raw_log": "full-resume-provider02.log contains environment assertion fragments; exclude from public export",
+    "includes_new_life_origin_cases": true
+  },
+  "configuration_cleanup": {
+    "obsolete_env_variable": "RINSORA_API_KEY",
+    "removed": true,
+    "effective_chat_provider": "Workbuddy2API",
+    "effective_chat_key_env": "WORKBUDDY_API_KEY",
+    "daily_model_or_risk_changes_by_probe": false
+  },
+  "semantic_provider_gate_history": [
+    {
+      "status": "FAIL",
+      "valid_decisions": 0,
+      "cases": 9,
+      "deterministic_guard_passed": 9
+    }
+  ]
+}

@@ -1,0 +1,61 @@
+{
+  "generated_at": "2026-10-20T16:18:36.612189+00:00",
+  "result": "PASS",
+  "scope": "R3.1 T1-T4 only; R3 IN_PROGRESS; R8 incomplete",
+  "source_before_sha256": "41aeba9b961dfa24dd5c855cfec13e9e4c042816aa9e8897cbd7db99289193b2",
+  "changed_since_before": [
+    "CHANGELOG.md",
+    "app/tasks/runtime.py",
+    "docs/README.md",
+    "docs/ROADMAP_EXECUTION_STATUS.md"
+  ],
+  "new_test": "tests/test_collection_evidence_recovery_race.py",
+  "new_tests": 14,
+  "specific_tests": {
+    "log": "data/r3/closure-20261021/logs/g2-final-second.log",
+    "passed": 14
+  },
+  "related_regression": {
+    "log": "data/r3/closure-20261021/logs/g2-regression-first.log",
+    "passed": 590,
+    "scope_note": "loaded 11 specific cases; final specific run covers all 14"
+  },
+  "red_before_fix": {
+    "log": "data/r3/closure-20261021/logs/g2-red-normal.log",
+    "failed": 4
+  },
+  "artifacts": {
+    "data/r3/closure-20261021/logs/format-final.log": "97d85b4b6c185a05396e2d09a3c304ff0f7cc77f8b7b7bb7989ec6cd875b3898",
+    "data/r3/closure-20261021/logs/format-first.log": "5dce0850ce5ec908c50b7fb338c19ac2d31e81dabd5cb9f43211e48bcdc949a9",
+    "data/r3/closure-20261021/logs/g2-expanded-first.log": "304cb47c43ca8a0a6818165a6c061e18ee58d39ebc7fe0eee52a30ebf6103c3a",
+    "data/r3/closure-20261021/logs/g2-expanded-second.log": "708deaf7588f5b8708e36d37669d8b4a421041fac701a3212446245343e5c3c9",
+    "data/r3/closure-20261021/logs/g2-expanded-third.log": "346dbfb9ba1de690c7c374834e9d81727968942d5d30a93709524fa60d457236",
+    "data/r3/closure-20261021/logs/g2-final-second.log": "bfb94f09548d79b21d25d827ea918f427dc3cf961a813d6651e7b3d6e0d27d25",
+    "data/r3/closure-20261021/logs/g2-final.log": "8838aff7b6cdb902ed2723536fd52e8c41fcb9ca7c20862d18c6fbddf9ca7b18",
+    "data/r3/closure-20261021/logs/g2-first-green.log": "d3882407a99216ce999c8ed57f7f71185a7c1aece265593589ab442e039138d7",
+    "data/r3/closure-20261021/logs/g2-first.log": "40bcd0d9db46e3729171ee8c3e780de9c342a4be26902bb0c541f1c6b29a6577",
+    "data/r3/closure-20261021/logs/g2-red-diagnostic.log": "42054642ca37f03a2c9b8fffd6f5e909202d80912c3938c88aafba8429f9e51d",
+    "data/r3/closure-20261021/logs/g2-red-normal.log": "7c7fed44b85a3e4af8d7130dfca62a3e400ca5c4c3ab2305f571e1304a631224",
+    "data/r3/closure-20261021/logs/g2-red.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "data/r3/closure-20261021/logs/g2-regression-first.log": "82c3d3f374d8f01d512d2b19fb71e4dc6455f693d13db7cd9b5fbc4c407b7b8c",
+    "data/r3/closure-20261021/logs/g2-second.log": "7255d9166246ade7f0431ee4ea58b91b35a4c719b217543d3d86b069a4eda00a",
+    "data/r3/closure-20261021/logs/mypy-final.log": "680d481cc62731d2fd04d8210927e7bd5809d6ac50c76e04c215cd8ff6cdcec8",
+    "data/r3/closure-20261021/logs/mypy-first.log": "680d481cc62731d2fd04d8210927e7bd5809d6ac50c76e04c215cd8ff6cdcec8",
+    "data/r3/closure-20261021/logs/ruff-final.log": "a4443afdcfb6d7363adb285762515ccf7cf50473b1a05c20c1a50f6bed4d26b0",
+    "data/r3/closure-20261021/logs/ruff-first.log": "4df1a2d52af37a9043246d852b5d9bf98e699ccaa1dbfd4d8a9b9ddec4e24502"
+  },
+  "sources": {
+    "app/tasks/runtime.py": "ee1cda633bcfc3747877805606361285ca844f6b630b6f71651315b0432fb1c7",
+    "tests/test_collection_evidence_recovery_race.py": "772d8a1531b1f79d2a43b7a4e261232fa6f3746fb1a971b2f24f12599edd8f15",
+    "docs/specs/CatooBot Minecraft R3.1 —— Terminal Verification Races and Recovery Evidence.md": "097a5fa8032a8993a977ee385fc49b7aecad5ca1a27f04b4bc8104bdcacd156c"
+  },
+  "previous_evidence_unchanged": true,
+  "live_operations": false,
+  "published": false,
+  "remaining": [
+    "R3 G1 normal assembly",
+    "R3 G3 per-ID real-server matrix",
+    "R3 G4 QQ, final checks, release and CI",
+    "R4-R8 and Integrated/LAN"
+  ]
+}

@@ -1,0 +1,2519 @@
+{
+  "phase": "R3",
+  "status": "IN_PROGRESS",
+  "checkpoint_date": "2026-10-20",
+  "baseline": "d121127ef5b78016430c56a6c3f15f9d2a4cb6a4",
+  "gate_status": {
+    "G1": "PARTIAL",
+    "G2": "PARTIAL",
+    "G3": "PARTIAL",
+    "G4": "PARTIAL"
+  },
+  "goal_R8_achieved": false,
+  "scope": "Controlled USER service boundaries; explicit wood/resource shapes; real TaskRuntime and Mineflayer; independent RCON. No QQ messages. Cancellation within actual MOVE step, not a per-atomic-dig/pickup cancellation claim. All other original R3 requirements remain.",
+  "python": {
+    "passed": 4743,
+    "seconds": 706.89,
+    "first_run_passed": 4711,
+    "first_run_failed": 32
+  },
+  "node_full": "PASS including E2E; strict 58/58, pickup 81/81, collection readiness 26/26",
+  "java_full": "11 suites and Smoke class loading PASS",
+  "source_manifest_sha256": "feb4db39786400c02f6ee150b1c763c35c472795b294681ca73d9ad14598b5df",
+  "source_manifest_files": 1078,
+  "positive_cases": [
+    {
+      "case_id": "oak_log-baseline-0",
+      "task_id": "task_bea8db18f58c",
+      "plan_hash": "634f65971c8cc554b278",
+      "dig_action": "act_rt_mvfhcgnq_7249a908_mvfhcmha_5",
+      "pickup_action": "act_rt_mvfhcgnq_7249a908_mvfhcoxw_7",
+      "server_proof": {
+        "schema": 1,
+        "source": "server_block_break",
+        "event_id": "66865bcf-b0de-4b9f-9872-4517be5f23e5",
+        "reservation_id": "be806ce3-205b-4ca7-8d19-30adbf5e4835",
+        "action_id": "act_rt_mvfhcgnq_7249a908_mvfhcmha_5",
+        "session_ref": "22fae446-539c-43ed-8ca8-683804798e99",
+        "session_seq": 1,
+        "player_uuid": "62c3af8a-e005-3312-9813-dda3bdf67214",
+        "dimension": "minecraft:overworld",
+        "pos": "12035,100,16032",
+        "block_before": "minecraft:oak_log",
+        "block_after": "minecraft:air"
+      },
+      "drop_uuid": "8696b9eb-c013-4bd4-baed-b0051b7fea1f",
+      "server_inventory_before": 0,
+      "server_inventory_after": 1,
+      "world_after": "Test passed",
+      "state": "SUCCEEDED"
+    },
+    {
+      "case_id": "oak_log-baseline-3",
+      "task_id": "task_c5516f1372d4",
+      "plan_hash": "f4efcafee98ce82d0c44",
+      "dig_action": "act_rt_mvfhcgnq_7249a908_mvfhcpni_b",
+      "pickup_action": "act_rt_mvfhcgnq_7249a908_mvfhcs2v_d",
+      "server_proof": {
+        "schema": 1,
+        "source": "server_block_break",
+        "event_id": "4c53c731-8cd4-4d45-bfb5-532873f32c68",
+        "reservation_id": "ac2d2aa1-880d-46db-af16-98364d29d77d",
+        "action_id": "act_rt_mvfhcgnq_7249a908_mvfhcpni_b",
+        "session_ref": "22fae446-539c-43ed-8ca8-683804798e99",
+        "session_seq": 1,
+        "player_uuid": "62c3af8a-e005-3312-9813-dda3bdf67214",
+        "dimension": "minecraft:overworld",
+        "pos": "12035,100,16032",
+        "block_before": "minecraft:oak_log",
+        "block_after": "minecraft:air"
+      },
+      "drop_uuid": "b74dea89-3b62-490d-bccf-92a8a478c891",
+      "server_inventory_before": 3,
+      "server_inventory_after": 4,
+      "world_after": "Test passed",
+      "state": "SUCCEEDED"
+    },
+    {
+      "case_id": "spruce_log-baseline-0",
+      "task_id": "task_1a0f43c4bd3f",
+      "plan_hash": "8e3ae296739d12a7725c",
+      "dig_action": "act_rt_mvfhcgnq_7249a908_mvfhcssj_h",
+      "pickup_action": "act_rt_mvfhcgnq_7249a908_mvfhcv7w_j",
+      "server_proof": {
+        "schema": 1,
+        "source": "server_block_break",
+        "event_id": "84f670ec-1b6f-4c0c-90ad-abf48bff163a",
+        "reservation_id": "7b219ab4-1f24-4305-a7ae-42b60c9edc42",
+        "action_id": "act_rt_mvfhcgnq_7249a908_mvfhcssj_h",
+        "session_ref": "22fae446-539c-43ed-8ca8-683804798e99",
+        "session_seq": 1,
+        "player_uuid": "62c3af8a-e005-3312-9813-dda3bdf67214",
+        "dimension": "minecraft:overworld",
+        "pos": "12035,100,16032",
+        "block_before": "minecraft:spruce_log",
+        "block_after": "minecraft:air"
+      },
+      "drop_uuid": "1633e66d-6253-4f41-a4cd-b5033b50fdc7",
+      "server_inventory_before": 0,
+      "server_inventory_after": 1,
+      "world_after": "Test passed",
+      "state": "SUCCEEDED"
+    },
+    {
+      "case_id": "spruce_log-baseline-3",
+      "task_id": "task_e43ce84ba072",
+      "plan_hash": "cbcf13ded0cae6bc5039",
+      "dig_action": "act_rt_mvfhcgnq_7249a908_mvfhcvze_n",
+      "pickup_action": "act_rt_mvfhcgnq_7249a908_mvfhcydy_p",
+      "server_proof": {
+        "schema": 1,
+        "source": "server_block_break",
+        "event_id": "87b3c5eb-3c86-47b5-a080-d08284c3b2fb",
+        "reservation_id": "86ee251c-e779-4bbc-b52a-940335a23a3c",
+        "action_id": "act_rt_mvfhcgnq_7249a908_mvfhcvze_n",
+        "session_ref": "22fae446-539c-43ed-8ca8-683804798e99",
+        "session_seq": 1,
+        "player_uuid": "62c3af8a-e005-3312-9813-dda3bdf67214",
+        "dimension": "minecraft:overworld",
+        "pos": "12035,100,16032",
+        "block_before": "minecraft:spruce_log",
+        "block_after": "minecraft:air"
+      },
+      "drop_uuid": "0f41e973-adbd-4c45-bfb4-ab085e0f0cae",
+      "server_inventory_before": 3,
+      "server_inventory_after": 4,
+      "world_after": "Test passed",
+      "state": "SUCCEEDED"
+    },
+    {
+      "case_id": "birch_log-baseline-0",
+      "task_id": "task_1bb261cfe25a",
+      "plan_hash": "6d79d155d46232fbb3b4",
+      "dig_action": "act_rt_mvfhcgnq_7249a908_mvfhcz95_t",
+      "pickup_action": "act_rt_mvfhcgnq_7249a908_mvfhd1o6_v",
+      "server_proof": {
+        "schema": 1,
+        "source": "server_block_break",
+        "event_id": "6e43d6cc-72ee-4b7c-be72-96fda910daf8",
+        "reservation_id": "1be7311d-ad1e-4d9c-883c-20dc4303dbb9",
+        "action_id": "act_rt_mvfhcgnq_7249a908_mvfhcz95_t",
+        "session_ref": "22fae446-539c-43ed-8ca8-683804798e99",
+        "session_seq": 1,
+        "player_uuid": "62c3af8a-e005-3312-9813-dda3bdf67214",
+        "dimension": "minecraft:overworld",
+        "pos": "12035,100,16032",
+        "block_before": "minecraft:birch_log",
+        "block_after": "minecraft:air"
+      },
+      "drop_uuid": "a3bafa14-2128-4ce4-95f1-d758a9a43432",
+      "server_inventory_before": 0,
+      "server_inventory_after": 1,
+      "world_after": "Test passed",
+      "state": "SUCCEEDED"
+    },
+    {
+      "case_id": "birch_log-baseline-3",
+      "task_id": "task_e06e4eb75dc5",
+      "plan_hash": "621811dbde0403e309aa",
+      "dig_action": "act_rt_mvfhcgnq_7249a908_mvfhd2iu_z",
+      "pickup_action": "act_rt_mvfhcgnq_7249a908_mvfhd4y0_11",
+      "server_proof": {
+        "schema": 1,
+        "source": "server_block_break",
+        "event_id": "c07b349a-3724-4a98-9579-1c36b7b75ac9",
+        "reservation_id": "a82fa75a-1c59-4ad2-8b21-5fc4cf060434",
+        "action_id": "act_rt_mvfhcgnq_7249a908_mvfhd2iu_z",
+        "session_ref": "22fae446-539c-43ed-8ca8-683804798e99",
+        "session_seq": 1,
+        "player_uuid": "62c3af8a-e005-3312-9813-dda3bdf67214",
+        "dimension": "minecraft:overworld",
+        "pos": "12035,100,16032",
+        "block_before": "minecraft:birch_log",
+        "block_after": "minecraft:air"
+      },
+      "drop_uuid": "c590e9f0-5739-4c6d-b828-ef0a5608b30d",
+      "server_inventory_before": 3,
+      "server_inventory_after": 4,
+      "world_after": "Test passed",
+      "state": "SUCCEEDED"
+    },
+    {
+      "case_id": "jungle_log-baseline-0",
+      "task_id": "task_481823de277d",
+      "plan_hash": "daa6719f8c67e3050353",
+      "dig_action": "act_rt_mvfhcgnq_7249a908_mvfhd61o_15",
+      "pickup_action": "act_rt_mvfhcgnq_7249a908_mvfhd8hv_17",
+      "server_proof": {
+        "schema": 1,
+        "source": "server_block_break",
+        "event_id": "55d39b4e-688e-4676-9989-dd0e27eaa07a",
+        "reservation_id": "365b21f7-7d6a-47e3-992b-d8f4dd06da76",
+        "action_id": "act_rt_mvfhcgnq_7249a908_mvfhd61o_15",
+        "session_ref": "22fae446-539c-43ed-8ca8-683804798e99",
+        "session_seq": 1,
+        "player_uuid": "62c3af8a-e005-3312-9813-dda3bdf67214",
+        "dimension": "minecraft:overworld",
+        "pos": "12035,100,16032",
+        "block_before": "minecraft:jungle_log",
+        "block_after": "minecraft:air"
+      },
+      "drop_uuid": "4c08a29a-a702-4515-aa39-efef411fa49c",
+      "server_inventory_before": 0,
+      "server_inventory_after": 1,
+      "world_after": "Test passed",
+      "state": "SUCCEEDED"
+    },
+    {
+      "case_id": "jungle_log-baseline-3",
+      "task_id": "task_856f9fef23ba",
+      "plan_hash": "c70dab3a9b05c1855ec1",
+      "dig_action": "act_rt_mvfhcgnq_7249a908_mvfhd9nr_1b",
+      "pickup_action": "act_rt_mvfhcgnq_7249a908_mvfhdc21_1d",
+      "server_proof": {
+        "schema": 1,
+        "source": "server_block_break",
+        "event_id": "ce364f33-9204-4f5d-a1c4-299f6ec7420e",
+        "reservation_id": "64d822d8-a2f1-4839-b3fa-bf849cd3f832",
+        "action_id": "act_rt_mvfhcgnq_7249a908_mvfhd9nr_1b",
+        "session_ref": "22fae446-539c-43ed-8ca8-683804798e99",
+        "session_seq": 1,
+        "player_uuid": "62c3af8a-e005-3312-9813-dda3bdf67214",
+        "dimension": "minecraft:overworld",
+        "pos": "12035,100,16032",
+        "block_before": "minecraft:jungle_log",
+        "block_after": "minecraft:air"
+      },
+      "drop_uuid": "13476494-2a30-46f2-8fe6-d14d9adf1759",
+      "server_inventory_before": 3,
+      "server_inventory_after": 4,
+      "world_after": "Test passed",
+      "state": "SUCCEEDED"
+    },
+    {
+      "case_id": "acacia_log-baseline-0",
+      "task_id": "task_e037dcb2339a",
+      "plan_hash": "eb4f4230d9561d9a79db",
+      "dig_action": "act_rt_mvfhcgnq_7249a908_mvfhdcz7_1h",
+      "pickup_action": "act_rt_mvfhcgnq_7249a908_mvfhdff1_1j",
+      "server_proof": {
+        "schema": 1,
+        "source": "server_block_break",
+        "event_id": "fe2e78ed-acf4-460c-88d6-e490b764c0c8",
+        "reservation_id": "f41f49a7-fdd4-4273-b56d-76f523a4fa4a",
+        "action_id": "act_rt_mvfhcgnq_7249a908_mvfhdcz7_1h",
+        "session_ref": "22fae446-539c-43ed-8ca8-683804798e99",
+        "session_seq": 1,
+        "player_uuid": "62c3af8a-e005-3312-9813-dda3bdf67214",
+        "dimension": "minecraft:overworld",
+        "pos": "12035,100,16032",
+        "block_before": "minecraft:acacia_log",
+        "block_after": "minecraft:air"
+      },
+      "drop_uuid": "95ce42db-deb2-482e-aa47-c8a2a9a54301",
+      "server_inventory_before": 0,
+      "server_inventory_after": 1,
+      "world_after": "Test passed",
+      "state": "SUCCEEDED"
+    },
+    {
+      "case_id": "acacia_log-baseline-3",
+      "task_id": "task_c3db6e04a57e",
+      "plan_hash": "6a9b645baeec3b7d470d",
+      "dig_action": "act_rt_mvfhcgnq_7249a908_mvfhdgoy_1n",
+      "pickup_action": "act_rt_mvfhcgnq_7249a908_mvfhdjc0_1p",
+      "server_proof": {
+        "schema": 1,
+        "source": "server_block_break",
+        "event_id": "5c2a750b-4a20-488d-9975-43c1541263fe",
+        "reservation_id": "a94242ab-977b-4cf2-b6b3-2b0afb255043",
+        "action_id": "act_rt_mvfhcgnq_7249a908_mvfhdgoy_1n",
+        "session_ref": "22fae446-539c-43ed-8ca8-683804798e99",
+        "session_seq": 1,
+        "player_uuid": "62c3af8a-e005-3312-9813-dda3bdf67214",
+        "dimension": "minecraft:overworld",
+        "pos": "12035,100,16032",
+        "block_before": "minecraft:acacia_log",
+        "block_after": "minecraft:air"
+      },
+      "drop_uuid": "d7de96d5-1315-40d9-9d54-7ca6cc3a01c6",
+      "server_inventory_before": 3,
+      "server_inventory_after": 4,
+      "world_after": "Test passed",
+      "state": "SUCCEEDED"
+    },
+    {
+      "case_id": "dark_oak_log-baseline-0",
+      "task_id": "task_6416b357c3a6",
+      "plan_hash": "124d99175e8bcb84dfb3",
+      "dig_action": "act_rt_mvfhcgnq_7249a908_mvfhdkly_1t",
+      "pickup_action": "act_rt_mvfhcgnq_7249a908_mvfhdn4t_1v",
+      "server_proof": {
+        "schema": 1,
+        "source": "server_block_break",
+        "event_id": "9da7dc84-edd1-42dc-8ca0-c4fb0e4274fc",
+        "reservation_id": "d5637f7d-781b-481a-ba63-d80bcfdac965",
+        "action_id": "act_rt_mvfhcgnq_7249a908_mvfhdkly_1t",
+        "session_ref": "22fae446-539c-43ed-8ca8-683804798e99",
+        "session_seq": 1,
+        "player_uuid": "62c3af8a-e005-3312-9813-dda3bdf67214",
+        "dimension": "minecraft:overworld",
+        "pos": "12035,100,16032",
+        "block_before": "minecraft:dark_oak_log",
+        "block_after": "minecraft:air"
+      },
+      "drop_uuid": "15beedb8-2195-4e32-802e-bb1f041ab4d9",
+      "server_inventory_before": 0,
+      "server_inventory_after": 1,
+      "world_after": "Test passed",
+      "state": "SUCCEEDED"
+    },
+    {
+      "case_id": "dark_oak_log-baseline-3",
+      "task_id": "task_4dc6d614f3f2",
+      "plan_hash": "1138707b7cbf117da3b2",
+      "dig_action": "act_rt_mvfhcgnq_7249a908_mvfhdobe_1z",
+      "pickup_action": "act_rt_mvfhcgnq_7249a908_mvfhdqpl_21",
+      "server_proof": {
+        "schema": 1,
+        "source": "server_block_break",
+        "event_id": "6201c702-fa89-40f0-860f-0cc2fa22c07e",
+        "reservation_id": "5a821d4f-2c61-4082-9b11-1315e79c1284",
+        "action_id": "act_rt_mvfhcgnq_7249a908_mvfhdobe_1z",
+        "session_ref": "22fae446-539c-43ed-8ca8-683804798e99",
+        "session_seq": 1,
+        "player_uuid": "62c3af8a-e005-3312-9813-dda3bdf67214",
+        "dimension": "minecraft:overworld",
+        "pos": "12035,100,16032",
+        "block_before": "minecraft:dark_oak_log",
+        "block_after": "minecraft:air"
+      },
+      "drop_uuid": "06a129e0-ff82-4e28-81ae-78f219ebb0ef",
+      "server_inventory_before": 3,
+      "server_inventory_after": 4,
+      "world_after": "Test passed",
+      "state": "SUCCEEDED"
+    },
+    {
+      "case_id": "stone-baseline-0",
+      "task_id": "task_bf24f4b70d4c",
+      "plan_hash": "8ec3c4aee0352c20da0f",
+      "dig_action": "act_rt_mvfhcgnq_7249a908_mvfhdry0_25",
+      "pickup_action": "act_rt_mvfhcgnq_7249a908_mvfhdszy_27",
+      "server_proof": {
+        "schema": 1,
+        "source": "server_block_break",
+        "event_id": "0cd2cf8b-7696-48f6-8340-c9f7ccdccdaf",
+        "reservation_id": "46bfe1ef-c6af-4545-b5d1-e56cc35b9929",
+        "action_id": "act_rt_mvfhcgnq_7249a908_mvfhdry0_25",
+        "session_ref": "22fae446-539c-43ed-8ca8-683804798e99",
+        "session_seq": 1,
+        "player_uuid": "62c3af8a-e005-3312-9813-dda3bdf67214",
+        "dimension": "minecraft:overworld",
+        "pos": "12035,100,16032",
+        "block_before": "minecraft:stone",
+        "block_after": "minecraft:air"
+      },
+      "drop_uuid": "20fc8495-ace9-44c6-a79f-530cd0ce823d",
+      "server_inventory_before": 0,
+      "server_inventory_after": 1,
+      "world_after": "Test passed",
+      "state": "SUCCEEDED"
+    },
+    {
+      "case_id": "stone-baseline-3",
+      "task_id": "task_cf1e126fdd31",
+      "plan_hash": "9e3fffa042b4addc1a33",
+      "dig_action": "act_rt_mvfhcgnq_7249a908_mvfhdufg_2b",
+      "pickup_action": "act_rt_mvfhcgnq_7249a908_mvfhdvjg_2d",
+      "server_proof": {
+        "schema": 1,
+        "source": "server_block_break",
+        "event_id": "6ceb8ab5-f699-4d2e-abd4-1f3c1108518e",
+        "reservation_id": "6116f637-b4e0-4b31-9edb-bb4c642c6499",
+        "action_id": "act_rt_mvfhcgnq_7249a908_mvfhdufg_2b",
+        "session_ref": "22fae446-539c-43ed-8ca8-683804798e99",
+        "session_seq": 1,
+        "player_uuid": "62c3af8a-e005-3312-9813-dda3bdf67214",
+        "dimension": "minecraft:overworld",
+        "pos": "12035,100,16032",
+        "block_before": "minecraft:stone",
+        "block_after": "minecraft:air"
+      },
+      "drop_uuid": "aba25023-b853-4b03-8025-88fb9d275b08",
+      "server_inventory_before": 3,
+      "server_inventory_after": 4,
+      "world_after": "Test passed",
+      "state": "SUCCEEDED"
+    },
+    {
+      "case_id": "cobblestone-baseline-0",
+      "task_id": "task_81591eda8f65",
+      "plan_hash": "bf5def9be643c113c839",
+      "dig_action": "act_rt_mvfhcgnq_7249a908_mvfhdwuq_2h",
+      "pickup_action": "act_rt_mvfhcgnq_7249a908_mvfhdy7i_2j",
+      "server_proof": {
+        "schema": 1,
+        "source": "server_block_break",
+        "event_id": "47e41690-5295-4c8d-bb0a-71e6c5d1e14e",
+        "reservation_id": "bd19006c-4fad-4624-8eef-e1b728a205b9",
+        "action_id": "act_rt_mvfhcgnq_7249a908_mvfhdwuq_2h",
+        "session_ref": "22fae446-539c-43ed-8ca8-683804798e99",
+        "session_seq": 1,
+        "player_uuid": "62c3af8a-e005-3312-9813-dda3bdf67214",
+        "dimension": "minecraft:overworld",
+        "pos": "12035,100,16032",
+        "block_before": "minecraft:cobblestone",
+        "block_after": "minecraft:air"
+      },
+      "drop_uuid": "ddca20f8-7de1-42de-abbc-bf2c20a53e43",
+      "server_inventory_before": 0,
+      "server_inventory_after": 1,
+      "world_after": "Test passed",
+      "state": "SUCCEEDED"
+    },
+    {
+      "case_id": "cobblestone-baseline-3",
+      "task_id": "task_d93a3838bf9e",
+      "plan_hash": "fc01f23074117f07b864",
+      "dig_action": "act_rt_mvfhcgnq_7249a908_mvfhdzp8_2n",
+      "pickup_action": "act_rt_mvfhcgnq_7249a908_mvfhe120_2p",
+      "server_proof": {
+        "schema": 1,
+        "source": "server_block_break",
+        "event_id": "0fb57690-ca09-42bb-822c-c5967bbbd3e6",
+        "reservation_id": "7866e7ab-ab8c-457b-b211-abbbbf710373",
+        "action_id": "act_rt_mvfhcgnq_7249a908_mvfhdzp8_2n",
+        "session_ref": "22fae446-539c-43ed-8ca8-683804798e99",
+        "session_seq": 1,
+        "player_uuid": "62c3af8a-e005-3312-9813-dda3bdf67214",
+        "dimension": "minecraft:overworld",
+        "pos": "12035,100,16032",
+        "block_before": "minecraft:cobblestone",
+        "block_after": "minecraft:air"
+      },
+      "drop_uuid": "a3d6beab-b282-4a46-80e9-a265dc61b06f",
+      "server_inventory_before": 3,
+      "server_inventory_after": 4,
+      "world_after": "Test passed",
+      "state": "SUCCEEDED"
+    },
+    {
+      "case_id": "coal_ore-baseline-0",
+      "task_id": "task_81a6ea052937",
+      "plan_hash": "c9e607ff9ce939270eb1",
+      "dig_action": "act_rt_mvfhcgnq_7249a908_mvfhe2k5_2t",
+      "pickup_action": "act_rt_mvfhcgnq_7249a908_mvfhe4h7_2v",
+      "server_proof": {
+        "schema": 1,
+        "source": "server_block_break",
+        "event_id": "53fffef3-edda-4fdd-8e27-4644999cde81",
+        "reservation_id": "c914bdc9-7353-438c-80e9-d965824993b3",
+        "action_id": "act_rt_mvfhcgnq_7249a908_mvfhe2k5_2t",
+        "session_ref": "22fae446-539c-43ed-8ca8-683804798e99",
+        "session_seq": 1,
+        "player_uuid": "62c3af8a-e005-3312-9813-dda3bdf67214",
+        "dimension": "minecraft:overworld",
+        "pos": "12035,100,16032",
+        "block_before": "minecraft:coal_ore",
+        "block_after": "minecraft:air"
+      },
+      "drop_uuid": "5873095f-ae97-4f76-a4a5-beedf629599f",
+      "server_inventory_before": 0,
+      "server_inventory_after": 1,
+      "world_after": "Test passed",
+      "state": "SUCCEEDED"
+    },
+    {
+      "case_id": "coal_ore-baseline-3",
+      "task_id": "task_da85e5f21788",
+      "plan_hash": "9ff976523c38c8be3d37",
+      "dig_action": "act_rt_mvfhcgnq_7249a908_mvfhe5yu_2z",
+      "pickup_action": "act_rt_mvfhcgnq_7249a908_mvfhe7zn_31",
+      "server_proof": {
+        "schema": 1,
+        "source": "server_block_break",
+        "event_id": "5aa9b567-974e-4bda-882a-07731893e9c5",
+        "reservation_id": "da028d96-2aeb-4c03-aec9-9461069ec3a5",
+        "action_id": "act_rt_mvfhcgnq_7249a908_mvfhe5yu_2z",
+        "session_ref": "22fae446-539c-43ed-8ca8-683804798e99",
+        "session_seq": 1,
+        "player_uuid": "62c3af8a-e005-3312-9813-dda3bdf67214",
+        "dimension": "minecraft:overworld",
+        "pos": "12035,100,16032",
+        "block_before": "minecraft:coal_ore",
+        "block_after": "minecraft:air"
+      },
+      "drop_uuid": "e7cd3cae-3dba-4c38-a064-3fa94ec9f5a0",
+      "server_inventory_before": 3,
+      "server_inventory_after": 4,
+      "world_after": "Test passed",
+      "state": "SUCCEEDED"
+    },
+    {
+      "case_id": "iron_ore-baseline-0",
+      "task_id": "task_6e8390b8b3de",
+      "plan_hash": "ee6af09c00576f6ef3bb",
+      "dig_action": "act_rt_mvfhcgnq_7249a908_mvfhe9qn_35",
+      "pickup_action": "act_rt_mvfhcgnq_7249a908_mvfhedmd_37",
+      "server_proof": {
+        "schema": 1,
+        "source": "server_block_break",
+        "event_id": "c89273dd-72e5-4ba6-855d-0cf7a86009fd",
+        "reservation_id": "64c806ef-e4a7-4a1c-8c9d-46d9a8c45a1a",
+        "action_id": "act_rt_mvfhcgnq_7249a908_mvfhe9qn_35",
+        "session_ref": "22fae446-539c-43ed-8ca8-683804798e99",
+        "session_seq": 1,
+        "player_uuid": "62c3af8a-e005-3312-9813-dda3bdf67214",
+        "dimension": "minecraft:overworld",
+        "pos": "12035,100,16032",
+        "block_before": "minecraft:iron_ore",
+        "block_after": "minecraft:air"
+      },
+      "drop_uuid": "d3f1d640-e97d-4446-a9a5-7b857f698a4d",
+      "server_inventory_before": 0,
+      "server_inventory_after": 1,
+      "world_after": "Test passed",
+      "state": "SUCCEEDED"
+    },
+    {
+      "case_id": "iron_ore-baseline-3",
+      "task_id": "task_23c29821022e",
+      "plan_hash": "b77af3a03d8fdfd5b52e",
+      "dig_action": "act_rt_mvfhcgnq_7249a908_mvfhefky_3b",
+      "pickup_action": "act_rt_mvfhcgnq_7249a908_mvfhejfn_3d",
+      "server_proof": {
+        "schema": 1,
+        "source": "server_block_break",
+        "event_id": "733009ab-7fde-42f2-8b8c-8f3c6efc15aa",
+        "reservation_id": "eea788ce-c2d6-45f5-8e34-5d33db263c60",
+        "action_id": "act_rt_mvfhcgnq_7249a908_mvfhefky_3b",
+        "session_ref": "22fae446-539c-43ed-8ca8-683804798e99",
+        "session_seq": 1,
+        "player_uuid": "62c3af8a-e005-3312-9813-dda3bdf67214",
+        "dimension": "minecraft:overworld",
+        "pos": "12035,100,16032",
+        "block_before": "minecraft:iron_ore",
+        "block_after": "minecraft:air"
+      },
+      "drop_uuid": "21110ee9-b8a7-4158-9196-d99e0aeacf96",
+      "server_inventory_before": 3,
+      "server_inventory_after": 4,
+      "world_after": "Test passed",
+      "state": "SUCCEEDED"
+    },
+    {
+      "case_id": "dirt-baseline-0",
+      "task_id": "task_9770ab2d0d2c",
+      "plan_hash": "42ddbabb3be74f17f8e9",
+      "dig_action": "act_rt_mvfhcgnq_7249a908_mvfhel7p_3h",
+      "pickup_action": "act_rt_mvfhcgnq_7249a908_mvfhem27_3j",
+      "server_proof": {
+        "schema": 1,
+        "source": "server_block_break",
+        "event_id": "7ae48038-11da-4eef-b3dd-c51018ad2f9d",
+        "reservation_id": "991db030-cbc9-438e-8466-a2f4e48e234b",
+        "action_id": "act_rt_mvfhcgnq_7249a908_mvfhel7p_3h",
+        "session_ref": "22fae446-539c-43ed-8ca8-683804798e99",
+        "session_seq": 1,
+        "player_uuid": "62c3af8a-e005-3312-9813-dda3bdf67214",
+        "dimension": "minecraft:overworld",
+        "pos": "12035,100,16032",
+        "block_before": "minecraft:dirt",
+        "block_after": "minecraft:air"
+      },
+      "drop_uuid": "a55dea62-9a0d-46ed-add2-a9db43d55d12",
+      "server_inventory_before": 0,
+      "server_inventory_after": 1,
+      "world_after": "Test passed",
+      "state": "SUCCEEDED"
+    },
+    {
+      "case_id": "dirt-baseline-3",
+      "task_id": "task_0af65d56a877",
+      "plan_hash": "a7541506008ec442413d",
+      "dig_action": "act_rt_mvfhcgnq_7249a908_mvfhenz4_3n",
+      "pickup_action": "act_rt_mvfhcgnq_7249a908_mvfheoxp_3p",
+      "server_proof": {
+        "schema": 1,
+        "source": "server_block_break",
+        "event_id": "f9766f60-177a-4f36-8282-f0904ecbc2ee",
+        "reservation_id": "1ccbf33f-c3d3-4171-b7d6-7c8142184678",
+        "action_id": "act_rt_mvfhcgnq_7249a908_mvfhenz4_3n",
+        "session_ref": "22fae446-539c-43ed-8ca8-683804798e99",
+        "session_seq": 1,
+        "player_uuid": "62c3af8a-e005-3312-9813-dda3bdf67214",
+        "dimension": "minecraft:overworld",
+        "pos": "12035,100,16032",
+        "block_before": "minecraft:dirt",
+        "block_after": "minecraft:air"
+      },
+      "drop_uuid": "dad1d5ba-8e71-40b9-8df2-d7e10667ab48",
+      "server_inventory_before": 3,
+      "server_inventory_after": 4,
+      "world_after": "Test passed",
+      "state": "SUCCEEDED"
+    },
+    {
+      "case_id": "sand-baseline-0",
+      "task_id": "task_7945f68c602d",
+      "plan_hash": "ea953d59029dac8fb496",
+      "dig_action": "act_rt_mvfhcgnq_7249a908_mvfheqjq_3t",
+      "pickup_action": "act_rt_mvfhcgnq_7249a908_mvfheril_3v",
+      "server_proof": {
+        "schema": 1,
+        "source": "server_block_break",
+        "event_id": "f0173998-4b0b-4e60-aa0b-316008130d1a",
+        "reservation_id": "654dd80f-5e01-444d-8073-70f41511df3d",
+        "action_id": "act_rt_mvfhcgnq_7249a908_mvfheqjq_3t",
+        "session_ref": "22fae446-539c-43ed-8ca8-683804798e99",
+        "session_seq": 1,
+        "player_uuid": "62c3af8a-e005-3312-9813-dda3bdf67214",
+        "dimension": "minecraft:overworld",
+        "pos": "12035,100,16032",
+        "block_before": "minecraft:sand",
+        "block_after": "minecraft:air"
+      },
+      "drop_uuid": "6e3e9975-fd6b-4860-adec-f4176de91c9b",
+      "server_inventory_before": 0,
+      "server_inventory_after": 1,
+      "world_after": "Test passed",
+      "state": "SUCCEEDED"
+    },
+    {
+      "case_id": "sand-baseline-3",
+      "task_id": "task_02e9be9901e3",
+      "plan_hash": "79dfff26993c99cd0c58",
+      "dig_action": "act_rt_mvfhcgnq_7249a908_mvfhetg9_3z",
+      "pickup_action": "act_rt_mvfhcgnq_7249a908_mvfheuhi_41",
+      "server_proof": {
+        "schema": 1,
+        "source": "server_block_break",
+        "event_id": "a9985e5f-d424-4465-8b23-cc86641cf409",
+        "reservation_id": "5597041f-a430-4c51-bdff-9f17cb7f8ff6",
+        "action_id": "act_rt_mvfhcgnq_7249a908_mvfhetg9_3z",
+        "session_ref": "22fae446-539c-43ed-8ca8-683804798e99",
+        "session_seq": 1,
+        "player_uuid": "62c3af8a-e005-3312-9813-dda3bdf67214",
+        "dimension": "minecraft:overworld",
+        "pos": "12035,100,16032",
+        "block_before": "minecraft:sand",
+        "block_after": "minecraft:air"
+      },
+      "drop_uuid": "41dff575-1bb6-4113-b2cf-6c59ab24dd7e",
+      "server_inventory_before": 3,
+      "server_inventory_after": 4,
+      "world_after": "Test passed",
+      "state": "SUCCEEDED"
+    }
+  ],
+  "negative_cases": [
+    {
+      "case_id": "oak_log-default_risk",
+      "kind": "default_risk",
+      "status": "PASS",
+      "world_after": "Test passed",
+      "verdict": {
+        "action": "plan_rejected",
+        "outcome": "BLOCKED_BY_POLICY",
+        "reply": "现在排不了这件事：minecraft_dig:MEDIUM"
+      }
+    },
+    {
+      "case_id": "oak_log-tool_changed",
+      "kind": "tool_changed",
+      "status": "PASS",
+      "world_after": "Test passed",
+      "task_id": "task_b5e1f09ed65b",
+      "plan_hash": "cb3f5a1338de8011883a",
+      "state": "PAUSED",
+      "failure": "ACTION_FAILED"
+    },
+    {
+      "case_id": "oak_log-target_changed",
+      "kind": "target_changed",
+      "status": "PASS",
+      "world_after": "Test passed",
+      "task_id": "task_6dba6f57a14a",
+      "plan_hash": "051a65078df0d50d545e",
+      "state": "REPLANNING",
+      "failure": "TARGET_LOST"
+    },
+    {
+      "case_id": "oak_log-gravity",
+      "kind": "gravity",
+      "status": "PASS",
+      "world_after": "Test passed",
+      "verdict": {
+        "action": "plan_rejected",
+        "outcome": "BLOCKED_BY_PRECONDITION",
+        "reply": "现在排不了这件事：resource.safety_precondition_failed"
+      }
+    },
+    {
+      "case_id": "oak_log-cancel_move",
+      "kind": "cancel_move",
+      "status": "PASS",
+      "world_after": "Test passed",
+      "task_id": "task_9cc2fd64eba9",
+      "plan_hash": "c13d8f6c0f4501824ccb",
+      "state": "CANCELLED",
+      "failure": "",
+      "actual_move": {
+        "raw": "R2Bot has the following entity data: [12034.68952512129d, 100.0d, 16032.5d]",
+        "xyz": [
+          12034.68952512129,
+          100.0,
+          16032.5
+        ]
+      },
+      "late_position_1": {
+        "raw": "R2Bot has the following entity data: [12035.020690693564d, 100.0d, 16032.5d]",
+        "xyz": [
+          12035.020690693564,
+          100.0,
+          16032.5
+        ]
+      },
+      "late_position_2": {
+        "raw": "R2Bot has the following entity data: [12035.020690693564d, 100.0d, 16032.5d]",
+        "xyz": [
+          12035.020690693564,
+          100.0,
+          16032.5
+        ]
+      },
+      "unique_cancelled_event": true
+    },
+    {
+      "case_id": "oak_log-drop_missing",
+      "kind": "drop_missing",
+      "status": "PASS",
+      "world_after": "Test passed",
+      "task_id": "task_33e88025ed00",
+      "plan_hash": "a216d89fcdd29e0cf52e",
+      "state": "PAUSED",
+      "failure": "ACTION_FAILED",
+      "relay_events": [
+        {
+          "case_id": "oak_log-drop_missing",
+          "mode": "drop_missing",
+          "source": "server_block_break",
+          "event_id": "e6feb9f7-5766-4785-b374-3fd01f9bb4c9",
+          "action_id": "act_rt_mvfh3hg4_27be8a7d_mvfh3r6b_y",
+          "deliberately_dropped": false
+        },
+        {
+          "case_id": "oak_log-drop_missing",
+          "mode": "drop_missing",
+          "source": "server_drop_evidence",
+          "event_id": "4d498e9c-a904-4697-975b-13a02d21e60a",
+          "action_id": "act_rt_mvfh3hg4_27be8a7d_mvfh3r6b_y",
+          "deliberately_dropped": true
+        }
+      ],
+      "failed_tool": "minecraft_dig"
+    },
+    {
+      "case_id": "oak_log-pickup_missing",
+      "kind": "pickup_missing",
+      "status": "PASS",
+      "world_after": "Test passed",
+      "task_id": "task_8a292cd21fb0",
+      "plan_hash": "938bcc8fd266600bc0cb",
+      "state": "PAUSED",
+      "failure": "ACTION_FAILED",
+      "relay_events": [
+        {
+          "case_id": "oak_log-pickup_missing",
+          "mode": "pickup_missing",
+          "source": "server_block_break",
+          "event_id": "c7a5536c-7d33-46d6-b5df-2ede364f16d1",
+          "action_id": "act_rt_mvfh3hg4_27be8a7d_mvfh3wfu_12",
+          "deliberately_dropped": false
+        },
+        {
+          "case_id": "oak_log-pickup_missing",
+          "mode": "pickup_missing",
+          "source": "server_drop_evidence",
+          "event_id": "cb758dd5-772f-470c-9fce-6ce006198300",
+          "action_id": "act_rt_mvfh3hg4_27be8a7d_mvfh3wfu_12",
+          "deliberately_dropped": false
+        },
+        {
+          "case_id": "oak_log-pickup_missing",
+          "mode": "pickup_missing",
+          "source": "server_drop_pickup",
+          "event_id": "f7722610-0b64-46b3-bcc9-6a39c064f19d",
+          "action_id": "act_rt_mvfh3hg4_27be8a7d_mvfh3ywv_14",
+          "deliberately_dropped": true
+        }
+      ],
+      "failed_tool": "minecraft_pickup_item"
+    },
+    {
+      "case_id": "spruce_log-default_risk",
+      "kind": "default_risk",
+      "status": "PASS",
+      "world_after": "Test passed",
+      "verdict": {
+        "action": "plan_rejected",
+        "outcome": "BLOCKED_BY_POLICY",
+        "reply": "现在排不了这件事：minecraft_dig:MEDIUM"
+      }
+    },
+    {
+      "case_id": "spruce_log-tool_changed",
+      "kind": "tool_changed",
+      "status": "PASS",
+      "world_after": "Test passed",
+      "task_id": "task_ea6452aed3b5",
+      "plan_hash": "dd5797fd8b2bf131191c",
+      "state": "PAUSED",
+      "failure": "ACTION_FAILED"
+    },
+    {
+      "case_id": "spruce_log-target_changed",
+      "kind": "target_changed",
+      "status": "PASS",
+      "world_after": "Test passed",
+      "task_id": "task_9ed498f40dce",
+      "plan_hash": "ca98b171b9d8800872e4",
+      "state": "REPLANNING",
+      "failure": "TARGET_LOST"
+    },
+    {
+      "case_id": "spruce_log-gravity",
+      "kind": "gravity",
+      "status": "PASS",
+      "world_after": "Test passed",
+      "verdict": {
+        "action": "plan_rejected",
+        "outcome": "BLOCKED_BY_PRECONDITION",
+        "reply": "现在排不了这件事：resource.safety_precondition_failed"
+      }
+    },
+    {
+      "case_id": "spruce_log-cancel_move",
+      "kind": "cancel_move",
+      "status": "PASS",
+      "world_after": "Test passed",
+      "task_id": "task_82c17953bc4f",
+      "plan_hash": "172dad7da2d41a609f33",
+      "state": "CANCELLED",
+      "failure": "",
+      "actual_move": {
+        "raw": "R2Bot has the following entity data: [12034.68952512129d, 100.0d, 16032.5d]",
+        "xyz": [
+          12034.68952512129,
+          100.0,
+          16032.5
+        ]
+      },
+      "late_position_1": {
+        "raw": "R2Bot has the following entity data: [12035.301297985512d, 100.0d, 16032.5d]",
+        "xyz": [
+          12035.301297985512,
+          100.0,
+          16032.5
+        ]
+      },
+      "late_position_2": {
+        "raw": "R2Bot has the following entity data: [12035.301297985512d, 100.0d, 16032.5d]",
+        "xyz": [
+          12035.301297985512,
+          100.0,
+          16032.5
+        ]
+      },
+      "unique_cancelled_event": true
+    },
+    {
+      "case_id": "spruce_log-drop_missing",
+      "kind": "drop_missing",
+      "status": "PASS",
+      "world_after": "Test passed",
+      "task_id": "task_da752c58fd02",
+      "plan_hash": "048ee9101ea7cb41496b",
+      "state": "PAUSED",
+      "failure": "ACTION_FAILED",
+      "relay_events": [
+        {
+          "case_id": "spruce_log-drop_missing",
+          "mode": "drop_missing",
+          "source": "server_block_break",
+          "event_id": "857cb389-a600-44eb-b562-33ee0954f9c5",
+          "action_id": "act_rt_mvfh3hg4_27be8a7d_mvfh45ze_1x",
+          "deliberately_dropped": false
+        },
+        {
+          "case_id": "spruce_log-drop_missing",
+          "mode": "drop_missing",
+          "source": "server_drop_evidence",
+          "event_id": "8a17045e-6157-48f8-bcb0-64f966040184",
+          "action_id": "act_rt_mvfh3hg4_27be8a7d_mvfh45ze_1x",
+          "deliberately_dropped": true
+        }
+      ],
+      "failed_tool": "minecraft_dig"
+    },
+    {
+      "case_id": "spruce_log-pickup_missing",
+      "kind": "pickup_missing",
+      "status": "PASS",
+      "world_after": "Test passed",
+      "task_id": "task_ce0e77ea1388",
+      "plan_hash": "e73b38281653000643a5",
+      "state": "PAUSED",
+      "failure": "ACTION_FAILED",
+      "relay_events": [
+        {
+          "case_id": "spruce_log-pickup_missing",
+          "mode": "pickup_missing",
+          "source": "server_block_break",
+          "event_id": "f2b4ad4b-8340-495d-a2b0-4e3eb58dd143",
+          "action_id": "act_rt_mvfh3hg4_27be8a7d_mvfh4bcz_21",
+          "deliberately_dropped": false
+        },
+        {
+          "case_id": "spruce_log-pickup_missing",
+          "mode": "pickup_missing",
+          "source": "server_drop_evidence",
+          "event_id": "9a882224-9a54-42b1-9ed0-42ccddad279f",
+          "action_id": "act_rt_mvfh3hg4_27be8a7d_mvfh4bcz_21",
+          "deliberately_dropped": false
+        },
+        {
+          "case_id": "spruce_log-pickup_missing",
+          "mode": "pickup_missing",
+          "source": "server_drop_pickup",
+          "event_id": "b52e68ca-03a3-4484-9540-ccde088e9d1a",
+          "action_id": "act_rt_mvfh3hg4_27be8a7d_mvfh4duk_23",
+          "deliberately_dropped": true
+        }
+      ],
+      "failed_tool": "minecraft_pickup_item"
+    },
+    {
+      "case_id": "birch_log-default_risk",
+      "kind": "default_risk",
+      "status": "PASS",
+      "world_after": "Test passed",
+      "verdict": {
+        "action": "plan_rejected",
+        "outcome": "BLOCKED_BY_POLICY",
+        "reply": "现在排不了这件事：minecraft_dig:MEDIUM"
+      }
+    },
+    {
+      "case_id": "birch_log-tool_changed",
+      "kind": "tool_changed",
+      "status": "PASS",
+      "world_after": "Test passed",
+      "task_id": "task_ed30baba97d7",
+      "plan_hash": "530bb64da343fb5609ef",
+      "state": "PAUSED",
+      "failure": "ACTION_FAILED"
+    },
+    {
+      "case_id": "birch_log-target_changed",
+      "kind": "target_changed",
+      "status": "PASS",
+      "world_after": "Test passed",
+      "task_id": "task_36bfcd4e2d3f",
+      "plan_hash": "8ade9ce1b97a67307fba",
+      "state": "REPLANNING",
+      "failure": "TARGET_LOST"
+    },
+    {
+      "case_id": "birch_log-gravity",
+      "kind": "gravity",
+      "status": "PASS",
+      "world_after": "Test passed",
+      "verdict": {
+        "action": "plan_rejected",
+        "outcome": "BLOCKED_BY_PRECONDITION",
+        "reply": "现在排不了这件事：resource.safety_precondition_failed"
+      }
+    },
+    {
+      "case_id": "birch_log-cancel_move",
+      "kind": "cancel_move",
+      "status": "PASS",
+      "world_after": "Test passed",
+      "task_id": "task_0b576cf1a329",
+      "plan_hash": "bbb0e8259f81bdb0bf19",
+      "state": "CANCELLED",
+      "failure": "",
+      "actual_move": {
+        "raw": "R2Bot has the following entity data: [12034.68952512129d, 100.0d, 16032.5d]",
+        "xyz": [
+          12034.68952512129,
+          100.0,
+          16032.5
+        ]
+      },
+      "late_position_1": {
+        "raw": "R2Bot has the following entity data: [12035.020690693564d, 100.0d, 16032.5d]",
+        "xyz": [
+          12035.020690693564,
+          100.0,
+          16032.5
+        ]
+      },
+      "late_position_2": {
+        "raw": "R2Bot has the following entity data: [12035.020690693564d, 100.0d, 16032.5d]",
+        "xyz": [
+          12035.020690693564,
+          100.0,
+          16032.5
+        ]
+      },
+      "unique_cancelled_event": true
+    },
+    {
+      "case_id": "birch_log-drop_missing",
+      "kind": "drop_missing",
+      "status": "PASS",
+      "world_after": "Test passed",
+      "task_id": "task_b891ea424035",
+      "plan_hash": "34df9c277b5f96f4cb1e",
+      "state": "PAUSED",
+      "failure": "ACTION_FAILED",
+      "relay_events": [
+        {
+          "case_id": "birch_log-drop_missing",
+          "mode": "drop_missing",
+          "source": "server_block_break",
+          "event_id": "0eaded5a-2d48-43ca-b725-b911495ff003",
+          "action_id": "act_rt_mvfh3hg4_27be8a7d_mvfh4m8p_2v",
+          "deliberately_dropped": false
+        },
+        {
+          "case_id": "birch_log-drop_missing",
+          "mode": "drop_missing",
+          "source": "server_drop_evidence",
+          "event_id": "3561df86-95e4-40c4-a555-8408eaed740e",
+          "action_id": "act_rt_mvfh3hg4_27be8a7d_mvfh4m8p_2v",
+          "deliberately_dropped": true
+        }
+      ],
+      "failed_tool": "minecraft_dig"
+    },
+    {
+      "case_id": "birch_log-pickup_missing",
+      "kind": "pickup_missing",
+      "status": "PASS",
+      "world_after": "Test passed",
+      "task_id": "task_9a2dd6a458a0",
+      "plan_hash": "2d50a52475dd90d2416b",
+      "state": "PAUSED",
+      "failure": "ACTION_FAILED",
+      "relay_events": [
+        {
+          "case_id": "birch_log-pickup_missing",
+          "mode": "pickup_missing",
+          "source": "server_block_break",
+          "event_id": "ef31f5c2-fbd1-48c5-acfa-e521b407bfdc",
+          "action_id": "act_rt_mvfh3hg4_27be8a7d_mvfh4rvh_2z",
+          "deliberately_dropped": false
+        },
+        {
+          "case_id": "birch_log-pickup_missing",
+          "mode": "pickup_missing",
+          "source": "server_drop_evidence",
+          "event_id": "056a62f1-d781-43b4-a78b-83158336a0d1",
+          "action_id": "act_rt_mvfh3hg4_27be8a7d_mvfh4rvh_2z",
+          "deliberately_dropped": false
+        },
+        {
+          "case_id": "birch_log-pickup_missing",
+          "mode": "pickup_missing",
+          "source": "server_drop_pickup",
+          "event_id": "8c6e4e81-d15e-4c26-ba94-dbf7783eb136",
+          "action_id": "act_rt_mvfh3hg4_27be8a7d_mvfh4uey_31",
+          "deliberately_dropped": true
+        }
+      ],
+      "failed_tool": "minecraft_pickup_item"
+    },
+    {
+      "case_id": "jungle_log-default_risk",
+      "kind": "default_risk",
+      "status": "PASS",
+      "world_after": "Test passed",
+      "verdict": {
+        "action": "plan_rejected",
+        "outcome": "BLOCKED_BY_POLICY",
+        "reply": "现在排不了这件事：minecraft_dig:MEDIUM"
+      }
+    },
+    {
+      "case_id": "jungle_log-tool_changed",
+      "kind": "tool_changed",
+      "status": "PASS",
+      "world_after": "Test passed",
+      "task_id": "task_756cd95055f0",
+      "plan_hash": "db79488954f887c373e8",
+      "state": "PAUSED",
+      "failure": "ACTION_FAILED"
+    },
+    {
+      "case_id": "jungle_log-target_changed",
+      "kind": "target_changed",
+      "status": "PASS",
+      "world_after": "Test passed",
+      "task_id": "task_325e0a657208",
+      "plan_hash": "f849aca332192e32a7ee",
+      "state": "REPLANNING",
+      "failure": "TARGET_LOST"
+    },
+    {
+      "case_id": "jungle_log-gravity",
+      "kind": "gravity",
+      "status": "PASS",
+      "world_after": "Test passed",
+      "verdict": {
+        "action": "plan_rejected",
+        "outcome": "BLOCKED_BY_PRECONDITION",
+        "reply": "现在排不了这件事：resource.safety_precondition_failed"
+      }
+    },
+    {
+      "case_id": "jungle_log-cancel_move",
+      "kind": "cancel_move",
+      "status": "PASS",
+      "world_after": "Test passed",
+      "task_id": "task_02f009d110fe",
+      "plan_hash": "1f71ba26e58c0c89ca8a",
+      "state": "CANCELLED",
+      "failure": "",
+      "actual_move": {
+        "raw": "R2Bot has the following entity data: [12034.68952512129d, 100.0d, 16032.5d]",
+        "xyz": [
+          12034.68952512129,
+          100.0,
+          16032.5
+        ]
+      },
+      "late_position_1": {
+        "raw": "R2Bot has the following entity data: [12035.301297985512d, 100.0d, 16032.5d]",
+        "xyz": [
+          12035.301297985512,
+          100.0,
+          16032.5
+        ]
+      },
+      "late_position_2": {
+        "raw": "R2Bot has the following entity data: [12035.301297985512d, 100.0d, 16032.5d]",
+        "xyz": [
+          12035.301297985512,
+          100.0,
+          16032.5
+        ]
+      },
+      "unique_cancelled_event": true
+    },
+    {
+      "case_id": "jungle_log-drop_missing",
+      "kind": "drop_missing",
+      "status": "PASS",
+      "world_after": "Test passed",
+      "task_id": "task_698ab0eea3c1",
+      "plan_hash": "31cf70617d38732d8c5d",
+      "state": "PAUSED",
+      "failure": "ACTION_FAILED",
+      "relay_events": [
+        {
+          "case_id": "jungle_log-drop_missing",
+          "mode": "drop_missing",
+          "source": "server_block_break",
+          "event_id": "0b4be8ae-5108-4f75-a2fa-22d762c2ac08",
+          "action_id": "act_rt_mvfh3hg4_27be8a7d_mvfh54h1_3t",
+          "deliberately_dropped": false
+        },
+        {
+          "case_id": "jungle_log-drop_missing",
+          "mode": "drop_missing",
+          "source": "server_drop_evidence",
+          "event_id": "3deff89b-0fb5-4193-9818-af5cad67beb5",
+          "action_id": "act_rt_mvfh3hg4_27be8a7d_mvfh54h1_3t",
+          "deliberately_dropped": true
+        }
+      ],
+      "failed_tool": "minecraft_dig"
+    },
+    {
+      "case_id": "jungle_log-pickup_missing",
+      "kind": "pickup_missing",
+      "status": "PASS",
+      "world_after": "Test passed",
+      "task_id": "task_800bf20138c1",
+      "plan_hash": "f1152a19589ac9de6df5",
+      "state": "PAUSED",
+      "failure": "ACTION_FAILED",
+      "relay_events": [
+        {
+          "case_id": "jungle_log-pickup_missing",
+          "mode": "pickup_missing",
+          "source": "server_block_break",
+          "event_id": "6b7e9858-4ab2-4173-b44f-31531e19a8f1",
+          "action_id": "act_rt_mvfh3hg4_27be8a7d_mvfh5afm_3x",
+          "deliberately_dropped": false
+        },
+        {
+          "case_id": "jungle_log-pickup_missing",
+          "mode": "pickup_missing",
+          "source": "server_drop_evidence",
+          "event_id": "31a0d5c8-c77a-418b-82e1-c4d374fb1a67",
+          "action_id": "act_rt_mvfh3hg4_27be8a7d_mvfh5afm_3x",
+          "deliberately_dropped": false
+        },
+        {
+          "case_id": "jungle_log-pickup_missing",
+          "mode": "pickup_missing",
+          "source": "server_drop_pickup",
+          "event_id": "77087375-e751-4129-bad9-5d0cc2785b49",
+          "action_id": "act_rt_mvfh3hg4_27be8a7d_mvfh5cxw_3z",
+          "deliberately_dropped": true
+        }
+      ],
+      "failed_tool": "minecraft_pickup_item"
+    },
+    {
+      "case_id": "acacia_log-default_risk",
+      "kind": "default_risk",
+      "status": "PASS",
+      "world_after": "Test passed",
+      "verdict": {
+        "action": "plan_rejected",
+        "outcome": "BLOCKED_BY_POLICY",
+        "reply": "现在排不了这件事：minecraft_dig:MEDIUM"
+      }
+    },
+    {
+      "case_id": "acacia_log-tool_changed",
+      "kind": "tool_changed",
+      "status": "PASS",
+      "world_after": "Test passed",
+      "task_id": "task_c27186ac222f",
+      "plan_hash": "1e6a97d64a851d3989b3",
+      "state": "PAUSED",
+      "failure": "ACTION_FAILED"
+    },
+    {
+      "case_id": "acacia_log-target_changed",
+      "kind": "target_changed",
+      "status": "PASS",
+      "world_after": "Test passed",
+      "task_id": "task_cd796844cb0d",
+      "plan_hash": "ec3bf4caff9745614075",
+      "state": "REPLANNING",
+      "failure": "TARGET_LOST"
+    },
+    {
+      "case_id": "acacia_log-gravity",
+      "kind": "gravity",
+      "status": "PASS",
+      "world_after": "Test passed",
+      "verdict": {
+        "action": "plan_rejected",
+        "outcome": "BLOCKED_BY_PRECONDITION",
+        "reply": "现在排不了这件事：resource.safety_precondition_failed"
+      }
+    },
+    {
+      "case_id": "acacia_log-cancel_move",
+      "kind": "cancel_move",
+      "status": "PASS",
+      "world_after": "Test passed",
+      "task_id": "task_383c07d2b325",
+      "plan_hash": "721c55c89f5a4bb821c1",
+      "state": "CANCELLED",
+      "failure": "",
+      "actual_move": {
+        "raw": "R2Bot has the following entity data: [12034.68952512129d, 100.0d, 16032.5d]",
+        "xyz": [
+          12034.68952512129,
+          100.0,
+          16032.5
+        ]
+      },
+      "late_position_1": {
+        "raw": "R2Bot has the following entity data: [12035.020690693564d, 100.0d, 16032.5d]",
+        "xyz": [
+          12035.020690693564,
+          100.0,
+          16032.5
+        ]
+      },
+      "late_position_2": {
+        "raw": "R2Bot has the following entity data: [12035.020690693564d, 100.0d, 16032.5d]",
+        "xyz": [
+          12035.020690693564,
+          100.0,
+          16032.5
+        ]
+      },
+      "unique_cancelled_event": true
+    },
+    {
+      "case_id": "acacia_log-drop_missing",
+      "kind": "drop_missing",
+      "status": "PASS",
+      "world_after": "Test passed",
+      "task_id": "task_51ff14b67d7a",
+      "plan_hash": "1a2f30365e73ddaacf03",
+      "state": "PAUSED",
+      "failure": "ACTION_FAILED",
+      "relay_events": [
+        {
+          "case_id": "acacia_log-drop_missing",
+          "mode": "drop_missing",
+          "source": "server_block_break",
+          "event_id": "918b7853-8154-446a-8e81-9e5d521448d4",
+          "action_id": "act_rt_mvfh3hg4_27be8a7d_mvfh5opq_4r",
+          "deliberately_dropped": false
+        },
+        {
+          "case_id": "acacia_log-drop_missing",
+          "mode": "drop_missing",
+          "source": "server_drop_evidence",
+          "event_id": "1966a2d1-35ca-486c-80b2-acb5f6a9b0cd",
+          "action_id": "act_rt_mvfh3hg4_27be8a7d_mvfh5opq_4r",
+          "deliberately_dropped": true
+        }
+      ],
+      "failed_tool": "minecraft_dig"
+    },
+    {
+      "case_id": "acacia_log-pickup_missing",
+      "kind": "pickup_missing",
+      "status": "PASS",
+      "world_after": "Test passed",
+      "task_id": "task_43258868a25e",
+      "plan_hash": "72a60db9a99ed1030415",
+      "state": "PAUSED",
+      "failure": "ACTION_FAILED",
+      "relay_events": [
+        {
+          "case_id": "acacia_log-pickup_missing",
+          "mode": "pickup_missing",
+          "source": "server_block_break",
+          "event_id": "55d0103d-832c-4cba-8cc6-06ec3844a301",
+          "action_id": "act_rt_mvfh3hg4_27be8a7d_mvfh5uz7_4v",
+          "deliberately_dropped": false
+        },
+        {
+          "case_id": "acacia_log-pickup_missing",
+          "mode": "pickup_missing",
+          "source": "server_drop_evidence",
+          "event_id": "5a6ab883-74f2-418c-b920-b5d1983dc601",
+          "action_id": "act_rt_mvfh3hg4_27be8a7d_mvfh5uz7_4v",
+          "deliberately_dropped": false
+        },
+        {
+          "case_id": "acacia_log-pickup_missing",
+          "mode": "pickup_missing",
+          "source": "server_drop_pickup",
+          "event_id": "7e607128-a3e1-43a4-9b5a-8917c1eed3b4",
+          "action_id": "act_rt_mvfh3hg4_27be8a7d_mvfh5xnz_4x",
+          "deliberately_dropped": true
+        }
+      ],
+      "failed_tool": "minecraft_pickup_item"
+    },
+    {
+      "case_id": "dark_oak_log-default_risk",
+      "kind": "default_risk",
+      "status": "PASS",
+      "world_after": "Test passed",
+      "verdict": {
+        "action": "plan_rejected",
+        "outcome": "BLOCKED_BY_POLICY",
+        "reply": "现在排不了这件事：minecraft_dig:MEDIUM"
+      }
+    },
+    {
+      "case_id": "dark_oak_log-tool_changed",
+      "kind": "tool_changed",
+      "status": "PASS",
+      "world_after": "Test passed",
+      "task_id": "task_4c1afe5e376b",
+      "plan_hash": "ab9ab89d0a7685f24204",
+      "state": "PAUSED",
+      "failure": "ACTION_FAILED"
+    },
+    {
+      "case_id": "dark_oak_log-target_changed",
+      "kind": "target_changed",
+      "status": "PASS",
+      "world_after": "Test passed",
+      "task_id": "task_3dde2644f4f6",
+      "plan_hash": "a385b2ae1d398d7bdc2a",
+      "state": "REPLANNING",
+      "failure": "TARGET_LOST"
+    },
+    {
+      "case_id": "dark_oak_log-gravity",
+      "kind": "gravity",
+      "status": "PASS",
+      "world_after": "Test passed",
+      "verdict": {
+        "action": "plan_rejected",
+        "outcome": "BLOCKED_BY_PRECONDITION",
+        "reply": "现在排不了这件事：resource.safety_precondition_failed"
+      }
+    },
+    {
+      "case_id": "dark_oak_log-cancel_move",
+      "kind": "cancel_move",
+      "status": "PASS",
+      "world_after": "Test passed",
+      "task_id": "task_c1d8dbd6c596",
+      "plan_hash": "629325d126c836b637f6",
+      "state": "CANCELLED",
+      "failure": "",
+      "actual_move": {
+        "raw": "R2Bot has the following entity data: [12034.68952512129d, 100.0d, 16032.5d]",
+        "xyz": [
+          12034.68952512129,
+          100.0,
+          16032.5
+        ]
+      },
+      "late_position_1": {
+        "raw": "R2Bot has the following entity data: [12035.301297985512d, 100.0d, 16032.5d]",
+        "xyz": [
+          12035.301297985512,
+          100.0,
+          16032.5
+        ]
+      },
+      "late_position_2": {
+        "raw": "R2Bot has the following entity data: [12035.301297985512d, 100.0d, 16032.5d]",
+        "xyz": [
+          12035.301297985512,
+          100.0,
+          16032.5
+        ]
+      },
+      "unique_cancelled_event": true
+    },
+    {
+      "case_id": "dark_oak_log-drop_missing",
+      "kind": "drop_missing",
+      "status": "PASS",
+      "world_after": "Test passed",
+      "task_id": "task_95bdf293ad33",
+      "plan_hash": "9dfefebacf7ac1a28092",
+      "state": "PAUSED",
+      "failure": "ACTION_FAILED",
+      "relay_events": [
+        {
+          "case_id": "dark_oak_log-drop_missing",
+          "mode": "drop_missing",
+          "source": "server_block_break",
+          "event_id": "2f100224-2469-481c-b84a-326f77cc931e",
+          "action_id": "act_rt_mvfh3hg4_27be8a7d_mvfh6ar1_5p",
+          "deliberately_dropped": false
+        },
+        {
+          "case_id": "dark_oak_log-drop_missing",
+          "mode": "drop_missing",
+          "source": "server_drop_evidence",
+          "event_id": "2ff972d4-2e56-42fc-b7f0-e5f9509d0934",
+          "action_id": "act_rt_mvfh3hg4_27be8a7d_mvfh6ar1_5p",
+          "deliberately_dropped": true
+        }
+      ],
+      "failed_tool": "minecraft_dig"
+    },
+    {
+      "case_id": "dark_oak_log-pickup_missing",
+      "kind": "pickup_missing",
+      "status": "PASS",
+      "world_after": "Test passed",
+      "task_id": "task_e0b1695a869d",
+      "plan_hash": "930b7e59293517ae8015",
+      "state": "PAUSED",
+      "failure": "ACTION_FAILED",
+      "relay_events": [
+        {
+          "case_id": "dark_oak_log-pickup_missing",
+          "mode": "pickup_missing",
+          "source": "server_block_break",
+          "event_id": "48f6a05a-11ac-4bdc-9b41-77629409e8ce",
+          "action_id": "act_rt_mvfh3hg4_27be8a7d_mvfh6hc0_5t",
+          "deliberately_dropped": false
+        },
+        {
+          "case_id": "dark_oak_log-pickup_missing",
+          "mode": "pickup_missing",
+          "source": "server_drop_evidence",
+          "event_id": "b28a7215-ee48-4caa-8cb9-6a06223e4d2d",
+          "action_id": "act_rt_mvfh3hg4_27be8a7d_mvfh6hc0_5t",
+          "deliberately_dropped": false
+        },
+        {
+          "case_id": "dark_oak_log-pickup_missing",
+          "mode": "pickup_missing",
+          "source": "server_drop_pickup",
+          "event_id": "2e399286-f195-4c7e-b39a-60f104659627",
+          "action_id": "act_rt_mvfh3hg4_27be8a7d_mvfh6k13_5v",
+          "deliberately_dropped": true
+        }
+      ],
+      "failed_tool": "minecraft_pickup_item"
+    },
+    {
+      "case_id": "stone-default_risk",
+      "kind": "default_risk",
+      "status": "PASS",
+      "world_after": "Test passed",
+      "verdict": {
+        "action": "plan_rejected",
+        "outcome": "BLOCKED_BY_POLICY",
+        "reply": "现在排不了这件事：minecraft_dig:MEDIUM"
+      }
+    },
+    {
+      "case_id": "stone-tool_changed",
+      "kind": "tool_changed",
+      "status": "PASS",
+      "world_after": "Test passed",
+      "task_id": "task_9369279aa781",
+      "plan_hash": "f2b0b11140ba83dca221",
+      "state": "PAUSED",
+      "failure": "ACTION_FAILED"
+    },
+    {
+      "case_id": "stone-target_changed",
+      "kind": "target_changed",
+      "status": "PASS",
+      "world_after": "Test passed",
+      "task_id": "task_a3451a6925d7",
+      "plan_hash": "aad513f61bd9439d99a0",
+      "state": "REPLANNING",
+      "failure": "TARGET_LOST"
+    },
+    {
+      "case_id": "stone-gravity",
+      "kind": "gravity",
+      "status": "PASS",
+      "world_after": "Test passed",
+      "verdict": {
+        "action": "plan_rejected",
+        "outcome": "BLOCKED_BY_PRECONDITION",
+        "reply": "现在排不了这件事：resource.safety_precondition_failed"
+      }
+    },
+    {
+      "case_id": "stone-cancel_move",
+      "kind": "cancel_move",
+      "status": "PASS",
+      "world_after": "Test passed",
+      "task_id": "task_ea2f51c6c21c",
+      "plan_hash": "abd98dc6836e589228ec",
+      "state": "CANCELLED",
+      "failure": "",
+      "actual_move": {
+        "raw": "R2Bot has the following entity data: [12034.68952512129d, 100.0d, 16032.499999999984d]",
+        "xyz": [
+          12034.68952512129,
+          100.0,
+          16032.499999999984
+        ]
+      },
+      "late_position_1": {
+        "raw": "R2Bot has the following entity data: [12035.301297985512d, 100.0d, 16032.499999999982d]",
+        "xyz": [
+          12035.301297985512,
+          100.0,
+          16032.499999999982
+        ]
+      },
+      "late_position_2": {
+        "raw": "R2Bot has the following entity data: [12035.301297985512d, 100.0d, 16032.499999999982d]",
+        "xyz": [
+          12035.301297985512,
+          100.0,
+          16032.499999999982
+        ]
+      },
+      "unique_cancelled_event": true
+    },
+    {
+      "case_id": "stone-drop_missing",
+      "kind": "drop_missing",
+      "status": "PASS",
+      "world_after": "Test passed",
+      "task_id": "task_b4317c967be1",
+      "plan_hash": "0eb45a01d63f175bf7f0",
+      "state": "PAUSED",
+      "failure": "ACTION_FAILED",
+      "relay_events": [
+        {
+          "case_id": "stone-drop_missing",
+          "mode": "drop_missing",
+          "source": "server_block_break",
+          "event_id": "1402a3a6-2623-4f1e-8e4e-13f3325a6eb9",
+          "action_id": "act_rt_mvfh3hg4_27be8a7d_mvfh6zmy_6n",
+          "deliberately_dropped": false
+        },
+        {
+          "case_id": "stone-drop_missing",
+          "mode": "drop_missing",
+          "source": "server_drop_evidence",
+          "event_id": "c688f2b7-2572-4364-9355-4a0f96c905ba",
+          "action_id": "act_rt_mvfh3hg4_27be8a7d_mvfh6zmy_6n",
+          "deliberately_dropped": true
+        }
+      ],
+      "failed_tool": "minecraft_dig"
+    },
+    {
+      "case_id": "stone-pickup_missing",
+      "kind": "pickup_missing",
+      "status": "PASS",
+      "world_after": "Test passed",
+      "task_id": "task_373594b1db2d",
+      "plan_hash": "d888099b47cae8bbb5bf",
+      "state": "PAUSED",
+      "failure": "ACTION_FAILED",
+      "relay_events": [
+        {
+          "case_id": "stone-pickup_missing",
+          "mode": "pickup_missing",
+          "source": "server_block_break",
+          "event_id": "c325547e-7187-4f6d-93ab-99e8c4c69d1f",
+          "action_id": "act_rt_mvfh3hg4_27be8a7d_mvfh757j_6r",
+          "deliberately_dropped": false
+        },
+        {
+          "case_id": "stone-pickup_missing",
+          "mode": "pickup_missing",
+          "source": "server_drop_evidence",
+          "event_id": "94615239-646a-46c9-a2d2-d6b8a2dc72ee",
+          "action_id": "act_rt_mvfh3hg4_27be8a7d_mvfh757j_6r",
+          "deliberately_dropped": false
+        },
+        {
+          "case_id": "stone-pickup_missing",
+          "mode": "pickup_missing",
+          "source": "server_drop_pickup",
+          "event_id": "4cde1178-350c-42dd-94ac-9a104164ffce",
+          "action_id": "act_rt_mvfh3hg4_27be8a7d_mvfh76ke_6t",
+          "deliberately_dropped": true
+        }
+      ],
+      "failed_tool": "minecraft_pickup_item"
+    },
+    {
+      "case_id": "cobblestone-default_risk",
+      "kind": "default_risk",
+      "status": "PASS",
+      "world_after": "Test passed",
+      "verdict": {
+        "action": "plan_rejected",
+        "outcome": "BLOCKED_BY_POLICY",
+        "reply": "现在排不了这件事：minecraft_dig:MEDIUM"
+      }
+    },
+    {
+      "case_id": "cobblestone-tool_changed",
+      "kind": "tool_changed",
+      "status": "PASS",
+      "world_after": "Test passed",
+      "task_id": "task_fb6209968fc0",
+      "plan_hash": "21073f6c03a40f871d29",
+      "state": "PAUSED",
+      "failure": "ACTION_FAILED"
+    },
+    {
+      "case_id": "cobblestone-target_changed",
+      "kind": "target_changed",
+      "status": "PASS",
+      "world_after": "Test passed",
+      "task_id": "task_c4e01cad451a",
+      "plan_hash": "948677590ce62cbeab80",
+      "state": "REPLANNING",
+      "failure": "TARGET_LOST"
+    },
+    {
+      "case_id": "cobblestone-gravity",
+      "kind": "gravity",
+      "status": "PASS",
+      "world_after": "Test passed",
+      "verdict": {
+        "action": "plan_rejected",
+        "outcome": "BLOCKED_BY_PRECONDITION",
+        "reply": "现在排不了这件事：resource.safety_precondition_failed"
+      }
+    },
+    {
+      "case_id": "cobblestone-cancel_move",
+      "kind": "cancel_move",
+      "status": "PASS",
+      "world_after": "Test passed",
+      "task_id": "task_21d5980fed02",
+      "plan_hash": "2caae12788f49aa82335",
+      "state": "CANCELLED",
+      "failure": "",
+      "actual_move": {
+        "raw": "R2Bot has the following entity data: [12034.68952512129d, 100.0d, 16032.499999999984d]",
+        "xyz": [
+          12034.68952512129,
+          100.0,
+          16032.499999999984
+        ]
+      },
+      "late_position_1": {
+        "raw": "R2Bot has the following entity data: [12035.301297985512d, 100.0d, 16032.499999999982d]",
+        "xyz": [
+          12035.301297985512,
+          100.0,
+          16032.499999999982
+        ]
+      },
+      "late_position_2": {
+        "raw": "R2Bot has the following entity data: [12035.301297985512d, 100.0d, 16032.499999999982d]",
+        "xyz": [
+          12035.301297985512,
+          100.0,
+          16032.499999999982
+        ]
+      },
+      "unique_cancelled_event": true
+    },
+    {
+      "case_id": "cobblestone-drop_missing",
+      "kind": "drop_missing",
+      "status": "PASS",
+      "world_after": "Test passed",
+      "task_id": "task_4d8e166e7f99",
+      "plan_hash": "1abb2c45bddbaaaf2397",
+      "state": "PAUSED",
+      "failure": "ACTION_FAILED",
+      "relay_events": [
+        {
+          "case_id": "cobblestone-drop_missing",
+          "mode": "drop_missing",
+          "source": "server_block_break",
+          "event_id": "923d3a09-3426-4249-a391-16b62d9e0756",
+          "action_id": "act_rt_mvfh3hg4_27be8a7d_mvfh7nq2_7l",
+          "deliberately_dropped": false
+        },
+        {
+          "case_id": "cobblestone-drop_missing",
+          "mode": "drop_missing",
+          "source": "server_drop_evidence",
+          "event_id": "e8882e23-7e68-4547-92b8-27f303683bc5",
+          "action_id": "act_rt_mvfh3hg4_27be8a7d_mvfh7nq2_7l",
+          "deliberately_dropped": true
+        }
+      ],
+      "failed_tool": "minecraft_dig"
+    },
+    {
+      "case_id": "cobblestone-pickup_missing",
+      "kind": "pickup_missing",
+      "status": "PASS",
+      "world_after": "Test passed",
+      "task_id": "task_da503fdb67df",
+      "plan_hash": "77594403a5ee689ce908",
+      "state": "PAUSED",
+      "failure": "ACTION_FAILED",
+      "relay_events": [
+        {
+          "case_id": "cobblestone-pickup_missing",
+          "mode": "pickup_missing",
+          "source": "server_block_break",
+          "event_id": "04f5aedd-d3c9-46ad-8d4f-35566fe113cc",
+          "action_id": "act_rt_mvfh3hg4_27be8a7d_mvfh7u4d_7p",
+          "deliberately_dropped": false
+        },
+        {
+          "case_id": "cobblestone-pickup_missing",
+          "mode": "pickup_missing",
+          "source": "server_drop_evidence",
+          "event_id": "beb4b7cb-4640-47a3-8c25-392587f2664a",
+          "action_id": "act_rt_mvfh3hg4_27be8a7d_mvfh7u4d_7p",
+          "deliberately_dropped": false
+        },
+        {
+          "case_id": "cobblestone-pickup_missing",
+          "mode": "pickup_missing",
+          "source": "server_drop_pickup",
+          "event_id": "9f3ff104-11ff-402f-8bc7-f4fd27264047",
+          "action_id": "act_rt_mvfh3hg4_27be8a7d_mvfh7w36_7r",
+          "deliberately_dropped": true
+        }
+      ],
+      "failed_tool": "minecraft_pickup_item"
+    },
+    {
+      "case_id": "coal_ore-default_risk",
+      "kind": "default_risk",
+      "status": "PASS",
+      "world_after": "Test passed",
+      "verdict": {
+        "action": "plan_rejected",
+        "outcome": "BLOCKED_BY_POLICY",
+        "reply": "现在排不了这件事：minecraft_dig:MEDIUM"
+      }
+    },
+    {
+      "case_id": "coal_ore-tool_changed",
+      "kind": "tool_changed",
+      "status": "PASS",
+      "world_after": "Test passed",
+      "task_id": "task_723cdafc6115",
+      "plan_hash": "f530712b5c2747e89301",
+      "state": "PAUSED",
+      "failure": "ACTION_FAILED"
+    },
+    {
+      "case_id": "coal_ore-target_changed",
+      "kind": "target_changed",
+      "status": "PASS",
+      "world_after": "Test passed",
+      "task_id": "task_d7cdac9cbb5c",
+      "plan_hash": "63d2282459697e2266e7",
+      "state": "REPLANNING",
+      "failure": "TARGET_LOST"
+    },
+    {
+      "case_id": "coal_ore-gravity",
+      "kind": "gravity",
+      "status": "PASS",
+      "world_after": "Test passed",
+      "verdict": {
+        "action": "plan_rejected",
+        "outcome": "BLOCKED_BY_PRECONDITION",
+        "reply": "现在排不了这件事：resource.safety_precondition_failed"
+      }
+    },
+    {
+      "case_id": "coal_ore-cancel_move",
+      "kind": "cancel_move",
+      "status": "PASS",
+      "world_after": "Test passed",
+      "task_id": "task_3e0adcd91c92",
+      "plan_hash": "c056e3145e1462b0f94d",
+      "state": "CANCELLED",
+      "failure": "",
+      "actual_move": {
+        "raw": "R2Bot has the following entity data: [12034.68952512129d, 100.0d, 16032.499999999984d]",
+        "xyz": [
+          12034.68952512129,
+          100.0,
+          16032.499999999984
+        ]
+      },
+      "late_position_1": {
+        "raw": "R2Bot has the following entity data: [12035.301297985512d, 100.0d, 16032.499999999982d]",
+        "xyz": [
+          12035.301297985512,
+          100.0,
+          16032.499999999982
+        ]
+      },
+      "late_position_2": {
+        "raw": "R2Bot has the following entity data: [12035.301297985512d, 100.0d, 16032.499999999982d]",
+        "xyz": [
+          12035.301297985512,
+          100.0,
+          16032.499999999982
+        ]
+      },
+      "unique_cancelled_event": true
+    },
+    {
+      "case_id": "coal_ore-drop_missing",
+      "kind": "drop_missing",
+      "status": "PASS",
+      "world_after": "Test passed",
+      "task_id": "task_554d29de0a63",
+      "plan_hash": "fce4fef30bac55ba7b60",
+      "state": "PAUSED",
+      "failure": "ACTION_FAILED",
+      "relay_events": [
+        {
+          "case_id": "coal_ore-drop_missing",
+          "mode": "drop_missing",
+          "source": "server_block_break",
+          "event_id": "e1129ddc-7110-4cd4-8493-ea433fe75668",
+          "action_id": "act_rt_mvfh3hg4_27be8a7d_mvfh8gap_8j",
+          "deliberately_dropped": false
+        },
+        {
+          "case_id": "coal_ore-drop_missing",
+          "mode": "drop_missing",
+          "source": "server_drop_evidence",
+          "event_id": "9811fea1-060f-47c9-90b9-4018243bdd2b",
+          "action_id": "act_rt_mvfh3hg4_27be8a7d_mvfh8gap_8j",
+          "deliberately_dropped": true
+        }
+      ],
+      "failed_tool": "minecraft_dig"
+    },
+    {
+      "case_id": "coal_ore-pickup_missing",
+      "kind": "pickup_missing",
+      "status": "PASS",
+      "world_after": "Test passed",
+      "task_id": "task_f21359d57b39",
+      "plan_hash": "5ca7f00d1672a1d31315",
+      "state": "PAUSED",
+      "failure": "ACTION_FAILED",
+      "relay_events": [
+        {
+          "case_id": "coal_ore-pickup_missing",
+          "mode": "pickup_missing",
+          "source": "server_block_break",
+          "event_id": "c311de0f-f124-46f2-8c92-4f826fbc8877",
+          "action_id": "act_rt_mvfh3hg4_27be8a7d_mvfh8nnb_8n",
+          "deliberately_dropped": false
+        },
+        {
+          "case_id": "coal_ore-pickup_missing",
+          "mode": "pickup_missing",
+          "source": "server_drop_evidence",
+          "event_id": "12d84afd-944a-4451-baf8-b04a2da3a2a4",
+          "action_id": "act_rt_mvfh3hg4_27be8a7d_mvfh8nnb_8n",
+          "deliberately_dropped": false
+        },
+        {
+          "case_id": "coal_ore-pickup_missing",
+          "mode": "pickup_missing",
+          "source": "server_drop_pickup",
+          "event_id": "803d702f-912e-44e9-8f7d-a5b90cc54934",
+          "action_id": "act_rt_mvfh3hg4_27be8a7d_mvfh8qce_8p",
+          "deliberately_dropped": true
+        }
+      ],
+      "failed_tool": "minecraft_pickup_item"
+    },
+    {
+      "case_id": "iron_ore-default_risk",
+      "kind": "default_risk",
+      "status": "PASS",
+      "world_after": "Test passed",
+      "verdict": {
+        "action": "plan_rejected",
+        "outcome": "BLOCKED_BY_POLICY",
+        "reply": "现在排不了这件事：minecraft_dig:MEDIUM"
+      }
+    },
+    {
+      "case_id": "iron_ore-tool_changed",
+      "kind": "tool_changed",
+      "status": "PASS",
+      "world_after": "Test passed",
+      "task_id": "task_47b4039feb53",
+      "plan_hash": "d1a359c82505583017ea",
+      "state": "PAUSED",
+      "failure": "ACTION_FAILED"
+    },
+    {
+      "case_id": "iron_ore-target_changed",
+      "kind": "target_changed",
+      "status": "PASS",
+      "world_after": "Test passed",
+      "task_id": "task_a1bc0703f82a",
+      "plan_hash": "2bec13600a68849448e0",
+      "state": "REPLANNING",
+      "failure": "TARGET_LOST"
+    },
+    {
+      "case_id": "iron_ore-gravity",
+      "kind": "gravity",
+      "status": "PASS",
+      "world_after": "Test passed",
+      "verdict": {
+        "action": "plan_rejected",
+        "outcome": "BLOCKED_BY_PRECONDITION",
+        "reply": "现在排不了这件事：resource.safety_precondition_failed"
+      }
+    },
+    {
+      "case_id": "iron_ore-cancel_move",
+      "kind": "cancel_move",
+      "status": "PASS",
+      "world_after": "Test passed",
+      "task_id": "task_ece69267ebfb",
+      "plan_hash": "9f048777317f7e0e21f0",
+      "state": "CANCELLED",
+      "failure": "",
+      "actual_move": {
+        "raw": "R2Bot has the following entity data: [12034.68952512129d, 100.0d, 16032.499999999984d]",
+        "xyz": [
+          12034.68952512129,
+          100.0,
+          16032.499999999984
+        ]
+      },
+      "late_position_1": {
+        "raw": "R2Bot has the following entity data: [12035.581909617007d, 100.0d, 16032.49999999998d]",
+        "xyz": [
+          12035.581909617007,
+          100.0,
+          16032.49999999998
+        ]
+      },
+      "late_position_2": {
+        "raw": "R2Bot has the following entity data: [12035.581909617007d, 100.0d, 16032.49999999998d]",
+        "xyz": [
+          12035.581909617007,
+          100.0,
+          16032.49999999998
+        ]
+      },
+      "unique_cancelled_event": true
+    },
+    {
+      "case_id": "iron_ore-drop_missing",
+      "kind": "drop_missing",
+      "status": "PASS",
+      "world_after": "Test passed",
+      "task_id": "task_da025f9540a5",
+      "plan_hash": "44d1f69ce34e982113ad",
+      "state": "PAUSED",
+      "failure": "ACTION_FAILED",
+      "relay_events": [
+        {
+          "case_id": "iron_ore-drop_missing",
+          "mode": "drop_missing",
+          "source": "server_block_break",
+          "event_id": "9cf2d2a5-5f88-48fd-95f3-ac289a8dda98",
+          "action_id": "act_rt_mvfh3hg4_27be8a7d_mvfh9bz7_9h",
+          "deliberately_dropped": false
+        },
+        {
+          "case_id": "iron_ore-drop_missing",
+          "mode": "drop_missing",
+          "source": "server_drop_evidence",
+          "event_id": "bef530e8-23f6-420a-9084-b58b9c31fdfc",
+          "action_id": "act_rt_mvfh3hg4_27be8a7d_mvfh9bz7_9h",
+          "deliberately_dropped": true
+        }
+      ],
+      "failed_tool": "minecraft_dig"
+    },
+    {
+      "case_id": "iron_ore-pickup_missing",
+      "kind": "pickup_missing",
+      "status": "PASS",
+      "world_after": "Test passed",
+      "task_id": "task_d57cbc7833ff",
+      "plan_hash": "960083bbf1327d6ab3f7",
+      "state": "PAUSED",
+      "failure": "ACTION_FAILED",
+      "relay_events": [
+        {
+          "case_id": "iron_ore-pickup_missing",
+          "mode": "pickup_missing",
+          "source": "server_block_break",
+          "event_id": "0c28d818-4070-46e5-9548-e8c3cd800136",
+          "action_id": "act_rt_mvfh3hg4_27be8a7d_mvfh9l6s_9l",
+          "deliberately_dropped": false
+        },
+        {
+          "case_id": "iron_ore-pickup_missing",
+          "mode": "pickup_missing",
+          "source": "server_drop_evidence",
+          "event_id": "2e0abaa8-3ec5-43ca-a2f8-6f04c38ca584",
+          "action_id": "act_rt_mvfh3hg4_27be8a7d_mvfh9l6s_9l",
+          "deliberately_dropped": false
+        },
+        {
+          "case_id": "iron_ore-pickup_missing",
+          "mode": "pickup_missing",
+          "source": "server_drop_pickup",
+          "event_id": "9b48b120-f5cf-4704-9fe8-533dd2ae215c",
+          "action_id": "act_rt_mvfh3hg4_27be8a7d_mvfh9phy_9n",
+          "deliberately_dropped": true
+        }
+      ],
+      "failed_tool": "minecraft_pickup_item"
+    },
+    {
+      "case_id": "dirt-default_risk",
+      "kind": "default_risk",
+      "status": "PASS",
+      "world_after": "Test passed",
+      "verdict": {
+        "action": "plan_rejected",
+        "outcome": "BLOCKED_BY_POLICY",
+        "reply": "现在排不了这件事：minecraft_dig:MEDIUM"
+      }
+    },
+    {
+      "case_id": "dirt-tool_changed",
+      "kind": "tool_changed",
+      "status": "PASS",
+      "world_after": "Test passed",
+      "task_id": "task_f47b0e9e709a",
+      "plan_hash": "a78cdfc082cc477e9d05",
+      "state": "PAUSED",
+      "failure": "ACTION_FAILED"
+    },
+    {
+      "case_id": "dirt-target_changed",
+      "kind": "target_changed",
+      "status": "PASS",
+      "world_after": "Test passed",
+      "task_id": "task_7d19cc20b88e",
+      "plan_hash": "26e0ca3d4aeabc3caa30",
+      "state": "REPLANNING",
+      "failure": "TARGET_LOST"
+    },
+    {
+      "case_id": "dirt-gravity",
+      "kind": "gravity",
+      "status": "PASS",
+      "world_after": "Test passed",
+      "verdict": {
+        "action": "plan_rejected",
+        "outcome": "BLOCKED_BY_PRECONDITION",
+        "reply": "现在排不了这件事：resource.safety_precondition_failed"
+      }
+    },
+    {
+      "case_id": "dirt-cancel_move",
+      "kind": "cancel_move",
+      "status": "PASS",
+      "world_after": "Test passed",
+      "task_id": "task_0f2d8c2e6c73",
+      "plan_hash": "a81ea17fff5799440c60",
+      "state": "CANCELLED",
+      "failure": "",
+      "actual_move": {
+        "raw": "R2Bot has the following entity data: [12034.969481217147d, 100.0d, 16032.499999999982d]",
+        "xyz": [
+          12034.969481217147,
+          100.0,
+          16032.499999999982
+        ]
+      },
+      "late_position_1": {
+        "raw": "R2Bot has the following entity data: [12035.301297985512d, 100.0d, 16032.499999999982d]",
+        "xyz": [
+          12035.301297985512,
+          100.0,
+          16032.499999999982
+        ]
+      },
+      "late_position_2": {
+        "raw": "R2Bot has the following entity data: [12035.301297985512d, 100.0d, 16032.499999999982d]",
+        "xyz": [
+          12035.301297985512,
+          100.0,
+          16032.499999999982
+        ]
+      },
+      "unique_cancelled_event": true
+    },
+    {
+      "case_id": "dirt-drop_missing",
+      "kind": "drop_missing",
+      "status": "PASS",
+      "world_after": "Test passed",
+      "task_id": "task_ff89e4a98908",
+      "plan_hash": "bfd25790bde27ffbad48",
+      "state": "PAUSED",
+      "failure": "ACTION_FAILED",
+      "relay_events": [
+        {
+          "case_id": "dirt-drop_missing",
+          "mode": "drop_missing",
+          "source": "server_block_break",
+          "event_id": "05075a87-0287-46b4-bbbc-7a7c577579b8",
+          "action_id": "act_rt_mvfh3hg4_27be8a7d_mvfhaa7s_ae",
+          "deliberately_dropped": false
+        },
+        {
+          "case_id": "dirt-drop_missing",
+          "mode": "drop_missing",
+          "source": "server_drop_evidence",
+          "event_id": "5544b934-12e8-413c-af44-c504ff1933d6",
+          "action_id": "act_rt_mvfh3hg4_27be8a7d_mvfhaa7s_ae",
+          "deliberately_dropped": true
+        }
+      ],
+      "failed_tool": "minecraft_dig"
+    },
+    {
+      "case_id": "dirt-pickup_missing",
+      "kind": "pickup_missing",
+      "status": "PASS",
+      "world_after": "Test passed",
+      "task_id": "task_6bbef8f1f62a",
+      "plan_hash": "3ed63c70f761954c06ef",
+      "state": "PAUSED",
+      "failure": "ACTION_FAILED",
+      "relay_events": [
+        {
+          "case_id": "dirt-pickup_missing",
+          "mode": "pickup_missing",
+          "source": "server_block_break",
+          "event_id": "b5634b70-e937-44e1-8155-8be9564e6b32",
+          "action_id": "act_rt_mvfh3hg4_27be8a7d_mvfhah5r_ai",
+          "deliberately_dropped": false
+        },
+        {
+          "case_id": "dirt-pickup_missing",
+          "mode": "pickup_missing",
+          "source": "server_drop_evidence",
+          "event_id": "8f701fa8-e66a-4338-80f7-d22ea0f34195",
+          "action_id": "act_rt_mvfh3hg4_27be8a7d_mvfhah5r_ai",
+          "deliberately_dropped": false
+        },
+        {
+          "case_id": "dirt-pickup_missing",
+          "mode": "pickup_missing",
+          "source": "server_drop_pickup",
+          "event_id": "87417209-bd4b-498b-a1df-412c8c0d1082",
+          "action_id": "act_rt_mvfh3hg4_27be8a7d_mvfhairv_ak",
+          "deliberately_dropped": true
+        }
+      ],
+      "failed_tool": "minecraft_pickup_item"
+    },
+    {
+      "case_id": "sand-default_risk",
+      "kind": "default_risk",
+      "status": "PASS",
+      "world_after": "Test passed",
+      "verdict": {
+        "action": "plan_rejected",
+        "outcome": "BLOCKED_BY_POLICY",
+        "reply": "现在排不了这件事：minecraft_dig:MEDIUM"
+      }
+    },
+    {
+      "case_id": "sand-tool_changed",
+      "kind": "tool_changed",
+      "status": "PASS",
+      "world_after": "Test passed",
+      "task_id": "task_5172a99a5c81",
+      "plan_hash": "376a58aefc29ea5f9440",
+      "state": "PAUSED",
+      "failure": "ACTION_FAILED"
+    },
+    {
+      "case_id": "sand-target_changed",
+      "kind": "target_changed",
+      "status": "PASS",
+      "world_after": "Test passed",
+      "task_id": "task_4705315333ba",
+      "plan_hash": "dc02d423bb6abcd304ab",
+      "state": "REPLANNING",
+      "failure": "TARGET_LOST"
+    },
+    {
+      "case_id": "sand-gravity",
+      "kind": "gravity",
+      "status": "PASS",
+      "world_after": "Test passed",
+      "verdict": {
+        "action": "plan_rejected",
+        "outcome": "BLOCKED_BY_PRECONDITION",
+        "reply": "现在排不了这件事：resource.safety_precondition_failed"
+      }
+    },
+    {
+      "case_id": "sand-cancel_move",
+      "kind": "cancel_move",
+      "status": "PASS",
+      "world_after": "Test passed",
+      "task_id": "task_a10ac99c9acb",
+      "plan_hash": "f1301c690fdc347852a0",
+      "state": "CANCELLED",
+      "failure": "",
+      "actual_move": {
+        "raw": "R2Bot has the following entity data: [12034.969481217147d, 100.0d, 16032.499999999982d]",
+        "xyz": [
+          12034.969481217147,
+          100.0,
+          16032.499999999982
+        ]
+      },
+      "late_position_1": {
+        "raw": "R2Bot has the following entity data: [12035.581909617007d, 100.0d, 16032.49999999998d]",
+        "xyz": [
+          12035.581909617007,
+          100.0,
+          16032.49999999998
+        ]
+      },
+      "late_position_2": {
+        "raw": "R2Bot has the following entity data: [12035.581909617007d, 100.0d, 16032.49999999998d]",
+        "xyz": [
+          12035.581909617007,
+          100.0,
+          16032.49999999998
+        ]
+      },
+      "unique_cancelled_event": true
+    },
+    {
+      "case_id": "sand-drop_missing",
+      "kind": "drop_missing",
+      "status": "PASS",
+      "world_after": "Test passed",
+      "task_id": "task_a723a06d3a9b",
+      "plan_hash": "4d44e4cbb0fd9a36e2fc",
+      "state": "PAUSED",
+      "failure": "ACTION_FAILED",
+      "relay_events": [
+        {
+          "case_id": "sand-drop_missing",
+          "mode": "drop_missing",
+          "source": "server_block_break",
+          "event_id": "dc6c5703-8758-4562-9bdf-fa37a2942cb4",
+          "action_id": "act_rt_mvfh3hg4_27be8a7d_mvfhb58r_bc",
+          "deliberately_dropped": false
+        },
+        {
+          "case_id": "sand-drop_missing",
+          "mode": "drop_missing",
+          "source": "server_drop_evidence",
+          "event_id": "8db64701-dfcd-4200-a689-c2b3f49a7df3",
+          "action_id": "act_rt_mvfh3hg4_27be8a7d_mvfhb58r_bc",
+          "deliberately_dropped": true
+        }
+      ],
+      "failed_tool": "minecraft_dig"
+    },
+    {
+      "case_id": "sand-pickup_missing",
+      "kind": "pickup_missing",
+      "status": "PASS",
+      "world_after": "Test passed",
+      "task_id": "task_850776dbac21",
+      "plan_hash": "e621ff08a0b64db8be82",
+      "state": "PAUSED",
+      "failure": "ACTION_FAILED",
+      "relay_events": [
+        {
+          "case_id": "sand-pickup_missing",
+          "mode": "pickup_missing",
+          "source": "server_block_break",
+          "event_id": "7fa4f7ae-5e29-4b55-a8d7-2b66f427ff32",
+          "action_id": "act_rt_mvfh3hg4_27be8a7d_mvfhbc2y_bg",
+          "deliberately_dropped": false
+        },
+        {
+          "case_id": "sand-pickup_missing",
+          "mode": "pickup_missing",
+          "source": "server_drop_evidence",
+          "event_id": "5d3a58b3-6979-4707-9685-241e43e2ad3e",
+          "action_id": "act_rt_mvfh3hg4_27be8a7d_mvfhbc2y_bg",
+          "deliberately_dropped": false
+        },
+        {
+          "case_id": "sand-pickup_missing",
+          "mode": "pickup_missing",
+          "source": "server_drop_pickup",
+          "event_id": "d94eee8a-cf4b-492d-ba6b-db8584514d3a",
+          "action_id": "act_rt_mvfh3hg4_27be8a7d_mvfhbdqa_bi",
+          "deliberately_dropped": true
+        }
+      ],
+      "failed_tool": "minecraft_pickup_item"
+    }
+  ],
+  "provider_cases": [
+    {
+      "case": "log_request",
+      "kind": "task_proposal",
+      "passed": true,
+      "reason": "decision_ok"
+    },
+    {
+      "case": "stone_request",
+      "kind": "task_proposal",
+      "passed": true,
+      "reason": "decision_ok"
+    },
+    {
+      "case": "ore_request",
+      "kind": "task_proposal",
+      "passed": true,
+      "reason": "decision_ok"
+    },
+    {
+      "case": "soil_request",
+      "kind": "task_proposal",
+      "passed": true,
+      "reason": "decision_ok"
+    },
+    {
+      "case": "sand_request",
+      "kind": "task_proposal",
+      "passed": true,
+      "reason": "decision_ok"
+    },
+    {
+      "case": "inquiry",
+      "kind": "chat",
+      "passed": true,
+      "reason": "decision_ok"
+    },
+    {
+      "case": "negation",
+      "kind": "stop",
+      "passed": true,
+      "reason": "decision_ok"
+    },
+    {
+      "case": "ambiguous",
+      "kind": "task_proposal",
+      "passed": false,
+      "reason": "decision_ok"
+    },
+    {
+      "case": "cancel",
+      "kind": "stop",
+      "passed": true,
+      "reason": "decision_ok"
+    }
+  ],
+  "lifecycle": [
+    {
+      "enabled": false,
+      "pid": 60456,
+      "jar_sha256": "75feef3ea6173d8373b743cd9ecaeb9f4b1012b2306a31079462c7bf9c08fe11",
+      "startup_passed": true,
+      "exit_code": 0,
+      "status": "PASS",
+      "all_dimensions_saved": true,
+      "ports_released": true
+    },
+    {
+      "enabled": true,
+      "pid": 49764,
+      "jar_sha256": "75feef3ea6173d8373b743cd9ecaeb9f4b1012b2306a31079462c7bf9c08fe11",
+      "startup_passed": true,
+      "exit_code": 0,
+      "status": "PASS",
+      "all_dimensions_saved": true,
+      "ports_released": true
+    }
+  ],
+  "restoration": {
+    "restored_files": 105,
+    "all_hashes_match_before_restart": true,
+    "removed_extra_world_files": [
+      "world/data/chunks.dat",
+      "world/entities/r.23.30.mca",
+      "world/entities/r.23.31.mca",
+      "world/poi/r.22.30.mca",
+      "world/poi/r.22.31.mca",
+      "world/poi/r.23.30.mca",
+      "world/poi/r.23.31.mca",
+      "world/poi/r.24.30.mca",
+      "world/poi/r.24.31.mca",
+      "world/region/r.22.30.mca",
+      "world/region/r.22.31.mca",
+      "world/region/r.22.32.mca",
+      "world/region/r.23.30.mca",
+      "world/region/r.23.31.mca",
+      "world/region/r.23.32.mca",
+      "world/region/r.24.30.mca",
+      "world/region/r.24.31.mca",
+      "world/region/r.24.32.mca"
+    ],
+    "restored_snapshot": "server-before-resume-v3.zip",
+    "initial_server_running": true,
+    "restored_server_running": true,
+    "restored_server_pid": 51204
+  },
+  "raw_evidence_base": "data/r3/resume-20261019-234845",
+  "raw_evidence_sha256": {
+    "source-before.zip": "caeb14c53f4a28284bc0c69dd7448f0e1e3e66427d18fa27a842d55832337cc6",
+    "server-before-resume-v3.zip": "0983f576557a19f016f0201508ab6c4fa5d91a3e598ecc4587b1dd87486ab83b",
+    "verified-source-manifest-v2.json": "feb4db39786400c02f6ee150b1c763c35c472795b294681ca73d9ad14598b5df",
+    "python-all-first.log": "7401467fb55343d866b1f8eec9afd47aea7557ddbb8a5dc89c660f3221bca5b3",
+    "python-all-second.log": "ee30968fb990dd00a1cdfc36cb88df67fb8f3ac055988038cd0be1b414f1ef04",
+    "node-all-third.log": "7fb1966a67fe4bb5ec6b90e8783e46c0d8d6853eb51d0b0ad85f1edae2ad6216",
+    "java-fabric-second.log": "a3017ba39fa31f5049996da69652c09a980a1d3d2af486c20eec688bbade3eed",
+    "pickup-geometry-before.log": "92193aac176e18dcafb306496a33384b4772010d05f87435461a669180d17837",
+    "pickup-geometry-after.log": "204654bace06e37975164d105f9be491c3cd24c45ba3a142f48da69194799493",
+    "collection-wake-before.log": "9d4866d0deab5a6b576270b16a68d498294e5aee960045de1e527159aa643531",
+    "collection-wake-after.log": "feb6e96966e535b8c2ad41e5a6184104881f9793f6c8fd0a7da6887c70dcbf82",
+    "product-01/matrix.log": "6c8d80a438da12e1838e88306623fa17827a7cdf3e524b4ac53cabcf4e283947",
+    "product-02/matrix.log": "3b92d780d68a963e15077b4f9b6361221caaa7cb87248d38ffd8993bbdd5fe94",
+    "product-03/matrix.log": "4c3fea65e9563cb24dc589a5aeec32ddbffd1ae7ae7fe9b501e618c85500edc8",
+    "product-04/matrix.log": "dd647ca58ccd8d3abdcc8edcbeecfc8ebea696b95a8ddc195df6feec8fe94807",
+    "product-05/product-results.json": "90b2e422cf7c621d26ba877f03235808ee785c2213b79d959c8f111591acc03e",
+    "product-06/product-results.json": "a9cdabcafffdd410b15db5d94509c3c6686dc3463412c1a1f9454aebcd975508",
+    "product-06/bridge-events.json": "6cf142f84cccc2fdb24700fb371c9455e9c780cd0a1f200b55f1301ba3240cc6",
+    "product-06/live-server.log": "d79949209325cc3e817cd278b5ba6c3da82ecd5e89d065c318809de588008a63",
+    "product-06/live-runtime.log": "38d65405de17b574d0bca47cb4420400d4fd67c0c17b960caf797336eeda824e",
+    "negative-01/matrix.log": "2a680ed3c349751eed5d1cd1de0fb16e6e422ef28f038103bb971d4ec960c0af",
+    "negative-02/product-results.json": "43541b31a3d0da50282927b7beb9bc56f0a3df890cbb83a69b1d06d81c2ae7a2",
+    "negative-02/task-events.json": "a8c768d1b4279795945402ed487e4cb0efc13e5e9dc2fe8c84ea4f17d9d77fac",
+    "negative-02/bridge-events.json": "53d2a031420c390cc58f2ae1104b5cbc80169dc01c5983e3da319d5177d0de35",
+    "negative-02/relay-evidence.json": "078daaf78958db95511548fc75ca1d8ba1c075281b3a1685ecf887d7a2937bda",
+    "negative-02/live-server.log": "3fb01cc158a9a25c1d5744fabecf708ff075a341214939360d689f53ae1787af",
+    "negative-02/live-runtime.log": "657a91e20dd232fef4cf13ef253fa83dc49917766820cc606d8b9b75dad3fc34",
+    "provider-01/provider-semantics.json": "d8d22454ec2c1ec234516c313d648f5bb21b37c2c271d59fb08a6e494e7d31de",
+    "routing-audit.json": "1f378cbd98b5d06f3324d44c166914562919e098cb9da254a4d5cc952dea9b59",
+    "lifecycle-01/results.json": "dc762196c6d8fce165d3659ab163205932d00a66df571b6e08a6bba98b6ee212",
+    "lifecycle-01/disabled.log": "4563adba8d2a988f7ecca17d6fcf1d856fdd2dc62b9a7cdef92090da2ce345c9",
+    "lifecycle-01/enabled.log": "8e339ad9807677642d98f65f5583f35866ad3283fe4cd2526551ef771b416d92",
+    "restore-receipt.json": "36d54a14de51f6906b1158bc04a2fcbe6ecf24374d932f39dead75c435a72d52",
+    "restored-server-ready.log": "356bb462a8fa5a6e832682866e8c40ccfeeeaa183bf6b0fb26c40317a4f33934"
+  },
+  "remaining": [
+    "Unified resource intent and plan contracts across all entry/replan/skill/LIFE paths",
+    "Full original protocol/version/replay/cross-generation and remaining real resource counterexamples",
+    "Provider ambiguity gate and allowed real QQ channel validation",
+    "Publication backup, non-force delivery, exact CI and COMPLETE receipt only after every R3 gate passes",
+    "R4-R8 and Integrated/LAN and long-lived Life/Play/Learning acceptance"
+  ],
+  "restoration_log_note": "restored-server-ready.log is an immutable copy at the ready checkpoint; the restored server remains running and restored-server.log may append normally."
+}

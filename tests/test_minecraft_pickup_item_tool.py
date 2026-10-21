@@ -51,7 +51,12 @@ async def test_tool_registered_with_strict_schema() -> None:
         assert tool is not None and isinstance(tool, MinecraftPickupItemTool)
         schema = tool.metadata.input_schema
         # §十三/§十四：两个字段都 required —— entity_id 不是足够的安全约束
-        assert set(schema["properties"]) == {"entity_id", "expected_item"}
+        assert set(schema["properties"]) == {
+            "entity_id",
+            "expected_item",
+            "entity_uuid",
+            "expected_break_action",
+        }
         assert schema["required"] == ["entity_id", "expected_item"]
         assert schema["additionalProperties"] is False
         assert schema["properties"]["entity_id"]["type"] == "integer"

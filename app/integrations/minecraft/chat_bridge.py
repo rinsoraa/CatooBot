@@ -1415,6 +1415,23 @@ class MinecraftChatBridge:
                 text_chars=len(message),
             )
             return f"要采哪一种？你提到的树不止一种（{wood.detail}），我不替你挑。"
+        from app.tasks.resource_intent import parse_collection_request
+
+        collection = parse_collection_request(message)
+        if collection is None or collection.problem:
+            if collection is not None and collection.problem == "quantity_out_of_budget":
+                self._route(
+                    reason_code="resource_quantity_out_of_budget",
+                    route_target=RouteTarget.CLARIFY.value,
+                    session_id=session_id,
+                    text_chars=len(message),
+                )
+                return "我一次最多采 2 根原木。这次要采 1 根还是 2 根？确认数量前我先不动手。"
+            return self._wood_intent_clarify(
+                session_id,
+                message,
+                "resource_" + (collection.problem if collection else "target_unresolved"),
+            )
         plans = getattr(self.bot, "agent_plans", None)
         plan_goal = getattr(plans, "plan_goal_from_user", None)
         if not callable(plan_goal):

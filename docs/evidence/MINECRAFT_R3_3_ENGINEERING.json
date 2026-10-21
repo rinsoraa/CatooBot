@@ -1,0 +1,91 @@
+{
+  "status": "PASS",
+  "generated_at": "2026-10-21T11:28:47.624Z",
+  "source": {
+    "files": 667,
+    "drift": 0
+  },
+  "pytest": {
+    "command": ".venv/Scripts/python.exe -m pytest tests -q --tb=short",
+    "result": "5069 passed in 802.83s",
+    "exit_code": 0,
+    "log": "pytest.log"
+  },
+  "node": {
+    "command": "npm test (minecraft_runtime)",
+    "exit_code": 0,
+    "all_checks_passed": true,
+    "suites": {
+      "action": 95,
+      "move_to": 84,
+      "follow": 54,
+      "dig": 95,
+      "strict_attribution": 84,
+      "attribution_http": 8,
+      "place": 99,
+      "equip": 63,
+      "inventory_move": 56,
+      "container": 85,
+      "container_transfer": 88,
+      "recipe": 78,
+      "craft": 83,
+      "dropped_items": 42,
+      "pickup_item": 81,
+      "dig_capability": 50,
+      "resource_facts": 26,
+      "collection_readiness": 26,
+      "find_blocks": 41
+    },
+    "e2e": "ALL CHECKS PASSED",
+    "log": "node-test.log"
+  },
+  "java": {
+    "command": "JDK21 javac --release 21 + java -ea; equivalent to server_mod/test.ps1 pure contract suites",
+    "exit_code": 0,
+    "suites": {
+      "BookingTest": "23/23",
+      "DimensionPolicyTest": "12/12",
+      "RequestStateTest": "25/25",
+      "ShutdownTest": "26/26",
+      "ProtocolTest": "24/24",
+      "CollectionLedgerTest": "34/34",
+      "CollectionProtocolTest": "14/14"
+    },
+    "log": "java-test.log",
+    "note": "server_mod/test.ps1 itself could not run under Windows PowerShell because $LASTEXITCODE stayed undefined; equivalent commands were executed directly with JDK 21. Full Fabric suites were last run on unchanged Java bytes at 02:55."
+  },
+  "static_checks": {
+    "ruff": "ruff check app tests PASS",
+    "ruff_format": "643 files already formatted",
+    "mypy": "351 source files PASS",
+    "ruff_repo_scope_first_failure": "ruff check . reported 2620 errors only under local data/task29 scripts; app/tests scoped gate PASS"
+  },
+  "first_failures": [
+    {
+      "check": "pytest via system Python312",
+      "error": "No module named pytest",
+      "resolution": "rerun with .venv/Scripts/python.exe"
+    },
+    {
+      "check": "ruff check .",
+      "error": "2620 errors in local data/task29 scripts (non-publishable)",
+      "resolution": "scoped gate ruff check app tests PASS"
+    },
+    {
+      "check": "server_mod/test.ps1",
+      "error": "PowerShell $LASTEXITCODE undefined under StrictMode",
+      "resolution": "ran equivalent javac/java suites directly with JDK21"
+    }
+  ],
+  "artifacts": {
+    "pytest.log": "37df05f41c3dbc49d486ff019e4b671143ce26b7c15961d0b009393860552484",
+    "pytest.exit": "9aca8dfce962538fb8131d73f84cada05e4dc79f5a0d3612c511b1150f3e33e2",
+    "node-test.log": "b691b9d1c01a4692a5e6eeed062ad4aae34da0f80dd711d0cd41803c6d40dd09",
+    "java-test.log": "192cd92bd20c3e3231289e8c39eca99457a5c1c7a0cc36c13be4d9447fb6141e",
+    "ruff-check.log": "f78434f0f81a8fed2240a7879eda40bd74cab1d54c181ba11eef299ac4baee47",
+    "ruff-format.log": "77ac8eec23425ffcdd6da08dd06fd8e0f1096c6684459ab5d5c8fbed24a8681a",
+    "mypy.log": "d686ccecb6ca38a33cece23f8421acc696ad1c24b391535fdfe0052732770dbb"
+  },
+  "report": "docs/MINECRAFT_R3_3_G4_ENGINEERING_AND_QQ_REPORT.md",
+  "raw_private_artifacts": "data\\r3\\engineering-20261021/ (local)"
+}

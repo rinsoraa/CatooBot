@@ -24,8 +24,11 @@ from app.tasks.models import (
     TaskPlan,
     TaskStep,
     canonical_arguments,
+    canonical_item_name,
     finite_number,
 )
+from app.tasks.resource_contract import RESOURCE_SPECS
+from app.tasks.resource_intent import parse_collection_request
 
 #: 计划里明确**禁止**的名字（复合工具/黑盒）：Phase 5A 不允许出现
 FORBIDDEN_TOOL_PARTS = ("gather", "collect", "auto_mine", "mining_loop", "task_", "_batch")
@@ -235,6 +238,110 @@ def validate_plan(
                 for issue in validate_arguments(schema, checkable):
                     problems.append(f"{prefix}: 参数不合 schema（{issue}）")
     problems.extend(_route_problems(plan))
+    problems.extend(collection_plan_problems(plan))
+    return problems
+
+
+def collection_plan_problems(
+    plan: TaskPlan, *, objective: str | None = None, required: bool = False
+) -> list[str]:
+    """Reject legacy/model collection plans that lack the R3 evidence graph.
+
+    Atomic break-only and crafting plans keep their own contracts. Collection
+    plans cannot substitute inventory gain or a nearby entity for this break.
+    """
+    digs = [step for step in plan.steps if step.tool == "minecraft_dig"]
+    pickups = [step for step in plan.steps if step.tool == "minecraft_pickup_item"]
+    text = plan.objective if objective is None else objective
+    request = parse_collection_request(text)
+    promised = request is not None and any(
+        word in text.lower()
+        for word in ("采集", "收集", "捡", "带回来", "拿回来", "collect", "gather", "harvest")
+    )
+    if not (
+        required
+        or promised
+        or digs
+        and (
+            pickups
+            or plan.expected_final_state.inventory_delta
+            or any(step.arguments.get("require_collection") for step in digs)
+        )
+    ):
+        return []
+    if not digs:
+        return ["resource.plan.collection_steps_required"]
+    problems: list[str] = []
+    if request is None or request.problem:
+        problems.append("resource.plan.intent_unresolved")
+    expected: dict[str, int] = {}
+    allowed = {
+        "minecraft_move_to",
+        "minecraft_equip",
+        "minecraft_dig",
+        "minecraft_dropped_items",
+        "minecraft_pickup_item",
+        "minecraft_inventory",
+    }
+    if any(step.tool not in allowed for step in plan.steps):
+        problems.append("resource.plan.unexpected_action")
+    for dig in digs:
+        args = dig.arguments
+        block = canonical_item_name(args.get("expected_block"))
+        spec = RESOURCE_SPECS.get(block)
+        if spec is None or (request is not None and block not in request.candidates):
+            problems.append("resource.plan.target_mismatch")
+            continue
+        if args.get("require_collection") is not True:
+            problems.append("resource.plan.collection_proof_required")
+        tool = isinstance(args.get("expected_tool"), str) and bool(args["expected_tool"].strip())
+        empty = args.get("expected_empty_hand") is True
+        if tool == empty:
+            problems.append("resource.plan.hand_not_frozen")
+        expected[spec.drop] = expected.get(spec.drop, 0) + 1
+        matching = []
+        for pickup in pickups:
+            refs = pickup.references
+            paths = {
+                "entity_id": "attribution.server_collection.drops.0.entity_id",
+                "entity_uuid": "attribution.server_collection.drops.0.uuid",
+                "expected_break_action": "attribution.action_id",
+            }
+            if all(
+                key in refs and refs[key].from_step == dig.step_id and refs[key].path == path
+                for key, path in paths.items()
+            ):
+                matching.append(pickup)
+        if len(matching) != 1:
+            problems.append("resource.plan.exact_pickup_parent_required")
+        elif (
+            plan.steps.index(matching[0]) <= plan.steps.index(dig)
+            or canonical_item_name(matching[0].arguments.get("expected_item")) != spec.drop
+        ):
+            problems.append("resource.plan.pickup_mismatch")
+    if len(pickups) != len(digs):
+        problems.append("resource.plan.pickup_count_mismatch")
+    if expected != {
+        canonical_item_name(name): count
+        for name, count in plan.expected_final_state.inventory_delta.items()
+    }:
+        problems.append("resource.plan.inventory_contract_mismatch")
+    blocks = {canonical_item_name(step.arguments.get("expected_block")) for step in digs}
+    spec = RESOURCE_SPECS.get(next(iter(blocks))) if len(blocks) == 1 else None
+    if spec is None or len(digs) > spec.max_count or (request and len(digs) > request.count):
+        problems.append("resource.plan.quantity_or_family_mismatch")
+    if len(digs) == 2:
+        a, b = (step.arguments for step in digs)
+        if (
+            a.get("x") != b.get("x")
+            or a.get("z") != b.get("z")
+            or finite_number(a.get("y")) is None
+            or finite_number(b.get("y")) is None
+            or abs(a["y"] - b["y"]) != 1
+        ):
+            problems.append("resource.plan.log_column_unproven")
+    if not plan.steps or plan.steps[-1].tool != "minecraft_inventory":
+        problems.append("resource.plan.final_inventory_required")
     return problems
 
 
@@ -295,6 +402,13 @@ def collect_references(arguments: Mapping[str, Any]) -> dict[str, ArgumentRefere
 def summarize_plan(plan: TaskPlan, *, label_of: Callable[[TaskStep], str] | None = None) -> str:
     """给用户看的计划摘要（§六十七：必须列出全部将执行的世界修改/低风险动作）。"""
     lines = [f"任务：{plan.objective}", "", "将执行："]
+    request = parse_collection_request(plan.objective)
+    targets = sum(step.tool == "minecraft_dig" for step in plan.steps)
+    if request is not None and not request.problem and 0 < targets < request.count:
+        lines[1:1] = [
+            f"本次只能验证 {targets} 个采集目标，原请求为 {request.count} 个；"
+            f"确认只执行这 {targets} 个。"
+        ]
     for index, step in enumerate(plan.steps, start=1):
         label = (label_of or default_step_label)(step)
         lines.append(f"{index}. {label}")

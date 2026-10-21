@@ -77,17 +77,17 @@ class StubRuntime:
         return self._inner.snapshot_payload(record)
 
 
-async def _stub(bot: Any, **kwargs: Any) -> StubRuntime:
+async def _stub(bot: Any, *, objective: str = "走到附近指定位置", **kwargs: Any) -> StubRuntime:
     stub = StubRuntime(**kwargs)
     # 任务端点只需要 bot.tasks（不碰 bot.minecraft，免得影响停机路径）
     bot.tasks = stub
     record = await stub._inner.create_task(  # noqa: SLF001 - 造一条真实的 PENDING 记录
-        "去附近找一棵橡木，挖一块原木并捡回来",
+        objective,
         session_id="minecraft:127.0.0.1:25565:空凛",
         user_id="空凛",
         origin="user",
         plan=TaskPlan(
-            objective="去附近找一棵橡木，挖一块原木并捡回来",
+            objective=objective,
             steps=[
                 TaskStep(
                     step_id="step_1",
@@ -130,7 +130,7 @@ async def test_task_read_endpoints_return_the_ui_projection(tmp_path) -> None:
         assert status == 200
         task = payload["data"]["task"]
         assert task["state"] == TaskState.PENDING_CONFIRMATION.value
-        assert task["objective"].startswith("去附近找一棵橡木")
+        assert task["objective"] == "走到附近指定位置"
         assert task["progress"] == {"completed": 0, "total": 1}
         assert task["confirmation_required"] is True
         assert task["plan"]["steps"][0]["tool"] == "minecraft_move_to"
@@ -175,6 +175,19 @@ async def test_task_control_endpoints_only_narrow_authority(tmp_path) -> None:
         status, payload = await client.post(f"/api/v1/minecraft/task/{task_id}/confirm", body={})
         assert status == 400
         assert error_code(payload) == "task.action_invalid", "没有 confirm 这条路"
+
+
+async def test_ui_never_offers_confirmation_for_a_collection_goal_with_only_a_move(
+    tmp_path,
+) -> None:
+    async with api_server(tmp_path) as (client, bot, _server):
+        await client.login()
+        stub = await _stub(bot, objective="采集一根橡木并捡回来")
+        assert stub.record.state is TaskState.FAILED
+        status, payload = await client.get("/api/v1/minecraft/task")
+        assert status == 200
+        assert payload["data"]["task"]["state"] == "FAILED"
+        assert payload["data"]["task"]["confirmation_required"] is False
 
 
 async def test_task_control_endpoints_reject_unknown_tasks(tmp_path) -> None:

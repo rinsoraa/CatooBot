@@ -47,7 +47,15 @@ async def test_schema_keeps_expected_tool_optional() -> None:
     """A：expected_tool 是**可选**参数 —— 4B 的 schema 继续通过。"""
     schema = DIG_METADATA.input_schema
     assert schema["required"] == ["x", "y", "z", "expected_block"]
-    assert set(schema["properties"]) == {"x", "y", "z", "expected_block", "expected_tool"}
+    assert set(schema["properties"]) == {
+        "x",
+        "y",
+        "z",
+        "expected_block",
+        "expected_tool",
+        "require_collection",
+        "expected_empty_hand",
+    }
     assert schema["additionalProperties"] is False
     assert schema["properties"]["expected_tool"]["type"] == "string"
 

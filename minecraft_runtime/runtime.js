@@ -29,6 +29,7 @@ const fs = require('fs')
 const crypto = require('crypto')
 const mineflayer = require('mineflayer')
 const Vec3 = require('vec3').Vec3 ?? require('vec3')
+const { itemCollectionFacts, collectionSafety, collectionReadiness } = require('./resource_facts')
 /**
  * R1-N6C/N7：目标可站立性的**保守**只读预检。
  *
@@ -1109,6 +1110,7 @@ function droppedItemsView(bot) {
     if (!stack || !position || !Number.isFinite(entity.id)) continue
     rows.push({
       entity_id: entity.id,
+      ...(entity.uuid ? { entity_uuid: String(entity.uuid) } : {}),
       item: { name: stack.name, count: stack.count },
       position: { x: round2(position.x), y: round2(position.y), z: round2(position.z) },
       distance: distanceToEntity(bot, entity),
@@ -1364,6 +1366,20 @@ function digCapabilityView(bot, params) {
   const blockName = blockNameOf(block) || 'unknown'
   const held = bot.heldItem && bot.heldItem.name ? bot.heldItem : null
   const heldItem = held ? { name: normalizeItemName(held.name), count: held.count } : null
+  // R3: canDigBlock answers reach/breakability, not whether the current tool yields drops.
+  // Use the pinned prismarine-block predicate; missing metadata is explicitly unknown.
+  let harvest = { known: false, can_harvest: null, source: 'prismarine-block.canHarvest' }
+  if (typeof block.canHarvest === 'function' && (!held || Number.isInteger(held.type))) {
+    try {
+      const value = block.canHarvest(held ? held.type : null)
+      if (value === true || value === false || value === null || value === undefined) {
+        harvest = { ...harvest, known: true, can_harvest: value === true }
+      }
+    } catch (_) {
+      // Unknown remains unknown; this read-only query never equips or digs.
+    }
+  }
+  harvest.tool = itemCollectionFacts(held, bot.registry)
   const distance = blockDistanceView(bot, position)
   const raw = distance.raw
   const view = {
@@ -1371,6 +1387,8 @@ function digCapabilityView(bot, params) {
     position: { x: params.x, y: params.y, z: params.z },
     block: { name: blockName },
     held_item: heldItem,
+    harvest,
+    safety: collectionSafety(bot, position),
     distance,
     can_dig: false,
     dig_time_ms: null,
@@ -2325,8 +2343,18 @@ const ACTION_REGISTRY = {
         // Phase 4I（§四/§五）：**可选** expected_tool —— 给了就是"执行瞬间主手必须拿着它"的
         // 身份硬约束（不是"帮我去找一把石镐"）。不给 = Phase 4B 原行为，一个字节都不变。
         const rawTool = params.expected_tool
+        const requireCollection = params.require_collection === true
+        if (params.require_collection !== undefined && typeof params.require_collection !== 'boolean') {
+          throw new ActionError('require_collection 必须是布尔值', 'action.invalid', 400)
+        }
+        const emptyHand = params.expected_empty_hand === true
+        if ((params.expected_empty_hand !== undefined && typeof params.expected_empty_hand !== 'boolean') ||
+            (emptyHand && rawTool)) {
+          throw new ActionError('expected_empty_hand 与 expected_tool 不得冲突', 'action.invalid', 400)
+        }
         if (rawTool === undefined || rawTool === null || rawTool === '') {
-          return { ...coords, expected_block: expected.trim(), expected_tool: null }
+          return { ...coords, expected_block: expected.trim(), expected_tool: null,
+            require_collection: requireCollection, expected_empty_hand: emptyHand }
         }
         if (typeof rawTool !== 'string') {
           throw new ActionError('expected_tool 必须是字符串', 'item.invalid', 400)
@@ -2341,6 +2369,8 @@ const ACTION_REGISTRY = {
           ...coords,
           expected_block: expected.trim(),
           expected_tool: rawTool.trim(),
+          require_collection: requireCollection,
+          expected_empty_hand: emptyHand,
         }
       },
       async start(bot, params, token, controller) {
@@ -2417,6 +2447,15 @@ const ACTION_REGISTRY = {
           // 挖不动（工具不对/被保护）：不换工具、不找角度、不走近——如实失败
           throw new ActionError('当前状态下挖不动这个方块', 'block.not_diggable', 400)
         }
+        if (params.require_collection) {
+          if (!strictAttribution.enabled) {
+            throw new ActionError('资源采集需要严格服务端证据，未开始挖掘', 'resource.attribution_required', 409)
+          }
+          const ready = collectionReadiness(bot, position, {
+            expectedTool: toolExpected, expectedEmptyHand: params.expected_empty_hand,
+          })
+          if (!ready.allowed) throw new ActionError('当前采收前提不满足，未开始挖掘', ready.reason, 409)
+        }
         // Phase 7D Follow-up：从这一刻起**只监听本次动作**的证据（同一 action_id / 同一坐标 /
         // 同一时间窗），并且在我们自己发出完成包之前不会误认任何变化（见 dig_attribution.js）。
         const attributionCollector = createDigAttribution({
@@ -2482,6 +2521,7 @@ const ACTION_REGISTRY = {
                 name: bot.username, uuid: bot.player && bot.player.uuid,
                 dimension: bot.game && bot.game.dimension,
                 target: { x: params.x, y: params.y, z: params.z }, block: state.blockName,
+                requireCollection: Boolean(params.require_collection),
               })
               controller.strictProof = proof
               await proof.prepare()
@@ -2496,12 +2536,20 @@ const ACTION_REGISTRY = {
                 throw new ActionError('登记期间目标或距离已变化', 'block.changed', 409)
               }
             }
+            if (params.require_collection) {
+              const ready = collectionReadiness(bot, state.position, {
+                expectedTool: state.toolExpected, expectedEmptyHand: params.expected_empty_hand,
+              })
+              if (!ready.allowed) throw new ActionError('登记期间采收前提已变化，未开始挖掘', ready.reason, 409)
+            }
+            if (token && token.cancelled) throw new ActionCancelled(token.reason)
             // forceLook=true：由 Mineflayer 负责朝向（Python 层绝不碰 yaw/pitch）
             await bot.dig(state.block, true)
           } catch (error) {
             if (token && token.cancelled) throw new ActionCancelled(token.reason)
             if (error && error.code === 'block.attribution_unavailable') {
-              throw new ActionError('严格服务端归因登记失败，未开始挖掘', error.code, 503)
+              throw new ActionError('严格服务端归因登记失败，未开始挖掘', error.code, 503,
+                { reason: error.reason || 'registration' })
             }
             if (error instanceof ActionError) throw error
             const message = String(error && error.message ? error.message : error)
@@ -3572,7 +3620,20 @@ const ACTION_REGISTRY = {
         if (expected.length > MAX_PLACE_ITEM_CHARS) {
           throw new ActionError('expected_item 过长', 'action.invalid', 400)
         }
-        return { entity_id: entityId, expected_item: normalizeItemName(expected) }
+        const entityUuid = params.entity_uuid
+        if (entityUuid !== undefined && entityUuid !== null &&
+            (typeof entityUuid !== 'string' ||
+             !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(entityUuid))) {
+          throw new ActionError('entity_uuid 必须是实体 UUID', 'action.invalid', 400)
+        }
+        const breakAction = params.expected_break_action
+        if (breakAction !== undefined && breakAction !== null &&
+            (typeof breakAction !== 'string' || !/^[!-~]{1,128}$/.test(breakAction) || !entityUuid)) {
+          throw new ActionError('expected_break_action 必须绑定动作与实体 UUID', 'action.invalid', 400)
+        }
+        return { entity_id: entityId, expected_item: normalizeItemName(expected),
+          entity_uuid: entityUuid ? String(entityUuid) : null,
+          expected_break_action: breakAction || null }
       },
       async start(bot, params, token, controller) {
         // §十三：执行前必须重新确认「实体还在 / 还是掉落物 / id 对得上 / 物品一致 / 距离还行」
@@ -3613,6 +3674,14 @@ const ACTION_REGISTRY = {
             { expected: params.expected_item, actual: stack.name },
           )
         }
+        if (strictAttribution.enabled && !params.entity_uuid) {
+          throw new ActionError('严格模式拾取必须绑定 minecraft_dropped_items 给出的实体 UUID',
+            'pickup.attribution_required', 409)
+        }
+        if (params.entity_uuid && String(targetEntity.uuid || '') !== params.entity_uuid) {
+          throw new ActionError('实体 UUID 与 entity_id 不一致（可能已被替换）',
+            'item_entity.changed', 409, { entity_id: params.entity_id })
+        }
         const distance = distanceToEntity(bot, targetEntity)
         const maxDistance = pickupMaxDistance()
         if (distance !== null && distance > maxDistance) {
@@ -3622,6 +3691,33 @@ const ACTION_REGISTRY = {
             422,
             { distance, max_distance: maxDistance },
           )
+        }
+        let strictPickup = null
+        if (params.expected_break_action && !strictAttribution.enabled) {
+          throw new ActionError('资源拾取需要启用严格服务端证据', 'pickup.attribution_required', 409)
+        }
+        if (strictAttribution.enabled) {
+          strictPickup = strictAttribution.beginPickup({
+            actionId: controller && controller.record ? controller.record.action_id : '',
+            sessionId: state.sessionId, name: bot.username, uuid: bot.player && bot.player.uuid,
+            dimension: bot.game && bot.game.dimension, entityUuid: params.entity_uuid,
+            expectedBreakAction: params.expected_break_action, expectedItem: params.expected_item,
+          })
+          if (!strictPickup) throw new ActionError('缺少严格拾取证据上下文',
+            'pickup.attribution_unavailable', 503)
+          if (controller) controller.strictPickup = strictPickup
+          await strictPickup.prepare()
+          if (token && token.cancelled) throw new ActionCancelled(token.reason)
+          if (state.bot !== bot || state.sessionId !== strictPickup.state.sessionId ||
+              dimensionOf(bot.game && bot.game.dimension) !== strictPickup.state.dimension ||
+              !bot.player || bot.player.uuid !== strictPickup.state.uuid ||
+              !bot.entities || bot.entities[params.entity_id] !== targetEntity ||
+              String(targetEntity.uuid || '') !== params.entity_uuid ||
+              droppedItemStack(bot, targetEntity)?.name !== params.expected_item ||
+              distanceToEntity(bot, targetEntity) === null ||
+              distanceToEntity(bot, targetEntity) > maxDistance) {
+            throw new ActionError('拾取登记期间连接、目标或距离已变化', 'pickup.target_changed', 409)
+          }
         }
         // §三十六：监听收集 / 实体消失（cleanup 与 wait 都会摘，幂等）
         const listeners = []
@@ -3644,7 +3740,10 @@ const ACTION_REGISTRY = {
         }
         if (controller) controller.pickupListeners = listeners
         // §二十二/§二十四：官方动态 Goal（跟着活 entity 走），不嵌套 move_to
-        bot.pathfinder.setGoal(new goals.GoalFollow(targetEntity, PICKUP_RADIUS), true)
+        // GoalFollow measures integer cells and otherwise tolerates one-cell
+        // drift without refreshing its target. Reach the exact entity cell;
+        // the existing floating-point pickup radius still controls release.
+        bot.pathfinder.setGoal(new goals.GoalFollow(targetEntity, 0), true)
         log('info', 'pickup started', {
           entity_id: params.entity_id,
           item: stack.name,
@@ -3660,6 +3759,8 @@ const ACTION_REGISTRY = {
           distance_start: distance,
           distance_collected: null,
           inventory_before: countInventoryItem(bot, params.expected_item),
+          entity_uuid: params.entity_uuid,
+          strictPickup,
           navigating: true,
         }
       },
@@ -3668,11 +3769,16 @@ const ACTION_REGISTRY = {
         const maxDistance = pickupMaxDistance()
         return new Promise((resolvePromise, rejectPromise) => {
           let settled = false
+          let proofPending = false
           const finish = (error, value) => {
             if (settled) return
             settled = true
             clearInterval(timer)
             detachPickupListeners(bot, scope.listeners)
+            if (state.strictPickup) {
+              state.strictPickup.close()
+              state.strictPickup = null
+            }
             if (error) rejectPromise(error)
             else resolvePromise(value)
           }
@@ -3754,8 +3860,9 @@ const ACTION_REGISTRY = {
                 state.navigating = false
                 releasePickupNavigation(bot)
               }
-              finish(null, {
+              const result = {
                 entity_id: state.entity_id,
+                entity_uuid: state.entity_uuid,
                 item: { name: state.expected_item, count_before: state.count_before },
                 distance_start: state.distance_start,
                 distance_collected: state.distance_collected,
@@ -3763,7 +3870,25 @@ const ACTION_REGISTRY = {
                 inventory_after: inventoryAfter,
                 collected_count: inventoryAfter - state.inventory_before,
                 collected: true,
-              })
+              }
+              if (state.strictPickup) {
+                if (proofPending) return
+                proofPending = true
+                state.strictPickup.wait(2000).then(proof => {
+                  if (settled) return
+                  if (!proof) {
+                    fail('背包有增加，但缺少服务端对同一实体与实际收集者的证明',
+                      'pickup.attribution_unconfirmed', 409)
+                    return
+                  }
+                  finish(null, { ...result, server_attribution: proof })
+                }).catch(error => {
+                  if (!settled) fail(error.message || '严格拾取证据不可用',
+                    'pickup.attribution_unavailable', 503)
+                })
+                return
+              }
+              finish(null, result)
               return
             }
             // entityGone 但背包还没到账：给一小段宽限（inventory 包可能滞后）
@@ -3782,6 +3907,10 @@ const ACTION_REGISTRY = {
         // §三十六：cleanup 至少 setGoal(null) + clearControlStates，且至多一次
         detachPickupListeners(bot, controller ? controller.pickupListeners : null)
         releasePickupNavigation(bot)
+        if (controller && controller.strictPickup) {
+          controller.strictPickup.close()
+          controller.strictPickup = null
+        }
       },
     },
     follow_player: {
@@ -4465,6 +4594,8 @@ async function handleRequest(request, response) {
       const result = await actionRuntime.execute('pickup_item', {
         entity_id: body.entity_id,
         expected_item: body.expected_item,
+        entity_uuid: body.entity_uuid,
+        expected_break_action: body.expected_break_action,
       })
       jsonResponse(response, 200, { ok: true, ...result })
       return
@@ -4539,6 +4670,8 @@ async function handleRequest(request, response) {
         expected_block: body.expected_block,
         // Phase 4I：可选 —— 给了就在 start 里实时校验主手（缺省/空 = Phase 4B 行为）
         expected_tool: body.expected_tool,
+        require_collection: body.require_collection,
+        expected_empty_hand: body.expected_empty_hand,
       })
       jsonResponse(response, 200, { ok: true, ...result })
       return

@@ -13,12 +13,19 @@ import net.fabricmc.fabric.api.event.player.PlayerBlockBreakEvents;
 import net.fabricmc.fabric.api.event.lifecycle.v1.ServerLifecycleEvents;
 import net.fabricmc.fabric.api.networking.v1.ServerPlayConnectionEvents;
 import net.minecraft.class_2338;
+import net.minecraft.class_1937;
+import net.minecraft.class_1657;
+import net.minecraft.class_1792;
+import net.minecraft.class_1799;
+import net.minecraft.class_1542;
+import net.minecraft.class_1297;
+import net.minecraft.class_7923;
 import net.minecraft.class_3218;
 import net.minecraft.class_3222;
 
 /** P2 shadow v7: server-owned resources and cancellation on shutdown; default off. */
 public final class CatooAttributionMod implements ModInitializer {
-    static final String VER = "p3-evidence-1";
+    static final String VER = "r3-collection-negotiated-1";
     static final Booking BOOK = new Booking();
     static final Properties CFG = new Properties();
     static volatile boolean ENABLED = false;
@@ -29,6 +36,7 @@ public final class CatooAttributionMod implements ModInitializer {
 
     static final int OUTBOX_CAPACITY = 1024;
     static volatile ShadowResources RESOURCES;
+    static volatile CollectionLedger COLLECTIONS;
     static volatile Object OWNER_SERVER;
     static final RequestRegistry<Reply> REQUESTS = new RequestRegistry<>();
 
@@ -156,6 +164,8 @@ public final class CatooAttributionMod implements ModInitializer {
             try {
                 if (OWNER_SERVER != server || !accepting()) return;
                 class_3222 player = handler.field_14140;
+                Booking.Session closing = BOOK.currentSessionOf(player.method_5477().getString());
+                invalidateCollectionSession(closing);
                 boolean closed = BOOK.disconnect(player.method_5477().getString(),
                         String.valueOf(player.method_5667()), player);
                 log("DISCONNECT session_closed=" + closed);
@@ -190,6 +200,13 @@ public final class CatooAttributionMod implements ModInitializer {
                 String posText = pos.method_10263() + "," + pos.method_10264() + "," + pos.method_10260();
                 Booking.MatchResult match = BOOK.match(session, eventUuid, eventDim, posText, String.valueOf(state));
                 String eventId = UUID.randomUUID().toString();
+                CollectionLedger ledger = COLLECTIONS;
+                CollectionLedger.Frame frame = ledger == null ? null : ledger.currentFrame();
+                if (frame != null && match.reservation != null
+                        && CollectionProtocol.VERSION.equals(match.reservation.collectionProtocol)) {
+                    ledger.bindBreak(frame, world, player, new CollectionLedger.BreakProof(
+                            eventId, match.reservation.id, match.reservation.actionId, frame.identity));
+                }
                 String payload = eventJson(eventId, match, session, eventUuid, eventDim, posText,
                         String.valueOf(state), stateNow);
                 boolean queued = resources != null && resources.offer(payload);
@@ -249,9 +266,200 @@ public final class CatooAttributionMod implements ModInitializer {
                 + "\",\"shadow\":\"" + match.state + "\",\"reason\":\"" + match.reason + "\"}";
     }
 
+    /** Begins an exact server-thread break scope; a missing session or fact means no evidence, never a guess. */
+    public static CollectionLedger.Frame beginCollectionBreak(class_3218 world, class_3222 player, class_2338 pos) {
+        CollectionLedger ledger = COLLECTIONS;
+        if (!accepting() || ledger == null || world == null || player == null || pos == null) return null;
+        try {
+            String name = player.method_5477().getString();
+            Booking.Session session = BOOK.currentSessionOf(name);
+            if (session == null || !session.valid || session.player != player) return null;
+            String uuid = String.valueOf(player.method_5667());
+            String dimension = Booking.normalizeDimension(String.valueOf(world.method_27983().method_29177()));
+            String posText = pos.method_10263() + "," + pos.method_10264() + "," + pos.method_10260();
+            String block = Booking.canonicalBlock(String.valueOf(world.method_8320(pos)));
+            CollectionLedger.Identity identity = new CollectionLedger.Identity(
+                    session.ref, session.seq, uuid, dimension, posText, block);
+            return ledger.beginBreak(world, player, identity);
+        } catch (Throwable error) {
+            log("COLLECTION_BREAK_BEGIN_UNKNOWN " + error.getClass().getSimpleName());
+            return null;
+        }
+    }
+
+    public static void finishCollectionBreak(CollectionLedger.Frame frame, boolean broken) {
+        CollectionLedger ledger = COLLECTIONS;
+        if (ledger == null || frame == null) return;
+        CollectionLedger.BreakResult result = ledger.finishBreak(frame, broken);
+        if (result == null || !result.confirmed()) {
+            if (result != null && !result.reason().isEmpty()) {
+                log("COLLECTION_BREAK_UNCONFIRMED reason=" + result.reason());
+            }
+            return;
+        }
+        ShadowResources resources = RESOURCES;
+        String payload = collectionBreakJson(result);
+        boolean queued = resources != null && resources.offer(payload);
+        log("COLLECTION_BREAK_CONFIRMED action=" + result.proof().actionId()
+                + " drops=" + result.drops().size() + " queued=" + queued);
+    }
+
+    public static boolean beginCollectionDrop(class_1937 world, String pos) {
+        CollectionLedger ledger = COLLECTIONS;
+        return ledger != null && ledger.beginDrop(world, pos);
+    }
+
+    public static void endCollectionDrop(boolean entered) {
+        CollectionLedger ledger = COLLECTIONS;
+        if (ledger != null) ledger.endDrop(entered);
+    }
+
+    public static boolean captureCollectionDrop(class_1937 world, class_1297 entity, boolean accepted) {
+        CollectionLedger ledger = COLLECTIONS;
+        if (ledger == null || !accepted || !(entity instanceof class_1542 itemEntity)) return false;
+        try {
+            class_1799 stack = itemEntity.method_6983();
+            if (stack == null || stack.method_7960()) return false;
+            String item = String.valueOf(class_7923.field_41178.method_10221(stack.method_7909()));
+            CollectionLedger.Drop drop = new CollectionLedger.Drop(
+                    String.valueOf(itemEntity.method_5667()), itemEntity.method_5628(), item, stack.method_7947());
+            return ledger.spawned(world, drop, true);
+        } catch (Throwable error) {
+            log("COLLECTION_DROP_CAPTURE_UNKNOWN " + error.getClass().getSimpleName());
+            return false;
+        }
+    }
+
+    static String collectionBreakJson(CollectionLedger.BreakResult result) {
+        CollectionLedger.BreakProof proof = result.proof();
+        CollectionLedger.Identity id = proof.identity();
+        StringBuilder drops = new StringBuilder("[");
+        for (CollectionLedger.Drop drop : result.drops()) {
+            if (drops.length() > 1) drops.append(',');
+            drops.append("{\"uuid\":").append(Json.quote(drop.uuid()))
+                    .append(",\"entity_id\":").append(drop.entityId())
+                    .append(",\"item\":").append(Json.quote(drop.item()))
+                    .append(",\"count\":").append(drop.count()).append('}');
+        }
+        drops.append(']');
+        return "{\"schema\":1,\"source\":\"server_drop_evidence\"" + CollectionProtocol.field() + ",\"event_id\":"
+                + Json.quote(UUID.randomUUID().toString())
+                + ",\"break_event_id\":" + Json.quote(proof.eventId())
+                + ",\"reservation_id\":" + Json.quote(proof.reservationId())
+                + ",\"action_id\":" + Json.quote(proof.actionId())
+                + ",\"session_ref\":" + Json.quote(id.sessionRef())
+                + ",\"session_seq\":" + id.sessionSeq()
+                + ",\"player_uuid\":" + Json.quote(id.playerUuid())
+                + ",\"dimension\":" + Json.quote(id.dimension())
+                + ",\"pos\":" + Json.quote(id.pos())
+                + ",\"block_before\":" + Json.quote(id.block())
+                + ",\"drops\":" + drops + "}";
+    }
+
+    static CollectionLedger.Identity pickupIdentity(class_1657 raw) {
+        if (!(raw instanceof class_3222 player)) return null;
+        try {
+            Booking.Session session = BOOK.currentSessionOf(player.method_5477().getString());
+            if (session == null || !session.valid || session.player != player) return null;
+            class_3218 world = player.method_51469();
+            String dimension = Booking.normalizeDimension(String.valueOf(world.method_27983().method_29177()));
+            int x = (int) Math.floor(player.method_23317());
+            int y = (int) Math.floor(player.method_23318());
+            int z = (int) Math.floor(player.method_23321());
+            return new CollectionLedger.Identity(session.ref, session.seq,
+                    String.valueOf(player.method_5667()), dimension, x + "," + y + "," + z, "minecraft:air");
+        } catch (Throwable error) {
+            return null;
+        }
+    }
+
+    public static int collectionInventoryCount(class_1657 player, class_1792 item) {
+        int total = 0;
+        for (class_1799 stack : player.method_31548().field_7547) {
+            if (stack != null && !stack.method_7960() && stack.method_7909() == item) {
+                total = Math.min(Integer.MAX_VALUE, total + stack.method_7947());
+            }
+        }
+        return total;
+    }
+
+    public static void recordCollectionMerge(class_1542 first, class_1542 second) {
+        CollectionLedger ledger = COLLECTIONS;
+        if (ledger == null || first == null || second == null) return;
+        ledger.merged(String.valueOf(first.method_5667()), String.valueOf(second.method_5667()));
+    }
+
+    public static void recordCollectionPickup(class_1542 entity, class_1657 player, class_1792 originalItem,
+            int before, int after,
+            int inventoryBefore, int inventoryAfter) {
+        CollectionLedger ledger = COLLECTIONS;
+        if (ledger == null || entity == null || player == null) return;
+        try {
+            CollectionLedger.Identity actor = pickupIdentity(player);
+            if (actor == null || originalItem == null) return;
+            String item = String.valueOf(class_7923.field_41178.method_10221(originalItem));
+            CollectionLedger.PickupResult result = ledger.pickedUp(actor, String.valueOf(entity.method_5667()),
+                    item, before, after, inventoryBefore, inventoryAfter);
+            if (result == null) return;
+            ShadowResources resources = RESOURCES;
+            String payload = collectionPickupJson(result, inventoryBefore, inventoryAfter);
+            boolean queued = resources != null && resources.offer(payload);
+            log("COLLECTION_PICKUP dropped=" + entity.method_5667() + " confirmed=" + result.confirmed()
+                    + " reason=" + result.reason() + " queued=" + queued);
+        } catch (Throwable error) {
+            log("COLLECTION_PICKUP_UNKNOWN " + error.getClass().getSimpleName());
+        }
+    }
+
+    public static void logCollectionPickupFailure(class_1542 entity) {
+        try {
+            log("COLLECTION_PICKUP_UNKNOWN dropped=" + (entity == null ? "" : entity.method_5667()));
+        } catch (Throwable ignored) {
+            log("COLLECTION_PICKUP_UNKNOWN");
+        }
+    }
+
+    static String collectionPickupJson(CollectionLedger.PickupResult result,
+            int inventoryBefore, int inventoryAfter) {
+        CollectionLedger.PickupBooking booking = result.booking();
+        CollectionLedger.Drop drop = result.drop();
+        CollectionLedger.BreakProof parent = result.parent();
+        CollectionLedger.Identity id = parent.identity();
+        return "{\"schema\":1,\"source\":\"server_drop_pickup\"" + CollectionProtocol.field() + ",\"event_id\":"
+                + Json.quote(UUID.randomUUID().toString())
+                + ",\"booking_id\":" + Json.quote(booking == null ? "" : booking.id())
+                + ",\"pickup_action_id\":" + Json.quote(booking == null ? "" : booking.actionId())
+                + ",\"pickup_nonce\":" + Json.quote(booking == null ? "" : booking.nonce())
+                + ",\"break_event_id\":" + Json.quote(parent.eventId())
+                + ",\"break_reservation_id\":" + Json.quote(parent.reservationId())
+                + ",\"break_action_id\":" + Json.quote(parent.actionId())
+                + ",\"session_ref\":" + Json.quote(id.sessionRef())
+                + ",\"session_seq\":" + id.sessionSeq()
+                + ",\"player_uuid\":" + Json.quote(id.playerUuid())
+                + ",\"dimension\":" + Json.quote(id.dimension())
+                + ",\"drop_uuid\":" + Json.quote(drop.uuid())
+                + ",\"item\":" + Json.quote(drop.item())
+                + ",\"count\":" + drop.count()
+                + ",\"inventory_before\":" + inventoryBefore
+                + ",\"inventory_after\":" + inventoryAfter
+                + ",\"collected\":" + result.collected()
+                + ",\"confirmed\":" + result.confirmed()
+                + ",\"reason\":" + Json.quote(result.reason()) + "}";
+    }
+
+    static void invalidateCollectionSession(Booking.Session session) {
+        CollectionLedger ledger = COLLECTIONS;
+        if (ledger != null && session != null) ledger.invalidateSession(session.ref, session.seq);
+    }
+
     static boolean accepting() {
         ShadowResources resources = RESOURCES;
         return resources != null && resources.isRunning();
+    }
+
+    static boolean collectionAvailable() {
+        CollectionLedger ledger = COLLECTIONS;
+        return accepting() && ledger != null && ledger.isOpen();
     }
 
     static void startRuntime(Executor server, Thread serverThread) {
@@ -267,11 +475,14 @@ public final class CatooAttributionMod implements ModInitializer {
             resources.start(CatooAttributionMod::configureHttp);
             SERVER_EXECUTOR = server;
             SERVER_THREAD = serverThread;
+            COLLECTIONS = new CollectionLedger(serverThread, System::nanoTime);
             REQUESTS.open(resources);
             log("RUNTIME_STARTED version=" + VER);
         } catch (Exception | Error error) {
             if (resources != null) resources.close();
             REQUESTS.close();
+            if (COLLECTIONS != null) COLLECTIONS.close();
+            COLLECTIONS = null;
             SERVER_EXECUTOR = null;
             SERVER_THREAD = null;
             log("RUNTIME_START_FAILED " + error.getClass().getSimpleName());
@@ -282,6 +493,8 @@ public final class CatooAttributionMod implements ModInitializer {
         if (OWNER_SERVER != server) return;
         // Cancel before stopping HTTP: no handler may wait for this server thread.
         REQUESTS.close();
+        if (COLLECTIONS != null) COLLECTIONS.close();
+        COLLECTIONS = null;
         SERVER_EXECUTOR = null;
         SERVER_THREAD = null;
         BOOK.invalidateAll();
@@ -306,6 +519,7 @@ public final class CatooAttributionMod implements ModInitializer {
         // This filter captures a generation, so old HTTP callbacks cannot enter a new server.
         ShadowResources owner = RESOURCES;
         context(server, owner, "/reserve", exchange -> handleReserve(exchange, owner));
+        context(server, owner, "/collection/pickup-reserve", exchange -> handlePickupReserve(exchange, owner));
         context(server, owner, "/health", exchange -> respond(exchange, 200, "{\"ok\":true}"));
         context(server, owner, "/stats", exchange -> respond(exchange, 200, statsJson()));
         context(server, owner, "/session", exchange -> {
@@ -334,7 +548,8 @@ public final class CatooAttributionMod implements ModInitializer {
                 return;
             }
             respond(exchange, 200, "{\"ok\":true,\"schema\":1,\"nonce\":\"" + nonce + "\",\"session_ref\":\"" + session.ref + "\",\"session_seq\":"
-                    + session.seq + ",\"player_uuid\":\"" + session.uuid + "\"}");
+                    + session.seq + ",\"player_uuid\":\"" + session.uuid + "\""
+                    + (collectionAvailable() ? CollectionProtocol.field() : "") + "}");
         });
     }
 
@@ -370,6 +585,8 @@ public final class CatooAttributionMod implements ModInitializer {
         Map<String, String> fields;
         try { fields = Json.flat(body); }
         catch (IllegalArgumentException error) { respond(exchange, 400, "{\"ok\":false,\"reason\":\"json\"}"); return; }
+        String protocolError = CollectionProtocol.check(fields, collectionAvailable(), false);
+        if (!protocolError.isEmpty()) { respond(exchange, 409, refuse(409, protocolError).body); return; }
         String pos = fields.getOrDefault("pos", "");
         try {
             int x = Integer.parseInt(fields.getOrDefault("x", ""));
@@ -408,9 +625,76 @@ public final class CatooAttributionMod implements ModInitializer {
                 + " action=" + fields.getOrDefault("action_id", ""));
     }
 
+    static void handlePickupReserve(HttpExchange exchange, ShadowResources owner) throws IOException {
+        if (!"POST".equals(exchange.getRequestMethod())) {
+            respond(exchange, 405, "{\"ok\":false,\"reason\":\"method\"}");
+            return;
+        }
+        byte[] bytes = exchange.getRequestBody().readNBytes(8193);
+        if (bytes.length > 8192) {
+            respond(exchange, 413, "{\"ok\":false,\"reason\":\"body_size\"}");
+            return;
+        }
+        String body = new String(bytes, StandardCharsets.UTF_8);
+        if (!Hmac.verify(body, CFG.getProperty("token", ""), exchange.getRequestHeaders().getFirst("X-Signature"))) {
+            log("PICKUP_RESERVE_REJECTED reason=hmac");
+            respond(exchange, 401, "{\"ok\":false,\"reason\":\"hmac\"}");
+            return;
+        }
+        Map<String, String> fields;
+        try {
+            fields = Json.flat(body);
+        } catch (IllegalArgumentException error) {
+            respond(exchange, 400, "{\"ok\":false,\"reason\":\"json\"}");
+            return;
+        }
+        String protocolError = CollectionProtocol.check(fields, collectionAvailable(), true);
+        if (!protocolError.isEmpty()) { respond(exchange, 409, refuse(409, protocolError).body); return; }
+        String actionId = fields.getOrDefault("action_id", "");
+        String nonce = fields.getOrDefault("nonce", "");
+        String dropUuid = fields.getOrDefault("drop_uuid", "");
+        String expectedBreakAction = fields.getOrDefault("expected_break_action", "");
+        String sessionRef = fields.getOrDefault("session_ref", "");
+        if (actionId.isEmpty() || actionId.length() > 128 || nonce.length() < 16 || nonce.length() > 128
+                || dropUuid.length() != 36) {
+            respond(exchange, 400, "{\"ok\":false,\"reason\":\"fields\"}");
+            return;
+        }
+        Reply reply = runOnServerThread(request -> {
+            if (!request.isOpen()) return request.outcome();
+            Booking.Session session = BOOK.sessionOfRef(sessionRef);
+            if (session == null || !session.valid || !(session.player instanceof class_3222 player)) {
+                return refuse(409, "session_not_current");
+            }
+            CollectionLedger ledger = COLLECTIONS;
+            CollectionLedger.Identity actor = pickupIdentity(player);
+            CollectionLedger.PickupBooking booking = ledger == null ? null
+                    : ledger.reservePickup(actor, actionId, nonce, dropUuid, expectedBreakAction,
+                            candidate -> request.complete(pickupReply(candidate)));
+            if (request.outcome() != null) return request.outcome();
+            if (booking == null) return refuse(409, "collection_lineage_unavailable");
+            return pickupReply(booking);
+        }, RESERVE_TIMEOUT_MS, owner);
+        respond(exchange, reply.code, reply.body);
+        log("PICKUP_RESERVE code=" + reply.code + " reason=" + reply.reason + " action=" + actionId);
+    }
+
+    static Reply pickupReply(CollectionLedger.PickupBooking booking) {
+        return new Reply(200, "{\"ok\":true,\"schema\":1,\"booking_id\":"
+                + Json.quote(booking.id()) + ",\"action_id\":" + Json.quote(booking.actionId())
+                + ",\"nonce\":" + Json.quote(booking.nonce()) + ",\"session_ref\":" + Json.quote(booking.identity().sessionRef())
+                + ",\"drop_uuid\":" + Json.quote(booking.dropUuid())
+                + ",\"break_event_id\":" + Json.quote(booking.breakEventId())
+                + ",\"reservation_id\":" + Json.quote(booking.breakReservationId())
+                + ",\"break_action_id\":" + Json.quote(booking.breakActionId())
+                + CollectionProtocol.field() + "}", "ok");
+    }
+
     static Reply reserveForRequest(Map<String, String> fields,
             java.util.function.Function<Map<String, String>, String> blockAt, RequestState<Reply> request) {
         if (!request.isOpen()) return request.outcome();
+        String protocolError = CollectionProtocol.check(fields, collectionAvailable(), false);
+        if (!protocolError.isEmpty()) return refuse(409, protocolError);
         Booking.ReserveResult result = BOOK.reserve(fields, blockAt,
                 candidate -> request.complete(reserveReply(candidate, fields)));
         Reply winner = request.outcome();
@@ -426,7 +710,9 @@ public final class CatooAttributionMod implements ModInitializer {
         return new Reply(result.httpCode, "{\"ok\":" + result.ok + ",\"schema\":1,\"reason\":\"" + result.reason
                 + "\",\"reservation_id\":" + Json.quote(result.id) + ",\"action_id\":" + Json.quote(fields.getOrDefault("action_id", ""))
                 + ",\"nonce\":" + Json.quote(fields.getOrDefault("nonce", "")) + ",\"session_ref\":"
-                + Json.quote(fields.getOrDefault("session_ref", "")) + "}", result.reason);
+                + Json.quote(fields.getOrDefault("session_ref", ""))
+                + (result.ok && CollectionProtocol.VERSION.equals(fields.get("collection_protocol"))
+                    ? CollectionProtocol.field() : "") + "}", result.reason);
     }
 
     static class_2338 posOf(Map<String, String> fields) {

@@ -249,7 +249,18 @@ class TestFinalPlanVersion:
         assert dig.arguments.get("$slot") == POSITION_SLOT
         assert not {"x", "y", "z"} & set(dig.arguments)
         pickup = next(step for step in steps if step.tool == "minecraft_pickup_item")
-        assert pickup.arguments["entity_id"] == {"from_step": "step_4", "path": "items.0.entity_id"}
+        assert pickup.arguments["entity_id"] == {
+            "from_step": dig.step_id,
+            "path": "attribution.server_collection.drops.0.entity_id",
+        }
+        assert pickup.arguments["entity_uuid"] == {
+            "from_step": dig.step_id,
+            "path": "attribution.server_collection.drops.0.uuid",
+        }
+        assert pickup.arguments["expected_break_action"] == {
+            "from_step": dig.step_id,
+            "path": "attribution.action_id",
+        }
         assert [slot.name for slot in slots] == [POSITION_SLOT]
 
 

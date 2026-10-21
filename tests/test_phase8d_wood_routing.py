@@ -187,7 +187,7 @@ async def test_legacy_single_target_template_is_never_reached_for_wood(
     def _boom(*_: Any, **__: Any) -> Any:
         raise AssertionError("旧单目标 plan_resource_task 不应该被木材请求调用")
 
-    monkeypatch.setattr(turn_module, "plan_resource_task", _boom)
+    monkeypatch.setattr(turn_module, "plan_collection_task", _boom)
     async with stack(tmp_path, "角色回答。") as env:
         turns, plans = WoodTurns(), WoodPlans()
         wire(env, turns=turns, plans=plans)
@@ -274,7 +274,7 @@ async def test_imperative_unsupported_request_is_blocked_and_never_falls_back(
     def _boom(*_: Any, **__: Any) -> Any:
         raise AssertionError("旧单目标 plan_resource_task 不应该被木材请求调用")
 
-    monkeypatch.setattr(turn_module, "plan_resource_task", _boom)
+    monkeypatch.setattr(turn_module, "plan_collection_task", _boom)
     async with stack(tmp_path, "角色回答。") as env:
         turns, plans = WoodTurns(), WoodPlans()
         wire(env, turns=turns, plans=plans)
@@ -349,21 +349,24 @@ async def test_plan_layer_error_is_blocked_not_fallen_through(tmp_path: Any) -> 
         assert route.route_target == RouteTarget.BLOCKED.value
 
 
-async def test_summary_uses_the_frozen_plan_count_and_flags_capping(tmp_path: Any) -> None:
-    """确认前的摘要必须来自**冻结计划**的真实数量，并如实说明超出上限。"""
+async def test_overbudget_request_clarifies_without_a_smaller_executable_plan(
+    tmp_path: Any,
+) -> None:
+    """R3: no silent change from the requested five logs to a two-log plan."""
     async with stack(tmp_path, "角色回答。") as env:
         turns = WoodTurns()
         plans = WoodPlans(result=wood_created(count=2, capped=True))
         wire(env, turns=turns, plans=plans)
         await env.say("IdSmoke8D", "帮我砍五根橡木原木带回来")
         assert turns.calls == 0
-        assert len(plans.calls) == 1
+        assert plans.calls == []
         session = env.chat._session_id("IdSmoke8D")
         history = await env.chat.bot.ai.conversations.get_context(session)
         blob = " ".join(str(getattr(item, "content", "")) for item in history)
-        assert "oak_log x2" in blob
-        assert "本期一次最多" in blob
-        assert "确认" in blob
+        assert "oak_log x2" not in blob
+        assert "最多采 2 根" in blob
+        assert last_route(env).reason_code == "resource_quantity_out_of_budget"
+        assert env.tools.executor.traces == []
 
 
 async def test_no_raw_message_text_in_route_evidence(tmp_path: Any) -> None:
@@ -376,6 +379,26 @@ async def test_no_raw_message_text_in_route_evidence(tmp_path: Any) -> None:
         assert "帮我砍两根橡木原木带回来" not in blob
         assert "rt_" in blob
         assert last_route(env).text_chars == len(WOOD_ASK)
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        "帮我砍一根紫杉原木带回来",
+        "帮我砍二〇二根白桦原木带回来",
+        "帮我采集一根云杉原木再采集原木",
+    ],
+)
+async def test_shared_contract_vetoes_legacy_wood_parameter_guesses(
+    tmp_path: Any, message: str
+) -> None:
+    async with stack(tmp_path, "角色回答。") as env:
+        turns, plans = WoodTurns(), WoodPlans()
+        wire(env, turns=turns, plans=plans)
+        await env.say("IdSmoke8D", message)
+        assert turns.calls == 0 and plans.calls == []
+        assert env.tools.executor.traces == []
+        assert last_route(env).route_target == RouteTarget.CLARIFY.value
 
 
 # ============================================================ Phase 8D Follow-up 2：否定护栏
@@ -410,7 +433,7 @@ async def test_negated_wood_is_taken_over_with_zero_action(
     def _boom(*_: Any, **__: Any) -> Any:
         raise AssertionError("否定请求不得进入旧单目标 plan_resource_task")
 
-    monkeypatch.setattr(turn_module, "plan_resource_task", _boom)
+    monkeypatch.setattr(turn_module, "plan_collection_task", _boom)
     async with stack(tmp_path, "角色回答。") as env:
         turns, plans = WoodTurns(), WoodPlans()
         wire(env, turns=turns, plans=plans)
@@ -434,7 +457,7 @@ async def test_ambiguous_negation_clarifies_with_zero_action(
     def _boom(*_: Any, **__: Any) -> Any:
         raise AssertionError("冲突意图不得进入旧单目标 plan_resource_task")
 
-    monkeypatch.setattr(turn_module, "plan_resource_task", _boom)
+    monkeypatch.setattr(turn_module, "plan_collection_task", _boom)
     async with stack(tmp_path, "角色回答。") as env:
         turns, plans = WoodTurns(), WoodPlans()
         wire(env, turns=turns, plans=plans)

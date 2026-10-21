@@ -1,6 +1,23 @@
 # 设计文档索引
 
-最新任务：[Minecraft P2.7：服务端退出生命周期与资源清理](specs/CatooBot%20Minecraft%20P2.7%20%E2%80%94%E2%80%94%20Server%20Shutdown%20Lifecycle%20and%20Resource%20Cleanup.md) · [实施报告与证据](MINECRAFT_P2_7_LIFECYCLE_REPORT.md)。
+2026-10-21 最新补证：[R3.2 最终源码实服矩阵](MINECRAFT_R3_2_LIVE_FINAL_REPORT.md)
+及 [证据 JSON](evidence/MINECRAFT_R3_2_LIVE_FINAL.json)。84/84 USER 负向矩阵与 3/3 LIFE/USER 采集通过；
+LIFE 双门、错误 owner 拒绝、记忆与技能复用已取证。剩余 G3 类别、真实 QQ 文案复测与 G4 发布/CI 未完成，R3 仍 IN_PROGRESS。
+
+2026-10-21 G4 补证：[最终工程与真实 QQ 复测](MINECRAFT_R3_3_G4_ENGINEERING_AND_QQ_REPORT.md) 与 [工程证据](evidence/MINECRAFT_R3_3_ENGINEERING.json)、[QQ 证据](evidence/MINECRAFT_R3_3_QQ_RECHECK.json)。5069 Python、Node 全链、Java 158 项检查通过；真实 QQ 歧义/否定复测无内部原因码、零任务零动作。发布/CI 待完成。
+
+2026-10-21 最新补证：[R3.3 剩余负向矩阵](MINECRAFT_R3_3_REMAINING_NEGATIVE_REPORT.md) 与 [证据](evidence/MINECRAFT_R3_3_REMAINING_NEGATIVE.json)。11/11 真服负向用例（工具耐久、事实缺失、支撑/液体危险、路径失败、库存满、旧掉落、外部移除）通过；R3 仍 IN_PROGRESS，G4 与“事实过期”真服证据待收口。
+
+2026-10-21 当前任务书：[R3.3 剩余负向矩阵、QQ 文案复测与发布冻结](specs/CatooBot%20Minecraft%20R3.3%20%E2%80%94%E2%80%94%20Remaining%20Negative%20Matrix%2C%20QQ%20Recheck%20and%20Release%20Freeze.md)。
+
+2026-10-21 阶段记录：[R3.2 正常装配阶段记录](MINECRAFT_R3_2_NORMAL_ASSEMBLY_REPORT.md)
+及 [证据索引](evidence/MINECRAFT_R3_2_NORMAL_ASSEMBLY.json)。正常装配真实服 24 项通过；历史记录保留。
+
+2026-10-21 最新补证：[R3.1 终态验证竞态与恢复证据报告](MINECRAFT_R3_1_TERMINAL_RECOVERY_REPORT.md)
+及 [R3.1 任务书](specs/CatooBot%20Minecraft%20R3.1%20%E2%80%94%E2%80%94%20Terminal%20Verification%20Races%20and%20Recovery%20Evidence.md)。
+该子项PASS，R3仍未完整验收；下面旧检查点按各自历史范围保留。
+
+最新检查点：[R3 采集证据链跨代/恢复/重放/竞争收口](MINECRAFT_R3_CHAIN_REPORT.md) · [证据 JSON](evidence/MINECRAFT_R3_CHAIN_EVIDENCE.json)。上一检查点：[Python 采集证据消费者](MINECRAFT_R3_CONSUMER_REPORT.md)；R3 仍未完整验收。
 命名规则与旧编号映射：[规格书命名索引](SPEC_NAMING_INDEX.md)。
 
 当前交接入口：[2026-10-18 工程交接与任务书 28 报告](HANDOFF_2026-10-18.md)。
@@ -171,7 +188,7 @@ v0.4 行为引擎（回复延迟/分段/作息，规格不在 docs/specs/）标 
 
 ## 运维速查
 
-Rx v3.0 当前出口对账见 [持续执行状态](ROADMAP_EXECUTION_STATUS.md)、[P3 严格归因报告](MINECRAFT_P3_STRICT_ATTRIBUTION_REPORT.md)、[R1 最终审计](MINECRAFT_R1_FINAL_AUDIT.md) 与 [R2 Life/Play 桥接报告](MINECRAFT_R2_LIFE_PLAY_REPORT.md)；历史报告保留原失败，最新裁定由这些追加证据和对应 CI 共同约束。
+Rx v3.0 当前出口对账见 [持续执行状态](ROADMAP_EXECUTION_STATUS.md)、[P3 严格归因报告](MINECRAFT_P3_STRICT_ATTRIBUTION_REPORT.md)、[R1 最终审计](MINECRAFT_R1_FINAL_AUDIT.md)、[R2 Life/Play 桥接报告](MINECRAFT_R2_LIFE_PLAY_REPORT.md)、[R3 来源证据检查点](MINECRAFT_R3_CONTINUATION_REPORT.md)、[统一采集准入检查点](MINECRAFT_R3_INTENT_ADMISSION_REPORT.md) 、[采集协议检查点](MINECRAFT_R3_PROTOCOL_COMPATIBILITY_REPORT.md)、[采集证据消费者检查点](MINECRAFT_R3_CONSUMER_REPORT.md) 与 [证据链收口检查点](MINECRAFT_R3_CHAIN_REPORT.md)。R3 尚未完整验收；历史报告保留原失败，已发布阶段与当前未发布检查点按各自证据范围核对。
 
 ```bash
 python scripts/backup_db.py                 # 在线快照（VACUUM INTO + 校验）→ ../CatooBot_backups/

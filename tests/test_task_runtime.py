@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import time
 from collections.abc import Mapping
 from typing import Any
 
@@ -29,6 +30,7 @@ from app.tasks.runtime import (
     TaskRuntime,
 )
 from app.tasks.store import InMemoryTaskStore
+from tests.resource_facts import unit_harvest_facts
 
 # ------------------------------------------------------------------ 替身
 
@@ -226,7 +228,7 @@ def simple_plan(
     from app.tasks.models import ExpectedFinalState
 
     return TaskPlan(
-        objective="去附近找一棵橡木，挖一块原木并捡回来",
+        objective="观察附近并移除指定方块",
         steps=built,
         expected_final_state=ExpectedFinalState(inventory_delta=expected or {}),
     )
@@ -274,7 +276,7 @@ async def paused_task(runtime: TaskRuntime, *, plan: TaskPlan | None = None) -> 
 async def test_a_task_creation_requests_one_frozen_plan_confirmation() -> None:
     runtime, _, confirmations, _ = make_runtime()
     record = await runtime.create_task(
-        "去附近找一棵橡木，挖一块原木并捡回来",
+        simple_plan().objective,
         session_id="private:10001",
         user_id="10001",
         origin="user",
@@ -773,7 +775,7 @@ async def test_x_final_verification_uses_a_fresh_safe_read() -> None:
                 session_id="s",
                 user_id="u",
                 origin="user",
-                plan=simple_plan(expected={"oak_log": 1}),
+                plan=simple_plan(steps=[("minecraft_inventory", {})], expected={"oak_log": 1}),
             )
         ).task_id,
         user_id="u",
@@ -792,7 +794,7 @@ async def test_x_failed_verification_fails_the_task() -> None:
         session_id="s",
         user_id="u",
         origin="user",
-        plan=simple_plan(expected={"oak_log": 3}),
+        plan=simple_plan(steps=[("minecraft_inventory", {})], expected={"oak_log": 3}),
     )
     record = await runtime.confirm_and_start(
         record.task_id, user_id="u", session_id="s", origin="user"
@@ -814,6 +816,11 @@ async def test_planner_resolves_action_arguments_before_confirmation() -> None:
                 ok=True,
                 result={
                     "ok": True,
+                    "observation": {
+                        "coverage": "COMPLETE",
+                        "dimension": "minecraft:overworld",
+                        "captured_at": time.time(),
+                    },
                     # 第一个候选比罐头高 6 格（树冠那一截，够不到）→ 计划应该跳过它选下面那个
                     "matches": [
                         {"position": {"x": 103, "y": 70, "z": 141}, "block": {"name": "oak_log"}},
@@ -837,6 +844,9 @@ async def test_planner_resolves_action_arguments_before_confirmation() -> None:
                     "can_dig": world["can_dig"],
                     "reason": world["reason"],
                     "dig_time_ms": 800,
+                    "safety": {"known": True, "allowed": True},
+                    "held_item": {"name": "dirt", "count": 3},
+                    "harvest": unit_harvest_facts(name="dirt", damageable=False, remaining=None),
                 },
             )
         if tool == "minecraft_inventory":
@@ -857,19 +867,19 @@ async def test_planner_resolves_action_arguments_before_confirmation() -> None:
     )
     tools = [step.tool for step in planned.plan.steps]
     assert tools == [
-        "minecraft_equip",
         "minecraft_move_to",
         "minecraft_dig",
         "minecraft_dropped_items",
         "minecraft_pickup_item",
         "minecraft_inventory",
     ]
-    move = planned.plan.steps[1]
+    move = planned.plan.steps[0]
     assert move.arguments == {"x": 103, "y": 64, "z": 141}, (
         "坐标在确认前就已经解析成最终值（而且选的是够得到的那一截，不是树冠上的）"
     )
-    pickup = planned.plan.steps[4]
-    assert pickup.references["entity_id"].from_step == "step_4"
+    pickup = planned.plan.steps[3]
+    assert pickup.references["entity_id"].from_step == "step_2"
+    assert pickup.references["entity_id"].path == "attribution.server_collection.drops.0.entity_id"
     assert planned.plan.expected_final_state.inventory_delta == {"oak_log": 1}
     assert [item.tool for item in planned.observations] == [
         "minecraft_find_blocks",
@@ -878,15 +888,21 @@ async def test_planner_resolves_action_arguments_before_confirmation() -> None:
         "minecraft_dig_capability",
     ]
 
-    # 挖不动（够不着 → 走过去就够得着）→ 计划里必须**写明**要换哪一把工具
+    # A backpack name alone does not prove that an unobserved replacement can harvest.
     world.update({"can_dig": False, "reason": "too_far"})
     planned2 = await plan_resource_task(
         "去附近找一棵橡木，挖一块原木并捡回来",
         observe=observe,
         block_name="minecraft:oak_log",
     )
-    assert planned2.plan.steps[0].tool == "minecraft_equip"
-    assert planned2.plan.steps[0].arguments == {"item": "stone_axe"}
+    assert planned2.plan.steps[0].tool == "minecraft_move_to"
+    assert not any(step.tool == "minecraft_equip" for step in planned2.plan.steps)
+    assert (
+        next(step for step in planned2.plan.steps if step.tool == "minecraft_dig").arguments[
+            "expected_tool"
+        ]
+        == "dirt"
+    )
 
 
 async def test_planner_skips_the_move_step_when_it_can_already_dig() -> None:
@@ -898,13 +914,28 @@ async def test_planner_skips_the_move_step_when_it_can_already_dig() -> None:
                 ok=True,
                 result={
                     "ok": True,
+                    "observation": {
+                        "coverage": "COMPLETE",
+                        "dimension": "minecraft:overworld",
+                        "captured_at": time.time(),
+                    },
                     "matches": [
                         {"position": {"x": 103, "y": 64, "z": 141}, "block": {"name": "oak_log"}}
                     ],
                 },
             )
         if tool == "minecraft_dig_capability":
-            return TaskInvocation(ok=True, result={"ok": True, "can_dig": True, "reason": None})
+            return TaskInvocation(
+                ok=True,
+                result={
+                    "ok": True,
+                    "can_dig": True,
+                    "reason": None,
+                    "safety": {"known": True, "allowed": True},
+                    "held_item": {"name": "stone_axe", "count": 1},
+                    "harvest": unit_harvest_facts(name="stone_axe", damageable=True, remaining=10),
+                },
+            )
         if tool == "minecraft_world":
             return TaskInvocation(
                 ok=True, result={"ok": True, "position": {"x": 100, "y": 64, "z": 140}}

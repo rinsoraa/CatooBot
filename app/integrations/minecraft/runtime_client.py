@@ -124,13 +124,21 @@ class MinecraftRuntimeClient:
         """读附近的掉落物实体（Phase 4H：同步只读语义投影）。"""
         return await self._request("POST", "/minecraft/dropped_items", body={})
 
-    async def pickup_item(self, entity_id: int, expected_item: str) -> dict[str, Any]:
+    async def pickup_item(
+        self,
+        entity_id: int,
+        expected_item: str,
+        *,
+        entity_uuid: str | None = None,
+        expected_break_action: str | None = None,
+    ) -> dict[str, Any]:
         """捡起一个明确的掉落物实体（Phase 4H：启动即 RUNNING）。"""
-        return await self._request(
-            "POST",
-            "/minecraft/pickup_item",
-            body={"entity_id": entity_id, "expected_item": expected_item},
-        )
+        body = {"entity_id": entity_id, "expected_item": expected_item}
+        if entity_uuid is not None:
+            body["entity_uuid"] = entity_uuid
+        if expected_break_action is not None:
+            body["expected_break_action"] = expected_break_action
+        return await self._request("POST", "/minecraft/pickup_item", body=body)
 
     async def recipe_lookup(
         self, item: str, crafting_table: dict[str, int] | None = None
@@ -205,6 +213,9 @@ class MinecraftRuntimeClient:
         z: float,
         expected_block: str,
         expected_tool: str | None = None,
+        *,
+        require_collection: bool = False,
+        expected_empty_hand: bool = False,
     ) -> dict[str, Any]:
         """破坏一个指定方块（Phase 4B；Phase 4I 起可带 expected_tool）。
 
@@ -219,6 +230,10 @@ class MinecraftRuntimeClient:
         }
         if expected_tool is not None:
             body["expected_tool"] = expected_tool
+        if require_collection:
+            body["require_collection"] = True
+        if expected_empty_hand:
+            body["expected_empty_hand"] = True
         return await self._request("POST", "/minecraft/dig", body=body)
 
     async def find_blocks(

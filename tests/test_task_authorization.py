@@ -55,7 +55,7 @@ def make_task_runtime(invoke: Any = None) -> tuple[TaskRuntime, Recorder, FakeCo
 
 async def make_confirmed(runtime: TaskRuntime) -> Any:
     record = await runtime.create_task(
-        "去附近找一棵橡木，挖一块原木并捡回来",
+        simple_plan().objective,
         session_id="private:10001",
         user_id="10001",
         origin="user",
@@ -121,7 +121,7 @@ async def test_2_changed_step_arguments_are_not_authorized() -> None:
 async def test_3_plan_change_invalidates_the_confirmation() -> None:
     runtime, _, confirmations = make_task_runtime()
     record = await runtime.create_task(
-        "去附近找一棵橡木，挖一块原木并捡回来",
+        simple_plan().objective,
         session_id="private:10001",
         user_id="10001",
         origin="user",

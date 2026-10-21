@@ -1,0 +1,141 @@
+{
+  "status": "PASS",
+  "scope": "final-source normal Bot.start; 84 USER negative matrix + 3 LIFE/USER collection cases; isolated profile; no QQ execution claim",
+  "generated_at": "2026-10-21T09:44:23.874Z",
+  "source": {
+    "files": 667,
+    "drift": [],
+    "frozen_at": "2026-10-21T09:09:19.663Z"
+  },
+  "driver": {
+    "file": "combined_matrix_final.py",
+    "sha256": "8158f71e67abb34f3411919bc375851b8c68188e8819034a60f821f77d49ad4f",
+    "base_sha256": "e9ed11c86107a1074e4b065fe09ca5955336a8fc2236fe872c06225ce2d20052",
+    "harness_change": "stop shared BehaviorScheduler immediately after Bot.start in isolated profile; explicit Initiative.check only. No product code or gate change."
+  },
+  "candidate": {
+    "jar_sha256": "59b5c9393b4f2f24472fa3c73d732646b317e95fcdaa5c544d493f67045e3a2c",
+    "backup_sha256": "8ce44c7252a22b25f2d1d8c2a8a4ef6961bdeb70d13c14014498cbd15ba4d08f"
+  },
+  "negative_matrix": {
+    "total": 84,
+    "statuses": {
+      "PASS": 84
+    },
+    "all_pass": true
+  },
+  "life_matrix": {
+    "total": 3,
+    "cases": [
+      {
+        "case_id": "life-source-sand-0",
+        "status": "PASS",
+        "source": "LIFE",
+        "baseline": 0,
+        "final": "SUCCEEDED",
+        "collection_verification": true,
+        "wrong_owner_denied": true
+      },
+      {
+        "case_id": "life-source-sand-3",
+        "status": "PASS",
+        "source": "USER",
+        "baseline": 3,
+        "final": "SUCCEEDED",
+        "collection_verification": true,
+        "wrong_owner_denied": null
+      },
+      {
+        "case_id": "life-source-sand-6",
+        "status": "PASS",
+        "source": "USER",
+        "baseline": 6,
+        "final": "SUCCEEDED",
+        "collection_verification": true,
+        "wrong_owner_denied": null
+      }
+    ]
+  },
+  "life_startup": {
+    "cold_reason": "CHARACTER_RECOVERY",
+    "cold_suppressed": 4,
+    "warm_action": "proposed",
+    "warm_created": [
+      "INT-20261021-005"
+    ],
+    "selected_intent": "INT-20261021-005",
+    "selected_origin": "goal:goal_f5bd33af47(complete_project)",
+    "proposal_id": "TP-20261021-001",
+    "proposal_source": "LIFE",
+    "natural_elapsed_seconds": 567.1235163211823,
+    "candidate_sources": [
+      "GOAL",
+      "MEMORY",
+      "ROUTINE"
+    ]
+  },
+  "memory_skill": {
+    "memory_facts": 2,
+    "skill_counts": {
+      "ACTIVE": 1
+    },
+    "skill_success_count": 3
+  },
+  "restore": {
+    "restored_files": 107,
+    "all_hashes_match_before_restart": true,
+    "removed_extra_world_files": [
+      "world/data/chunks.dat",
+      "world/entities/r.23.30.mca",
+      "world/entities/r.23.31.mca",
+      "world/poi/r.23.30.mca",
+      "world/region/r.22.30.mca",
+      "world/region/r.22.31.mca",
+      "world/region/r.22.32.mca",
+      "world/region/r.23.30.mca",
+      "world/region/r.23.31.mca",
+      "world/region/r.23.32.mca",
+      "world/region/r.24.30.mca",
+      "world/region/r.24.31.mca",
+      "world/region/r.24.32.mca"
+    ],
+    "restored_snapshot": "server-before.zip",
+    "initial_server_running": true,
+    "restored_server_running": true,
+    "restored_server_pid": 48016
+  },
+  "first_failures": [
+    {
+      "attempt": 1,
+      "stage": "RCON first command",
+      "error": "TimeoutError on forceload add while server startup lagged ~6s",
+      "product_cases_started": 0
+    },
+    {
+      "attempt": 2,
+      "stage": "life warm check",
+      "error": "RECENT_INITIATIVE from shared BehaviorScheduler",
+      "negative_matrix": "84/84 PASS"
+    },
+    {
+      "attempt": 3,
+      "stage": "life warm check",
+      "error": "DUPLICATE_INTENT because product.db was reused from attempt-02",
+      "negative_matrix": "84/84 PASS"
+    }
+  ],
+  "artifacts": {
+    "attempt-04/product-results.json": "aacd0645f9a24b588dbbd306db1c951e9c7bb200bd8a18c86f39eac338ed6d1a",
+    "attempt-04/life-product-results.json": "ecd964d95a1d131c05aba02c2f150cde4ed79e9254a6f710c09fade8eabcbe77",
+    "attempt-04/life-startup.json": "a8a61a8d34d46258e7b13ca1bf4ee2e587b48a768811f6d7d71901dc76a6338e",
+    "attempt-04/life-memory-skill.json": "e69ce8c6536f01543f593faf8b1d80009b7ffe822ee33e9420af78590b59e406",
+    "attempt-04/matrix-final.log": "61ece302bdeea82243bd01864f79f723225a96f953bc6050ac32bf0fe2d03862",
+    "attempt-04/matrix-final.stderr.log": "d12d7e8c3c9e60b7093df33a7c6bf65b2b380e3280389380def10334f2f3fcb2",
+    "attempt-04/matrix-final.exit": "9aca8dfce962538fb8131d73f84cada05e4dc79f5a0d3612c511b1150f3e33e2",
+    "attempt-04/product.db": "dabc7b3bc50872afe506e9a8d4a3ea7cdd80f3bbd6f66cf3d7c753c378275966",
+    "restore-receipt.json": "ebb7d8d3dca411a8584f42ba61f10c13cfe259c80028071d3b71823c636baa11",
+    "restore-final.log": "0dca1a5616865577c63be0df7beb3b41ba97c57ac27ac9e9ec349da1547fa76b"
+  },
+  "report": "docs/MINECRAFT_R3_2_LIVE_FINAL_REPORT.md",
+  "raw_private_artifacts": "data/r3/normal-assembly-20261021/live-final-01/ (local; contains private test token and test database, not for publication)"
+}

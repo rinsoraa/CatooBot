@@ -316,6 +316,36 @@ async function main() {
   console.log('[pickup-test] H/N. 成功路径：走过去 → 进入半径 → playerCollect → 背包增加')
   {
     const bot = makeBot()
+    const entity = spawnItem(bot, { x: 5.9, z: 5.9 })
+    const harness = makeHarness()
+    harness.state.bot = bot
+    await harness.runtime.execute('pickup_item', ARGS)
+    const goal = bot.pathfinder.goals.find(row => row.goal).goal
+    assert(!goal.isEnd({ x: 4, y: 64, z: 5 }), 'adjacent integer cell is not a completed pickup navigation goal')
+    entity.position.x += 1
+    assert(goal.hasChanged(), 'one-cell item drift refreshes the exact entity goal')
+    await harness.runtime.stop('geometry counterexample complete')
+  }
+  {
+    const bot = makeBot({ items: { dirt: 1 } })
+    const entity = spawnItem(bot, { count: 1, z: 1 })
+    let waits = 0, closes = 0, releaseProof
+    const proof = new Promise(resolve => { releaseProof = resolve })
+    const state = {
+      targetEntity: entity, entity_id: entity.id, expected_item: 'dirt', count_before: 1,
+      inventory_before: 0, distance_start: 1, distance_collected: 1, navigating: false,
+      scope: { collectedBy: { bot: true, other: false }, gone: true, goneAt: Date.now(), listeners: [] },
+      strictPickup: { wait() { waits++; return proof }, close() { closes++ } },
+    }
+    const pending = PICKUP.wait(bot, ARGS, { cancelled: false }, state)
+    await sleep(90)
+    assert(waits === 1, 'slow signed proof starts exactly one bounded waiter across polling ticks')
+    releaseProof({ strict_self_proof: true })
+    const result = await pending
+    assert(result.collected && closes === 1, 'signed proof waiter settles once and closes its context')
+  }
+  {
+    const bot = makeBot()
     const entity = spawnItem(bot, { z: 5 })
     const harness = makeHarness()
     harness.state.bot = bot

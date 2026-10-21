@@ -400,7 +400,6 @@ class TestVerticalSlice:
         planned = await restarted.suggest("去挖一块橡木并捡回来")
         assert planned is not None, "重启后的实例必须能检索并物化技能"
         assert [step.tool for step in planned.plan.steps] == [
-            "minecraft_equip",
             "minecraft_move_to",
             "minecraft_dig",
             "minecraft_dropped_items",

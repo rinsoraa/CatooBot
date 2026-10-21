@@ -2,10 +2,10 @@
 
 **阶段定位：** Follow-up 3 的定向补充审计；优先验证并修复“合法词元拼成多个动作，仍被当成单任务接受”的风险。
 
-**仓库：** `rinsoraa/CatooBot`
-**基线提交：** `0c527bf33402cf2a36b0c9d4e88f6327e499931e`
-**基线链接：** https://github.com/rinsoraa/CatooBot/commit/0c527bf33402cf2a36b0c9d4e88f6327e499931e
-**权威开发目录：** `E:\WorkSpace ZCode\CatooBot`
+**仓库：** `rinsoraa/CatooBot`  
+**基线提交：** `0c527bf33402cf2a36b0c9d4e88f6327e499931e`  
+**基线链接：** https://github.com/rinsoraa/CatooBot/commit/0c527bf33402cf2a36b0c9d4e88f6327e499931e  
+**权威开发目录：** `E:\WorkSpace ZCode\CatooBot`  
 **发布镜像：** `E:\WorkSpace ZCode\CatooBot_github`
 
 ---

@@ -36,6 +36,13 @@ from app.tasks.models import (
     canonical_item_name,
     finite_number,
 )
+from app.tasks.resource_contract import (
+    ResourceContractError,
+    require_harvest_probe,
+    require_resource_observation,
+    resource_spec,
+)
+from app.tasks.resource_intent import parse_collection_request
 from app.tasks.validation import collect_references
 from app.tasks.workbench import WorkbenchObservation, WorkbenchStatus, observe_workbench
 
@@ -51,10 +58,6 @@ SAFE_OBSERVATION_TOOLS = frozenset(
         "minecraft_container_inspect",
     }
 )
-
-#: 挖叶子/木头这类用斧头，石头/矿物用镐 —— 只是"计划里写明要换哪把"，
-#: 不是"运行时自动挑最好的工具"（§四十二：那是后续 Tool Capability Knowledge）
-_TOOL_SUFFIX_BY_BLOCK = {"log": "_axe", "wood": "_axe", "planks": "_axe"}
 
 
 @dataclass
@@ -170,6 +173,20 @@ def observation_coverage(payload: Mapping[str, Any] | None) -> tuple[str, str]:
     return coverage, str(observation.get("coverage_reason") or "")
 
 
+async def plan_collection_task(objective: str, *, observe: ObserveFn) -> PlannedTask:
+    """One normal collection route for USER, LIFE, skills and replanning."""
+    request = parse_collection_request(objective)
+    if request is None or request.problem:
+        raise ObservationFailed(
+            f"resource.intent.{request.problem if request else 'target_unresolved'}"
+        )
+    if request.family == "log":
+        return await plan_wood_task(
+            objective, observe=observe, candidates=request.candidates, count=request.count
+        )
+    return await plan_resource_task(objective, observe=observe, block_name=request.candidates[0])
+
+
 async def plan_resource_task(
     objective: str,
     *,
@@ -185,8 +202,18 @@ async def plan_resource_task(
     只有 SAFE 观察会在这里执行（find_blocks / dig_capability / inventory）；
     其它步骤只是**写进计划**，等用户确认后由 TaskRuntime 执行。
     """
-    block = canonical_item_name(block_name)
-    drop = canonical_item_name(drop_item or block)
+    try:
+        spec = resource_spec(block_name, drop_item=drop_item)
+    except ResourceContractError as exc:
+        raise ObservationFailed(str(exc)) from exc
+    block, drop = spec.block, spec.drop
+    request = parse_collection_request(objective)
+    if request is None or request.problem:
+        raise ObservationFailed(
+            f"resource.intent.{request.problem if request else 'target_unresolved'}"
+        )
+    if block not in request.candidates or request.count != 1:
+        raise ObservationFailed("resource.intent.target_or_quantity_mismatch")
     observations: list[Observation] = []
 
     found = await _safe_observe(
@@ -203,7 +230,16 @@ async def plan_resource_task(
             summary=getattr(found, "summary", ""),
         )
     )
-    matches = found_result.get("matches") or []
+    raw_matches = found_result.get("matches") or []
+    matches = [
+        match
+        for match in raw_matches
+        if isinstance(match, Mapping)
+        and isinstance(match.get("block"), Mapping)
+        and canonical_item_name(match["block"].get("name")) == block
+    ]
+    if raw_matches and not matches:
+        raise ObservationFailed("resource.target_unverified")
     if not found_result.get("ok"):
         raise ObservationFailed(f"附近 {max_distance} 格内没有找到 {block}")
     if not matches:
@@ -214,6 +250,10 @@ async def plan_resource_task(
             f"{prefix}:{coverage}:{why}:"
             + coverage_message(coverage, radius=int(max_distance), target=block)
         )
+    try:
+        require_resource_observation(found_result)
+    except ResourceContractError as exc:
+        raise ObservationFailed(str(exc)) from exc
     world_view = await _safe_observe(observe, "minecraft_world", {})
     world_result = _result_of(world_view)
     observations.append(
@@ -267,6 +307,11 @@ async def plan_resource_task(
         )
     )
 
+    try:
+        require_harvest_probe(probe_result)
+    except ResourceContractError as exc:
+        raise ObservationFailed(str(exc)) from exc
+
     steps: list[TaskStep] = []
     index = 0
 
@@ -294,27 +339,13 @@ async def plan_resource_task(
             f"目标 ({position['x']},{position['y']},{position['z']}) 现在挖不了：{probe_reason}"
         )
 
-    # 工具：只有"现在挖不动"或者主手为空时才把换工具写进计划（而且要写明具体是哪一把）
-    held = inventory_view.get("held_item") or {}
+    # 采收事实属于这次 capability 观察的实际主手；不能拿更早库存快照替代。
+    # 另一把工具尚未取得对应采收事实时，不能按名字后缀猜它适用再暗中换用。
+    held = probe_result.get("held_item") or {}
     held_name = canonical_item_name(held.get("name")) if isinstance(held, Mapping) else ""
-    needs_tool = not can_dig or not held_name
-    chosen_tool = ""
-    if needs_tool:
-        if equip_tool:
-            chosen_tool = canonical_item_name(equip_tool)
-        else:
-            suffix = next(
-                (value for key, value in _TOOL_SUFFIX_BY_BLOCK.items() if block.endswith(key)), ""
-            )
-            if suffix:
-                available = [
-                    canonical_item_name(row.get("name"))
-                    for row in (inventory_view.get("items") or [])
-                    if isinstance(row, Mapping) and row.get("name")
-                ]
-                chosen_tool = next((name for name in available if name.endswith(suffix)), "")
-        if chosen_tool:
-            add("minecraft_equip", {"item": chosen_tool}, "MEDIUM")
+    if equip_tool and canonical_item_name(equip_tool) != held_name:
+        raise ObservationFailed("resource.requested_tool_not_observed")
+    chosen_tool = held_name
 
     if not can_dig:
         add(
@@ -329,21 +360,28 @@ async def plan_resource_task(
             "y": int(position["y"]),
             "z": int(position["z"]),
             "expected_block": block,
-            **({"expected_tool": chosen_tool} if chosen_tool else {}),
+            "require_collection": True,
+            **({"expected_tool": chosen_tool} if chosen_tool else {"expected_empty_hand": True}),
         },
         "MEDIUM",
     )
+    dig_step_id = steps[-1].step_id
     add("minecraft_dropped_items", {}, "SAFE")
-    drop_step_id = steps[-1].step_id
-    # entity_id 只能是"动作之后才存在"的事实（掉落物实体刚被挖出来）→ 用引用；
-    # 但 expected_item 是**计划时就知道的**（我们要捡的就是 drop）→ 写成常量。
-    # 这样即使最近的那个掉落物不是目标（别人扔的鸡蛋…），pickup 也会因为
-    # expected_item 不符而失败，而不是闷头捡错东西（fail-closed，§四十一）。
+    # Only the signed result of this break establishes item provenance. The
+    # nearby observation may contain older drops and has no ordering authority.
     add(
         "minecraft_pickup_item",
         {
-            "entity_id": {"from_step": drop_step_id, "path": "items.0.entity_id"},
+            "entity_id": {
+                "from_step": dig_step_id,
+                "path": "attribution.server_collection.drops.0.entity_id",
+            },
             "expected_item": drop,
+            "entity_uuid": {
+                "from_step": dig_step_id,
+                "path": "attribution.server_collection.drops.0.uuid",
+            },
+            "expected_break_action": {"from_step": dig_step_id, "path": "attribution.action_id"},
         },
         "MEDIUM",
     )
@@ -460,7 +498,16 @@ async def plan_wood_task(
 
     原木不需要工具（徒手可破），因此这里**不写 equip 步骤**，动作步数 ≤ 6（预算 8）。
     """
+    request = parse_collection_request(objective)
+    if request is None or request.problem:
+        raise ObservationFailed(
+            f"resource.intent.{request.problem if request else 'target_unresolved'}"
+        )
     names = [canonical_item_name(name) for name in candidates if str(name or "").strip()]
+    if request.family != "log" or any(name not in request.candidates for name in names):
+        raise ObservationFailed("resource.intent.target_mismatch")
+    if isinstance(count, bool) or not isinstance(count, int) or count != request.count:
+        raise ObservationFailed("resource.intent.quantity_mismatch")
     if not names:
         raise ObservationFailed("no_wood_target：木材支持矩阵为空，没有可观察的原木种类")
     wanted = max(1, min(int(count), WOOD_MAX_TARGETS))
@@ -482,7 +529,7 @@ async def plan_wood_task(
     targets = [
         target
         for target in (_wood_match_target(match) for match in (found_result.get("matches") or []))
-        if target is not None
+        if target is not None and target.block in names
     ]
     if not targets:
         coverage, why = observation_coverage(found_result)
@@ -491,6 +538,14 @@ async def plan_wood_task(
             f"{prefix}:{coverage}:{why}:no_wood_target:"
             + coverage_message(coverage, radius=int(max_distance), target="原木")
         )
+
+    try:
+        require_resource_observation(found_result)
+        for name in names:
+            if resource_spec(name).family != "log":
+                raise ResourceContractError("resource.not_supported_log")
+    except ResourceContractError as exc:
+        raise ObservationFailed(str(exc)) from exc
 
     world_view = await _safe_observe(observe, "minecraft_world", {})
     world_result = _result_of(world_view)
@@ -548,6 +603,12 @@ async def plan_wood_task(
         reason = probe_result.get("reason")
         if not can_dig and reason and reason != "too_far":
             raise ObservationFailed(f"目标 ({target.x},{target.y},{target.z}) 现在挖不了：{reason}")
+        try:
+            require_harvest_probe(probe_result, required_uses=len(chosen))
+        except ResourceContractError as exc:
+            raise ObservationFailed(str(exc)) from exc
+        held = probe_result.get("held_item") or {}
+        chosen_tool = canonical_item_name(held.get("name")) if isinstance(held, Mapping) else ""
         if not can_dig:
             add(
                 "minecraft_move_to",
@@ -561,16 +622,31 @@ async def plan_wood_task(
                 "y": target.y,
                 "z": target.z,
                 "expected_block": target.block,
+                "require_collection": True,
+                **(
+                    {"expected_tool": chosen_tool} if chosen_tool else {"expected_empty_hand": True}
+                ),
             },
             "MEDIUM",
         )
+        dig_step_id = steps[-1].step_id
         add("minecraft_dropped_items", {}, "SAFE")
-        drop_step_id = steps[-1].step_id
         add(
             "minecraft_pickup_item",
             {
-                "entity_id": {"from_step": drop_step_id, "path": "items.0.entity_id"},
+                "entity_id": {
+                    "from_step": dig_step_id,
+                    "path": "attribution.server_collection.drops.0.entity_id",
+                },
                 "expected_item": target.block,
+                "entity_uuid": {
+                    "from_step": dig_step_id,
+                    "path": "attribution.server_collection.drops.0.uuid",
+                },
+                "expected_break_action": {
+                    "from_step": dig_step_id,
+                    "path": "attribution.action_id",
+                },
             },
             "MEDIUM",
         )
@@ -1446,7 +1522,7 @@ class ModelTaskPlanner:
                 )
             )
         return TaskPlan(
-            objective=str(payload.get("objective") or objective),
+            objective=str(objective),
             steps=steps,
             expected_final_state=ExpectedFinalState.from_payload(
                 payload.get("expected_final_state")

@@ -21,7 +21,6 @@ from typing import Any
 from app.integrations.minecraft.agent import ACTION_RISK
 from app.tasks.agent_plan import PlanTarget
 from app.tasks.craft_intent import parse_craft_request
-from app.tasks.intent import parse_wood_request
 from app.tasks.planner import (
     EXPLORE_MAX_LEGS,
     ObservationFailed,
@@ -32,6 +31,7 @@ from app.tasks.planner import (
     plan_resource_task,
     plan_wood_task,
 )
+from app.tasks.resource_intent import parse_collection_request
 from app.tasks.turn import DROP_OVERRIDES, block_for
 
 #: §五：SAFE 观察的签名（与 TaskTurnHandler 用的同一条既有工具通道）
@@ -100,18 +100,13 @@ EXPLORE_DEFAULT_DISTANCE = 24.0
 
 
 def detect_shape(objective: str) -> str:
-    """确定性形状判定：follow / resource / explore / unknown（绝不靠模型猜）。
-
-    Phase 8D 的木材形状**不在这里**判定：它由 MC 入口用同一套确定性解析
-    （``intent.parse_wood_request``）判明后，以 ``shape_hint`` 显式传给 :meth:`plan`。
-    这样既有调用方（技能感知资源计划 / LIFE / QQ follow）的形状判定**逐字不变**。
-    """
+    """Deterministic shape; resource includes the shared bounded log family."""
     text = str(objective or "").strip()
     if not text:
         return "unknown"
     if any(keyword in text for keyword in FOLLOW_KEYWORDS):
         return "follow"
-    if block_for(text):
+    if parse_collection_request(text) is not None:
         return "resource"
     if any(keyword.lower() in text.lower() for keyword in EXPLORE_KEYWORDS):
         return "explore"
@@ -169,6 +164,21 @@ class BoundedAgentPlanner:
         就是这么做的）；留空时行为与 Phase 8D 之前**逐字一致**。
         """
         shape = str(shape_hint or "") or detect_shape(objective)
+        collection = parse_collection_request(objective)
+        if collection is not None and shape != "craft":
+            if collection.problem:
+                return PlanningResult(
+                    outcome=PlanningOutcome.NEEDS_MORE_INFORMATION,
+                    reason=f"resource.intent.{collection.problem}",
+                    checks=(
+                        {
+                            "check": "collection_intent",
+                            "ok": False,
+                            "detail": {"problem": collection.problem},
+                        },
+                    ),
+                )
+            shape = "wood" if collection.family == "log" else "resource"
         if shape == "follow":
             return self._plan_follow(objective, target or PlanTarget())
         if shape == "wood":
@@ -381,7 +391,7 @@ class BoundedAgentPlanner:
         allow_medium=false 时直接 BLOCKED_BY_POLICY，**不创建可执行任务** —— 这正是
         旧的 MC 资源路径（turn.py 直接调 plan_resource_task）绕开的那道闸。
         """
-        request = parse_wood_request(objective)
+        request = parse_collection_request(objective)
         if request is None:
             return self._plan_unknown(objective)
         if request.problem:
@@ -427,7 +437,7 @@ class BoundedAgentPlanner:
                     {
                         "check": "risk_flags",
                         "ok": False,
-                        "detail": {"reason": blocked, "capped": request.capped},
+                        "detail": {"reason": blocked, "capped": False},
                     },
                 ),
             )
@@ -436,7 +446,7 @@ class BoundedAgentPlanner:
             "steps": len(planned.plan.steps),
             "targets": targets,
             "requested": request.requested,
-            "capped": request.capped,
+            "capped": False,
             "truncated": targets < request.count,
         }
         if targets < request.count:

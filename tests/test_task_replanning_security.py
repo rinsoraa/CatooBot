@@ -45,7 +45,7 @@ USER = "空凛"
 
 def dig_plan(*, x: int = 10, z: int = 10, expected: str = "oak_log") -> TaskPlan:
     return TaskPlan(
-        objective="挖一块橡木原木并捡回来",
+        objective="移除指定的一块原木",
         steps=[
             TaskStep(
                 step_id="step_1",
@@ -73,17 +73,21 @@ async def create_confirmed(runtime: Any, plan: TaskPlan | None = None) -> Any:
 # ------------------------------------------------------------------ 1/2：v1 ≠ v2
 
 
-async def test_1_v1_confirmation_cannot_authorize_v2() -> None:
+@pytest.mark.parametrize("collection", [False, True])
+async def test_1_v1_confirmation_cannot_authorize_v2(collection: bool) -> None:
     """同一 task / 同一 user，换了计划也不行 —— 授权绑的是**那一版**的 hash 与版本号。"""
     runtime, invoke, _, _ = make_runtime()
-    record = await create_confirmed(runtime)
+    from tests.test_task_recovery import dig_plan as collection_plan
+
+    factory = collection_plan if collection else dig_plan
+    record = await create_confirmed(runtime, factory())
     assert record.authorization is not None
     v1_hash = record.plan_hash
     actions_before = list(invoke.world_actions)
 
     await runtime.recover(record.task_id)  # 世界变了 → REPLANNING
     replanned = await runtime.replan(
-        record.task_id, dig_plan(x=99, z=99), reason=ReplanReason.WORLD_CHANGED.value
+        record.task_id, factory(x=99, z=99), reason=ReplanReason.WORLD_CHANGED.value
     )
     assert replanned.state is TaskState.PENDING_CONFIRMATION
     assert replanned.authorization is None, "重规划必须清掉旧授权"

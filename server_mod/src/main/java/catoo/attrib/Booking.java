@@ -22,12 +22,13 @@ final class Booking {
     static final class Reservation {
         final String id; final String actionId; final String nonce; final String dim; final String pos;
         final String expectedId; final String sessionRef; final long seq; final String playerUuid;
-        final long expiresAtNanos; boolean consumed = false;
+        final long expiresAtNanos; final String collectionProtocol; boolean consumed = false;
         Reservation(String id, String actionId, String nonce, String dim, String pos, String expectedId,
-                String sessionRef, long seq, String playerUuid, long ttlMs) {
+                String sessionRef, long seq, String playerUuid, long ttlMs, String collectionProtocol) {
             this.id = id; this.actionId = actionId; this.nonce = nonce; this.dim = dim; this.pos = pos;
             this.expectedId = expectedId; this.sessionRef = sessionRef; this.seq = seq;
             this.playerUuid = playerUuid;
+            this.collectionProtocol = collectionProtocol;
             this.expiresAtNanos = System.nanoTime() + ttlMs * 1_000_000L;
         }
     }
@@ -163,6 +164,8 @@ final class Booking {
     ReserveResult reserve(Map<String, String> fields, Function<Map<String, String>, String> blockAt,
             Predicate<ReserveResult> commitGate) {
         fields = Map.copyOf(fields);
+        String protocolError = CollectionProtocol.check(fields, true, false);
+        if (!protocolError.isEmpty()) return new ReserveResult(false, protocolError, "", 409);
         String sessionRef = fields.getOrDefault("session_ref", "").trim();
         Session session;
         String actionId = fields.getOrDefault("action_id", "").trim();
@@ -236,7 +239,8 @@ final class Booking {
                 return new ReserveResult(false, "capacity", "", 503);
             }
             Reservation reservation = new Reservation(UUID.randomUUID().toString(), actionId, nonce, dim, pos, expected,
-                    session.ref, session.seq, session.uuid, Math.max(1000L, Math.min(ttl, 600000L)));
+                    session.ref, session.seq, session.uuid, Math.max(1000L, Math.min(ttl, 600000L)),
+                    fields.getOrDefault("collection_protocol", ""));
             ReserveResult result = new ReserveResult(true, "ok", reservation.id, 200);
             reservations.ensureCapacity(reservations.size() + 1);
             // Linearization point: the request's success CAS must beat its cancellation CAS.

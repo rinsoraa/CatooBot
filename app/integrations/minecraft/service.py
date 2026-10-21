@@ -21,6 +21,7 @@ from collections import deque
 from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
+from uuid import UUID
 
 from app.config.settings import PROJECT_ROOT, MinecraftConfig
 from app.integrations.minecraft.events import MinecraftBridgeEvent, parse_bridge_event
@@ -1495,8 +1496,14 @@ class MinecraftService:
 
     @staticmethod
     def validate_dig(
-        x: Any, y: Any, z: Any, expected_block: Any, expected_tool: Any = None
-    ) -> tuple[dict[str, float], str, str | None]:
+        x: Any,
+        y: Any,
+        z: Any,
+        expected_block: Any,
+        expected_tool: Any = None,
+        *,
+        require_collection: bool = False,
+    ) -> tuple[dict[str, float], str, str | None, bool]:
         """dig 的参数校验（纯函数，抛 :class:`MinecraftActionInvalid`）。
 
         调用方（WebUI 调试端点）先校验再进确认门：垃圾参数不该挂出一条待确认。
@@ -1520,8 +1527,10 @@ class MinecraftService:
         # 带换行/制表的方块名一定是模型拼错了，宁可让它重来
         if any(ord(ch) < 32 or ord(ch) == 127 for ch in expected_block):
             raise MinecraftActionInvalid("expected_block 不能包含控制字符")
+        if not isinstance(require_collection, bool):
+            raise MinecraftActionInvalid("require_collection 必须是布尔值")
         tool = MinecraftService.validate_expected_tool(expected_tool)
-        return coords, expected_block.strip(), tool
+        return coords, expected_block.strip(), tool, require_collection
 
     @staticmethod
     def validate_expected_tool(expected_tool: Any) -> str | None:
@@ -1860,7 +1869,14 @@ class MinecraftService:
                 self._mark_runtime_down(str(exc))
             raise _translate(exc) from exc
 
-    async def pickup_item(self, entity_id: Any, expected_item: Any) -> dict[str, Any]:
+    async def pickup_item(
+        self,
+        entity_id: Any,
+        expected_item: Any,
+        *,
+        entity_uuid: Any = None,
+        expected_break_action: Any = None,
+    ) -> dict[str, Any]:
         """走过去捡起**一个明确指定**的掉落物实体（Phase 4H · MEDIUM · 需要用户确认）。
 
         一次只捡一个实体：不捡附近所有掉落物、不自动挖、不自动 loot、不追超过上限的距离。
@@ -1868,9 +1884,29 @@ class MinecraftService:
         """
         self._require_enabled()
         clean_id, clean_item = self.validate_pickup(entity_id, expected_item)
+        clean_uuid: str | None = None
+        if entity_uuid is not None:
+            if not isinstance(entity_uuid, str):
+                raise MinecraftActionInvalid("entity_uuid 必须是字符串")
+            try:
+                clean_uuid = str(UUID(entity_uuid))
+            except (ValueError, AttributeError) as exc:
+                raise MinecraftActionInvalid("entity_uuid 必须是实体 UUID") from exc
+        extra: dict[str, Any] = {}
+        if expected_break_action is not None:
+            if (
+                not isinstance(expected_break_action, str)
+                or not 1 <= len(expected_break_action) <= 128
+                or any(not 33 <= ord(ch) <= 126 for ch in expected_break_action)
+                or clean_uuid is None
+            ):
+                raise MinecraftActionInvalid("expected_break_action 必须绑定有效动作与实体 UUID")
+            extra["expected_break_action"] = expected_break_action
         try:
             await self._ensure_runtime()
-            return await self._client.pickup_item(clean_id, clean_item)
+            return await self._client.pickup_item(
+                clean_id, clean_item, entity_uuid=clean_uuid, **extra
+            )
         except MinecraftRuntimeError as exc:
             if exc.unreachable:
                 self._mark_runtime_down(str(exc))
@@ -2081,7 +2117,15 @@ class MinecraftService:
             raise _translate(exc) from exc
 
     async def dig(
-        self, x: Any, y: Any, z: Any, expected_block: Any, expected_tool: Any = None
+        self,
+        x: Any,
+        y: Any,
+        z: Any,
+        expected_block: Any,
+        expected_tool: Any = None,
+        *,
+        require_collection: bool = False,
+        expected_empty_hand: bool = False,
     ) -> dict[str, Any]:
         """破坏**一个**明确指定的方块（Phase 4B · MEDIUM · 需要用户确认）。
 
@@ -2094,10 +2138,23 @@ class MinecraftService:
         事件送达（成功额外带 ``result.tool_expected`` / ``tool_actual``）。
         """
         self._require_enabled()
-        coords, expected, tool = self.validate_dig(x, y, z, expected_block, expected_tool)
+        coords, expected, tool, require_collection = self.validate_dig(
+            x, y, z, expected_block, expected_tool, require_collection=require_collection
+        )
+        if not isinstance(expected_empty_hand, bool) or (expected_empty_hand and tool):
+            raise MinecraftActionInvalid("expected_empty_hand 与 expected_tool 不得冲突")
+        extra = {"expected_empty_hand": True} if expected_empty_hand else {}
         try:
             await self._ensure_runtime()
-            return await self._client.dig(coords["x"], coords["y"], coords["z"], expected, tool)
+            return await self._client.dig(
+                coords["x"],
+                coords["y"],
+                coords["z"],
+                expected,
+                tool,
+                require_collection=require_collection,
+                **extra,
+            )
         except MinecraftRuntimeError as exc:
             if exc.unreachable:
                 self._mark_runtime_down(str(exc))

@@ -26,8 +26,9 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from typing import Any
 
-from app.tasks.models import ExpectedFinalState, TaskPlan, TaskState, TaskStep
-from app.tasks.planner import Observation, PlannedTask
+from app.tasks.models import TaskState, canonical_item_name
+from app.tasks.planner import ObservationFailed, PlannedTask, plan_collection_task
+from app.tasks.resource_intent import parse_collection_request
 from app.tasks.skill import (
     SKILL_SCHEMA_VERSION,
     Applicability,
@@ -45,7 +46,7 @@ from app.tasks.skill_learning import (
     classify_reuse,
     qualify,
 )
-from app.tasks.validation import collect_references, validate_plan
+from app.tasks.validation import validate_plan
 
 #: 计划里携带技能引用的观察条目标识（**不进 plan_hash**：只做审计与回流归因）
 SKILL_REFERENCE_TOOL = "skill_reference"
@@ -863,81 +864,75 @@ class SkillService:
     async def materialize(self, skill: ProceduralSkill, *, objective: str) -> PlannedTask | None:
         """把技能模板物化成**经 schema 校验**的计划候选（坐标槽位用新鲜 SAFE 观察解析）。"""
 
-        sample = str(skill.extra.get("sample_objective") or "")
-        block = self._target_block(skill)
-        if not block:
+        request = parse_collection_request(objective)
+        block = canonical_item_name(self._target_block(skill))
+        if request is None or request.problem or block not in request.candidates:
             return None
-        observations: list[Observation] = []
-        found = await self._safe_observe(
-            "minecraft_find_blocks",
-            {"block_names": [block], "max_distance": 16, "max_results": 8},
-        )
-        if found is None:
+        if self.observe is None:
             return None
-        result = getattr(found, "result", None)
-        matches = list((result or {}).get("matches") or []) if isinstance(result, Mapping) else []
-        if not matches:
+        # A learned collection method can propose its target/tool, but cannot
+        # reuse coordinates, stale tool facts or legacy nearby-drop references.
+        # Rematerialize the bounded method through the same current SAFE facts.
+        allowed = {
+            "minecraft_equip",
+            "minecraft_move_to",
+            "minecraft_dig",
+            "minecraft_dropped_items",
+            "minecraft_pickup_item",
+            "minecraft_inventory",
+        }
+        if any(step.tool not in allowed for step in skill.steps):
             return None
-        position = dict((matches[0] or {}).get("position") or {})
-        if not all(key in position for key in ("x", "y", "z")):
+        try:
+            planned = await plan_collection_task(objective, observe=self.observe)
+        except ObservationFailed:
             return None
-        observations.append(
-            Observation(
-                tool="minecraft_find_blocks",
-                arguments={"block_names": [block], "max_distance": 16, "max_results": 8},
-                result=dict(result) if isinstance(result, Mapping) else {},
-                summary=getattr(found, "summary", ""),
-            )
-        )
-        probe = await self._safe_observe("minecraft_dig_capability", position)
-        if probe is not None:
-            observations.append(
-                Observation(
-                    tool="minecraft_dig_capability",
-                    arguments=dict(position),
-                    result=dict(getattr(probe, "result", None) or {}),
-                    summary=getattr(probe, "summary", ""),
-                )
-            )
-        steps = []
-        for step in skill.steps:
-            arguments = _substitute(dict(step.arguments), position)
-            steps.append(
-                TaskStep(
-                    step_id=step.step_id,
-                    tool=step.tool,
-                    arguments=arguments,
-                    risk=step.risk,
-                    depends_on=step.depends_on,
-                    references=collect_references(arguments),
-                )
-            )
+        plan = planned.plan
+        digs = [step for step in plan.steps if step.tool == "minecraft_dig"]
+        learned_tools = {
+            canonical_item_name(step.arguments.get("item"))
+            for step in skill.steps
+            if step.tool == "minecraft_equip"
+        } | {
+            canonical_item_name(step.arguments.get("expected_tool"))
+            for step in skill.steps
+            if step.tool == "minecraft_dig" and step.arguments.get("expected_tool")
+        }
+        if learned_tools and any(
+            canonical_item_name(step.arguments.get("expected_tool")) not in learned_tools
+            for step in digs
+        ):
+            return None
+        if len(learned_tools) > 1:
+            return None
+        if any(
+            canonical_item_name(step.arguments.get("expected_block")) != block
+            for step in skill.steps
+            if step.tool == "minecraft_dig"
+        ):
+            return None
         criteria = {
-            str(item.params.get("item") or ""): int(item.params.get("count") or 0)
+            canonical_item_name(item.params.get("item")): int(item.params.get("count") or 0)
             for item in skill.success_criteria
             if str(item.kind) == "inventory_delta"
         }
-        plan = TaskPlan(
-            objective=str(objective or sample)[:120],
-            steps=steps,
-            expected_final_state=ExpectedFinalState(inventory_delta=criteria),
-            observations=[
-                # 注意：只有 **TaskPlan.observations** 会随任务一起持久化（运行时字段），
-                # 这里是①新鲜观察 ②技能引用 —— 二者都是审计，不进 plan_hash。
-                *[item.to_payload() for item in observations],
-                {
-                    "tool": SKILL_REFERENCE_TOOL,
-                    "arguments": {},
-                    "result": {
-                        "skill_id": skill.skill_id,
-                        "skill_version": int(skill.version),
-                        "fingerprint": skill.fingerprint,
-                        "status": skill.status,
-                        "source": "procedural_skill",
-                    },
-                    "summary": f"复用技能 {skill.skill_id}（{skill.status}）",
+        if criteria != plan.expected_final_state.inventory_delta:
+            return None
+        observations = planned.observations
+        plan.observations.append(
+            {
+                "tool": SKILL_REFERENCE_TOOL,
+                "arguments": {},
+                "result": {
+                    "skill_id": skill.skill_id,
+                    "skill_version": int(skill.version),
+                    "fingerprint": skill.fingerprint,
+                    "status": skill.status,
+                    "source": "procedural_skill",
+                    "admission": "fresh_collection_contract",
                 },
-            ],
+                "summary": f"复用技能 {skill.skill_id}（{skill.status}）",
+            }
         )
         snapshot = self._tools_snapshot()
         problems = validate_plan(

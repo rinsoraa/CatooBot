@@ -26,10 +26,11 @@ DIG_CAPABILITY_METADATA = ToolMetadata(
     description=(
         "只读查询：罐头**现在站着的位置、现在的主手**，对指定方块（整数坐标）能不能挖、"
         "预计需要多少毫秒。返回 block / held_item / 两种口径的距离 / can_dig / "
-        "dig_time_ms / reason。"
+        "dig_time_ms / reason，以及 harvest.known / harvest.can_harvest，"
+        "区分能破坏与当前工具能否采收到掉落；采收元数据缺失时为未知。"
         "不会换工具、不会导航、不会挖——只回答事实。"
     ),
-    version="0.1.0",
+    version="0.2.0",
     category="information",
     tags=["minecraft", "dig", "capability", "tool", "read-only"],
     keywords=[

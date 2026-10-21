@@ -23,6 +23,8 @@ from app.tasks.agent_planner import (
     PlanTarget,
     detect_shape,
 )
+from app.tasks.resource_intent import parse_collection_request
+from app.tasks.validation import collection_plan_problems
 
 #: 审计里标记"这一份计划来自技能复用"
 SKILL_REUSE_REASON = "skill_plan_ready"
@@ -50,6 +52,7 @@ class SkillAwarePlanner:
         *,
         target: PlanTarget | None = None,
         observe: Any = None,
+        shape_hint: str = "",
     ) -> PlanningResult:
         suggestion = await self._suggest(objective)
         if suggestion is not None:
@@ -78,6 +81,10 @@ class SkillAwarePlanner:
                     "source": "procedural_skill",
                 },
             )
+        if shape_hint:
+            return await self.base.plan(
+                objective, target=target, observe=observe, shape_hint=shape_hint
+            )
         return await self.base.plan(objective, target=target, observe=observe)
 
     def _reference_of(self, suggestion: Any) -> dict[str, Any]:
@@ -91,6 +98,9 @@ class SkillAwarePlanner:
             return {}
 
     async def _suggest(self, objective: str) -> Any:
+        request = parse_collection_request(objective)
+        if request is None or request.problem:
+            return None
         if self.skills is None:
             return None
         if detect_shape(objective) != "resource":
@@ -101,6 +111,10 @@ class SkillAwarePlanner:
         except Exception:  # noqa: BLE001 - 技能异常 = 回退既有规划器
             return None
         if suggestion is None:
+            return None
+        if collection_plan_problems(suggestion.plan) or collection_plan_problems(
+            suggestion.plan, objective=objective, required=True
+        ):
             return None
         # 基规划器的风险闸门对技能计划**同样生效**（allow_medium=false 时 MEDIUM 技能不许
         # 被当成"可执行候选"塞进来）——不通过就交给基规划器给出它自己的 BLOCKED_BY_POLICY。

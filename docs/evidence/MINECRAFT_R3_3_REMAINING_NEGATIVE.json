@@ -1,0 +1,211 @@
+{
+  "status": "PASS",
+  "scope": "R3.3 remaining G3 negative categories; normal Bot.start; isolated SQLite; no QQ execution",
+  "generated_at": "2026-10-21T10:32:44.790Z",
+  "source": {
+    "files": 667,
+    "drift": []
+  },
+  "driver": {
+    "file": "remaining_matrix.py",
+    "sha256": "21fba35decfa18a701505953af9e7890ab214c8c2bce2cd21d0eaf2f7abe2c57"
+  },
+  "candidate": {
+    "jar_sha256": "59b5c9393b4f2f24472fa3c73d732646b317e95fcdaa5c544d493f67045e3a2c",
+    "backup_sha256": "44fde6a299133a56ebf4e4a9ad7369bbcec4df40a28f1a88737c9b16454a07e3"
+  },
+  "cases": [
+    {
+      "case_id": "tool_durability-stone",
+      "status": "PASS",
+      "final_state": null,
+      "plan_action": "plan_rejected",
+      "plan_reply": "现在排不了这件事：resource.tool_durability_insufficient_or_unknown",
+      "observed_safety": {
+        "known": true,
+        "allowed": true,
+        "reason": "resource.local_safety_checked"
+      }
+    },
+    {
+      "case_id": "tool_durability-cobblestone",
+      "status": "PASS",
+      "final_state": null,
+      "plan_action": "plan_rejected",
+      "plan_reply": "现在排不了这件事：resource.tool_durability_insufficient_or_unknown",
+      "observed_safety": {
+        "known": true,
+        "allowed": true,
+        "reason": "resource.local_safety_checked"
+      }
+    },
+    {
+      "case_id": "tool_durability-coal_ore",
+      "status": "PASS",
+      "final_state": null,
+      "plan_action": "plan_rejected",
+      "plan_reply": "现在排不了这件事：resource.tool_durability_insufficient_or_unknown",
+      "observed_safety": {
+        "known": true,
+        "allowed": true,
+        "reason": "resource.local_safety_checked"
+      }
+    },
+    {
+      "case_id": "tool_durability-iron_ore",
+      "status": "PASS",
+      "final_state": null,
+      "plan_action": "plan_rejected",
+      "plan_reply": "现在排不了这件事：resource.tool_durability_insufficient_or_unknown",
+      "observed_safety": {
+        "known": true,
+        "allowed": true,
+        "reason": "resource.local_safety_checked"
+      }
+    },
+    {
+      "case_id": "facts_missing-no_target",
+      "status": "PASS",
+      "final_state": null,
+      "plan_action": "plan_rejected",
+      "plan_reply": "现在排不了这件事：coverage_complete:COMPLETE:all_columns_loaded:no_wood_target:在本次完整检查的 16 格范围内没有找到 原木",
+      "observed_safety": null
+    },
+    {
+      "case_id": "danger_support-stone",
+      "status": "PASS",
+      "final_state": null,
+      "plan_action": "plan_rejected",
+      "plan_reply": "现在排不了这件事：resource.safety_precondition_failed",
+      "observed_safety": {
+        "known": true,
+        "allowed": false,
+        "reason": "resource.target_floor_unsafe"
+      }
+    },
+    {
+      "case_id": "danger_liquid-stone",
+      "status": "PASS",
+      "final_state": null,
+      "plan_action": "plan_rejected",
+      "plan_reply": "现在排不了这件事：resource.safety_precondition_failed",
+      "observed_safety": {
+        "known": true,
+        "allowed": false,
+        "reason": "resource.target_floor_unsafe"
+      }
+    },
+    {
+      "case_id": "path_failure-stone",
+      "status": "PASS",
+      "final_state": "PAUSED",
+      "plan_action": "created",
+      "plan_reply": "任务：挖一块石头并捡回来\n\n将执行：\n1. 走到 (12040,100,16032) 附近\n2. 挖掉 (12040,100,16032) 的 stone\n3. 看看附近的地上有什么掉落物\n4. 捡起刚掉出来的 cobblestone\n5. 重新读一次背包\n\n完成标准：背包里至少多出 cobblestone ×1",
+      "observed_safety": {
+        "known": true,
+        "allowed": true,
+        "reason": "resource.local_safety_checked"
+      }
+    },
+    {
+      "case_id": "inventory_full-stone",
+      "status": "PASS",
+      "final_state": "PAUSED",
+      "plan_action": "created",
+      "plan_reply": "任务：挖一块石头并捡回来\n\n将执行：\n1. 挖掉 (12035,100,16032) 的 stone\n2. 看看附近的地上有什么掉落物\n3. 捡起刚掉出来的 cobblestone\n4. 重新读一次背包\n\n完成标准：背包里至少多出 cobblestone ×1",
+      "observed_safety": {
+        "known": true,
+        "allowed": true,
+        "reason": "resource.local_safety_checked"
+      }
+    },
+    {
+      "case_id": "old_drop-sand",
+      "status": "PASS",
+      "final_state": "PAUSED",
+      "plan_action": "created",
+      "plan_reply": "任务：挖一块沙子并捡回来\n\n将执行：\n1. 挖掉 (12035,100,16032) 的 sand\n2. 看看附近的地上有什么掉落物\n3. 捡起刚掉出来的 sand\n4. 重新读一次背包\n\n完成标准：背包里至少多出 sand ×1",
+      "observed_safety": {
+        "known": true,
+        "allowed": true,
+        "reason": "resource.local_safety_checked"
+      }
+    },
+    {
+      "case_id": "external_removal-sand",
+      "status": "PASS",
+      "final_state": "REPLANNING",
+      "plan_action": "created",
+      "plan_reply": "任务：挖一块沙子并捡回来\n\n将执行：\n1. 挖掉 (12035,100,16032) 的 sand\n2. 看看附近的地上有什么掉落物\n3. 捡起刚掉出来的 sand\n4. 重新读一次背包\n\n完成标准：背包里至少多出 sand ×1",
+      "observed_safety": {
+        "known": true,
+        "allowed": true,
+        "reason": "resource.local_safety_checked"
+      }
+    }
+  ],
+  "summary": {
+    "total": 11,
+    "passed": 11
+  },
+  "restore": {
+    "restored_files": 108,
+    "all_hashes_match_before_restart": true,
+    "removed_extra_world_files": [
+      "world/data/chunks.dat",
+      "world/entities/r.23.30.mca",
+      "world/poi/r.23.30.mca",
+      "world/region/r.22.30.mca",
+      "world/region/r.22.31.mca",
+      "world/region/r.22.32.mca",
+      "world/region/r.23.30.mca",
+      "world/region/r.23.31.mca",
+      "world/region/r.23.32.mca",
+      "world/region/r.24.30.mca",
+      "world/region/r.24.31.mca",
+      "world/region/r.24.32.mca"
+    ],
+    "restored_snapshot": "server-before.zip",
+    "initial_server_running": true,
+    "restored_server_running": true,
+    "restored_server_pid": 62664
+  },
+  "first_failures": [
+    {
+      "attempt": 1,
+      "failed_case": "danger_support-stone",
+      "reason": "no target warm-up; find_blocks cache missed newly placed target"
+    },
+    {
+      "attempt": 2,
+      "failed_case": "danger_support-stone",
+      "reason": "no pickaxe held, plan rejected first at tool_cannot_harvest"
+    },
+    {
+      "attempt": 3,
+      "failed_case": "path_failure-stone",
+      "reason": "no pickaxe held, path precondition not reached"
+    },
+    {
+      "attempt": 4,
+      "failed_case": "inventory_full-stone",
+      "reason": "only inventory.1-26 filled; hotbar had space, task correctly SUCCEEDED"
+    },
+    {
+      "attempt": 5,
+      "failed_case": "external_removal-sand",
+      "reason": "mode_control left at drop_missing; dig evidence dropped, no step_succeeded event"
+    }
+  ],
+  "artifacts": {
+    "attempt-06/remaining-results.json": "28294479c738d05ff2b8b41555d50a0e3bd487d8601c98e2a1a5ea3c7c30cb30",
+    "attempt-06/remaining.log": "036101f10d3511a5a00fbf8695f1a0479540b6b7201dd5b289781036f082074e",
+    "attempt-06/remaining.stderr.log": "d12d7e8c3c9e60b7093df33a7c6bf65b2b380e3280389380def10334f2f3fcb2",
+    "attempt-06/remaining.exit": "9aca8dfce962538fb8131d73f84cada05e4dc79f5a0d3612c511b1150f3e33e2",
+    "attempt-06/product.db": "050d98ed995e4d7378c32e2159b6f5dc56d637e82ee2a5930d762700af64d4a3",
+    "restore-receipt.json": "4044efc1431580d19620ba808d6efcf614ae8eadff397645bd00f4c86db561dc",
+    "restore-final.log": "0eba297d76f89569230031e12ad3faac103963002b61e664058f6222a30ab7b6"
+  },
+  "report": "docs/MINECRAFT_R3_3_REMAINING_NEGATIVE_REPORT.md",
+  "raw_private_artifacts": "data/r3/remaining-negative-20261021/ (local; private test token and DB not for publication)"
+}

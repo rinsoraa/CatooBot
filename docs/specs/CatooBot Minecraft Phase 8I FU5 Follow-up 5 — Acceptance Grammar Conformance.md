@@ -2,10 +2,10 @@
 
 **阶段定位：** Follow-up 4 的定向补充审计。目标不是继续增加词元，而是证明结构自动机实际执行的顺序约束与文档声明的许可语法一致。
 
-**仓库：** `rinsoraa/CatooBot`
-**基线提交：** `4d8776e6f9d53a60a4903f01bcc51d7172ec2440`
-**基线链接：** https://github.com/rinsoraa/CatooBot/commit/4d8776e6f9d53a60a4903f01bcc51d7172ec2440
-**权威开发目录：** `E:\WorkSpace ZCode\CatooBot`
+**仓库：** `rinsoraa/CatooBot`  
+**基线提交：** `4d8776e6f9d53a60a4903f01bcc51d7172ec2440`  
+**基线链接：** https://github.com/rinsoraa/CatooBot/commit/4d8776e6f9d53a60a4903f01bcc51d7172ec2440  
+**权威开发目录：** `E:\WorkSpace ZCode\CatooBot`  
 **发布镜像：** `E:\WorkSpace ZCode\CatooBot_github`
 
 ---

@@ -57,6 +57,18 @@ PICKUP_ITEM_METADATA = ToolMetadata(
                 "minLength": 1,
                 "description": "第二层身份校验：那个掉落物必须真的是这个物品（如 dirt）",
             },
+            "entity_uuid": {
+                "type": "string",
+                "format": "uuid",
+                "description": "严格模式必填：minecraft_dropped_items 返回的实体 UUID。",
+            },
+            "expected_break_action": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 128,
+                "pattern": "^[!-~]+$",
+                "description": "采集计划绑定的原始破坏 action_id；不得用其他破坏的掉落替代。",
+            },
         },
         "required": ["entity_id", "expected_item"],
         "additionalProperties": False,
@@ -73,4 +85,13 @@ class MinecraftPickupItemTool(ActionTool):
     metadata = PICKUP_ITEM_METADATA
 
     async def _call(self, service: MinecraftService, arguments: dict[str, Any]) -> dict[str, Any]:
-        return await service.pickup_item(arguments.get("entity_id"), arguments.get("expected_item"))
+        extra = {
+            key: arguments[key]
+            for key in ("expected_break_action", "entity_uuid")
+            if key in arguments
+        }
+        return await service.pickup_item(
+            arguments.get("entity_id"),
+            arguments.get("expected_item"),
+            **extra,
+        )

@@ -1,0 +1,13 @@
+{
+  "required": true,
+  "package": "catoo.attrib.mixin",
+  "compatibilityLevel": "JAVA_21",
+  "mixins": [
+    "ServerPlayerInteractionManagerMixin",
+    "BlockDropStackMixin",
+    "ItemEntityPickupMixin"
+  ],
+  "injectors": {
+    "defaultRequire": 1
+  }
+}

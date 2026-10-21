@@ -1,0 +1,106 @@
+{
+ "artifacts": {
+  "data/r3/consumer-20261020/offline-replay.json": "08af128bede9fead8a43aacb483b6a5b4b49f0edf63f47f53c9b71d138328dd9",
+  "data/r3/consumer-20261020/red-baseline/mypy.log": "680d481cc62731d2fd04d8210927e7bd5809d6ac50c76e04c215cd8ff6cdcec8",
+  "data/r3/consumer-20261020/red-baseline/pytest-final.log": "e6c173ac1b28d0bb39183fad6c27b04d258be3fecab335c29f6829a88d79efd4",
+  "data/r3/consumer-20261020/red-baseline/pytest-first.log": "e74f02f94382d7b0fd45fd88d990352c9ecbe6bba4f425fbd1a30a425e0adf03",
+  "data/r3/consumer-20261020/red-baseline/ruff-check.log": "a4443afdcfb6d7363adb285762515ccf7cf50473b1a05c20c1a50f6bed4d26b0",
+  "data/r3/consumer-20261020/red-baseline/ruff-format.log": "ba31058b0520af5e14b794f1fa8a9aa718250be57806ad0ca8e573c5057221a1",
+  "data/r3/consumer-20261020/red-baseline/source-manifest-after.json": "7682ec9c665bb31c9d29904d795cded46c72649a54ae25500df7e2fc31287030",
+  "data/r3/consumer-20261020/red-baseline/source-manifest-before.json": "4cec5604848436e08a23f7064f006aa671011658aad77ccf947d8c300cdebcfa",
+  "data/r3/consumer-20261020/source-before.zip": "3d5775759ad10684fbc6ec338ce78123188acca0ca1894956036771997b3bebb",
+  "data/r3/consumer-20261020/spec-archive-receipt.json": "6e6b01d7d3fbddfe01a2f4929881a05e0535f628cd917b4da474e1aa65e4f28b"
+ },
+ "checkpoint": "R3 Python collection evidence consumers",
+ "checks": {
+  "first_failure_recorded": true,
+  "no_unexpected_removals": true,
+  "node_java_bytes_unchanged": true,
+  "offline_mutations_all_rejected": true,
+  "offline_mutations_min_30": true,
+  "offline_records_all_accepted": true,
+  "offline_replay_pass": true,
+  "offline_source_unchanged": true,
+  "prior_checkpoint_manifest": true,
+  "pytest_counts_add_up": true,
+  "pytest_final_green": true,
+  "source_before_archive": true,
+  "spec_hash_archived": true
+ },
+ "generated_at": "2026-10-20T06:23:23Z",
+ "in_flight_changes": {
+  "added": [
+   "scripts/verify_collection_evidence_offline.py",
+   "tests/collection_facts.py",
+   "tests/test_collection_evidence.py"
+  ],
+  "changed": [
+   "app/integrations/minecraft/memory_bridge.py",
+   "app/tasks/collection_evidence.py",
+   "app/tasks/runtime.py",
+   "tests/skill_fakes.py",
+   "tests/test_dig_attribution.py",
+   "tests/test_minecraft_memory_recovery.py"
+  ]
+ },
+ "offline_replay": {
+  "cross_case_sweep": 7,
+  "disclaimer": "Offline consumer replay over existing real-server normalized records; no new world task was executed.",
+  "evidence": "data/r3/consumer-20261020/offline-replay.json",
+  "mutations": 62,
+  "records_ok": 24,
+  "records_total": 24,
+  "script": "scripts/verify_collection_evidence_offline.py",
+  "source_file": "data/r3/protocol-20261020/new-01/product-results.json",
+  "source_sha256": "45178ff1b7a691431bc31a8b731d562434aa4069016f08afa7a0d925b0d5502e"
+ },
+ "prior_checkpoint": {
+  "differing_files": [
+   "app/integrations/minecraft/memory_bridge.py",
+   "app/tasks/runtime.py",
+   "app/tasks/skill_learning.py",
+   "tests/skill_fakes.py",
+   "tests/test_dig_attribution.py",
+   "tests/test_minecraft_memory_recovery.py"
+  ],
+  "files": 692,
+  "manifest": "data/r3/protocol-20261020/final-source-manifest.json",
+  "node_java_files_total": 63,
+  "node_java_files_unchanged": 63,
+  "note": "Node/Java 字节未变，只复用协议检查点证据；Python 侧 6 个文件按本项重验",
+  "unchanged_files": 686
+ },
+ "problems": [],
+ "result": "PASS",
+ "scope_limits": [
+  "R3 仍是 IN_PROGRESS；G1–G4 未因此关闭，R8 未完成；本检查点不得用于进入 R4",
+  "本轮未重启日常 Bot/Bridge/测试服，未部署 JAR，未发 QQ，未操作世界",
+  "开发目录无 Git；未同步/提交/推送，未宣称任何 CI 结果"
+ ],
+ "source_before_files": 895,
+ "source_before_sha256": "3d5775759ad10684fbc6ec338ce78123188acca0ca1894956036771997b3bebb",
+ "source_files_after": 728,
+ "specification": "docs/specs/CatooBot Minecraft R3 Python Collection Evidence Consumers.md",
+ "specification_sha256": "f909c4521070fccbcbb71f4a524c4c68285e6d9256222d38411f8f31b5566026",
+ "static_checks": {
+  "mypy_scope": "app",
+  "ruff_check_scope": "app tests scripts",
+  "ruff_format_preexisting_local_only": "scripts/r1u_final_gates.py (未纳入发布; HANDOFF 已记录)",
+  "ruff_format_scope": "app tests scripts"
+ },
+ "tests": {
+  "baseline_frozen": 4947,
+  "final_run": {
+   "errors": 0,
+   "failed": 0,
+   "passed": 5019
+  },
+  "first_run": {
+   "errors": 0,
+   "failed": 80,
+   "passed": 4867
+  },
+  "new_test_file": "tests/test_collection_evidence.py",
+  "new_tests": 72
+ }
+}

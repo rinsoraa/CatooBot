@@ -1,12 +1,12 @@
 # CatooBot R1 残余缺口一次性收敛任务书
 
-**任务名称：** CatooBot R1 Closure — Residual Navigation & Perception Gaps
-**任务目标：** 在已完成 R1-RC1…RC5 的基础上，针对当前 R1 报告中的 PARTIAL 项目进行一次统一复现、根因修复、真机门禁与最终裁定；不把每个未通过项拆成多个 Follow-up。
-**仓库：** `rinsoraa/CatooBot`
-**R1 原始基线：** `32649eb1856feba56e970d51026f79cf6ad477fc`
-**R1 实现提交：** `38ca66d0271550846233c0466843112286583db9`
-**R1 收尾报告提交：** `3f400d6adb8f5603be0219ca90b6cfe829b76587`
-**参考报告：** `docs/specs/CatooBot R1 Real-World Perception & Navigation Reliability Report.md`
+**任务名称：** CatooBot R1 Closure — Residual Navigation & Perception Gaps  
+**任务目标：** 在已完成 R1-RC1…RC5 的基础上，针对当前 R1 报告中的 PARTIAL 项目进行一次统一复现、根因修复、真机门禁与最终裁定；不把每个未通过项拆成多个 Follow-up。  
+**仓库：** `rinsoraa/CatooBot`  
+**R1 原始基线：** `32649eb1856feba56e970d51026f79cf6ad477fc`  
+**R1 实现提交：** `38ca66d0271550846233c0466843112286583db9`  
+**R1 收尾报告提交：** `3f400d6adb8f5603be0219ca90b6cfe829b76587`  
+**参考报告：** `docs/specs/CatooBot R1 Real-World Perception & Navigation Reliability Report.md`  
 **性质：** R1 残余缺口的单一闭环任务，不是新能力阶段，不是 Follow-up 序列。
 
 > **基线纪律：** 上述 SHA 是编写本任务书时已核验的参考值，不代表 DSH 实际开工时最新的远端 HEAD。开工必须重新读取 `origin/main`、镜像 HEAD、ahead/behind、dirty、CI、当前 Bot/Runtime 版本。若 main 已前进，基于最新可安全继续的主线执行并记录差异；不得 reset、force-push、覆盖用户变更或将旧 SHA 当作当前 SHA。

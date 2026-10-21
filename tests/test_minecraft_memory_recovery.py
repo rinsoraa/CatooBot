@@ -23,13 +23,15 @@ from app.core.event_bus import EventBus
 from app.integrations.minecraft.events import MinecraftBridgeEvent
 from app.memory.minecraft.model import FactSource, MinecraftMemoryKind
 from app.tasks.models import StepState, TaskStep
+from tests.collection_facts import bare_name
+from tests.collection_facts import dig_attribution as collection_attribution
 from tests.minecraft_memory_fakes import (
     UUID_KONGLING,
     UUID_OTHER,
     FakeMinecraftService,
     build_bridge,
 )
-from tests.skill_fakes import DIG_ATTRIBUTION_PRESETS, DIG_ATTRIBUTION_SELF
+from tests.skill_fakes import DIG_ATTRIBUTION_PRESETS
 
 
 def wire_bot(
@@ -557,7 +559,17 @@ def dig_step(
         status="SUCCEEDED",
     )
     if attribution is None:
-        payload: dict[str, Any] | None = dict(DIG_ATTRIBUTION_SELF)
+        position = {axis: arguments[axis] for axis in ("x", "y", "z") if axis in arguments}
+        if len(position) == 3:
+            payload: dict[str, Any] | None = collection_attribution(
+                position=position,
+                block=block,
+                action_id=action_id,
+                item=bare_name(block),
+            )
+        else:
+            # 坐标不全的步骤不可能是严格自证（缺目标就无从核对）。
+            payload = None
     elif isinstance(attribution, str):
         preset = DIG_ATTRIBUTION_PRESETS.get(attribution)
         payload = dict(preset) if preset else None

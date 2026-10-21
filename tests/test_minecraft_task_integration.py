@@ -16,6 +16,7 @@
 from __future__ import annotations
 
 import asyncio
+import time
 from typing import Any
 
 from app.config.settings import MinecraftAgentToolsConfig, MinecraftConfig, ToolsConfig
@@ -27,6 +28,7 @@ from app.tasks.models import ExpectedFinalState, StepState, TaskPlan, TaskState,
 from app.tasks.planner import Observation, plan_resource_task
 from app.tasks.runtime import TaskConfig, TaskInvocation, TaskRuntime
 from app.tasks.store import InMemoryTaskStore
+from tests.resource_facts import unit_harvest_facts
 
 SESSION = "minecraft:integration:空凛"
 USER = "空凛"
@@ -125,6 +127,11 @@ class FakeService:
             "result": {
                 "ok": True,
                 "truncated": False,
+                "observation": {
+                    "coverage": "COMPLETE",
+                    "dimension": "minecraft:overworld",
+                    "captured_at": time.time(),
+                },
                 "matches": [
                     {
                         "block": {"name": "oak_log"},
@@ -151,6 +158,12 @@ class FakeService:
                 "can_dig": False,
                 "dig_time_ms": 900,
                 "reason": "too_far",
+                "safety": {"known": True, "allowed": True},
+                "harvest": unit_harvest_facts(
+                    name=self.held["name"] if self.held else None,
+                    damageable=bool(self.held),
+                    remaining=10 if self.held else None,
+                ),
             },
             **(outcome or {}),
         }
@@ -181,9 +194,26 @@ class FakeService:
         return dict(outcome)
 
     async def dig(
-        self, x: Any, y: Any, z: Any, expected_block: Any = None, expected_tool: Any = None
+        self,
+        x: Any,
+        y: Any,
+        z: Any,
+        expected_block: Any = None,
+        expected_tool: Any = None,
+        *,
+        require_collection: bool = False,
+        expected_empty_hand: bool = False,
     ) -> dict[str, Any]:
-        self._record("dig", x=x, y=y, z=z, expected_block=expected_block)
+        self._record(
+            "dig",
+            x=x,
+            y=y,
+            z=z,
+            expected_block=expected_block,
+            require_collection=require_collection,
+            **({"expected_tool": expected_tool} if expected_tool else {}),
+            **({"expected_empty_hand": True} if expected_empty_hand else {}),
+        )
         outcome = self._next(
             "dig",
             {
@@ -204,8 +234,21 @@ class FakeService:
             raise outcome
         return dict(outcome)
 
-    async def pickup_item(self, entity_id: Any, expected_item: Any = None) -> dict[str, Any]:
-        self._record("pickup_item", entity_id=entity_id, expected_item=expected_item)
+    async def pickup_item(
+        self,
+        entity_id: Any,
+        expected_item: Any = None,
+        *,
+        entity_uuid: Any = None,
+        expected_break_action: Any = None,
+    ) -> dict[str, Any]:
+        self._record(
+            "pickup_item",
+            entity_id=entity_id,
+            expected_item=expected_item,
+            entity_uuid=entity_uuid,
+            expected_break_action=expected_break_action,
+        )
         outcome = self._next(
             "pickup_item",
             {"status": "RUNNING", "action_id": "act_pick_1", "action": "pickup_item"},
@@ -345,14 +388,23 @@ async def test_task_drives_find_move_dig_pickup_and_verifies_inventory() -> None
         assert record.steps[0].state is StepState.SUCCEEDED
         # MEDIUM 的 dig 由"已确认的冻结计划 + 步骤授权"放行（不弹新确认）
         assert record.steps[1].state is StepState.WAITING_ACTION
-        assert ("dig", {"x": 103, "y": 64, "z": 141, "expected_block": "oak_log"}) in [
-            (name, args) for name, args in service.calls if name == "dig"
-        ]
+        assert (
+            "dig",
+            {
+                "x": 103,
+                "y": 64,
+                "z": 141,
+                "expected_block": "oak_log",
+                "require_collection": True,
+                "expected_tool": "stone_pickaxe",
+            },
+        ) in [(name, args) for name, args in service.calls if name == "dig"]
 
         # 挖完 → 掉落物里出现 oak_log
         service.drops = [
             {
                 "entity_id": 4242,
+                "entity_uuid": "11111111-1111-4111-8111-111111111111",
                 "item": {"name": "oak_log", "count": 1},
                 "position": {"x": 103.2, "y": 64.3, "z": 141.4},
                 "distance": 1.1,
@@ -362,7 +414,20 @@ async def test_task_drives_find_move_dig_pickup_and_verifies_inventory() -> None
             "minecraft.action.completed",
             action_id="act_dig_1",
             status="SUCCEEDED",
-            result={"block_after": "air"},
+            result={
+                "block_after": "air",
+                "attribution": {
+                    "action_id": "act_dig_1",
+                    "server_collection": {
+                        "drops": [
+                            {
+                                "entity_id": 4242,
+                                "uuid": "11111111-1111-4111-8111-111111111111",
+                            }
+                        ]
+                    },
+                },
+            },
         )
         await _settle()
         record = await runtime.get(record.task_id)
@@ -371,9 +436,12 @@ async def test_task_drives_find_move_dig_pickup_and_verifies_inventory() -> None
         assert record.steps[2].state is StepState.SUCCEEDED, "SAFE 的掉落物查询同步完成"
         assert record.steps[3].state is StepState.WAITING_ACTION
         pickup_args = next(args for name, args in service.calls if name == "pickup_item")
-        assert pickup_args == {"entity_id": 4242, "expected_item": "oak_log"}, (
-            "引用参数在执行前解析成**树里那一份**具体值"
-        )
+        assert pickup_args == {
+            "entity_id": 4242,
+            "expected_item": "oak_log",
+            "entity_uuid": "11111111-1111-4111-8111-111111111111",
+            "expected_break_action": "act_dig_1",
+        }, "引用参数在执行前解析成**树里那一份**具体值"
 
         # 捡起来 → 背包真的多了一块
         service.inventory_items = [{"name": "dirt", "count": 3}, {"name": "oak_log", "count": 1}]

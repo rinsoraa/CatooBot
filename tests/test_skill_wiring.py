@@ -49,7 +49,8 @@ class TestSkillAwarePlanner:
         assert result.reason == SKILL_REUSE_REASON
         assert result.plan is not None
         assert result.checks and result.checks[0]["check"] == "skill_reuse"
-        assert [step.tool for step in result.plan.plan.steps][0] == "minecraft_equip"
+        assert [step.tool for step in result.plan.plan.steps][0] == "minecraft_move_to"
+        assert not any(step.tool == "minecraft_equip" for step in result.plan.plan.steps)
 
     async def test_follow_objective_never_uses_skills(self) -> None:
         service = await promoted_service()
@@ -70,11 +71,12 @@ class TestSkillAwarePlanner:
     async def test_without_skills_behaviour_is_unchanged(self) -> None:
         base = BoundedAgentPlanner(allow_medium=True)
         planner = SkillAwarePlanner(base, skills=None)
-        # 背包里有斧头 → 模板同样会插一步 equip（与技能模板同形，便于比对）
+        # 当前手持斧头已有采收事实，模板不得凭背包名字重复插入 equip。
         observe = FakeObserve(inventory=[{"name": "netherite_axe", "count": 1}])
         result = await planner.plan("去挖一块橡木并捡回来", observe=observe)
-        assert result.reason == "resource_plan_ready"
-        assert [step.tool for step in result.plan.plan.steps][0] == "minecraft_equip"
+        assert result.reason == "wood_plan_ready"
+        assert [step.tool for step in result.plan.plan.steps][0] == "minecraft_move_to"
+        assert not any(step.tool == "minecraft_equip" for step in result.plan.plan.steps)
 
     async def test_broken_skill_layer_falls_back(self) -> None:
         class Broken:
@@ -83,7 +85,7 @@ class TestSkillAwarePlanner:
 
         planner = SkillAwarePlanner(BoundedAgentPlanner(allow_medium=True), skills=Broken())
         result = await planner.plan("去挖一块橡木并捡回来", observe=FakeObserve())
-        assert result.reason == "resource_plan_ready", "异常必须原样回退"
+        assert result.reason == "wood_plan_ready", "异常必须原样回退"
 
     async def test_medium_skill_is_blocked_when_medium_is_disabled(self) -> None:
         """``allow_medium=false`` 时技能**不能**绕开基规划器的风险闸门。"""

@@ -1,0 +1,98 @@
+{
+ "artifacts": {
+  "data/r3/chain-20261020/logs/mypy.log": "680d481cc62731d2fd04d8210927e7bd5809d6ac50c76e04c215cd8ff6cdcec8",
+  "data/r3/chain-20261020/logs/node-test.log": "b64c7b031a42e684dd0422bbfa4b5a05348a9b29e1aeea7edf9bf58215206991",
+  "data/r3/chain-20261020/logs/pytest-final.log": "f61e83bcb6f9b617046e73df3f9e264432b54f4e18be1a4086236ec39915ca3c",
+  "data/r3/chain-20261020/logs/ruff-check.log": "a4443afdcfb6d7363adb285762515ccf7cf50473b1a05c20c1a50f6bed4d26b0",
+  "data/r3/chain-20261020/logs/ruff-format.log": "4fed02a6cc115ffcac22a8898c742f309ae6e6d97db35886ea1cbe71a8a06c6c",
+  "data/r3/chain-20261020/logs/source-manifest-after.json": "063e5a12d39615b7b888a51160f6d2ff831337a90ec0f4fe28b9feacfc06c086",
+  "data/r3/chain-20261020/source-before.zip": "655ca71c61307dafb0090fe9199e1f5088c001988631c6b6bde4034cc9a83c79",
+  "data/r3/chain-20261020/spec-archive-receipt.json": "2f7ade4da7ea2348499892b1d5afd014706637c2f9b923ff228749f64f3ff06f"
+ },
+ "checkpoint": "R3 collection evidence chain counterexamples and cross-generation closure",
+ "checks": {
+  "before_manifest_complete": true,
+  "mypy_green": true,
+  "no_unexpected_removals": true,
+  "node_strict_attribution_84": true,
+  "node_suite_green": true,
+  "prior_checkpoint_artifacts": true,
+  "pytest_green": true,
+  "ruff_check_green": true,
+  "ruff_format_only_preexisting_local_script": true,
+  "ruff_format_scoped_green": true,
+  "source_before_archive": true,
+  "spec_hash_archived": true
+ },
+ "generated_at": "2026-10-20T06:49:36Z",
+ "in_flight_changes": {
+  "added": [
+   "docs/MINECRAFT_R3_CHAIN_REPORT.md",
+   "docs/evidence/MINECRAFT_R3_CHAIN_EVIDENCE.json",
+   "tests/test_collection_evidence_chain.py"
+  ],
+  "changed": [
+   "docs/README.md",
+   "docs/ROADMAP_EXECUTION_STATUS.md"
+  ]
+ },
+ "node": {
+  "check_marks": 1219,
+  "command": "cd minecraft_runtime && npm test",
+  "e2e": true,
+  "log": "data/r3/chain-20261020/logs/node-test.log",
+  "strict_attribution": [
+   "95/95",
+   "84/84",
+   "54/54",
+   "95/95",
+   "84/84",
+   "8/8",
+   "99/99",
+   "63/63",
+   "56/56",
+   "85/85",
+   "88/88",
+   "78/78",
+   "83/83",
+   "42/42",
+   "81/81",
+   "50/50",
+   "26/26",
+   "26/26",
+   "41/41"
+  ]
+ },
+ "prior_checkpoint": {
+  "artifacts_verified": 10,
+  "broken": [],
+  "evidence": "docs/evidence/MINECRAFT_R3_CONSUMER_EVIDENCE.json"
+ },
+ "problems": [],
+ "result": "PASS",
+ "scope_limits": [
+  "本项只关闭 R3 G2 的链上反例与跨代/恢复收口子项；G1/G3/G4 与 R8 未完成",
+  "全程离线：未启动/重启日常 Bot/Bridge/测试服，未部署 JAR，未发 QQ，未操作世界",
+  "开发目录无 Git；未同步/提交/推送；未宣称任何 CI 结果"
+ ],
+ "source_before_files": 991,
+ "source_before_sha256": "655ca71c61307dafb0090fe9199e1f5088c001988631c6b6bde4034cc9a83c79",
+ "source_files_after": 994,
+ "specification": "docs/specs/CatooBot Minecraft R3 —— Collection Evidence Chain Counterexamples and Cross-Generation Closure.md",
+ "specification_sha256": "c62a21c49d6eeb624e08573fbe56594d474354b72d21877e77edfd4189e1fd37",
+ "static_checks": {
+  "mypy": "app",
+  "preexisting_local_only": "scripts/r1u_final_gates.py",
+  "ruff_check": "app tests scripts",
+  "ruff_format": "app tests scripts"
+ },
+ "tests": {
+  "final_run": {
+   "failed": 0,
+   "passed": 5028
+  },
+  "first_run_note": "首轮该新模块 5 项用例失败，全部为用例侧预期修正（replan 落 PENDING_CONFIRMATION、inventory 读取序列、结构性断言范围、取消任务原因码）；产品代码未因此修改或放宽。",
+  "new_test_file": "tests/test_collection_evidence_chain.py",
+  "new_tests": 9
+ }
+}

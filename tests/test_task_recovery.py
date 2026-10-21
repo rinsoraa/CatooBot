@@ -34,6 +34,7 @@ from app.tasks.runtime import (
     TaskRuntime,
 )
 from app.tasks.store import InMemoryTaskStore
+from app.tasks.validation import collect_references
 from tests.test_task_runtime import FakeConfirmation
 
 SESSION = "minecraft:127.0.0.1:25565:空凛"
@@ -86,7 +87,10 @@ class FakeInvoke:
         if tool == "minecraft_world":
             if self.world_code:
                 return TaskInvocation(ok=False, error="world read failed", code=self.world_code)
-            return TaskInvocation(ok=True, result={"ok": True, "online": self.online})
+            return TaskInvocation(
+                ok=True,
+                result={"ok": True, "online": self.online, "dimension": "minecraft:overworld"},
+            )
         if tool == "minecraft_dig_capability":
             if self.dig_missing:
                 return TaskInvocation(
@@ -160,13 +164,20 @@ class Clock:
 
 
 def dig_plan(*, x: int = 10, y: int = 64, z: int = 10, expected: str = "oak_log") -> TaskPlan:
-    return TaskPlan(
+    plan = TaskPlan(
         objective="挖一块橡木原木并捡回来",
         steps=[
             TaskStep(
                 step_id="step_1",
                 tool="minecraft_dig",
-                arguments={"x": x, "y": y, "z": z, "expected_block": expected},
+                arguments={
+                    "x": x,
+                    "y": y,
+                    "z": z,
+                    "expected_block": expected,
+                    "require_collection": True,
+                    "expected_empty_hand": True,
+                },
                 risk="MEDIUM",
             ),
             TaskStep(step_id="step_2", tool="minecraft_dropped_items", arguments={}, risk="SAFE"),
@@ -174,7 +185,18 @@ def dig_plan(*, x: int = 10, y: int = 64, z: int = 10, expected: str = "oak_log"
                 step_id="step_3",
                 tool="minecraft_pickup_item",
                 arguments={
-                    "entity_id": {"from_step": "step_2", "path": "items.0.entity_id"},
+                    "entity_id": {
+                        "from_step": "step_1",
+                        "path": "attribution.server_collection.drops.0.entity_id",
+                    },
+                    "entity_uuid": {
+                        "from_step": "step_1",
+                        "path": "attribution.server_collection.drops.0.uuid",
+                    },
+                    "expected_break_action": {
+                        "from_step": "step_1",
+                        "path": "attribution.action_id",
+                    },
                     "expected_item": expected,
                 },
                 risk="MEDIUM",
@@ -183,6 +205,10 @@ def dig_plan(*, x: int = 10, y: int = 64, z: int = 10, expected: str = "oak_log"
         ],
         expected_final_state=ExpectedFinalState(inventory_delta={expected: 1}),
     )
+
+    for step in plan.steps:
+        step.references = collect_references(step.arguments)
+    return plan
 
 
 def make_runtime(
@@ -499,7 +525,17 @@ async def test_o_resume_after_reconfirmation_runs_the_new_plan_to_success() -> N
     invoke.drops = drops_for()
     invoke.inventory = [{"name": "oak_log", "count": 1}]
     await runtime.on_action_event(
-        action_id=started.pending_action_id, event="minecraft.action.completed", status="SUCCEEDED"
+        action_id=started.pending_action_id,
+        event="minecraft.action.completed",
+        status="SUCCEEDED",
+        result={
+            "attribution": {
+                "action_id": started.pending_action_id,
+                "server_collection": {
+                    "drops": [{"entity_id": 42, "uuid": "11111111-1111-4111-8111-111111111111"}]
+                },
+            }
+        },
     )
     after_dig = await runtime.get(record.task_id)
     assert after_dig is not None

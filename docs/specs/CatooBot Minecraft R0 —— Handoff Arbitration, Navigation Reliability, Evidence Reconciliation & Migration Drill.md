@@ -1,13 +1,13 @@
 # CatooBot R0 最终闭环任务书
 
-**任务名称：** CatooBot R0 Final Closure — Handoff Arbitration, Navigation Reliability, Evidence Reconciliation & Migration Drill
-**目标：** 一次性交付 R0 的最终验收，不再按每发现一个边界就另开 Follow-up。
-**仓库：** `rinsoraa/CatooBot`
-**开工基线（编写本任务书时最新可核验的 `main`）：** `67ad74d976689a73a98f736cd2d46af9469b3950`
-**基线提交：** https://github.com/rinsoraa/CatooBot/commit/67ad74d976689a73a98f736cd2d46af9469b3950
-**基线 CI：** https://github.com/rinsoraa/CatooBot/actions/runs/38942126109
-**权威开发目录：** `E:\WorkSpace ZCode\CatooBot`（非 Git 真源，含本地密钥，不外泄）
-**发布镜像：** `E:\WorkSpace ZCode\CatooBot_github`（Git 工作树；所有发布提交在此完成）
+**任务名称：** CatooBot R0 Final Closure — Handoff Arbitration, Navigation Reliability, Evidence Reconciliation & Migration Drill  
+**目标：** 一次性交付 R0 的最终验收，不再按每发现一个边界就另开 Follow-up。  
+**仓库：** `rinsoraa/CatooBot`  
+**开工基线（编写本任务书时最新可核验的 `main`）：** `67ad74d976689a73a98f736cd2d46af9469b3950`  
+**基线提交：** https://github.com/rinsoraa/CatooBot/commit/67ad74d976689a73a98f736cd2d46af9469b3950  
+**基线 CI：** https://github.com/rinsoraa/CatooBot/actions/runs/38942126109  
+**权威开发目录：** `E:\WorkSpace ZCode\CatooBot`（非 Git 真源，含本地密钥，不外泄）  
+**发布镜像：** `E:\WorkSpace ZCode\CatooBot_github`（Git 工作树；所有发布提交在此完成）  
 **任务性质：** 单一、综合、可终止的 R0 收尾任务，不是下一轮 Follow-up 的起点。
 
 > **基线纪律：** 上述 SHA 是任务书编写时的参考基线。真正开工必须先读取实际 `origin/main`、镜像 HEAD、dirty 状态与提交数。如果 main 已前进，且没有未提交变更冲突，则在最新远端基线上继续并在报告中解释；不得 reset、force-push、丢弃用户改动或把较旧 SHA 强行当成真实 HEAD。

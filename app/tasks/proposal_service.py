@@ -49,6 +49,7 @@ from app.tasks.proposal_events import (
     PROPOSAL_REJECTED,
     ProposalEventPublisher,
 )
+from app.tasks.resource_intent import parse_collection_request
 
 #: §四：USER 路径上"这句话是在指一个玩家"的关键词（确定性；绝不靠模型猜目标）
 PLAYER_TARGET_KEYWORDS: tuple[str, ...] = (
@@ -114,6 +115,7 @@ class TaskProposalService:
         registry: Any = None,
         minecraft: Any = None,
         minecraft_online: Callable[[], bool] | None = None,
+        goal_source: Callable[[], Sequence[Any]] | None = None,
         publisher: Any = None,
         clock: Callable[[], float] = time.time,
         logger: Any = None,
@@ -128,6 +130,7 @@ class TaskProposalService:
         self._clock = clock
         self._log = logger
         self._online_provider = minecraft_online
+        self._goal_source = goal_source
         self.started_at = float(self._clock())
         self.last_check_at = 0.0
         self.created_count = 0
@@ -314,7 +317,9 @@ class TaskProposalService:
         expired_at = getattr(intent, "expired_at", None)
         if callable(expired_at) and bool(expired_at(moment)):
             return {"action": "skipped", "reason": "intent_expired"}
-        objective = intent_objective(intent)
+        objective = self._source_objective(intent)
+        if objective is None:
+            return {"action": "skipped", "reason": "goal_source_unavailable"}
         if not objective:
             return {"action": "skipped", "reason": "empty_objective"}
         player = str(getattr(intent, "related_player", "") or "")
@@ -331,6 +336,43 @@ class TaskProposalService:
             require_target=require_target,
             now=moment,
         )
+
+    def _source_objective(self, intent: Any) -> str | None:
+        """Read a scoped open Goal; display prose must not rewrite its collection request."""
+        fallback = intent_objective(intent)
+        source = getattr(intent, "source", "")
+        source = str(getattr(source, "value", source))
+        goal_id = str(getattr(intent, "related_goal", "") or "")
+        if source != "GOAL" or not goal_id or self._goal_source is None:
+            return fallback
+        if str(getattr(intent, "character_id", "")) != self.character_id:
+            return None
+        try:
+            goals = self._goal_source()
+            if not isinstance(goals, Sequence) or isinstance(goals, str | bytes):
+                return None
+            goal = next(
+                (row for row in goals[:32] if str(getattr(row, "goal_id", "")) == goal_id),
+                None,
+            )
+            if goal is None or str(getattr(goal, "character_id", "")) != self.character_id:
+                return None
+            status = getattr(goal, "status", "")
+            if str(getattr(status, "value", status)) not in {"pending", "active"}:
+                return None
+            text = str(
+                getattr(goal, "reason", "")
+                or getattr(goal, "target_project", "")
+                or getattr(goal, "target_item", "")
+                or ""
+            )
+            # Inspect the full source before any proposal/display truncation.
+            request = parse_collection_request(text)
+            if request is not None and not request.problem:
+                return text
+        except Exception:  # noqa: BLE001 - unreadable provenance never supplies a goal
+            return None
+        return fallback
 
     async def record_user_request(
         self,

@@ -44,7 +44,7 @@ def sentinel(monkeypatch: pytest.MonkeyPatch) -> list[Any]:
         calls.append((args, kwargs))
         raise PlanResourceSentinel("plan_resource_task 不该被调用")
 
-    monkeypatch.setattr(turn_module, "plan_resource_task", boom)
+    monkeypatch.setattr(turn_module, "plan_collection_task", boom)
     return calls
 
 

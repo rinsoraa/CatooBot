@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import time
 from typing import Any
 
 import pytest
 
 from app.tasks.agent_planner import BoundedAgentPlanner, PlanningOutcome, detect_shape
 from app.tasks.planner import ObservationFailed, plan_wood_task
+from tests.resource_facts import unit_harvest_facts
 
 OAK = "minecraft:oak_log"
 SPRUCE = "minecraft:spruce_log"
@@ -28,11 +30,25 @@ class FakeObserve:
         self.calls.append((tool, dict(arguments)))
         payload: dict[str, Any]
         if tool == "minecraft_find_blocks":
-            payload = {"ok": True, "matches": list(self.matches)}
+            payload = {
+                "ok": True,
+                "matches": list(self.matches),
+                "observation": {
+                    "coverage": "COMPLETE",
+                    "dimension": "minecraft:overworld",
+                    "captured_at": time.time(),
+                },
+            }
         elif tool == "minecraft_world":
             payload = {"position": {"x": 0.0, "y": 64.0, "z": 0.0}}
         elif tool == "minecraft_dig_capability":
-            payload = {"can_dig": self.can_dig, "reason": self.reason}
+            payload = {
+                "can_dig": self.can_dig,
+                "reason": self.reason,
+                "held_item": None,
+                "safety": {"known": True, "allowed": True},
+                "harvest": unit_harvest_facts(name=None, damageable=False, remaining=None),
+            }
         else:
             payload = {}
         return type("R", (), {"result": payload, "summary": tool})()
@@ -55,7 +71,7 @@ async def _plan(
 ) -> Any:
     observe = FakeObserve(matches=matches, can_dig=can_dig, reason=reason)
     return await plan_wood_task(
-        "帮我砍两根橡木原木带回来",
+        f"帮我砍{count}根橡木原木带回来",
         observe=observe,
         candidates=(OAK,),
         count=count,
@@ -77,7 +93,11 @@ async def test_two_adjacent_logs_in_one_column_are_frozen_per_target() -> None:
     for pick in picks:
         ref = pick.arguments["entity_id"]["from_step"]
         source = next(s for s in plan.plan.steps if s.step_id == ref)
-        assert source.tool == "minecraft_dropped_items"
+        assert source.tool == "minecraft_dig"
+        assert (
+            pick.arguments["entity_id"]["path"] == "attribution.server_collection.drops.0.entity_id"
+        )
+        assert pick.arguments["expected_break_action"]["from_step"] == source.step_id
     assert plan.plan.expected_final_state.inventory_delta == {"oak_log": 2}
     assert plan.plan.steps[-1].tool == "minecraft_inventory"
     actions = [s for s in plan.plan.steps if s.risk != "SAFE"]
@@ -131,13 +151,11 @@ async def test_no_logs_found_is_a_safe_refusal() -> None:
     assert "no_wood_target" in str(excinfo.value)
 
 
-async def test_count_never_exceeds_the_hard_limit() -> None:
-    """预算不随请求扩大：即使要 5 根，计划里最多 2 个目标。"""
+async def test_overbudget_count_is_rejected_without_silently_reducing_the_goal() -> None:
+    """R3：超预算必须澄清，不能将用户的 5 根改成可执行的 2 根。"""
     matches = [_match(OAK, 10, 64 + index, 5) for index in range(5)]
-    plan = await _plan(matches, count=5)
-    digs = [s for s in plan.plan.steps if s.tool == "minecraft_dig"]
-    assert len(digs) == 2
-    assert plan.plan.expected_final_state.inventory_delta == {"oak_log": 2}
+    with pytest.raises(ObservationFailed, match="quantity_out_of_budget"):
+        await _plan(matches, count=5)
 
 
 async def test_unreachable_high_logs_are_filtered_before_grouping() -> None:
@@ -192,19 +210,19 @@ async def test_unsupported_wood_is_refused_at_planning_time() -> None:
     result = await _planner(allow_medium=True).plan(
         "帮我砍两根竹子带回来", observe=observe, shape_hint="wood"
     )
-    assert result.outcome is PlanningOutcome.BLOCKED_BY_PRECONDITION
-    assert result.reason.startswith("unsupported_species:")
+    assert result.outcome is PlanningOutcome.NEEDS_MORE_INFORMATION
+    assert result.reason == "resource.intent.unsupported_target"
     assert observe.calls == []
 
 
 async def test_wood_is_selected_by_the_explicit_shape_hint() -> None:
     """约束 1：木材形状由 MC 入口的确定性解析 + shape_hint 选定；全局形状判定逐字不变。"""
-    assert detect_shape("帮我砍两棵橡木原木带回来") == "resource"
+    assert detect_shape("帮我砍两根橡木原木带回来") == "resource"
     assert detect_shape("帮我挖两块圆石带回来") == "resource"
     observe = FakeObserve(matches=[_match(OAK, 10, 64, 5)])
     hinted = await _planner(allow_medium=True).plan(
-        "帮我砍两棵橡木原木带回来", observe=observe, shape_hint="wood"
+        "帮我砍两根橡木原木带回来", observe=observe, shape_hint="wood"
     )
     assert hinted.reason == "wood_plan_ready"
-    unhinted = await _planner(allow_medium=True).plan("帮我砍两棵橡木原木带回来", observe=observe)
-    assert unhinted.reason != "wood_plan_ready"
+    unhinted = await _planner(allow_medium=True).plan("帮我砍两根橡木原木带回来", observe=observe)
+    assert unhinted.reason == "wood_plan_ready"

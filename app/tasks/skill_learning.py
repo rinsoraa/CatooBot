@@ -36,6 +36,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Any
 
+from app.tasks.collection_evidence import collection_evidence
 from app.tasks.models import StepState, TaskFailure, TaskState
 from app.tasks.skill import (
     EvidenceVerdict,
@@ -625,6 +626,10 @@ def classify_reuse(record: Any, *, learning: Qualification | None = None) -> Reu
     if state is TaskState.FAILED:
         verification = getattr(record, "verification", None) or {}
         failure = str(getattr(record, "failure", "") or "")
+        if verification.get("indeterminate") is True:
+            return ReuseVerdict(
+                EvidenceVerdict.REJECTED, "collection_evidence_unproven", "indeterminate"
+            )
         if (
             failure in ATTRIBUTABLE_FAILURES
             and verification.get("checked") is True
@@ -754,6 +759,16 @@ def qualify(inputs: LearningInput) -> Qualification:
                 detail={"step_id": step_id, "tool": tool},
             )
         postcondition_kind = kind
+
+    collection = collection_evidence(record)
+    if not collection["ok"]:
+        return Qualification(
+            ok=False,
+            reason_code="collection_evidence_unproven:" + collection["step_id"],
+            verdict=EvidenceVerdict.AMBIGUOUS,
+            method_class=method_class,
+            detail=collection,
+        )
 
     # ---- 判据与归一化
     criteria = success_criteria_of(record)

@@ -1,5 +1,54 @@
 # Changelog
 
+### Minecraft R3.2 —— 正常装配补证（进行中）
+
+- 修复正常 AgentPlanService 经技能包装调用规划器时 shape_hint 不兼容的问题。
+- 修复任务开始与终态事件并发投影导致 Activity Episode 状态顺序错误的问题。
+- 正常 Bot.start 装配真实服完成 24 项资源任务，并形成 24 个完成活动、24 条记忆事实和 12 个有效技能；真实 QQ、LIFE 与剩余阶段门禁尚未完成。
+- R3.3 G4：最终源码 5069 Python passed（802.83s）、Node 全链 ALL CHECKS PASSED、Java 158 项断言、ruff/format/mypy 通过；真实 QQ 歧义/否定复测无内部原因码、零任务零动作。发布/CI 待完成。详见 docs/MINECRAFT_R3_3_G4_ENGINEERING_AND_QQ_REPORT.md。
+- R3.3 剩余负向矩阵：11/11 真服用例通过（工具/耐久、事实缺失、支撑/液体危险、路径失败、库存满、旧掉落、外部移除）；108 文件恢复、测试服 PID 62664。前五次夹具失败保留。R3 仍 IN_PROGRESS，事实过期真服证据与 G4 发布/CI 待收口。详见 docs/MINECRAFT_R3_3_REMAINING_NEGATIVE_REPORT.md。
+- 最终源码实服矩阵：84/84 USER 负向（12 ID × 7 类）与 3/3 LIFE/USER 采集通过；LIFE 冷启动抑制、自然 300 秒恢复后提案、错误 owner 拒绝、记忆与技能复用均有实服证据。前三次失败（RCON 超时、scheduler RECENT_INITIATIVE、复用 SQLite 的 DUPLICATE_INTENT）保留。R3 仍 IN_PROGRESS，剩余 G3 类别与 G4 发布/CI。详见 docs/MINECRAFT_R3_2_LIVE_FINAL_REPORT.md。
+- 当前 Node 完整单元/E2E、5053项完整Python重跑及全仓静态检查通过；配置更新重叠触发的首次.env保护错误独立保留。Workbuddy2API聊天与SiliconFlow向量接口通过，结构化决策子门禁经12:09最小复测通过（历史失败保留）。详见 docs/MINECRAFT_R3_2_NORMAL_ASSEMBLY_REPORT.md。
+
+### Minecraft R3.1 —— 终态验证竞态与恢复证据
+
+- 修复最终库存验证等待期间，已取消/过期任务被旧快照改写为成功或失败的问题；最终结算按任务锁重读当前状态与计划。
+- 先落盘终态不能被另一终态替换；吸收旧写入时保留当前计划历史与结果，不产生错误终态事件或checkpoint。
+- 新增14项SQLite确定性测试，覆盖恢复与技能/记忆拒绝、乱序、拾取结算竞争及终态旧快照；相关回归590项通过，改动范围lint/format及mypy通过。
+- R3仍为IN_PROGRESS；正常装配、逐ID真服矩阵、指定QQ及最终发布CI继续保留。详见docs/MINECRAFT_R3_1_TERMINAL_RECOVERY_REPORT.md。
+
+### Minecraft R3 —— 采集证据链跨代 / 恢复 / 重放 / 竞争收口
+
+- 在真实 TaskRuntime 上补 G2 链上反例：重规划后旧计划的 dig 证据与旧 pickup 迟到事件都不能为新计划提供成功，新计划必须重新派发新的动作 id；重规划本身零世界动作。
+- 真实 SQLite 回读：带旧"验证成功"缓存的持久化记录仍按当前证据重算；篡改落库掉落物品后判 drop_identity，技能资格同步拒绝，不产生伪成功。
+- 重放与竞争：同一 pickup 终态事件只结算一次且不改写已落库来源证据；重复 dig 事件携带被篡改掉落时不得覆盖原证据；pickup 在途取消后迟到事件不复活终态、不再派发且技能侧拒绝。
+- 结构性一致性：全仓只有 app/tasks/collection_evidence.py 产出采集证据判决，三处消费者同源导入；Node 全仓只有 strict_attribution.js 消费服务端采集证据，通道层只搬运不裁决。
+- 新增 9 项确定性测试；全量 5028 passed；npm test exit 0（严格归因 84/84、E2E ALL CHECKS PASSED、1219 个断言标记）；ruff/format/mypy 通过。详见 docs/MINECRAFT_R3_CHAIN_REPORT.md。
+
+### Minecraft R3 —— Python 采集证据消费者与恢复边界
+
+- 新增纯消费者，按当前冻结步骤复核 schema-3 服务端破坏证明、唯一掉落、拾取精确关联、连接一致与身份不复用；不新增执行器/表/迁移，不抬高 TTL、步数、重规划与等待预算，MEDIUM 默认关闭。
+- 接线到派发前复核、任务终态、技能资格与成功记忆：证据图缺陷（掉落/拾取/连接/复用/部分完成）即 FAILED(VERIFICATION) 且零后续派发；归因本身的缺陷沿用既有"世界变了 → 等新计划"路径。
+- 新增 72 项确定性测试（13 项正向含 12 个目标 ID、46 类稳定原因码反例、7 项图级规则、真实 TaskRuntime 零派发与原子 P3 兼容、3 项消费端联动）；24 条真实归一化记录离线复核 24/24 且 62 条注入反例全部拒绝；全量 5019 passed，ruff/format/mypy PASS。
+- Node/Java 63 个文件字节未变，仅复用协议检查点证据；首轮全量 80 failed 的根因是共享夹具停留在 schema-2，修复只改夹具与断言、未放宽任何门禁，原始失败与最终日志均保留。详见 docs/MINECRAFT_R3_CONSUMER_REPORT.md。
+
+### Minecraft R3 —— 采集协议协商与兼容拒绝
+
+- 签名 session、采集预约与签名回执逐次确认 catoobot.collection.v1；缺失、未知、类型错误或回执降级时，采集 dig/pickup 在动作开始前拒绝。
+- Node 消费者只映射 12 个受支持目标的实际掉落，校验实体 UUID/ID、actor/session/维度、break 事件/预约与 pickup 预约的精确关联；新服务端保留无该字段的 P3 原子破坏协议。
+- Java 12 套与真实 HTTP 断言、24 条真实正向任务、旧 JAR 拒绝、默认关闭/开启两轮真实 JVM 生命周期与 107 文件现场恢复；R3 仍为 IN_PROGRESS，G1–G4 均 PARTIAL。详见 docs/MINECRAFT_R3_PROTOCOL_COMPATIBILITY_REPORT.md。
+
+### Minecraft R3 —— 统一采集意图准入与旧计划准入
+
+- 统一 QQ/游戏内/LIFE/技能/重规划的资源解释与准入；询问、否定、歧义、未知种类与超预算数量不创建可执行计划。
+- 规划后与派发前再次核对真实目标、维度、工具与耐久；旧计划、旧成功与缓存不获得新授权；采集旧协议拒绝停在重规划。
+- 629 文件源码冻结、4947 项 Python、真实 Provider 9/9；R3 仍为 IN_PROGRESS。详见 docs/MINECRAFT_R3_INTENT_ADMISSION_REPORT.md。
+
+### Minecraft R3 —— 来源证据与派发前复核
+
+- 采集步骤必须绑定精确来源并在派发前复核；技能重新物化按当前事实重算，不复用旧缓存。
+- 24 条正向与 84 条负向服务端记录、Node/Java 全链证据；R3 仍为 IN_PROGRESS。详见 docs/MINECRAFT_R3_CONTINUATION_REPORT.md。
+
 ### Minecraft R2 —— Life/Play 桥接与当前事实门禁
 
 - 先归档 R2 规格，复用既有意图、提案、计划、确认和 Task 执行链；规划、批准及派发前只读核验真实来源、持久化角色、冲突任务和当前连接/近场观察。
