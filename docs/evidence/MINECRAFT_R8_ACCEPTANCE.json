@@ -122,5 +122,13 @@
     "No new production code; R6/R7 full engineering/CI applies to same frozen bytes."
   ],
   "report": "docs/MINECRAFT_R8_ACCEPTANCE_REPORT.md",
-  "raw_private_artifacts": "data/r8/acceptance-20261022/"
+  "raw_private_artifacts": "data/r8/acceptance-20261022/",
+  "release": {
+    "commit": "8129bf2d63a99726a3f7d8664dac881e4e289f4c",
+    "ci_run": 39690232917,
+    "ci_url": "https://github.com/rinsoraa/CatooBot/actions/runs/39690232917",
+    "conclusion": "success",
+    "jobs": 3,
+    "status": "PASS"
+  }
 }

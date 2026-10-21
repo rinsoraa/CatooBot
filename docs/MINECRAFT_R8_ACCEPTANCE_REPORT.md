@@ -1,6 +1,6 @@
 # CatooBot Minecraft R8 正式验收报告
 
-日期：2026-10-22。状态：**IN_PROGRESS，R8 跨进程复用链路已 PASS，等待发布/CI 回执。**
+日期：2026-10-22。状态：**COMPLETE**。
 
 ## 1. 端到端链路
 
@@ -36,7 +36,7 @@ R8 新进程：同一隔离 SQLite/角色读到 ACTIVE 技能 success=3、3 条 
 | R8-A3 异常/反例 | PASS | R3/R4/R5/R6/R7 拒绝、歧义、STOP、目标丢失、外部移除、未知矩阵保留；R8 不宣告假成功 |
 | R8-A4 长期角色 | PASS | R2 Life episode、R7 多任务/ACTIVE、R8 新进程复用；记忆/技能有来源；无自主搜索升级 |
 | R8-A5 真实 QQ | PASS（沿用 R3.3） | 真实私聊歧义/否定非动作；无正向执行宣称；QQ 路径未改 |
-| R8-A6 工程与发布 | PASS（发布待补） | 生产代码自 R6 未变；R6 5106 pytest/Node/静态 + R7 81 技能测试；发布/CI 待补 |
+| R8-A6 工程与发布 | PASS | 生产代码自 R6 未变；R6 5106 pytest/Node/静态 + R7 81 技能测试；发布 `8129bf2`，CI 39690232917 三 job success |
 
 ## 4. 边界
 
@@ -48,4 +48,5 @@ R8 新进程：同一隔离 SQLite/角色读到 ACTIVE 技能 success=3、3 条 
 
 ## 5. 发布
 
-待补。
+- 发布提交：`8129bf2d63a99726a3f7d8664dac881e4e289f4c`
+- CI：https://github.com/rinsoraa/CatooBot/actions/runs/39690232917 ，三 job 全部 success

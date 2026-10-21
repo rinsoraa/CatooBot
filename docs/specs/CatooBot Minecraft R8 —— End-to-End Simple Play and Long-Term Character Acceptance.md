@@ -1,6 +1,6 @@
 # CatooBot Minecraft R8 —— End-to-End Simple Play and Long-Term Character Acceptance
 
-开工归档：2026-10-22。验收执行：R7→R8 跨进程/世界恢复后技能复用真实链路 PASS；组合 R2/R3.3/R4/R5/R6/R7 证据。
+开工归档：2026-10-22。验收完成：R8-A1–A6 PASS；发布 `8129bf2`，CI 39690232917 三 job success。
 
 ## 1. 目标
 

@@ -5,7 +5,7 @@
 - 修复正常 AgentPlanService 经技能包装调用规划器时 shape_hint 不兼容的问题。
 - 修复任务开始与终态事件并发投影导致 Activity Episode 状态顺序错误的问题。
 - 正常 Bot.start 装配真实服完成 24 项资源任务，并形成 24 个完成活动、24 条记忆事实和 12 个有效技能；真实 QQ、LIFE 与剩余阶段门禁尚未完成。
-- R8：跨进程/世界恢复后的技能复用真实链路 PASS（ACTIVE success 3→4、记忆 2 条）；组合 R2 Life→Play、R7 Learning、R6 交付、R5/R4 战斗建造、R3.3 真实 QQ 证据；发布/CI 待补。详见 docs/MINECRAFT_R8_ACCEPTANCE_REPORT.md。
+- R8 正式完成：跨进程/世界恢复后的技能复用真实链路 PASS（ACTIVE success 3→4、记忆 2 条）；组合 R2 Life→Play、R7 Learning、R6 交付、R5/R4 战斗建造、R3.3 真实 QQ 证据；发布 `8129bf2`，CI 39690232917 三 job success。详见 docs/MINECRAFT_R8_ACCEPTANCE_REPORT.md。
 - R7 正式完成：经历回流与程序性技能闭环首期；真实矩阵 5/5 PASS，81 项技能测试通过；生产代码自 R6 未变；发布 `4e797ca`，CI 39684566873 三 job success。详见 docs/MINECRAFT_R7_SKILL_CLOSURE_REPORT.md。
 - R6 正式完成：玩家物品交付首期；真实矩阵 6/6 PASS（attempt-06），5106 Python passed（614.53s）、Node 全链、ruff/format/mypy 通过；发布 `938c454`，CI 39677255923 attempt 2 三 job success。详见 docs/MINECRAFT_R6_DELIVERY_REPORT.md。
 - R5 正式完成：有界敌对交互与战斗安全首期；真实矩阵 9/9 PASS（attempt-07），5099 Python passed（823.71s）、Node 全链、ruff/format/mypy 通过；发布 `3b7f40b`，CI 39663573182 三 job success。详见 docs/MINECRAFT_R5_BOUNDED_COMBAT_REPORT.md。
