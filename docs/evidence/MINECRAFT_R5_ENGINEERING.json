@@ -49,5 +49,13 @@
     "ruff-format.log": "20f86d7fe95270f0e0cb68f8da3ca8203a7be4ddcb9d930b4aab2b408415d04f",
     "mypy.log": "ef3184d649f3b486ecf39825cbdff2ea78d2fbb6be7077a75f28b88a6c762027"
   },
-  "report": "docs/MINECRAFT_R5_BOUNDED_COMBAT_REPORT.md"
+  "report": "docs/MINECRAFT_R5_BOUNDED_COMBAT_REPORT.md",
+  "release": {
+    "commit": "3b7f40bc094a8d5b9c40382f7ab5b8dfcb067498",
+    "ci_run": 39663573182,
+    "ci_url": "https://github.com/rinsoraa/CatooBot/actions/runs/39663573182",
+    "conclusion": "success",
+    "jobs": 3,
+    "status": "PASS"
+  }
 }

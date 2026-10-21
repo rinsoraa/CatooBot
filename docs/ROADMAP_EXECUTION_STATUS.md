@@ -3,7 +3,7 @@
 更新：2026-10-21。长期目标：R8 中 Life、Play、Learning 在真实服务器和长期会话形成可追溯闭环。此表记录证据状态，不修改产品定义或路线要求。
 
 当前阶段：**R4 COMPLETE**。[R4 正式验收报告](MINECRAFT_R4_BOUNDED_BUILD_REPORT.md)。
-2026-10-22：真实服务器 10/10 PASS（attempt-12）；5088 Python passed（661.08s）、Node 全链 ALL CHECKS PASSED、ruff/format/mypy 通过；发布 `7c3a5a4`，CI [39638936965](https://github.com/rinsoraa/CatooBot/actions/runs/39638936965) 三 job success。2026-10-22：R5 真实矩阵 9/9 PASS（attempt-07）；5099 Python passed（823.71s）、Node 全链、ruff/format/mypy 通过。发布/CI 通过后标记 R5 COMPLETE。
+2026-10-22：真实服务器 10/10 PASS（attempt-12）；5088 Python passed（661.08s）、Node 全链 ALL CHECKS PASSED、ruff/format/mypy 通过；发布 `7c3a5a4`，CI [39638936965](https://github.com/rinsoraa/CatooBot/actions/runs/39638936965) 三 job success。2026-10-22：R5 真实矩阵 9/9 PASS（attempt-07）；5099 Python passed（823.71s）、Node 全链、ruff/format/mypy 通过；发布 `3b7f40b`，CI [39663573182](https://github.com/rinsoraa/CatooBot/actions/runs/39663573182) 三 job success。
 
 [前序 R3.3 负向矩阵](MINECRAFT_R3_3_REMAINING_NEGATIVE_REPORT.md)。
 2026-10-21 18:30 完成 11/11 真服负向用例：工具/耐久 4 项、事实缺失 1 项、支撑/液体危险 2 项、路径失败 1 项、库存满 1 项、旧掉落 1 项、外部移除 1 项；108 文件恢复、测试服 PID 62664。前五次夹具失败保留。
@@ -30,7 +30,7 @@ LIFE 冷启动抑制、自然 300 秒恢复后 warm 提案、错误 owner 拒绝
 | R2 | COMPLETE：真实 Goal/Memory、两道门、SUCCEEDED/CANCELLED、自然恢复/确认过期、当前角色/冲突/世界检查，4732 Python；d121127 的 CI 39216169585 attempt 1 三 job success，交付回执核验通过 | 收尾离线是当时现场；R3 续作已复核日常 Bot/Bridge 在线，不冒充新代码已部署或 QQ 通道已验收 |
 | R3 | **COMPLETE**：12 ID 合同；24/24 正向（零/已有库存双基线）；84/84 七类负向；11/11 剩余负向；逐 ID STOP/CANCEL；LIFE/Goal 双门 3/3；最终 5069 Python、Node 全链、Java 158 项、静态检查；发布 `804f35f` / CI 39592796282 三 job success。见[R3 正式报告](MINECRAFT_R3_FINAL_REPORT.md) | R4 受限放置与简单建造；先制定 R4 任务书 |
 | R4 | **COMPLETE**：受限放置首期；真实矩阵 10/10（单块/3 格/材料不足/占用/参考缺失/越界/外部变化/错误 owner/部分 STOP）；5088 Python/Node/静态；发布 `7c3a5a4` / CI 39638936965 三 job success。见[R4 报告](MINECRAFT_R4_BOUNDED_BUILD_REPORT.md) | R5 有界敌对交互与战斗安全；先制定 R5 任务书 |
-| R5 | **IN_PROGRESS（awaiting release/CI）**：白名单僵尸/骷髅/蜘蛛/洞穴蜘蛛；4 击、650ms 冷却、无导航、死亡后 SAFE 实体消失核验；真实矩阵 9/9（击杀/XP+掉落/无目标/低生命/空手/村民拒绝/超范围/目标丢失/STOP）；5099 Python/Node/静态通过。见[R5 报告](MINECRAFT_R5_BOUNDED_COMBAT_REPORT.md) | 发布回执后 COMPLETE；R6 交付合作 |
+| R5 | **COMPLETE**：白名单僵尸/骷髅/蜘蛛/洞穴蜘蛛；4 击、650ms 冷却、无导航、死亡后 SAFE 实体消失核验；真实矩阵 9/9（击杀/XP+掉落/无目标/低生命/空手/村民拒绝/超范围/目标丢失/STOP）；5099 Python/Node/静态；发布 `3b7f40b` / CI 39663573182 三 job success。见[R5 报告](MINECRAFT_R5_BOUNDED_COMBAT_REPORT.md) | R6 玩家物品交付与合作交互；先制定 R6 任务书 |
 | R6 | 身份设施不等于交付闭环 | DROPPED/PICKUP_CONFIRMED/UNKNOWN 分离 |
 | R7 | 既有技能模块不等于真实复用已通过 | 来源、检索、适用性、反例、跨重启复现 |
 | R8 | 未达到；保持完整长期目标 | 路线全部用例矩阵与长期角色证据审计 |

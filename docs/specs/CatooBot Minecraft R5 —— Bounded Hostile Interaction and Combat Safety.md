@@ -1,6 +1,6 @@
 # CatooBot Minecraft R5 —— Bounded Hostile Interaction and Combat Safety
 
-开工归档：2026-10-22。前置 R4 COMPLETE（发布 `7c3a5a4`，CI 39638936965 三 job success）。本阶段只做有界敌对生物交互，不进入 R6。
+开工归档：2026-10-22。验收完成：2026-10-22，R5-A1–A6 全部 PASS；发布 `3b7f40b`，CI 39663573182 三 job success。本阶段只做有界敌对生物交互，不进入 R6。
 
 ## 1. 目标与首期白名单
 

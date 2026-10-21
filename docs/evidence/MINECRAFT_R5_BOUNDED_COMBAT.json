@@ -200,5 +200,13 @@
     "player/villager/pet parser and runtime rejection are covered deterministically; real matrix covered villager, not a second live player."
   ],
   "report": "docs/MINECRAFT_R5_BOUNDED_COMBAT_REPORT.md",
-  "raw_private_artifacts": "data/r5/combat-20261022/ (local; product.db and private config not published)"
+  "raw_private_artifacts": "data/r5/combat-20261022/ (local; product.db and private config not published)",
+  "release": {
+    "commit": "3b7f40bc094a8d5b9c40382f7ab5b8dfcb067498",
+    "ci_run": 39663573182,
+    "ci_url": "https://github.com/rinsoraa/CatooBot/actions/runs/39663573182",
+    "conclusion": "success",
+    "jobs": 3,
+    "status": "PASS"
+  }
 }

@@ -1,6 +1,6 @@
 # CatooBot Minecraft R5 正式验收报告
 
-日期：2026-10-22。状态：**IN_PROGRESS，真实矩阵与工程已 PASS，等待发布/CI 回执。**
+日期：2026-10-22。状态：**COMPLETE**。
 
 ## 1. 范围
 
@@ -57,7 +57,7 @@ R5 首期只完成“有界敌对生物交互与战斗安全”：
 | R5-A3 有界攻击 | PASS | 每击独立动作、650ms 冷却、最多 4 击、无导航、最后 SAFE 验证实体消失 |
 | R5-A4 撤退/取消/异常 | PASS | STOP 后 CANCELLED 且目标仍存活；目标丢失 PAUSED；不自动改绑/追新目标 |
 | R5-A5 真实服务器矩阵 | PASS（玩家实机待补） | 9/9；真实覆盖僵尸/村民/目标丢失/STOP/低生命/空手/超范围；**真实第二玩家未启动**，玩家拒绝由 Node runtime 单测和产品解析单测覆盖 |
-| R5-A6 工程与发布 | PASS（发布待补） | 5099 Python passed（823.71s）、Node 全链 ALL CHECKS PASSED、ruff/format/mypy 通过；发布/CI 待补 |
+| R5-A6 工程与发布 | PASS | 5099 Python passed（823.71s）、Node 全链 ALL CHECKS PASSED、ruff/format/mypy；发布 `3b7f40b`，CI 39663573182 三 job success |
 
 ## 5. 工程验证
 
@@ -67,6 +67,11 @@ R5 首期只完成“有界敌对生物交互与战斗安全”：
 - Java：R5 未改 `server_mod` 源或候选 JAR，字节未变；沿用 R3 发布版 7 个 pure suite / 158 项断言证据。
 - 首次工程失败：9 个旧测试仍写死 19 个工具；已更新为批准的 22 个工具，未放宽风险/授权策略。
 - 完整日志：`data/r5/combat-20261022/`；脱敏汇总 `docs/evidence/MINECRAFT_R5_ENGINEERING.json`。
+
+## 6. 发布
+
+- 发布提交：`3b7f40bc094a8d5b9c40382f7ab5b8dfcb067498`
+- CI：https://github.com/rinsoraa/CatooBot/actions/runs/39663573182 ，三 job 全部 success
 
 ## 6. 边界
 
