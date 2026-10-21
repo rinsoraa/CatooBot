@@ -1,0 +1,126 @@
+{
+  "status": "PASS",
+  "stage": "R8",
+  "generated_at": "2026-10-21T22:55:40.552Z",
+  "matrix": "PASS",
+  "cases_total": 1,
+  "cases_passed": 1,
+  "cases": [
+    {
+      "case_id": "restart-reuse",
+      "status": "PASS",
+      "state": "SUCCEEDED",
+      "success_before": 3,
+      "success_after": 4,
+      "suggestion": {
+        "present": true,
+        "tool_steps": [
+          "minecraft_dig",
+          "minecraft_dropped_items",
+          "minecraft_pickup_item",
+          "minecraft_inventory"
+        ]
+      },
+      "memories": 2
+    }
+  ],
+  "source": {
+    "files": 691,
+    "drift": 0,
+    "frozen_sha256": "9fb2bf0b470075d1141e9569824660f69ef498d7c2e3a43a6165db25750771d5"
+  },
+  "driver": {
+    "path": "data/r8/acceptance-20261022/r8_matrix.py",
+    "sha256": "5c3126eacf262dfdd3a66be2361f34792c33a659d30f7d08b1350176c28cbb54"
+  },
+  "backup": {
+    "archive": "server-before.zip",
+    "sha256": "4740aa15aebc8e7932bf0d1027758c4e3cec40483444df13d6b8058835a5dd9a",
+    "files": 108
+  },
+  "restore": {
+    "restored_files": 108,
+    "all_hashes_match_before_restart": true,
+    "removed_extra_world_files": [
+      "world/data/chunks.dat",
+      "world/entities/r.23.30.mca",
+      "world/poi/r.23.30.mca",
+      "world/region/r.22.30.mca",
+      "world/region/r.22.31.mca",
+      "world/region/r.22.32.mca",
+      "world/region/r.23.30.mca",
+      "world/region/r.23.31.mca",
+      "world/region/r.23.32.mca",
+      "world/region/r.24.30.mca",
+      "world/region/r.24.31.mca",
+      "world/region/r.24.32.mca"
+    ],
+    "restored_snapshot": "server-before.zip",
+    "initial_server_running": true,
+    "restored_server_running": true,
+    "restored_server_pid": 43240
+  },
+  "continuity": {
+    "db_sha256": "d755998704453224bbbbc562049809b162726a6ba4519966f2b4c9f21365020e",
+    "tables": {
+      "procedural_skills": 1,
+      "procedural_skill_evidence": 3,
+      "procedural_skill_bindings": 2,
+      "agent_tasks": 0,
+      "memories": 2,
+      "life_intents": 0
+    },
+    "skills": [
+      {
+        "skill_id": "SK-20261022-001",
+        "status": "ACTIVE",
+        "success_count": 3,
+        "failure_count": 0,
+        "ambiguous_count": 0,
+        "objective_pattern": "resource:minecraft:dirt:minecraft:dirt",
+        "last_verified_at": 1792620313.395648
+      }
+    ],
+    "evidence": [
+      {
+        "evidence_id": "EV-task_a7a0828b83c8-1",
+        "task_id": "task_a7a0828b83c8",
+        "verdict": "POSITIVE",
+        "reason_code": "QUALIFIED"
+      },
+      {
+        "evidence_id": "EV-task_283d433339c5-1",
+        "task_id": "task_283d433339c5",
+        "verdict": "POSITIVE",
+        "reason_code": "QUALIFIED"
+      },
+      {
+        "evidence_id": "EV-task_ebcca464f688-1",
+        "task_id": "task_ebcca464f688",
+        "verdict": "POSITIVE",
+        "reason_code": "reuse_succeeded"
+      }
+    ],
+    "separate_process": true,
+    "note": "R7 matrix process ended and world was restored; this is a fresh read of the persisted SQLite."
+  },
+  "components": {
+    "r2_life_play": "docs/evidence/MINECRAFT_R2_LIFE_PLAY_CLOSURE.json",
+    "r7_learning": "docs/evidence/MINECRAFT_R7_SKILL_CLOSURE.json",
+    "r6_delivery": "docs/evidence/MINECRAFT_R6_DELIVERY.json",
+    "r5_combat": "docs/evidence/MINECRAFT_R5_BOUNDED_COMBAT.json",
+    "r3_3_qq": "docs/evidence/MINECRAFT_R3_3_QQ_RECHECK.json"
+  },
+  "artifacts": {
+    "r8.log": "d94dc7059c684946ebcb019b1cd0164d24826e40f82ac45c49fb0ff040e3a331",
+    "r8-results.json": "07eec5b62df3ca6e3b6d7737db9820a88f5352c429af14632eb2fa82ea2f9e7c",
+    "task-events.json": "3f3acbbb6e1a2d54d6a08d4ccf893571d086f92e3553216fb3da5403b467aaeb"
+  },
+  "notes": [
+    "New process read persisted ACTIVE dirt skill success=3 and 2 memories from R7 DB after R7 process/world restore.",
+    "Task proposed plan with 4-step collection skill, executed SUCCEEDED, success=4.",
+    "No new production code; R6/R7 full engineering/CI applies to same frozen bytes."
+  ],
+  "report": "docs/MINECRAFT_R8_ACCEPTANCE_REPORT.md",
+  "raw_private_artifacts": "data/r8/acceptance-20261022/"
+}

@@ -1,6 +1,6 @@
 # CatooBot Minecraft R8 —— End-to-End Simple Play and Long-Term Character Acceptance
 
-开工归档：2026-10-22。前置 R7 COMPLETE（发布 '4e797ca'，CI 39684566873 三 job success）。本阶段是 Rx v3.0 最终验收，不进入新的开发阶段。
+开工归档：2026-10-22。验收执行：R7→R8 跨进程/世界恢复后技能复用真实链路 PASS；组合 R2/R3.3/R4/R5/R6/R7 证据。
 
 ## 1. 目标
 

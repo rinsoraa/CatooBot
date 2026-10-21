@@ -1,0 +1,87 @@
+{
+  "stage": "R8",
+  "status": "IN_PROGRESS",
+  "date": "2026-10-22",
+  "components": {
+    "life_play": {
+      "source": "docs/evidence/MINECRAFT_R2_LIFE_PLAY_CLOSURE.json",
+      "status": "PASS",
+      "scope": "real server LifeIntent→TaskProposal→AgentPlan→TaskRuntime→verified movement observation; controlled product user boundary, no QQ message"
+    },
+    "learning": {
+      "source": "docs/evidence/MINECRAFT_R7_SKILL_CLOSURE.json",
+      "status": "PASS",
+      "scope": "real collection tasks→CANDIDATE→ACTIVE→skill reuse; 81 skill tests"
+    },
+    "continuity": {
+      "db_sha256": "d755998704453224bbbbc562049809b162726a6ba4519966f2b4c9f21365020e",
+      "tables": {
+        "procedural_skills": 1,
+        "procedural_skill_evidence": 3,
+        "procedural_skill_bindings": 2,
+        "agent_tasks": 0,
+        "memories": 2,
+        "life_intents": 0
+      },
+      "skills": [
+        {
+          "skill_id": "SK-20261022-001",
+          "status": "ACTIVE",
+          "success_count": 3,
+          "failure_count": 0,
+          "ambiguous_count": 0,
+          "objective_pattern": "resource:minecraft:dirt:minecraft:dirt",
+          "last_verified_at": 1792620313.395648
+        }
+      ],
+      "evidence": [
+        {
+          "evidence_id": "EV-task_a7a0828b83c8-1",
+          "task_id": "task_a7a0828b83c8",
+          "verdict": "POSITIVE",
+          "reason_code": "QUALIFIED"
+        },
+        {
+          "evidence_id": "EV-task_283d433339c5-1",
+          "task_id": "task_283d433339c5",
+          "verdict": "POSITIVE",
+          "reason_code": "QUALIFIED"
+        },
+        {
+          "evidence_id": "EV-task_ebcca464f688-1",
+          "task_id": "task_ebcca464f688",
+          "verdict": "POSITIVE",
+          "reason_code": "reuse_succeeded"
+        }
+      ],
+      "separate_process": true,
+      "note": "R7 matrix process ended and world was restored; this is a fresh read of the persisted SQLite."
+    },
+    "qq": {
+      "source": "docs/evidence/MINECRAFT_R3_3_QQ_RECHECK.json",
+      "status": "PASS",
+      "scope": "real QQNT private chat ambiguity/negation non-action turns; no positive execution claimed"
+    },
+    "delivery": {
+      "source": "docs/evidence/MINECRAFT_R6_DELIVERY.json",
+      "status": "PASS"
+    },
+    "combat_build": {
+      "source": "docs/evidence/MINECRAFT_R5_BOUNDED_COMBAT.json and R4 report",
+      "status": "PASS"
+    }
+  },
+  "gaps": [
+    "No single real run from LifeIntent through a resource task to skill learning and later reuse in the same character/database.",
+    "R8 long-session multi-episode/restart matrix not yet run.",
+    "Real QQ current-build recheck not rerun; R3.3 evidence predates R4-R7 (QQ path untouched)."
+  ],
+  "gate_status": {
+    "R8-A1": "PARTIAL",
+    "R8-A2": "PARTIAL",
+    "R8-A3": "PARTIAL",
+    "R8-A4": "PARTIAL",
+    "R8-A5": "PARTIAL",
+    "R8-A6": "PENDING"
+  }
+}

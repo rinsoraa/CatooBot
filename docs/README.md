@@ -18,6 +18,8 @@ LIFE 双门、错误 owner 拒绝、记忆与技能复用已取证。剩余 G3 �
 
 2026-10-22 **R7 COMPLETE**：[R7 技能闭环验收报告](MINECRAFT_R7_SKILL_CLOSURE_REPORT.md) 与 [证据](evidence/MINECRAFT_R7_SKILL_CLOSURE.json)。真实矩阵 5/5 PASS；81 项技能测试通过；生产代码自 R6 未变；发布 `4e797ca`，CI [39684566873](https://github.com/rinsoraa/CatooBot/actions/runs/39684566873) 三 job success。R8 待制定任务书。
 
+2026-10-22 R8 验收：[R8 正式验收报告](MINECRAFT_R8_ACCEPTANCE_REPORT.md) 与 [证据](evidence/MINECRAFT_R8_ACCEPTANCE.json)。R7 进程结束后，R8 新进程读取同一 DB，ACTIVE 技能 success 3→4、记忆 2 条；真实服务器 restart-reuse 1/1 PASS。发布/CI 待补。
+
 2026-10-22 当前任务书：[R8 端到端简单游玩与长期角色验收](specs/CatooBot%20Minecraft%20R8%20%E2%80%94%E2%80%94%20End-to-End%20Simple%20Play%20and%20Long-Term%20Character%20Acceptance.md)。R7 已完成并发布；R8 是 Rx v3.0 最终验收。
 
 2026-10-22 当前任务书：[R7 经历回流与程序性技能闭环](specs/CatooBot%20Minecraft%20R7%20%E2%80%94%E2%80%94%20Experience%20Reflux%20and%20Procedural%20Skill%20Closure.md)。R6 已完成并发布；R7 门禁见任务书。
