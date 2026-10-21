@@ -10,7 +10,7 @@ LIFE 双门、错误 owner 拒绝、记忆与技能复用已取证。剩余 G3 �
 
 2026-10-21 最新补证：[R3.3 剩余负向矩阵](MINECRAFT_R3_3_REMAINING_NEGATIVE_REPORT.md) 与 [证据](evidence/MINECRAFT_R3_3_REMAINING_NEGATIVE.json)。11/11 真服负向用例（工具耐久、事实缺失、支撑/液体危险、路径失败、库存满、旧掉落、外部移除）通过；R3 仍 IN_PROGRESS，G4 与“事实过期”真服证据待收口。
 
-2026-10-22 R4 补证：[R4 受限放置与简单建造验收报告](MINECRAFT_R4_BOUNDED_BUILD_REPORT.md) 与 [证据](evidence/MINECRAFT_R4_BOUNDED_BUILD.json)、[工程证据](evidence/MINECRAFT_R4_ENGINEERING.json)。真实矩阵 10/10 PASS；5088 Python passed、Node 全链、ruff/format/mypy 通过；发布/CI 待补。
+2026-10-22 **R4 COMPLETE**：[R4 正式验收报告](MINECRAFT_R4_BOUNDED_BUILD_REPORT.md) 与 [证据](evidence/MINECRAFT_R4_BOUNDED_BUILD.json)、[工程证据](evidence/MINECRAFT_R4_ENGINEERING.json)。真实矩阵 10/10 PASS；5088 Python passed、Node 全链、ruff/format/mypy 通过；发布 `7c3a5a4`，CI [39638936965](https://github.com/rinsoraa/CatooBot/actions/runs/39638936965) 三 job success。R5 待制定任务书。
 
 2026-10-21 当前任务书：[R4 受限放置与简单建造](specs/CatooBot%20Minecraft%20R4%20%E2%80%94%E2%80%94%20Bounded%20Placement%20and%20Simple%20Building.md)。R3 已完成并发布；R4 门禁见任务书。
 

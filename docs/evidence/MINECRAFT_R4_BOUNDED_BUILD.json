@@ -183,5 +183,13 @@
     "candidate_jar_deployed": true,
     "log": "post-restore-server.log",
     "started_at": "2026-10-22T00:37:15+08:00"
+  },
+  "release": {
+    "commit": "7c3a5a41adeddc89f4f98ffe31621ec80c6cd275",
+    "ci_run": 39638936965,
+    "ci_url": "https://github.com/rinsoraa/CatooBot/actions/runs/39638936965",
+    "conclusion": "success",
+    "jobs": 3,
+    "status": "PASS"
   }
 }

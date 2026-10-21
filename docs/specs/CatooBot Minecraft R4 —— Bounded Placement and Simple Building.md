@@ -1,6 +1,6 @@
 # CatooBot Minecraft R4 —— Bounded Placement and Simple Building
 
-开工归档：2026-10-21。前置 R3 COMPLETE（发布 `804f35f`，CI 39592796282 三 job success）。本阶段只做受限放置与简单建造，不进入 R5。
+开工归档：2026-10-21。验收完成：2026-10-22，R4-A1–A6 全部 PASS；发布 `7c3a5a4`，CI 39638936965 三 job success。前置 R3 COMPLETE。
 
 ## 1. 目标与首期支持集
 

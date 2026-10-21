@@ -1,6 +1,6 @@
 # CatooBot Minecraft R4 正式验收报告
 
-日期：2026-10-22。状态：**IN_PROGRESS，工程已 PASS，等待发布/CI 回执。**
+日期：2026-10-22。状态：**COMPLETE**。
 
 ## 1. 范围
 
@@ -67,7 +67,7 @@ R4 只完成“受限方块放置与简单建造”的首期能力：
 | R4-A3 逐格执行与验证 | PASS | 每格一个 `minecraft_place`，runtime 放置后真实读回；全部步骤成功才 SUCCEEDED |
 | R4-A4 取消/部分完成/外部变化 | PASS | STOP 后 CANCELLED 且 1 格保留；外部占位变化 PAUSED/ACTION_FAILED，未覆盖 |
 | R4-A5 真实服务器矩阵 | PASS | 10/10；测试后恢复 108 文件、哈希一致（恢复脚本 PID 62492）；随后用候选 JAR 重启测试服 PID 44904 |
-| R4-A6 工程与发布 | PASS（发布待补） | 5088 Python passed（661.08s）、Node 全链 ALL CHECKS PASSED、ruff/format/mypy 通过；发布/CI 回执待补 |
+| R4-A6 工程与发布 | PASS | 5088 Python passed（661.08s）、Node 全链 ALL CHECKS PASSED、ruff/format/mypy；发布 `7c3a5a4`，CI 39638936965 三 job success |
 
 ## 5. 工程验证
 
@@ -76,6 +76,11 @@ R4 只完成“受限方块放置与简单建造”的首期能力：
 - 静态：`ruff check app tests` PASS、647 files formatted、mypy 352 files PASS。
 - Java：R4 未改 `server_mod` 源或候选 JAR，字节未变；沿用 R3 发布的 7 个 pure suite / 158 项断言证据，不重复冒充新跑。
 - 完整日志：`data/r4/bounded-build-20261021/`；脱敏汇总 `docs/evidence/MINECRAFT_R4_ENGINEERING.json`。
+
+## 6. 发布
+
+- 发布提交：`7c3a5a41adeddc89f4f98ffe31621ec80c6cd275`
+- CI：https://github.com/rinsoraa/CatooBot/actions/runs/39638936965 ，三 job 全部 success
 
 ## 6. 边界
 

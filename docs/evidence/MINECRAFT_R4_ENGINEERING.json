@@ -54,5 +54,13 @@
     "No product gate was relaxed to obtain PASS.",
     "R4 matrix itself is attempt-12, 10/10, run on the final source freeze."
   ],
-  "report": "docs/MINECRAFT_R4_BOUNDED_BUILD_REPORT.md"
+  "report": "docs/MINECRAFT_R4_BOUNDED_BUILD_REPORT.md",
+  "release": {
+    "commit": "7c3a5a41adeddc89f4f98ffe31621ec80c6cd275",
+    "ci_run": 39638936965,
+    "ci_url": "https://github.com/rinsoraa/CatooBot/actions/runs/39638936965",
+    "conclusion": "success",
+    "jobs": 3,
+    "status": "PASS"
+  }
 }
