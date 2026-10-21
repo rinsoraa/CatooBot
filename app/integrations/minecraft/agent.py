@@ -94,6 +94,10 @@ ACTION_RISK: dict[str, str] = {
     "minecraft_dig_capability": "SAFE",
     # Phase 4K：找方块只读（只定位，不移动/不装备/不挖/不拾取）
     "minecraft_find_blocks": "SAFE",
+    # R5: entity observation (SAFE) and one-hit bounded attack (MEDIUM)
+    "minecraft_entities": "SAFE",
+    "minecraft_attack": "MEDIUM",
+    "minecraft_combat_verify": "SAFE",
 }
 
 #: Tool → Action Runtime 动作名（chat 也走统一生命周期）
@@ -115,6 +119,8 @@ TOOL_ACTION: dict[str, str] = {
     "minecraft_dig_capability": "dig_capability",
     "minecraft_find_blocks": "find_blocks",
     "minecraft_pickup_item": "pickup_item",
+    "minecraft_entities": "entities",
+    "minecraft_attack": "attack",
 }
 
 #: 离线也能用的 Tool：minecraft_world（离线也要能回答「我不在游戏里」）
@@ -140,6 +146,8 @@ NON_EXCLUSIVE_TOOLS: frozenset[str] = frozenset(
         "minecraft_dig_capability",
         # Phase 4K：找方块是纯读取（只回答「目标在哪里」）
         "minecraft_find_blocks",
+        "minecraft_entities",
+        "minecraft_combat_verify",
     }
 )
 

@@ -1869,6 +1869,111 @@ class MinecraftService:
                 self._mark_runtime_down(str(exc))
             raise _translate(exc) from exc
 
+    async def entities(self) -> dict[str, Any]:
+        """R5: nearby living entities (SAFE read-only projection)."""
+        self._require_enabled()
+        try:
+            await self._ensure_runtime()
+            return await self._client.entities()
+        except MinecraftRuntimeError as exc:
+            if exc.unreachable:
+                self._mark_runtime_down(str(exc))
+            raise _translate(exc) from exc
+
+    async def combat_verify(
+        self,
+        entity_id: Any,
+        expected_type: Any,
+        *,
+        expected_uuid: Any = None,
+        timeout: float = 3.0,
+    ) -> dict[str, Any]:
+        """R5: verify the frozen entity is really gone after bounded attacks.
+
+        This is a read-only server observation, not an action result claim.
+        """
+        self._require_enabled()
+        if not isinstance(entity_id, int) or isinstance(entity_id, bool) or entity_id < 0:
+            raise MinecraftActionInvalid("entity_id 必须是非负整数")
+        if not isinstance(expected_type, str) or not expected_type.strip():
+            raise MinecraftActionInvalid("expected_type 不能为空")
+        uuid = None
+        if expected_uuid is not None:
+            if not isinstance(expected_uuid, str) or not expected_uuid.strip():
+                raise MinecraftActionInvalid("expected_uuid 必须是非空字符串")
+            uuid = expected_uuid.strip()
+        deadline = time.monotonic() + max(0.2, min(float(timeout), 10.0))
+        while True:
+            try:
+                await self._ensure_runtime()
+                view = await self._client.entities()
+            except MinecraftRuntimeError as exc:
+                if exc.unreachable:
+                    self._mark_runtime_down(str(exc))
+                raise _translate(exc) from exc
+            payload = (
+                view.get("result")
+                if isinstance(view, dict) and isinstance(view.get("result"), dict)
+                else view
+            )
+            rows = payload.get("entities") if isinstance(payload, dict) else None
+            match = None
+            if isinstance(rows, list):
+                for row in rows:
+                    if not isinstance(row, dict) or row.get("entity_id") != entity_id:
+                        continue
+                    match = row
+                    break
+            if match is None:
+                return {"ok": True, "absent": True, "entity_id": entity_id, "checked": True}
+            if uuid and str(match.get("entity_uuid") or "") != uuid:
+                return {"ok": True, "absent": True, "entity_id": entity_id, "checked": True}
+            if time.monotonic() >= deadline:
+                raise MinecraftActionFailed("目标实体仍然存在，不能宣告击杀")
+            await asyncio.sleep(0.25)
+
+    async def attack(
+        self,
+        entity_id: Any,
+        expected_type: Any,
+        *,
+        expected_uuid: Any = None,
+        max_distance: Any = None,
+    ) -> dict[str, Any]:
+        """R5: exactly one hit on one frozen entity (MEDIUM; no navigation)."""
+        self._require_enabled()
+        if not isinstance(entity_id, int) or isinstance(entity_id, bool) or entity_id < 0:
+            raise MinecraftActionInvalid("entity_id 必须是非负整数")
+        if not isinstance(expected_type, str) or not expected_type.strip():
+            raise MinecraftActionInvalid("expected_type 不能为空")
+        uuid = None
+        if expected_uuid is not None:
+            if not isinstance(expected_uuid, str) or not expected_uuid.strip():
+                raise MinecraftActionInvalid("expected_uuid 必须是非空字符串")
+            uuid = expected_uuid.strip()
+        distance = None
+        if max_distance is not None:
+            if (
+                not isinstance(max_distance, int | float)
+                or isinstance(max_distance, bool)
+                or not math.isfinite(float(max_distance))
+                or not 0 < float(max_distance) <= 4
+            ):
+                raise MinecraftActionInvalid("max_distance 必须在 0 到 4 之间")
+            distance = float(max_distance)
+        try:
+            await self._ensure_runtime()
+            return await self._client.attack(
+                entity_id,
+                expected_type.strip(),
+                expected_uuid=uuid,
+                max_distance=distance,
+            )
+        except MinecraftRuntimeError as exc:
+            if exc.unreachable:
+                self._mark_runtime_down(str(exc))
+            raise _translate(exc) from exc
+
     async def pickup_item(
         self,
         entity_id: Any,

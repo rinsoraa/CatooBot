@@ -385,7 +385,9 @@ async def test_minecraft_projection_includes_agent_block(tmp_path):
         assert agent["enabled"] is False
         assert {row["name"] for row in agent["tools"]} == {
             "minecraft_world",
+            "minecraft_attack",
             "minecraft_chat",
+            "minecraft_combat_verify",
             "minecraft_look_at",
             "minecraft_move_to",
             "minecraft_follow_player",
@@ -396,6 +398,7 @@ async def test_minecraft_projection_includes_agent_block(tmp_path):
             "minecraft_dig",
             "minecraft_dig_capability",
             "minecraft_dropped_items",
+            "minecraft_entities",
             "minecraft_equip",
             "minecraft_find_blocks",
             "minecraft_inventory",

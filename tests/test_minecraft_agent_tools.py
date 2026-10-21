@@ -549,23 +549,26 @@ async def test_minecraft_stop_tool_registered() -> None:
 
 
 async def test_all_tools_share_one_risk_table() -> None:
-    """Phase 4H 起十七个生产 Tool（SAFE 只读 + 七个 MEDIUM 写动作）。"""
+    """Phase 4H 起全部生产 Tool（含 R5 entities/attack/combat_verify）。"""
     runtime = await _runtime()
     for name in ACTION_RISK:
         tool = runtime.registry.maybe_get(name)
         assert tool is not None, name
         # 通用 Tool Runtime 的风险词表是 low/medium/high；真正的动作分级在 ACTION_RISK
-        assert tool.metadata.risk_level == "low"
+        assert tool.metadata.risk_level == ("medium" if name == "minecraft_attack" else "low")
         assert tool.metadata.description
     assert runtime.registry.names() == [
         "calculator",
+        "minecraft_attack",
         "minecraft_chat",
+        "minecraft_combat_verify",
         "minecraft_container_inspect",
         "minecraft_container_transfer",
         "minecraft_craft",
         "minecraft_dig",
         "minecraft_dig_capability",
         "minecraft_dropped_items",
+        "minecraft_entities",
         "minecraft_equip",
         "minecraft_find_blocks",
         "minecraft_follow_player",
@@ -671,7 +674,7 @@ def test_busy_foreground_action_is_rejected() -> None:
 
 def test_unknown_tool_is_rejected() -> None:
     # attack/craft/eat 这类还没有实现的动作：风险表里没有名字 → 拒绝
-    for unknown in ("minecraft_attack", "minecraft_craft_all", "minecraft_eat", "minecraft_smelt"):
+    for unknown in ("minecraft_craft_all", "minecraft_eat", "minecraft_smelt"):
         decision = policy().check(unknown, {}, online_facts())
         assert not decision.allowed and decision.code == "minecraft.action_invalid", unknown
 
@@ -705,8 +708,9 @@ def test_risk_flags_gate_every_level() -> None:
     assert policy(allow_medium=True).allowed_by_config("minecraft_dig") is True
     assert policy(allow_medium=True).allowed_by_config("minecraft_place") is True
     # 还没实现的等级：风险表里没有名字，开了开关也不放行
-    assert table.risk_of("minecraft_attack") == ""
-    assert policy(allow_high=True).allowed_by_config("minecraft_attack") is False
+    assert table.risk_of("minecraft_attack") == "MEDIUM"
+    assert table.allowed_by_config("minecraft_attack") is False
+    assert policy(allow_medium=True).allowed_by_config("minecraft_attack") is True
     assert table.allowed_by_config("minecraft_world") is True
     assert table.allowed_by_config("minecraft_move_to") is True
 

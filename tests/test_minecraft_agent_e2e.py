@@ -160,7 +160,7 @@ async def test_model_cannot_use_unimplemented_actions() -> None:
     由风险开关 + 确认门保护；这里验证尚未实现的名字。）
     """
     service = FakeMinecraftService()
-    for forbidden in ("minecraft_attack", "minecraft_smelt", "minecraft_eat", "minecraft_trade"):
+    for forbidden in ("minecraft_smelt", "minecraft_eat", "minecraft_trade"):
         runtime, engine, _provider, _bridge, context = await make_stack(
             script=[decide(forbidden, x=1, y=2, z=3), "我不会做那个。"],
             service=service,

@@ -1015,6 +1015,65 @@ function isDroppedItemEntity(bot, entity) {
   return name === 'item' || name === 'item_stack'
 }
 
+// R5: bounded entity observation / one-hit attack.
+const ENTITY_VIEW_LIMIT = 32
+const ENTITY_VIEW_RANGE = 16
+const ATTACK_DEFAULT_TIMEOUT_MS = 10000
+const ATTACK_MAX_DISTANCE = 4
+const ATTACK_COOLDOWN_MS = 650
+
+function entityTypeOf(entity) {
+  if (!entity || typeof entity !== 'object') return ''
+  const raw = entity.name !== undefined && entity.name !== null
+    ? entity.name
+    : entity.displayName !== undefined && entity.displayName !== null
+      ? entity.displayName
+      : entity.type
+  return String(raw || '').trim().toLowerCase().replace(/^minecraft:/, '')
+}
+
+function entitiesView(bot) {
+  if (bot === null || bot === undefined) {
+    return { ok: true, online: false, total: 0, truncated: false, entities: [] }
+  }
+  const all = bot.entities && typeof bot.entities === 'object' ? Object.values(bot.entities) : []
+  const rows = []
+  for (const entity of all) {
+    if (!entity || !Number.isFinite(entity.id)) continue
+    if (bot.entity && entity.id === bot.entity.id) continue
+    const type = entityTypeOf(entity)
+    if (!type || isDroppedItemEntity(bot, entity)) continue
+    const position = entityPositionOf(entity)
+    if (!position) continue
+    const distance = distanceToEntity(bot, entity)
+    if (distance === null || distance > ENTITY_VIEW_RANGE) continue
+    const row = {
+      entity_id: entity.id,
+      type,
+      position: { x: round2(position.x), y: round2(position.y), z: round2(position.z) },
+      distance,
+      is_player: Boolean(entity.username) || type === 'player',
+    }
+    if (entity.uuid) row.entity_uuid = String(entity.uuid)
+    if (entity.username) row.username = String(entity.username)
+    if (Number.isFinite(entity.health)) row.health = entity.health
+    rows.push(row)
+  }
+  rows.sort((a, b) => a.distance - b.distance || a.entity_id - b.entity_id)
+  return {
+    ok: true,
+    online: true,
+    total: rows.length,
+    truncated: rows.length > ENTITY_VIEW_LIMIT,
+    entities: rows.slice(0, ENTITY_VIEW_LIMIT),
+    observation: {
+      dimension: dimensionOf(bot.game && bot.game.dimension),
+      at: Date.now() / 1000,
+      range: ENTITY_VIEW_RANGE,
+    },
+  }
+}
+
 /** 把 mineflayer 的原始物品槽解码成 ``{name, count}``（解不出来返回 null）。 */
 function decodeRawItemStack(bot, raw) {
   if (!raw || typeof raw !== 'object') return null
@@ -3516,6 +3575,113 @@ const ACTION_REGISTRY = {
         return droppedItemsView(bot)
       },
     },
+    entities: {
+      // R5: read nearby living entities (SAFE; non-exclusive).
+      exclusive: false,
+      timeout_ms: 5000,
+      risk: 'SAFE',
+      validate() {
+        return {}
+      },
+      async run(bot) {
+        if (bot === null || bot === undefined) {
+          throw new ActionError('罐头还没有进入世界', 'action.not_online', 400)
+        }
+        return entitiesView(bot)
+      },
+    },
+    attack: {
+      // R5: exactly one hit on one frozen entity. No navigation, no auto-equip.
+      exclusive: true,
+      timeout_ms: ATTACK_DEFAULT_TIMEOUT_MS,
+      risk: 'MEDIUM',
+      detached: true,
+      validate(params) {
+        const entityId = params.entity_id
+        if (typeof entityId !== 'number' || !Number.isInteger(entityId) || entityId < 0) {
+          throw new ActionError('entity_id 必须是非负整数', 'action.invalid', 400)
+        }
+        const expectedType = String(params.expected_type || '').trim().toLowerCase().replace(/^minecraft:/, '')
+        if (!expectedType) {
+          throw new ActionError('expected_type 不能为空', 'action.invalid', 400)
+        }
+        const expectedUuid = params.expected_uuid === undefined || params.expected_uuid === null
+          ? ''
+          : String(params.expected_uuid).trim()
+        const rawDistance = Number(params.max_distance === undefined ? ATTACK_MAX_DISTANCE : params.max_distance)
+        if (!Number.isFinite(rawDistance) || rawDistance <= 0 || rawDistance > ATTACK_MAX_DISTANCE) {
+          throw new ActionError('max_distance 必须是 0 到 ' + ATTACK_MAX_DISTANCE + ' 之间的数字', 'action.invalid', 400)
+        }
+        return { entity_id: entityId, expected_type: expectedType, expected_uuid: expectedUuid, max_distance: rawDistance }
+      },
+      start(bot, params) {
+        if (bot === null || bot.entity === null) {
+          throw new ActionError('罐头还没有进入世界', 'action.not_online', 400)
+        }
+        const entity = bot.entities ? bot.entities[params.entity_id] : null
+        if (!entity) {
+          throw new ActionError('目标实体不存在', 'target.not_found', 404, { entity_id: params.entity_id })
+        }
+        if (entity.id === bot.entity.id) {
+          throw new ActionError('不能攻击自己', 'target.self', 400)
+        }
+        const type = entityTypeOf(entity)
+        if (type === 'player' || entity.username) {
+          throw new ActionError('默认禁止攻击玩家', 'target.player', 403, { type })
+        }
+        if (type !== params.expected_type) {
+          throw new ActionError('目标类型已变化', 'target.type_changed', 409, { expected: params.expected_type, actual: type })
+        }
+        if (params.expected_uuid && String(entity.uuid || '') !== params.expected_uuid) {
+          throw new ActionError('目标 UUID 已变化', 'target.replaced', 409, { entity_id: params.entity_id })
+        }
+        const distance = distanceToEntity(bot, entity)
+        if (distance === null || distance > params.max_distance) {
+          throw new ActionError('目标超出攻击距离（不会自己追过去）', 'target.too_far', 400, { distance, max: params.max_distance })
+        }
+        return {
+          targetEntity: entity,
+          entity_id: params.entity_id,
+          entity_uuid: params.expected_uuid,
+          expected_type: type,
+          health_before: Number.isFinite(entity.health) ? entity.health : null,
+          distance_start: distance,
+        }
+      },
+      async wait(bot, params, token, state) {
+        if (token && token.cancelled) throw new ActionCancelled(token.reason)
+        const current = bot.entities ? bot.entities[state.entity_id] : null
+        if (current !== state.targetEntity) {
+          throw new ActionError('攻击前目标已消失或被替换', 'target.lost', 409, { entity_id: state.entity_id })
+        }
+        if (state.entity_uuid && String(current.uuid || '') !== state.entity_uuid) {
+          throw new ActionError('攻击前目标 UUID 已变化', 'target.replaced', 409, { entity_id: state.entity_id })
+        }
+        const distance = distanceToEntity(bot, current)
+        if (distance === null || distance > ATTACK_MAX_DISTANCE) {
+          throw new ActionError('攻击前目标已超出距离', 'target.too_far', 400, { distance })
+        }
+        bot.attack(current)
+        await new Promise((resolve) => setTimeout(resolve, ATTACK_COOLDOWN_MS))
+        const after = bot.entities ? bot.entities[state.entity_id] : null
+        const gone = after !== current || !after
+        const healthAfter = gone ? 0 : (Number.isFinite(after.health) ? after.health : null)
+        return {
+          entity_id: state.entity_id,
+          entity_uuid: state.entity_uuid,
+          type: state.expected_type,
+          health_before: state.health_before,
+          health_after: healthAfter,
+          entity_gone: gone,
+          hit: true,
+          damage_confirmed: state.health_before !== null && healthAfter !== null && healthAfter < state.health_before,
+          distance_after: gone ? null : distanceToEntity(bot, after),
+        }
+      },
+      cleanup(bot) {
+        if (bot && typeof bot.clearControlStates === 'function') bot.clearControlStates()
+      },
+    },
     dig_capability: {
       // Phase 4J：读"当前状态下这个方块能不能挖、大概要多久"（SAFE 只读；**非独占**）。
       // 纯查询：不改世界、不改背包、不装备、不切槽、不移动、不导航 —— 与 inventory /
@@ -4559,6 +4725,25 @@ async function handleRequest(request, response) {
       jsonResponse(response, 200, { ok: true, ...result })
       return
     }
+    if (request.method === 'POST' && path === '/minecraft/entities') {
+      // R5: nearby living entities (SAFE read-only).
+      await readBody(request).catch(() => ({}))
+      const result = await actionRuntime.execute('entities', {})
+      jsonResponse(response, 200, { ok: true, ...result })
+      return
+    }
+    if (request.method === 'POST' && path === '/minecraft/attack') {
+      // R5: one hit on one frozen entity (MEDIUM; confirmation stays in product).
+      const body = await readBody(request)
+      const result = await actionRuntime.execute('attack', {
+        entity_id: body.entity_id,
+        expected_type: body.expected_type,
+        expected_uuid: body.expected_uuid,
+        max_distance: body.max_distance,
+      })
+      jsonResponse(response, 200, { ok: true, ...result })
+      return
+    }
     if (request.method === 'POST' && path === '/minecraft/dropped_items') {
       // Phase 4H：读附近的掉落物实体（SAFE 只读；同步返回语义投影）
       await readBody(request).catch(() => ({}))
@@ -4807,6 +4992,10 @@ module.exports = {
   droppedItemStack,
   droppedItemSlotIndex,
   droppedItemsView,
+  entitiesView,
+  entityTypeOf,
+  ENTITY_VIEW_LIMIT,
+  ENTITY_VIEW_RANGE,
   CRAFT_DEFAULTS: {
     timeoutMs: CRAFT_DEFAULT_TIMEOUT_MS,
     lookupTimeoutMs: LOOKUP_DEFAULT_TIMEOUT_MS,
@@ -4848,6 +5037,11 @@ module.exports = {
   inventorySlotBounds,
   inventorySlots,
   findInventoryItem,
+  ATTACK_DEFAULTS: {
+    timeoutMs: ATTACK_DEFAULT_TIMEOUT_MS,
+    maxDistance: ATTACK_MAX_DISTANCE,
+    cooldownMs: ATTACK_COOLDOWN_MS,
+  },
   PLACE_DEFAULTS: {
     timeoutMs: PLACE_DEFAULT_TIMEOUT_MS,
     maxDistance: PLACE_MAX_DISTANCE,

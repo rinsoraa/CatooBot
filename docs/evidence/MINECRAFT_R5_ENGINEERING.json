@@ -1,0 +1,53 @@
+{
+  "status": "PASS",
+  "generated_at": "2026-10-21T19:36:39.847Z",
+  "source": {
+    "files": 687,
+    "drift": 0
+  },
+  "pytest": {
+    "command": ".venv/Scripts/python.exe -m pytest tests -q --tb=short",
+    "result": "5099 passed in 823.71s (0:13:43)",
+    "exit_code": 0,
+    "log": "pytest.log"
+  },
+  "node": {
+    "command": "npm test (minecraft_runtime)",
+    "exit_code": 0,
+    "result": "ALL CHECKS PASSED; 20 suites + new entities/attack 12 checks",
+    "log": "node-test.log"
+  },
+  "java": {
+    "status": "UNCHANGED_SINCE_R3_RELEASE",
+    "note": "R5 did not change server_mod Java source or candidate JAR; R3 158 assertions remain valid, no new Java gate claimed."
+  },
+  "static_checks": {
+    "ruff": "ruff check app tests PASS",
+    "ruff_format": "653 files already formatted",
+    "mypy": "356 source files PASS"
+  },
+  "first_failures": [
+    {
+      "check": "engineering-attempt-01",
+      "resolution": "9 Python tests asserted old 19-tool inventories; updated to the approved 22 tools, no policy weakening."
+    },
+    {
+      "check": "R5 matrix attempts 1-6",
+      "resolution": "combat_verify nested result, attack cooldown, low-health fixture, drop selector; all preserved under attempts."
+    },
+    {
+      "check": "Node e2e flake",
+      "resolution": "first R5 node run failed fixture dirt timeout; retry passed all checks; first log preserved as node-attempt-01.log."
+    }
+  ],
+  "artifacts": {
+    "pytest.log": "0f5145756cd53ea62ead145163f316d1022745fc62be899b400f0e9222acd537",
+    "pytest.exit": "9aca8dfce962538fb8131d73f84cada05e4dc79f5a0d3612c511b1150f3e33e2",
+    "node-test.log": "4e965c201e6f88640313eb97bd5de2dd2c8e6d4506fa2174c25d96056836b156",
+    "node-test.exit": "9aca8dfce962538fb8131d73f84cada05e4dc79f5a0d3612c511b1150f3e33e2",
+    "ruff-check.log": "a5796bb19775c2bfc62f7d3875eba1295da1c9854a7dd0290c850e9c8c9f2d0a",
+    "ruff-format.log": "20f86d7fe95270f0e0cb68f8da3ca8203a7be4ddcb9d930b4aab2b408415d04f",
+    "mypy.log": "ef3184d649f3b486ecf39825cbdff2ea78d2fbb6be7077a75f28b88a6c762027"
+  },
+  "report": "docs/MINECRAFT_R5_BOUNDED_COMBAT_REPORT.md"
+}

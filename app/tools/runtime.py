@@ -84,13 +84,16 @@ class ToolRuntime:
     def _register_builtins(self) -> None:
         from app.tools.builtins import (
             CalculatorTool,
+            MinecraftAttackTool,
             MinecraftChatTool,
+            MinecraftCombatVerifyTool,
             MinecraftContainerInspectTool,
             MinecraftContainerTransferTool,
             MinecraftCraftTool,
             MinecraftDigCapabilityTool,
             MinecraftDigTool,
             MinecraftDroppedItemsTool,
+            MinecraftEntitiesTool,
             MinecraftEquipTool,
             MinecraftFindBlocksTool,
             MinecraftFollowPlayerTool,
@@ -138,6 +141,9 @@ class ToolRuntime:
             # Phase 4J：挖掘能力只读查询（SAFE；只回答「现在能不能挖、多久」）
             ("minecraft_dig_capability", lambda: MinecraftDigCapabilityTool()),
             # Phase 4K：找方块（SAFE 只读；只定位，不移动/不装备/不挖/不拾取）
+            ("minecraft_entities", lambda: MinecraftEntitiesTool()),
+            ("minecraft_attack", lambda: MinecraftAttackTool()),
+            ("minecraft_combat_verify", lambda: MinecraftCombatVerifyTool()),
             ("minecraft_find_blocks", lambda: MinecraftFindBlocksTool()),
             ("minecraft_pickup_item", lambda: MinecraftPickupItemTool()),
             ("minecraft_craft", lambda: MinecraftCraftTool()),

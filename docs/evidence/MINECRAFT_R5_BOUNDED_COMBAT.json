@@ -1,0 +1,204 @@
+{
+  "status": "PASS",
+  "stage": "R5",
+  "generated_at": "2026-10-21T19:36:39.797Z",
+  "attempt": 7,
+  "matrix": "PASS",
+  "cases_total": 9,
+  "cases_passed": 9,
+  "cases": [
+    {
+      "case_id": "kill-zombie",
+      "status": "PASS",
+      "action": "created",
+      "reason_code": "",
+      "final_state": "SUCCEEDED",
+      "failure": "",
+      "zombie_after": false,
+      "xp_before": null,
+      "xp_after": null,
+      "drop_item": null
+    },
+    {
+      "case_id": "kill-zombie-drop",
+      "status": "PASS",
+      "action": "created",
+      "reason_code": "",
+      "final_state": "SUCCEEDED",
+      "failure": "",
+      "zombie_after": false,
+      "xp_before": "R2Bot has the following entity data: 5",
+      "xp_after": "R2Bot has the following entity data: 10",
+      "drop_item": "Iron Ingot has the following entity data: {count: 1, id: \"minecraft:iron_ingot\"}"
+    },
+    {
+      "case_id": "no-target",
+      "status": "PASS",
+      "action": "plan_failed",
+      "reason_code": "combat.no_target",
+      "final_state": "",
+      "failure": "",
+      "zombie_after": null,
+      "xp_before": null,
+      "xp_after": null,
+      "drop_item": null
+    },
+    {
+      "case_id": "low-health",
+      "status": "PASS",
+      "action": "plan_failed",
+      "reason_code": "combat.low_health",
+      "final_state": "",
+      "failure": "",
+      "zombie_after": null,
+      "xp_before": null,
+      "xp_after": null,
+      "drop_item": null
+    },
+    {
+      "case_id": "no-sword",
+      "status": "PASS",
+      "action": "plan_failed",
+      "reason_code": "combat.weapon_required",
+      "final_state": "",
+      "failure": "",
+      "zombie_after": null,
+      "xp_before": null,
+      "xp_after": null,
+      "drop_item": null
+    },
+    {
+      "case_id": "villager-forbidden",
+      "status": "PASS",
+      "action": "plan_failed",
+      "reason_code": "combat.villager_forbidden",
+      "final_state": "",
+      "failure": "",
+      "zombie_after": null,
+      "xp_before": null,
+      "xp_after": null,
+      "drop_item": null
+    },
+    {
+      "case_id": "out-of-range",
+      "status": "PASS",
+      "action": "plan_failed",
+      "reason_code": "combat.no_target",
+      "final_state": "",
+      "failure": "",
+      "zombie_after": null,
+      "xp_before": null,
+      "xp_after": null,
+      "drop_item": null
+    },
+    {
+      "case_id": "target-lost",
+      "status": "PASS",
+      "action": "created",
+      "reason_code": "",
+      "final_state": "PAUSED",
+      "failure": "ACTION_FAILED",
+      "zombie_after": false,
+      "xp_before": null,
+      "xp_after": null,
+      "drop_item": null
+    },
+    {
+      "case_id": "stop-before-attack",
+      "status": "PASS",
+      "action": "created",
+      "reason_code": "",
+      "final_state": "CANCELLED",
+      "failure": "",
+      "zombie_after": true,
+      "xp_before": null,
+      "xp_after": null,
+      "drop_item": null
+    }
+  ],
+  "source": {
+    "files": 687,
+    "drift": [],
+    "frozen_sha256": "b1604eae81d22b0e1e4f84d28024d0a73fb373dfcf763a1304de130845059026"
+  },
+  "driver": {
+    "path": "data/r5/combat-20261022/r5_matrix.py",
+    "sha256": "f19344f33d781784e91f6184c34d5f9129da92f0fa17e319b852d921e4817d5f"
+  },
+  "backup": {
+    "archive": "server-before.zip",
+    "sha256": "c20d196ad4696771023345f1338f36236d088dc6f75dad4e648a4014f94643f3",
+    "files": 108
+  },
+  "candidate": {
+    "jar_sha256": "59b5c9393b4f2f24472fa3c73d732646b317e95fcdaa5c544d493f67045e3a2c"
+  },
+  "restore": {
+    "restored_files": 108,
+    "all_hashes_match_before_restart": true,
+    "removed_extra_world_files": [
+      "world/data/chunks.dat",
+      "world/entities/r.23.30.mca",
+      "world/poi/r.23.30.mca",
+      "world/poi/r.23.31.mca",
+      "world/region/r.22.30.mca",
+      "world/region/r.22.31.mca",
+      "world/region/r.22.32.mca",
+      "world/region/r.23.30.mca",
+      "world/region/r.23.31.mca",
+      "world/region/r.23.32.mca",
+      "world/region/r.24.30.mca",
+      "world/region/r.24.31.mca",
+      "world/region/r.24.32.mca"
+    ],
+    "restored_snapshot": "server-before.zip",
+    "initial_server_running": true,
+    "restored_server_running": true,
+    "restored_server_pid": 64020
+  },
+  "artifacts": {
+    "r5.log": "7e4a6a21bd51f2466da307aed93d8dc54a3920551707a688d4b1978704025a36",
+    "r5.stderr.log": "d12d7e8c3c9e60b7093df33a7c6bf65b2b380e3280389380def10334f2f3fcb2",
+    "r5-results.json": "dd1b7ca73bc9b1688843e5c54f0058a29be76581e8db2ff75f8c1672395791f9",
+    "task-events.json": "2fb2d001eb89243c8827efe33d838582f6a516e6b0f4cb3bbbc7ada310a57d78",
+    "bridge-events.json": "973618235c71f9dd93abaf87317fb231b4a45d48e28c8eff499c4823465b6ccf",
+    "assembly-receipt.json": "9d04276b948fcb1a93ef7da1d70db6aebea0258b3697ebabd3748acabd141826",
+    "live-server.log": "e3e53fd7364c100897850a1b4c13274f4a9f3f547009e692710a62ac817b08b7",
+    "live-runtime.log": "3b59226de8d5dfaf9e36d040fb2f9d4bbc58b8ef143884439fbda9634b408dd4"
+  },
+  "preserved_attempts": [
+    "attempt-01",
+    "attempt-02",
+    "attempt-03",
+    "attempt-04",
+    "attempt-05",
+    "attempt-06",
+    "engineering-attempt-01"
+  ],
+  "product_changes": [
+    "minecraft_runtime/runtime.js (entities/attack actions, 650ms cooldown)",
+    "app/tasks/combat_plan.py",
+    "app/tasks/turn.py",
+    "app/tasks/validation.py",
+    "app/integrations/minecraft/service.py (entities/attack/combat_verify)",
+    "app/integrations/minecraft/runtime_client.py",
+    "app/integrations/minecraft/task_adapter.py",
+    "app/integrations/minecraft/agent.py",
+    "app/tools/builtins/minecraft_entities.py",
+    "minecraft_attack.py",
+    "minecraft_combat_verify.py",
+    "minecraft_runtime/test/entities_attack.test.js",
+    "tests/test_combat_plan.py",
+    "tests/test_combat_turn.py"
+  ],
+  "scope": "R5 bounded combat first phase: normal Bot.start, isolated SQLite, whitelist zombie/skeleton/spider/cave_spider, one frozen target, 4 hits max, no navigation, post-attack live verify. No PVP/player attack.",
+  "notes": [
+    "kill-zombie: 4 hits + live entity absence; SUCCEEDED.",
+    "kill-zombie-drop: XP 5->10 and iron_ingot drop observed.",
+    "target-lost: task PAUSED; zombie killed externally; no false kill.",
+    "stop-before-attack: CANCELLED with zombie still present.",
+    "player/villager/pet parser and runtime rejection are covered deterministically; real matrix covered villager, not a second live player."
+  ],
+  "report": "docs/MINECRAFT_R5_BOUNDED_COMBAT_REPORT.md",
+  "raw_private_artifacts": "data/r5/combat-20261022/ (local; product.db and private config not published)"
+}

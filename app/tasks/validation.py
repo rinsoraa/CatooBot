@@ -452,6 +452,10 @@ def default_step_label(step: TaskStep) -> str:
     if tool == "minecraft_place":
         item = canonical_item_name(arguments.get("expected_item"))
         return f"在 ({arguments.get('x')},{arguments.get('y')},{arguments.get('z')}) 放一个 {item}"
+    if tool == "minecraft_attack":
+        return f"攻击 {arguments.get('expected_type')} 一次"
+    if tool == "minecraft_combat_verify":
+        return "重新读实体列表，确认目标已经消失"
     if tool == "minecraft_inventory":
         return "重新读一次背包"
     return tool

@@ -357,11 +357,11 @@ class TestCapabilityGaps:
         assert proposal.status == ProposalStatus.NEEDS_MORE_INFORMATION.value
 
     async def test_catalog_keeps_the_existing_risk_table(self) -> None:
-        """§九：能力目录从既有 19 个原子工具提取，风险分类**一个字都没改**。"""
+        """§九：能力目录从既有原子工具提取，风险分类**一个字都没改**。"""
         from app.integrations.minecraft.agent import ACTION_RISK
 
         catalog = capability_catalog(minecraft_online=True)
-        assert len(catalog) == len(ACTION_RISK) == 19
+        assert len(catalog) == len(ACTION_RISK) == 22
         for name, risk in ACTION_RISK.items():
             assert catalog[name].risk_class == risk
         assert all(item.available for item in catalog.values())

@@ -124,6 +124,29 @@ class MinecraftRuntimeClient:
         """读附近的掉落物实体（Phase 4H：同步只读语义投影）。"""
         return await self._request("POST", "/minecraft/dropped_items", body={})
 
+    async def entities(self) -> dict[str, Any]:
+        """R5: read nearby living entities (SAFE; synchronous projection)."""
+        return await self._request("POST", "/minecraft/entities", body={})
+
+    async def attack(
+        self,
+        entity_id: int,
+        expected_type: str,
+        *,
+        expected_uuid: str | None = None,
+        max_distance: float | None = None,
+    ) -> dict[str, Any]:
+        """R5: one hit on one frozen entity (MEDIUM; no navigation)."""
+        body: dict[str, Any] = {
+            "entity_id": entity_id,
+            "expected_type": expected_type,
+        }
+        if expected_uuid:
+            body["expected_uuid"] = expected_uuid
+        if max_distance is not None:
+            body["max_distance"] = max_distance
+        return await self._request("POST", "/minecraft/attack", body=body)
+
     async def pickup_item(
         self,
         entity_id: int,

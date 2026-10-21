@@ -54,6 +54,7 @@ SAFE_OBSERVATION_TOOLS = frozenset(
         "minecraft_find_blocks",
         "minecraft_dig_capability",
         "minecraft_dropped_items",
+        "minecraft_entities",
         "minecraft_recipe_lookup",
         "minecraft_container_inspect",
     }

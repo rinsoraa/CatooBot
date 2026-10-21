@@ -241,7 +241,7 @@ async def test_minecraft_tools_stay_untouched_by_the_task_endpoints(tmp_path) ->
     """5A 不新增 Minecraft 原子工具：任务端点只是编排层，不碰单工具行为。"""
     from app.integrations.minecraft.agent import ACTION_RISK
 
-    assert len(ACTION_RISK) == 19
+    assert len(ACTION_RISK) == 22
     assert not any(name.startswith("minecraft_task") for name in ACTION_RISK)
     assert ToolsConfig(enabled=True).max_calls_per_turn >= 1
     assert MinecraftConfig(enabled=True).agent.tools.allow_medium is False

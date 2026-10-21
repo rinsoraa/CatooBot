@@ -238,6 +238,27 @@ async def _dropped_items(service: Any, args: Mapping[str, Any]) -> dict[str, Any
     return await service.dropped_items()
 
 
+async def _entities(service: Any, args: Mapping[str, Any]) -> dict[str, Any]:
+    return await service.entities()
+
+
+async def _combat_verify(service: Any, args: Mapping[str, Any]) -> dict[str, Any]:
+    return await service.combat_verify(
+        args.get("entity_id"),
+        args.get("expected_type"),
+        expected_uuid=args.get("expected_uuid"),
+    )
+
+
+async def _attack(service: Any, args: Mapping[str, Any]) -> dict[str, Any]:
+    return await service.attack(
+        args.get("entity_id"),
+        args.get("expected_type"),
+        expected_uuid=args.get("expected_uuid"),
+        max_distance=args.get("max_distance"),
+    )
+
+
 async def _recipe_lookup(service: Any, args: Mapping[str, Any]) -> dict[str, Any]:
     """Phase 8F：合成规划期的**只读**配方观察（SAFE，与既有 Tool 的 `_call` 同款）。"""
     return await service.recipe_lookup(args.get("item"), args.get("crafting_table"))
@@ -317,11 +338,14 @@ _SERVICE_ROUTES: dict[str, Callable[[Any, Mapping[str, Any]], Awaitable[dict[str
     "minecraft_find_blocks": _find_blocks,
     "minecraft_dig_capability": _dig_capability,
     "minecraft_dropped_items": _dropped_items,
+    "minecraft_entities": _entities,
     "minecraft_recipe_lookup": _recipe_lookup,
     "minecraft_look_at": _look_at,
     "minecraft_move_to": _move_to,
     "minecraft_follow_player": _follow_player,
     "minecraft_dig": _dig,
+    "minecraft_attack": _attack,
+    "minecraft_combat_verify": _combat_verify,
     "minecraft_place": _place,
     "minecraft_equip": _equip,
     "minecraft_pickup_item": _pickup,
