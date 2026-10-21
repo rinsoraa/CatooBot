@@ -274,6 +274,16 @@ async def _dig(service: Any, args: Mapping[str, Any]) -> dict[str, Any]:
     )
 
 
+async def _place(service: Any, args: Mapping[str, Any]) -> dict[str, Any]:
+    return await service.place(
+        args.get("x"),
+        args.get("y"),
+        args.get("z"),
+        args.get("face"),
+        args.get("expected_item"),
+    )
+
+
 async def _equip(service: Any, args: Mapping[str, Any]) -> dict[str, Any]:
     return await service.equip(args.get("item"))
 
@@ -312,6 +322,7 @@ _SERVICE_ROUTES: dict[str, Callable[[Any, Mapping[str, Any]], Awaitable[dict[str
     "minecraft_move_to": _move_to,
     "minecraft_follow_player": _follow_player,
     "minecraft_dig": _dig,
+    "minecraft_place": _place,
     "minecraft_equip": _equip,
     "minecraft_pickup_item": _pickup,
     "minecraft_craft": _craft,

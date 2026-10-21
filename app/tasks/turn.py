@@ -20,6 +20,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from app.character.turn import TurnOrigin
+from app.tasks.build_plan import parse_build_request, plan_build_task
 from app.tasks.intent import TaskIntentDetector
 from app.tasks.models import ReplanReason, TaskState
 from app.tasks.planner import ObservationFailed, plan_collection_task
@@ -43,6 +44,28 @@ def _collection_input_reply(problem: str) -> str:
     if problem == "text_too_long":
         return "采集说明太长，请简短说明一种资源和数量。"
     return "采集目标或数量还不明确，请先选定一种资源并说明数量，我再规划。"
+
+
+def _build_input_reply(problem: str) -> str:
+    if "unsupported_item" in problem:
+        return "这个方块暂不支持放置。首期只支持工作台、火把、泥土、圆石、石头和橡木木板。"
+    if "too_many_cells" in problem:
+        return "一次最多放四块，请缩小范围。"
+    if "region_not_axis_aligned" in problem:
+        return "首期只支持沿一个轴排成直线的简单放置，请给出同一轴上的起点和终点。"
+    if "target_occupied" in problem:
+        return "目标位置已经有方块了，不能覆盖。"
+    if "reference_missing" in problem:
+        return "目标旁边没有可依附的方块，放不上去。"
+    if "material_missing_or_insufficient" in problem:
+        return "主手没有拿够这种方块；请先把材料拿在主手，再让我放。"
+    if "cell_outside_region" in problem or "region_too_large" in problem:
+        return "目标超出身边固定的小范围，请把放置位置放在附近三格以内。"
+    if "cell_too_far" in problem:
+        return "目标超出可放置距离，请靠近一点。"
+    if "position_unknown" in problem:
+        return "现在读不到位置，暂时不能放置。"
+    return "这个放置请求现在不能执行，请检查目标位置、材料和主手物品。"
 
 
 #: Compatibility export, derived from the single resource registry.
@@ -227,6 +250,19 @@ class TaskTurnHandler:
         if current is not None and self._detector.status_query(message):
             # §二十七：先看当前会话里那个**唯一**的活动任务，不猜、不挑历史任务
             return self._status(current)
+        build = parse_build_request(message)
+        if build is not None:
+            if current is not None and not current.state.terminal:
+                return TaskTurnOutcome(
+                    True,
+                    action="busy",
+                    task_id=current.task_id,
+                    state=current.state.value,
+                    reply=self._replies.busy.format(
+                        objective=current.objective, state=STATE_LABELS.get(current.state.value, "")
+                    ),
+                )
+            return await self._create_build(session_id, user_id, message, build, origin=origin)
         intent = self._detector.detect(message)
         if not intent.is_task:
             return TaskTurnOutcome(False)
@@ -243,6 +279,65 @@ class TaskTurnHandler:
             )
         # Phase 8C：来源必须一路带下去（此前 _create 里被硬编码成 USER，形参形同虚设）。
         return await self._create(session_id, user_id, message, origin=origin)
+
+    async def _create_build(
+        self,
+        session_id: str,
+        user_id: str,
+        message: str,
+        build: Any,
+        *,
+        origin: str = TurnOrigin.USER.value,
+    ) -> TaskTurnOutcome:
+        if build.problem:
+            return TaskTurnOutcome(
+                True,
+                action="plan_failed",
+                reply=_build_input_reply(build.problem),
+                detail={"reason_code": f"build.{build.problem}"},
+            )
+        try:
+            planned = await plan_build_task(message, build, observe=self._observe)
+        except ObservationFailed as exc:
+            return TaskTurnOutcome(
+                True,
+                action="plan_failed",
+                reply=_build_input_reply(str(exc)),
+                detail={"reason_code": str(exc)},
+            )
+        except Exception:  # noqa: BLE001 - build planning must not break chat
+            log.exception("[Task] build planning failed (%s)", message)
+            return TaskTurnOutcome(
+                True, action="plan_failed", reply="这个放置请求现在做不了，请稍后再试。"
+            )
+        try:
+            record = await self._runtime.create_task(
+                message,
+                session_id=session_id,
+                user_id=user_id,
+                origin=str(origin or TurnOrigin.USER.value),
+                plan=planned.plan,
+                source=self._source,
+            )
+        except TaskBusy:
+            return TaskTurnOutcome(
+                True, action="busy", reply="我手上还有一件事没做完，先做完这个再说。"
+            )
+        await self._record_agent_plan(message, record, session_id=session_id, user_id=user_id)
+        summary = self._runtime.summary_of(record)
+        reply = self._replies.created.format(
+            summary=summary,
+            version=record.plan_version,
+            hint=self._replies.created_hint,
+        ).strip()
+        return TaskTurnOutcome(
+            True,
+            action="created",
+            task_id=record.task_id,
+            state=record.state.value,
+            reply=reply,
+            detail={"plan_hash": record.plan_hash, "plan_version": record.plan_version},
+        )
 
     async def _record_agent_plan(
         self, message: str, record: Any, *, session_id: str, user_id: str

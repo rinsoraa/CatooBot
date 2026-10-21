@@ -1,0 +1,58 @@
+{
+  "status": "PASS",
+  "generated_at": "2026-10-21T16:35:26.368Z",
+  "source": {
+    "files": 671,
+    "drift": 0
+  },
+  "pytest": {
+    "command": ".venv/Scripts/python.exe -m pytest tests -q --tb=short",
+    "result": "5088 passed in 661.08s (0:11:01)",
+    "exit_code": 0,
+    "log": "pytest.log"
+  },
+  "node": {
+    "command": "npm test (minecraft_runtime)",
+    "exit_code": 0,
+    "result": "ALL CHECKS PASSED; unit suites action/move_to/follow/dig/strict attribution/place/equip/inventory/container/recipe/craft/dropped items/pickup/dig capability/resource facts/collection readiness/find blocks all passed; E2E bridge auth/runtime exit passed",
+    "log": "node-test.log"
+  },
+  "java": {
+    "status": "UNCHANGED_SINCE_R3_RELEASE",
+    "note": "No server_mod Java source or candidate JAR byte changed in R4; R3 release Java 7 pure suites / 158 assertions remain the valid evidence. No new Java gate claimed.",
+    "log": "../r3/engineering-20261021/java-test.log"
+  },
+  "static_checks": {
+    "ruff": "ruff check app tests PASS",
+    "ruff_format": "647 files already formatted",
+    "mypy": "352 source files PASS"
+  },
+  "first_failures": [
+    {
+      "check": "R4 matrix attempt-01..11",
+      "resolution": "all failures were test-fixture/timing or missing TaskRuntime place route; product fixes: add _place route, floor player block cell for 3x3 region, per-step block verification instead of inventory consumption; preserved under data/r4/bounded-build-20261021/attempt-01..11"
+    },
+    {
+      "check": "direct npm.cmd from run_code",
+      "resolution": "no output/exit code from direct child; reran through Windows Task Scheduler CatooBot_R4_NodeTest, exit 0, E2E ALL CHECKS PASSED"
+    },
+    {
+      "check": "engineering run edited during pytest (twice)",
+      "resolution": "stopped stale runs, finalized code, reran the full suite; final 5088 passed"
+    }
+  ],
+  "artifacts": {
+    "pytest.log": "673f2b256e48ea30936a964fc68fbe41e75c9009d9a9203596f2a062c6c22fbb",
+    "pytest.exit": "9aca8dfce962538fb8131d73f84cada05e4dc79f5a0d3612c511b1150f3e33e2",
+    "node-test.log": "b009215e80eeaf3a0e0e83d59f2e337af1f6ced6aa9b80a310739d584ef3a6ed",
+    "node-test.exit": "9aca8dfce962538fb8131d73f84cada05e4dc79f5a0d3612c511b1150f3e33e2",
+    "ruff-check.log": "82b3e6a6c090a57601d22943bd23fca9218d1031dbe5a7b754092f9a156b4f18",
+    "ruff-format.log": "58971be7a1a95ccc8276dd5998361b4a53b515803f48b578af23823d8ae36442",
+    "mypy.log": "4515345cba0d782f4ab98b0d64f80d935ef8f121749d0efe0a1aa3dfe77e35be"
+  },
+  "notes": [
+    "No product gate was relaxed to obtain PASS.",
+    "R4 matrix itself is attempt-12, 10/10, run on the final source freeze."
+  ],
+  "report": "docs/MINECRAFT_R4_BOUNDED_BUILD_REPORT.md"
+}

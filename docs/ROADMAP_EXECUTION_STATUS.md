@@ -2,8 +2,8 @@
 
 更新：2026-10-21。长期目标：R8 中 Life、Play、Learning 在真实服务器和长期会话形成可追溯闭环。此表记录证据状态，不修改产品定义或路线要求。
 
-当前阶段：**R3 COMPLETE**。[R3 正式验收报告](MINECRAFT_R3_FINAL_REPORT.md)。
-发布提交 `804f35f`，CI [39592796282](https://github.com/rinsoraa/CatooBot/actions/runs/39592796282) attempt 1 三 job success。G1–G4 全部 PASS；R4–R8 尚未开始，下一阶段先制定 R4 任务书。
+当前阶段：**R4 IN_PROGRESS，工程与真实矩阵 PASS，等待发布/CI 回执**。[R4 验收报告](MINECRAFT_R4_BOUNDED_BUILD_REPORT.md)。
+2026-10-22：真实服务器 10/10 PASS（attempt-12）；5088 Python passed（661.08s）、Node 全链 ALL CHECKS PASSED、ruff/format/mypy 通过。发布/CI 通过后标记 R4 COMPLETE。
 
 [前序 R3.3 负向矩阵](MINECRAFT_R3_3_REMAINING_NEGATIVE_REPORT.md)。
 2026-10-21 18:30 完成 11/11 真服负向用例：工具/耐久 4 项、事实缺失 1 项、支撑/液体危险 2 项、路径失败 1 项、库存满 1 项、旧掉落 1 项、外部移除 1 项；108 文件恢复、测试服 PID 62664。前五次夹具失败保留。
@@ -29,7 +29,7 @@ LIFE 冷启动抑制、自然 300 秒恢复后 warm 提案、错误 owner 拒绝
 | P3 | COMPLETE：27 产品任务、3 协议补验、5 真实 Provider、真实 QQ 纯聊天；4705 Python；ad9484c 的 CI 39186718041 attempt 1 三 job PASS | 同一 P3 JAR 已供 R1.4 真机补证；日常严格开关默认关闭 |
 | R2 | COMPLETE：真实 Goal/Memory、两道门、SUCCEEDED/CANCELLED、自然恢复/确认过期、当前角色/冲突/世界检查，4732 Python；d121127 的 CI 39216169585 attempt 1 三 job success，交付回执核验通过 | 收尾离线是当时现场；R3 续作已复核日常 Bot/Bridge 在线，不冒充新代码已部署或 QQ 通道已验收 |
 | R3 | **COMPLETE**：12 ID 合同；24/24 正向（零/已有库存双基线）；84/84 七类负向；11/11 剩余负向；逐 ID STOP/CANCEL；LIFE/Goal 双门 3/3；最终 5069 Python、Node 全链、Java 158 项、静态检查；发布 `804f35f` / CI 39592796282 三 job success。见[R3 正式报告](MINECRAFT_R3_FINAL_REPORT.md) | R4 受限放置与简单建造；先制定 R4 任务书 |
-| R4 | 有原子 place，不等于受限建造通过 | 冻结区域/材料/授权/逐步世界核验 |
+| R4 | **IN_PROGRESS（awaiting release/CI）**：build 合同/3×3×3 区域/1–3 格逐格 place；真实矩阵 10/10（单块、3 格、材料不足、占用、参考缺失、越界、外部变化、错误 owner、部分 STOP）；5088 Python/Node/静态通过。见[R4 报告](MINECRAFT_R4_BOUNDED_BUILD_REPORT.md) | 发布回执通过后标记 COMPLETE；R5 战斗安全 |
 | R5 | 未取得完整受限战斗门禁 | 白名单目标、预算、风险、撤退与取消 |
 | R6 | 身份设施不等于交付闭环 | DROPPED/PICKUP_CONFIRMED/UNKNOWN 分离 |
 | R7 | 既有技能模块不等于真实复用已通过 | 来源、检索、适用性、反例、跨重启复现 |

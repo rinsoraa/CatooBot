@@ -449,6 +449,9 @@ def default_step_label(step: TaskStep) -> str:
             source_step = str(item.get("from_step") or "上一步")
             return f"拾取 {source_step} 找到的掉落物"
         return f"捡起刚掉出来的 {item}"
+    if tool == "minecraft_place":
+        item = canonical_item_name(arguments.get("expected_item"))
+        return f"在 ({arguments.get('x')},{arguments.get('y')},{arguments.get('z')}) 放一个 {item}"
     if tool == "minecraft_inventory":
         return "重新读一次背包"
     return tool

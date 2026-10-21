@@ -1,0 +1,187 @@
+{
+  "status": "PASS",
+  "stage": "R4",
+  "generated_at": "2026-10-21T16:08:50.755Z",
+  "attempt": 12,
+  "matrix": "PASS",
+  "cases_total": 10,
+  "cases_passed": 10,
+  "cases": [
+    {
+      "case_id": "single-dirt",
+      "status": "PASS",
+      "action": "created",
+      "reason_code": "",
+      "final_state": "SUCCEEDED",
+      "failure": "",
+      "placed_blocks": null
+    },
+    {
+      "case_id": "single-crafting_table",
+      "status": "PASS",
+      "action": "created",
+      "reason_code": "",
+      "final_state": "SUCCEEDED",
+      "failure": "",
+      "placed_blocks": null
+    },
+    {
+      "case_id": "multi-3-dirt",
+      "status": "PASS",
+      "action": "created",
+      "reason_code": "",
+      "final_state": "SUCCEEDED",
+      "failure": "",
+      "placed_blocks": null
+    },
+    {
+      "case_id": "material-insufficient",
+      "status": "PASS",
+      "action": "plan_failed",
+      "reason_code": "build.material_missing_or_insufficient",
+      "final_state": "",
+      "failure": "",
+      "placed_blocks": null
+    },
+    {
+      "case_id": "target-occupied",
+      "status": "PASS",
+      "action": "plan_failed",
+      "reason_code": "build.target_occupied",
+      "final_state": "",
+      "failure": "",
+      "placed_blocks": null
+    },
+    {
+      "case_id": "reference-missing",
+      "status": "PASS",
+      "action": "plan_failed",
+      "reason_code": "build.reference_missing",
+      "final_state": "",
+      "failure": "",
+      "placed_blocks": null
+    },
+    {
+      "case_id": "outside-region",
+      "status": "PASS",
+      "action": "plan_failed",
+      "reason_code": "build.cell_outside_region",
+      "final_state": "",
+      "failure": "",
+      "placed_blocks": null
+    },
+    {
+      "case_id": "external-change",
+      "status": "PASS",
+      "action": "created",
+      "reason_code": "",
+      "final_state": "PAUSED",
+      "failure": "ACTION_FAILED",
+      "placed_blocks": null
+    },
+    {
+      "case_id": "wrong-owner",
+      "status": "PASS",
+      "action": "created",
+      "reason_code": "",
+      "final_state": "",
+      "failure": "",
+      "placed_blocks": null
+    },
+    {
+      "case_id": "cancel-partial",
+      "status": "PASS",
+      "action": "created",
+      "reason_code": "",
+      "final_state": "CANCELLED",
+      "failure": "",
+      "placed_blocks": 1
+    }
+  ],
+  "source": {
+    "files": 671,
+    "drift": [],
+    "frozen_sha256": "b9f6f4445457f49f90945501ec6c35a1cf2c73db2b8bfbef705cf35f456777cf"
+  },
+  "driver": {
+    "path": "data/r4/bounded-build-20261021/r4_matrix.py",
+    "sha256": "6caca6ed970a9d5f04f57a136bff44a689dd4be6337d0cbb70e74af382903cb8"
+  },
+  "backup": {
+    "archive": "server-before.zip",
+    "sha256": "b0646687587a261ec963836cbdbae776446b74545b2b6427f7be001620054828",
+    "files": 108
+  },
+  "candidate": {
+    "jar_sha256": "59b5c9393b4f2f24472fa3c73d732646b317e95fcdaa5c544d493f67045e3a2c"
+  },
+  "restore": {
+    "restored_files": 108,
+    "all_hashes_match_before_restart": true,
+    "removed_extra_world_files": [
+      "world/data/chunks.dat",
+      "world/entities/r.23.30.mca",
+      "world/poi/r.23.30.mca",
+      "world/region/r.22.30.mca",
+      "world/region/r.22.31.mca",
+      "world/region/r.22.32.mca",
+      "world/region/r.23.30.mca",
+      "world/region/r.23.31.mca",
+      "world/region/r.23.32.mca",
+      "world/region/r.24.30.mca",
+      "world/region/r.24.31.mca",
+      "world/region/r.24.32.mca"
+    ],
+    "restored_snapshot": "server-before.zip",
+    "initial_server_running": true,
+    "restored_server_running": true,
+    "restored_server_pid": 62492
+  },
+  "artifacts": {
+    "r4.log": "f15629b351f9834d103edeeb6cad9abc1a57e705f6d6f1ba5f2f8fc04b21d5f4",
+    "r4.stderr.log": "d12d7e8c3c9e60b7093df33a7c6bf65b2b380e3280389380def10334f2f3fcb2",
+    "r4-results.json": "ae9a350aafb17365da5a0e4231882d345c9ac82c5e6f84dff767ccd2759e490a",
+    "task-events.json": "8f9ee48d26d2c7d89b69cb9914020ff528c2b9f6ca10956583014892cb8044fa",
+    "assembly-receipt.json": "9d04276b948fcb1a93ef7da1d70db6aebea0258b3697ebabd3748acabd141826",
+    "live-server.log": "c5521f84a55aabde3d844fa36888fdcd9863fe9708ca01115207717ea14d0ca0",
+    "live-runtime.log": "3dcd11b00f9a77ebed5a701b33939a608ac5e5d34e6622400dd36428dfa6dae3"
+  },
+  "preserved_attempts": [
+    "attempt-01",
+    "attempt-02",
+    "attempt-03",
+    "attempt-04",
+    "attempt-05",
+    "attempt-06",
+    "attempt-07",
+    "attempt-08",
+    "attempt-09",
+    "attempt-10",
+    "attempt-11"
+  ],
+  "product_changes": [
+    "app/tasks/build_plan.py (new bounded build parser/planner)",
+    "app/tasks/turn.py (build entry routing and replies)",
+    "app/tasks/validation.py (user-facing place step label)",
+    "app/integrations/minecraft/task_adapter.py (minecraft_place route)",
+    "tests/test_build_contract.py",
+    "tests/test_build_plan.py",
+    "tests/test_build_turn.py"
+  ],
+  "scope": "R4 bounded placement; normal Bot.start; isolated SQLite; no QQ messages; 1-3 blocks in a 3x3x3 region; fixed material and up face; no auto-equip/gather/navigation.",
+  "notes": [
+    "inventory consumption is not a completion gate; the existing minecraft_place action re-reads the target block and the matrix independently checks the placed block.",
+    "external change paused on ACTION_FAILED with stone preserved and no overwrite.",
+    "controlled STOP left exactly one placed block and did not auto-rollback.",
+    "attempt-12 is the final clean-source run, including the user-facing place step label."
+  ],
+  "report": "docs/MINECRAFT_R4_BOUNDED_BUILD_REPORT.md",
+  "raw_private_artifacts": "data/r4/bounded-build-20261021/ (local; product.db and private config not published)",
+  "post_run_server": {
+    "pid": 44904,
+    "port": 25565,
+    "candidate_jar_deployed": true,
+    "log": "post-restore-server.log",
+    "started_at": "2026-10-22T00:37:15+08:00"
+  }
+}
