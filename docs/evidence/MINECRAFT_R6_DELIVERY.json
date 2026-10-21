@@ -148,5 +148,14 @@
     "Other-player-first-pickup and mid-drop disconnect are not covered."
   ],
   "report": "docs/MINECRAFT_R6_DELIVERY_REPORT.md",
-  "raw_private_artifacts": "data/r6/delivery-20261022/ (local; product.db/private config not published)"
+  "raw_private_artifacts": "data/r6/delivery-20261022/ (local; product.db/private config not published)",
+  "release": {
+    "commit": "938c4547c7172a573be24651815b2747fcc3a55d",
+    "ci_run": 39677255923,
+    "ci_url": "https://github.com/rinsoraa/CatooBot/actions/runs/39677255923",
+    "conclusion": "success",
+    "attempt": 2,
+    "jobs": 3,
+    "status": "PASS"
+  }
 }

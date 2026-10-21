@@ -1,6 +1,6 @@
 # CatooBot Minecraft R6 正式验收报告
 
-日期：2026-10-22。状态：**IN_PROGRESS，真实矩阵与工程已 PASS，等待发布/CI 回执。**
+日期：2026-10-22。状态：**COMPLETE**。
 
 ## 1. 范围
 
@@ -48,7 +48,7 @@ R6 首期只完成“玩家物品交付”：
 | R6-A3 交付执行与状态 | PASS | `minecraft_drop_item` MEDIUM；丢出后 `minecraft_delivery_verify` 读掉落物 UUID/位置确认 DROPPED；观察客户端拾取后记录 PICKED_UP |
 | R6-A4 取消/异常 | PASS | STOP 后 CANCELLED，未丢出；目标丢失/数量不足均不产生动作 |
 | R6-A5 真实服务器矩阵 | PASS | 6/6；第二玩家真实在线/拾取；世界恢复 108 文件哈希一致 |
-| R6-A6 工程与发布 | PASS（发布待补） | 5106 Python passed（614.53s）、Node 全链 ALL CHECKS PASSED、ruff/format/mypy 通过；发布/CI 待补 |
+| R6-A6 工程与发布 | PASS | 5106 Python passed（614.53s）、Node 全链 ALL CHECKS PASSED、ruff/format/mypy；发布 `938c454`，CI 39677255923 attempt 2 三 job success |
 
 ## 5. 工程验证
 
@@ -58,6 +58,11 @@ R6 首期只完成“玩家物品交付”：
 - Java：R6 未改 `server_mod` 源/候选 JAR，沿用 R3 158 项断言。
 - 首次 Node E2E 失败（player distance）为夹具竞态，重跑通过；首次日志保留。
 - 完整日志：`data/r6/delivery-20261022/`；脱敏汇总 `docs/evidence/MINECRAFT_R6_ENGINEERING.json`。
+
+## 6. 发布
+
+- 发布提交：`938c4547c7172a573be24651815b2747fcc3a55d`
+- CI：https://github.com/rinsoraa/CatooBot/actions/runs/39677255923 ，attempt 2 三 job 全部 success
 
 ## 6. 边界
 

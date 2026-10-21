@@ -45,5 +45,14 @@
     "ruff-format.log": "acf961694764e02c45b7cc99462afb80d82b19924ea97d417fe9f9b44322a2dc",
     "mypy.log": "db6e4762450a7477f358eff847d357d8f6b8e3656d64eaf257a6d3bf5750c7d2"
   },
-  "report": "docs/MINECRAFT_R6_DELIVERY_REPORT.md"
+  "report": "docs/MINECRAFT_R6_DELIVERY_REPORT.md",
+  "release": {
+    "commit": "938c4547c7172a573be24651815b2747fcc3a55d",
+    "ci_run": 39677255923,
+    "ci_url": "https://github.com/rinsoraa/CatooBot/actions/runs/39677255923",
+    "conclusion": "success",
+    "attempt": 2,
+    "jobs": 3,
+    "status": "PASS"
+  }
 }
