@@ -1,0 +1,127 @@
+{
+  "status": "PASS",
+  "stage": "R7",
+  "generated_at": "2026-10-21T22:08:52.565Z",
+  "attempt": 1,
+  "matrix": "PASS",
+  "cases_total": 5,
+  "cases_passed": 5,
+  "cases": [
+    {
+      "case_id": "success-1",
+      "status": "PASS",
+      "state": "SUCCEEDED",
+      "counts": {
+        "CANDIDATE": 1
+      },
+      "skill_steps": null,
+      "error": ""
+    },
+    {
+      "case_id": "success-2",
+      "status": "PASS",
+      "state": "SUCCEEDED",
+      "counts": {
+        "ACTIVE": 1
+      },
+      "skill_steps": null,
+      "error": ""
+    },
+    {
+      "case_id": "skill-reuse",
+      "status": "PASS",
+      "state": "SUCCEEDED",
+      "counts": {
+        "ACTIVE": 1
+      },
+      "skill_steps": [
+        "minecraft_dig",
+        "minecraft_dropped_items",
+        "minecraft_pickup_item",
+        "minecraft_inventory"
+      ],
+      "error": ""
+    },
+    {
+      "case_id": "reuse-counterexample",
+      "status": "PASS",
+      "state": "REPLANNING",
+      "counts": {
+        "ACTIVE": 1
+      },
+      "skill_steps": null,
+      "error": ""
+    },
+    {
+      "case_id": "not-applicable",
+      "status": "PASS",
+      "state": "",
+      "counts": null,
+      "skill_steps": [],
+      "error": ""
+    }
+  ],
+  "source": {
+    "files": 691,
+    "drift": 0,
+    "frozen_sha256": "9fb2bf0b470075d1141e9569824660f69ef498d7c2e3a43a6165db25750771d5"
+  },
+  "driver": {
+    "path": "data/r7/skills-20261022/r7_matrix.py",
+    "sha256": "583d7bcc8cf7bf4bc181643320caef22c2aa01b94c6a93c33ad5908392c0777f"
+  },
+  "backup": {
+    "archive": "server-before.zip",
+    "sha256": "73ca7c32dec5877f3263085ce83f5fee57dd2b4ae073ca200718b5f17693938c",
+    "files": 108
+  },
+  "restore": {
+    "restored_files": 108,
+    "all_hashes_match_before_restart": true,
+    "removed_extra_world_files": [
+      "world/data/chunks.dat",
+      "world/entities/r.23.30.mca",
+      "world/poi/r.23.30.mca",
+      "world/region/r.22.30.mca",
+      "world/region/r.22.31.mca",
+      "world/region/r.22.32.mca",
+      "world/region/r.23.30.mca",
+      "world/region/r.23.31.mca",
+      "world/region/r.23.32.mca",
+      "world/region/r.24.30.mca",
+      "world/region/r.24.31.mca",
+      "world/region/r.24.32.mca"
+    ],
+    "restored_snapshot": "server-before.zip",
+    "initial_server_running": true,
+    "restored_server_running": true,
+    "restored_server_pid": 10116
+  },
+  "skill_tests": {
+    "command": ".venv/Scripts/python.exe -m pytest tests/test_skill_learning.py tests/test_skill_service.py tests/test_skill_wiring.py -q",
+    "result": "81 passed in 4.48s",
+    "exit_code": 0,
+    "log": "skill-tests.log"
+  },
+  "code_unchanged_since": {
+    "r6_release": "938c454",
+    "r6_ci": 39677255923,
+    "note": "R7 added no production code; existing Phase 7E skill implementation is reused. R6 full 5106 pytest + Node + static evidence applies to the same frozen bytes."
+  },
+  "artifacts": {
+    "r7.log": "fd728feaa12d1c53fec8d2ff5e758e972f504211de2a527e52f8ee397f5f9d42",
+    "r7.stderr.log": "d12d7e8c3c9e60b7093df33a7c6bf65b2b380e3280389380def10334f2f3fcb2",
+    "r7-results.json": "6d8084f697e60c280bbb6a258f56ba199e7bf11a6febedf728f330d7a7a018f2",
+    "task-events.json": "02cd05b98b062e2c722d44bf4377564c5c037d74effaa284408f986979a2e83a",
+    "skill-tests.log": "cce26bd70064e9059d6177d5d70431bcba8b2ea567605f73bb0d9a371110a4cd"
+  },
+  "notes": [
+    "success-1 -> CANDIDATE success=1",
+    "success-2 -> ACTIVE success=2",
+    "skill-reuse -> SUCCEEDED, suggestion 4-step dig/drop/pickup/inventory",
+    "reuse-counterexample -> REPLANNING, no false success; deterministic tests cover failure->STALE/INVALIDATED",
+    "not-applicable -> plan_failed for cobblestone with no stone"
+  ],
+  "report": "docs/MINECRAFT_R7_SKILL_CLOSURE_REPORT.md",
+  "raw_private_artifacts": "data/r7/skills-20261022/ (local; product.db/private config not published)"
+}

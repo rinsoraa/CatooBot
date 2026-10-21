@@ -16,6 +16,10 @@ LIFE 双门、错误 owner 拒绝、记忆与技能复用已取证。剩余 G3 �
 
 2026-10-22 **R6 COMPLETE**：[R6 交付验收报告](MINECRAFT_R6_DELIVERY_REPORT.md) 与 [证据](evidence/MINECRAFT_R6_DELIVERY.json)、[工程证据](evidence/MINECRAFT_R6_ENGINEERING.json)。真实矩阵 6/6 PASS；5106 Python passed、Node 全链、ruff/format/mypy 通过；发布 `938c454`，CI [39677255923](https://github.com/rinsoraa/CatooBot/actions/runs/39677255923) attempt 2 三 job success。R7 待制定任务书。
 
+2026-10-22 R7 补证：[R7 技能闭环验收报告](MINECRAFT_R7_SKILL_CLOSURE_REPORT.md) 与 [证据](evidence/MINECRAFT_R7_SKILL_CLOSURE.json)。真实矩阵 5/5 PASS；81 项技能测试通过；生产代码自 R6 未变；发布/CI 待补。
+
+2026-10-22 当前任务书：[R7 经历回流与程序性技能闭环](specs/CatooBot%20Minecraft%20R7%20%E2%80%94%E2%80%94%20Experience%20Reflux%20and%20Procedural%20Skill%20Closure.md)。R6 已完成并发布；R7 门禁见任务书。
+
 2026-10-22 当前任务书：[R6 玩家物品交付与合作交互](specs/CatooBot%20Minecraft%20R6%20%E2%80%94%E2%80%94%20Player%20Item%20Delivery%20and%20Cooperative%20Interaction.md)。R5 已完成并发布；R6 门禁见任务书。
 
 2026-10-22 当前任务书：[R5 有界敌对交互与战斗安全](specs/CatooBot%20Minecraft%20R5%20%E2%80%94%E2%80%94%20Bounded%20Hostile%20Interaction%20and%20Combat%20Safety.md)。R4 已完成并发布；R5 门禁见任务书。

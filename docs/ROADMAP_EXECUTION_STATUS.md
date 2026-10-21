@@ -32,7 +32,7 @@ LIFE 冷启动抑制、自然 300 秒恢复后 warm 提案、错误 owner 拒绝
 | R4 | **COMPLETE**：受限放置首期；真实矩阵 10/10（单块/3 格/材料不足/占用/参考缺失/越界/外部变化/错误 owner/部分 STOP）；5088 Python/Node/静态；发布 `7c3a5a4` / CI 39638936965 三 job success。见[R4 报告](MINECRAFT_R4_BOUNDED_BUILD_REPORT.md) | R5 有界敌对交互与战斗安全；先制定 R5 任务书 |
 | R5 | **COMPLETE**：白名单僵尸/骷髅/蜘蛛/洞穴蜘蛛；4 击、650ms 冷却、无导航、死亡后 SAFE 实体消失核验；真实矩阵 9/9（击杀/XP+掉落/无目标/低生命/空手/村民拒绝/超范围/目标丢失/STOP）；5099 Python/Node/静态；发布 `3b7f40b` / CI 39663573182 三 job success。见[R5 报告](MINECRAFT_R5_BOUNDED_COMBAT_REPORT.md) | R6 玩家物品交付与合作交互；先制定 R6 任务书 |
 | R6 | **COMPLETE**：可信玩家实体/UUID/距离；单一主手物品/数量；DROPPED 由掉落物实体核验，PICKED_UP 由第二客户端背包补证；真实矩阵 6/6（拾取/不拾取/目标不存在/物品不符/数量不足/STOP）；5106 Python/Node/静态；发布 `938c454` / CI 39677255923 attempt 2 三 job success。见[R6 报告](MINECRAFT_R6_DELIVERY_REPORT.md) | R7 经历回流与程序性技能；先制定 R7 任务书 |
-| R7 | 既有技能模块不等于真实复用已通过 | 来源、检索、适用性、反例、跨重启复现 |
+| R7 | **IN_PROGRESS（awaiting release/CI）**：真实经历→CANDIDATE→第二条独立成功→ACTIVE→检索复用；真实矩阵 5/5（候选/ACTIVE/复用/反例未成功/不适用）；81 技能测试；生产代码自 R6 未变。见[R7 报告](MINECRAFT_R7_SKILL_CLOSURE_REPORT.md) | 发布回执后 COMPLETE；R8 端到端长期角色 |
 | R8 | 未达到；保持完整长期目标 | 路线全部用例矩阵与长期角色证据审计 |
 
 下一阶段只能在当前规格的所有必需门禁 PASS 后开始；真实测试仅使用用户授权的服务器及 QQ 会话。当前服务现场必须重新核验，不能把上一轮“已停止/已恢复”当作长期不变事实。
