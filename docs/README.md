@@ -4,6 +4,8 @@
 及 [证据 JSON](evidence/MINECRAFT_R3_2_LIVE_FINAL.json)。84/84 USER 负向矩阵与 3/3 LIFE/USER 采集通过；
 LIFE 双门、错误 owner 拒绝、记忆与技能复用已取证。剩余 G3 类别、真实 QQ 文案复测与 G4 发布/CI 未完成，R3 仍 IN_PROGRESS。
 
+2026-10-21 **R3 COMPLETE**：[R3 正式验收报告](MINECRAFT_R3_FINAL_REPORT.md)。G1–G4 全部 PASS；发布提交 `804f35f`，CI [39592796282](https://github.com/rinsoraa/CatooBot/actions/runs/39592796282) attempt 1 三 job success。R4–R8 仍待各自任务书。
+
 2026-10-21 G4 补证：[最终工程与真实 QQ 复测](MINECRAFT_R3_3_G4_ENGINEERING_AND_QQ_REPORT.md) 与 [工程证据](evidence/MINECRAFT_R3_3_ENGINEERING.json)、[QQ 证据](evidence/MINECRAFT_R3_3_QQ_RECHECK.json)。5069 Python、Node 全链、Java 158 项检查通过；真实 QQ 歧义/否定复测无内部原因码、零任务零动作。发布/CI 待完成。
 
 2026-10-21 最新补证：[R3.3 剩余负向矩阵](MINECRAFT_R3_3_REMAINING_NEGATIVE_REPORT.md) 与 [证据](evidence/MINECRAFT_R3_3_REMAINING_NEGATIVE.json)。11/11 真服负向用例（工具耐久、事实缺失、支撑/液体危险、路径失败、库存满、旧掉落、外部移除）通过；R3 仍 IN_PROGRESS，G4 与“事实过期”真服证据待收口。

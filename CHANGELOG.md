@@ -5,6 +5,7 @@
 - 修复正常 AgentPlanService 经技能包装调用规划器时 shape_hint 不兼容的问题。
 - 修复任务开始与终态事件并发投影导致 Activity Episode 状态顺序错误的问题。
 - 正常 Bot.start 装配真实服完成 24 项资源任务，并形成 24 个完成活动、24 条记忆事实和 12 个有效技能；真实 QQ、LIFE 与剩余阶段门禁尚未完成。
+- R3 正式完成：G1–G4 全部 PASS；发布提交 `804f35f`，CI 39592796282 attempt 1 三 job success；R4–R8 尚未开始。详见 docs/MINECRAFT_R3_FINAL_REPORT.md。
 - R3.3 G4：最终源码 5069 Python passed（802.83s）、Node 全链 ALL CHECKS PASSED、Java 158 项断言、ruff/format/mypy 通过；真实 QQ 歧义/否定复测无内部原因码、零任务零动作。发布/CI 待完成。详见 docs/MINECRAFT_R3_3_G4_ENGINEERING_AND_QQ_REPORT.md。
 - R3.3 剩余负向矩阵：11/11 真服用例通过（工具/耐久、事实缺失、支撑/液体危险、路径失败、库存满、旧掉落、外部移除）；108 文件恢复、测试服 PID 62664。前五次夹具失败保留。R3 仍 IN_PROGRESS，事实过期真服证据与 G4 发布/CI 待收口。详见 docs/MINECRAFT_R3_3_REMAINING_NEGATIVE_REPORT.md。
 - 最终源码实服矩阵：84/84 USER 负向（12 ID × 7 类）与 3/3 LIFE/USER 采集通过；LIFE 冷启动抑制、自然 300 秒恢复后提案、错误 owner 拒绝、记忆与技能复用均有实服证据。前三次失败（RCON 超时、scheduler RECENT_INITIATIVE、复用 SQLite 的 DUPLICATE_INTENT）保留。R3 仍 IN_PROGRESS，剩余 G3 类别与 G4 发布/CI。详见 docs/MINECRAFT_R3_2_LIVE_FINAL_REPORT.md。
