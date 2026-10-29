@@ -1,0 +1,9 @@
+{
+  "id": "bot.catoo.chat",
+  "name": "character",
+  "version": "1.2.0",
+  "api_version": "1.0",
+  "capabilities": ["message.read", "send.private", "send.group", "services"],
+  "author": "Rinsora",
+  "description": "QQ 侧唯一入口：把私聊/群聊消息交给回合运行时、角色运行时与投递层，并驱动沙盒外部事件"
+}

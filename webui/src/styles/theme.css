@@ -1,0 +1,76 @@
+/** 主题相关样式：滚动条、过渡、卡片与布局的通用类（组件可复用）。 */
+
+html {
+  color-scheme: light dark;
+}
+
+:root[data-theme='dark'] {
+  color-scheme: dark;
+}
+
+:root[data-theme='light'] {
+  color-scheme: light;
+}
+
+body {
+  transition: background-color 0.18s ease, color 0.18s ease;
+}
+
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--cb-border-strong) transparent;
+}
+
+*::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+*::-webkit-scrollbar-thumb {
+  background: var(--cb-border-strong);
+  border-radius: 999px;
+  border: 3px solid transparent;
+  background-clip: content-box;
+}
+
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+/* 通用卡片：Dashboard 与后续页面复用 */
+.cb-card {
+  background: var(--cb-surface);
+  border: 1px solid var(--cb-border);
+  border-radius: var(--cb-radius-lg);
+  padding: var(--cb-space-5);
+  box-shadow: var(--cb-shadow-sm);
+}
+
+.cb-card--raised {
+  background: var(--cb-surface-raised);
+}
+
+.cb-grid {
+  display: grid;
+  gap: var(--cb-space-4);
+}
+
+.cb-grid--cards {
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+}
+
+.cb-row {
+  display: flex;
+  align-items: center;
+  gap: var(--cb-space-2);
+}
+
+.cb-row--between {
+  justify-content: space-between;
+}
+
+.cb-stack {
+  display: flex;
+  flex-direction: column;
+  gap: var(--cb-space-3);
+}

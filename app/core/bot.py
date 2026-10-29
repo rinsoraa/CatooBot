@@ -1,0 +1,1991 @@
+"""CatooBot core: assembles config, adapter, AI, character, memory, web.
+
+The Bot is protocol-agnostic: it holds an :class:`Adapter` and never imports
+OneBot/NapCat code directly. Since v0.3 the QQ surface is natural-language
+only — the command registry stays as internal infrastructure but nothing
+mounts QQ user commands.
+
+本文件同时引用 v0.8 / v1.1 / v2.0 §n（装配层混版）；裸 §N 才指 v2.0。"""
+
+from __future__ import annotations
+
+import asyncio
+import math
+import time
+from typing import TYPE_CHECKING, Any
+
+from app.adapters import Adapter
+from app.adapters.onebot_v11.api import BotApi
+from app.agent.runtime import AgentRuntime
+from app.ai.engine import AIEngine
+from app.ai.usage import UsageRecorder
+from app.behavior.engine import CharacterBehaviorEngine
+from app.behavior.models import ScheduledJob
+from app.behavior.presence import PresenceResolver
+from app.behavior.scheduler import BehaviorScheduler
+from app.character.persona_manager import PersonaManager
+from app.character.runtime import CharacterRuntime
+from app.commands.registry import CommandRegistry
+from app.commands.router import CommandRouter
+from app.config.settings import PROJECT_ROOT, AppConfig, explicit_core_friends
+from app.config.watcher import ConfigFileWatcher
+from app.core.event_bus import EventBus
+from app.core.lifecycle import Lifecycle
+from app.core.metrics import Metrics
+from app.core.router import CoreRouter
+from app.core.watchdog import EventLoopWatchdog
+from app.database.database import Database
+from app.expression import ExpressionLearner, ExpressionStore
+from app.media.runtime import MediaRuntime
+from app.memory.consolidation import ConsolidationScheduler, MemoryConsolidator
+from app.memory.embedding import EmbeddingService
+from app.memory.extraction import MemoryExtractor
+from app.memory.manager import MemoryManager
+from app.memory.outbox import Outbox, outbox_path_for
+from app.message.event import Event, MessageEvent
+from app.permissions.manager import PermissionManager
+from app.plugins.loader import PluginLoader
+from app.response.delivery import MessageDelivery
+from app.response.planner import CharacterResponsePlanner
+from app.response.timing import ReplyTiming
+from app.social.cognition import SocialCognitionEngine
+from app.social.feedback import ReplyFeedbackSettler, ReplyFeedbackStore
+from app.tools.runtime import ToolRuntime
+from app.utils import console
+from app.utils.logger import get_logger
+from app.utils.narrator import narrate
+
+if TYPE_CHECKING:
+    from app.web.server import WebServer
+
+
+class Bot:
+    """The runtime object every subsystem and plugin gets a reference to."""
+
+    def __init__(self, config: AppConfig, adapter: Adapter) -> None:
+        self.config = config
+        self.adapter: Adapter = adapter
+        self.log = get_logger("CatooBot")
+        self._clock = time.time
+
+        self.event_bus = EventBus()
+        self.commands = CommandRegistry()
+        self.permissions = PermissionManager(config.permissions)
+        self.database = Database(config.database)
+        self.metrics = Metrics()
+        # Task 15: per-call usage rows (tokens, latency, outcome) for the model page.
+        # Task 16: single process, single loop — stalls freeze QQ and WebUI alike.
+        self.watchdog = (
+            EventLoopWatchdog(
+                interval_seconds=config.logging.watchdog_interval_seconds,
+                threshold_ms=config.logging.watchdog_threshold_ms,
+                metrics=self.metrics,
+            )
+            if config.logging.watchdog_enabled
+            else None
+        )
+        # Task 23: hand-edits to config.yaml are hot-reloaded (no restart).
+        self.config_watcher = (
+            ConfigFileWatcher(
+                paths=[PROJECT_ROOT / "config" / "config.yaml"],
+                interval_seconds=config.logging.watch_config_interval_seconds,
+                on_change=self._reload_config_from_disk,
+            )
+            if config.logging.watch_config_enabled
+            else None
+        )
+        self.ai_usage = (
+            UsageRecorder(self.database, metrics=self.metrics) if config.ai.usage.enabled else None
+        )
+        self.ai = AIEngine(
+            config.ai,
+            self.database,
+            router_event_listener=self._on_router_event,
+            usage=self.ai_usage,
+        )
+        # v0.5: semantic memory (embeddings) is opt-in and independent from chat models.
+        self.embeddings = (
+            EmbeddingService.from_config(
+                config.memory.semantic.embedding,
+                self.database,
+                ai_providers=config.ai.providers,
+                # 角色绑定可能是别名（模型用途页的下拉就是别名）：交给嵌入层解析
+                ai_models=config.ai.models,
+            )
+            if config.memory.enabled and config.memory.semantic.enabled
+            else None
+        )
+        # Task 14: writes the database refuses land here instead of vanishing.
+        # The file lives beside the database it protects, so a test database
+        # never writes into the operator's live data.
+        outbox_file = outbox_path_for(config.database.url)
+        self.outbox = Outbox(outbox_file, metrics=self.metrics) if outbox_file is not None else None
+        self.memory = (
+            MemoryManager(
+                config.memory, self.database, embeddings=self.embeddings, outbox=self.outbox
+            )
+            if config.memory.enabled
+            else None
+        )
+        # Task 20: reply-outcome observations (settled by the scheduler later).
+        self.reply_feedback = ReplyFeedbackStore(
+            self.database, outbox=self.outbox, metrics=self.metrics
+        )
+        if self.outbox is not None:
+            self.outbox.register("reply_outcome", self.reply_feedback.replay_entry)
+        self.consolidator = (
+            MemoryConsolidator(config.memory, self.memory, engine=self.ai) if self.memory else None
+        )
+        self.consolidation_scheduler = (
+            ConsolidationScheduler(self.consolidator, config.memory.consolidation.schedule)
+            if self.consolidator is not None
+            else None
+        )
+        self.personas = PersonaManager(config.character, self.database)
+        self.character = CharacterRuntime(
+            persona_manager=self.personas,
+            engine=self.ai,
+            memory_manager=self.memory,
+            database=self.database,
+        )
+        # Task 22: expression / 口癖 learning (opt-in; the plugin feeds it).
+        self.expression_store = ExpressionStore(
+            self.database, config.expression, clock=self._clock, metrics=self.metrics
+        )
+        self.expression_learner = ExpressionLearner(
+            self.expression_store, config.expression, clock=self._clock, metrics=self.metrics
+        )
+        self.extractor = (
+            MemoryExtractor(config.memory, self.ai, self.memory, metrics=self.metrics)
+            if self.memory is not None
+            else None
+        )
+        self.character.extractor = self.extractor
+        self.character.expression_store = self.expression_store
+        self.character.expression_config = config.expression
+        self.character.metrics = self.metrics
+        self.relationships = self.character.relationships
+
+        # v0.4 behaviour layer: presence → activity/initiative → response plan.
+        self.presence = PresenceResolver(config.character.timezone, config.behavior.schedule)
+        self.behavior = CharacterBehaviorEngine(
+            config.behavior,
+            self.presence,
+            self.character.states,
+            relationships=self.relationships,
+            database=self.database,
+            memory=self.memory,
+        )
+        self.behavior.topics = self.behavior.topics
+        self.reply_timing = ReplyTiming(config.behavior.reply, self.presence)
+        self.response_planner = CharacterResponsePlanner(
+            self.reply_timing, config.behavior.chunking
+        )
+        self.response_delivery = MessageDelivery(self)
+        self.scheduler = BehaviorScheduler(self, self.behavior)
+
+        # v0.6 tool runtime: registry + policy + executor (tools are opt-in).
+        self.tools = ToolRuntime(config.tools, self.database)
+        self.character.tools = self.tools
+        # v0.7 agent runtime: multi-step goals on top of the tool runtime.
+        self.agent = AgentRuntime(config.agent, self.ai, self.tools, self.database)
+        self.character.agent = self.agent
+
+        # v0.9 social cognition: *when* the character joins a group conversation.
+        # Reuses behavior/topic/memory/state/world — no second engine, no dice.
+        self.social = SocialCognitionEngine(config=config.social, bot=self, database=self.database)
+
+        # v1.1 media + sticker runtime: image understanding, sticker library,
+        # acquisition (background) and expression. Ordinary images never become
+        # stickers — the boundary lives in app/media/normalizer.
+        self.media = MediaRuntime(config=config.media, engine=self.ai, database=self.database)
+
+        # v1.2 character continuity + conversation turn runtime. The runtime
+        # only buffers/classifies/decides; the chat plugin binds the actual
+        # respond/deliver callbacks (adapter pattern, minimal intrusion).
+        from app.continuity import ContinuityStore
+        from app.continuity.manager import ContinuityManager
+        from app.conversation.decision import ConversationDecisionEngine
+        from app.conversation.runtime import ConversationTurnRuntime
+
+        self.continuity: ContinuityManager | None = None
+        if config.continuity.enabled:
+            self.continuity = ContinuityManager(
+                ContinuityStore(self.database, config.continuity),
+                clock=self._clock,
+            )
+        self.conversation = ConversationTurnRuntime(
+            config.conversation,
+            ConversationDecisionEngine(config.conversation),
+            clock=self._clock,
+        )
+        # v2.0 Character Life Sandbox: when enabled it IS her world — the
+        # legacy WorldRuntime does not start at all (v2.0 §17-§19).
+        self.sandbox = None
+        self.lifecycle_manager = None
+        if config.sandbox.enabled:
+            try:
+                from app.sandbox import (
+                    BibleCompiler,
+                    CharacterLifecycleManager,
+                    SandboxRuntime,
+                    SandboxStore,
+                )
+                from app.sandbox.ai import SandboxAIDecider
+
+                bible = BibleCompiler(PROJECT_ROOT / config.sandbox.bible_path).compile()
+                store = SandboxStore(self.database, clock=self._clock)
+                self.sandbox = SandboxRuntime(
+                    config.sandbox,
+                    store,
+                    bible=bible,
+                    bot=self,
+                    clock=self._clock,
+                    ai_decider=SandboxAIDecider(self.ai, model=config.sandbox.decision_model),
+                    ai_engine=self.ai,
+                )
+                self.lifecycle_manager = CharacterLifecycleManager(self.database, clock=self._clock)
+                self.character.sandbox = self.sandbox
+                # The sandbox owns her life; v1.2 continuity receives its events.
+                self.sandbox.narrate_ticks = config.logging.narrate_world_ticks
+                self.sandbox.continuity = self.continuity
+                self.sandbox.state_sync = self._sync_sandbox_state
+                # The sandbox is the truth for "is she asleep" (v2.0 §76/§77);
+                # the clock window is only the sandbox-off fallback.
+                self.presence.set_sleep_state_provider(self._sandbox_asleep)
+            except Exception:  # noqa: BLE001 - sandbox failure must not stop startup
+                self.log.exception("Sandbox initialization failed; continuing without it")
+                self.sandbox = None
+
+        # Core friends are one identity across subsystems: the sandbox persons
+        # map, the chat relationship stage and the proactive-chat rules all read
+        # the same explicit mapping (config.sandbox.core_friend_identities /
+        # core_friend_ids), so 示例好友 cannot be a core friend in one place and a
+        # stranger in another.
+        self.core_friend_ids: set[str] = set()
+        try:
+            core_names = getattr(getattr(self.sandbox, "seed", None), "core_friend_names", []) or []
+            self.core_friend_ids = set(
+                explicit_core_friends(config.sandbox, core_names=core_names).keys()
+            )
+            self.character.relationships.set_core_friends(self.core_friend_ids)
+        except Exception:  # noqa: BLE001 - identity wiring must not stop startup
+            self.log.exception("Core friend wiring failed; continuing without it")
+
+        # Phase 13 §57: the real external gateway is opt-in; when it is on, the
+        # sandbox answers QQ messages (the v1.2 chat path keeps non-message
+        # events), and when it is off nothing about the old behaviour changes.
+        self.onebot_gateway: Any = None
+        if (
+            self.sandbox is not None
+            and config.onebot.enabled
+            and bool(getattr(config.onebot, "gateway_enabled", False))
+        ):
+            try:
+                from app.integrations.onebot.gateway import OneBotGateway
+                from app.integrations.onebot.transport import ServerTransport
+
+                self.onebot_gateway = OneBotGateway(
+                    self.sandbox,
+                    transport=ServerTransport(
+                        self.adapter, logger=self.log, fallback=self.handle_event
+                    ),
+                    config=config.onebot,
+                    clock=self._clock,
+                )
+                self.log.warning(
+                    "[OneBot] gateway enabled: inbound QQ messages are answered by the"
+                    " sandbox conversation runtime (the v1.2 chat reply path is bypassed)"
+                )
+            except Exception:  # noqa: BLE001 - gateway trouble must not stop startup
+                self.log.exception("OneBot gateway initialization failed; continuing without it")
+                self.onebot_gateway = None
+
+        # Phase 14: the long-lived runtime — one thin scheduler drives the
+        # sandbox's existing tick, so life continues without any chat message.
+        self.runtime_scheduler: Any = None
+        if self.sandbox is not None and bool(getattr(config.runtime, "enabled", True)):
+            try:
+                from app.runtime.scheduler import RuntimeScheduler
+
+                self.runtime_scheduler = RuntimeScheduler(
+                    self.sandbox, config=config.runtime, clock=self._clock, logger=self.log
+                )
+            except Exception:  # noqa: BLE001 - scheduling trouble must not stop startup
+                self.log.exception("Runtime scheduler initialization failed")
+                self.runtime_scheduler = None
+
+        # Minecraft 连接层（Phase 1）：Bridge runtime 托管 + 事件通道，opt-in。
+        # 失败只降级（QQ/WebUI 照常），绝不影响聊天主链路。
+        self.minecraft: Any = None
+        #: Phase 5A：多步骤任务运行时 / 事件协调器 / 对话入口（装配失败 = None）
+        self.tasks: Any = None
+        self.task_coordinator: Any = None
+        self.task_turns: Any = None
+        #: Phase 5B：QQ 任务入口（任务运行时装配好之后才存在）
+        self.task_entry: Any = None
+        #: Phase 6A：世界活动（Activity Episode 生命周期；装配失败 = 没有活动能力）
+        self.activity: Any = None
+        # Phase 7A：Initiative / LifeIntent 服务（只产生意图；没装配就是 None）
+        self.initiative: Any = None
+        # Phase 7C：TaskProposal 服务（**只产生提案**；执行层恒为 NONE，没装配就是 None）
+        self.proposals: Any = None
+        # Phase 7D：AgentPlan 服务（**只规划 + 记账**；执行永远走既有 TaskRuntime 链）
+        self.agent_plans: Any = None
+        # Phase 7E：程序性技能（学习 + 有界复用；唯一出口是"计划候选"，没有执行入口）
+        self.skills: Any = None
+        #: Phase 7E：包装规划器（技能优先、失败原样回退 BoundedAgentPlanner）
+        self.skill_planner: Any = None
+        self.activity_sandbox: Any = None
+        self.activity_tasks: Any = None
+        self.activity_observation: Any = None
+        self.activity_user: Any = None
+        self._activity_tasks_running: set[Any] = set()
+        #: Phase 5C：Minecraft 身份桥 + 持久世界记忆（装配失败 = 只是没有记忆能力）
+        self.minecraft_memory: Any = None
+        self.minecraft_identity: Any = None
+        self._memory_tasks: set[Any] = set()
+        self._memory_reconcile_task: Any = None
+        if config.minecraft.enabled:
+            try:
+                from app.integrations.minecraft.service import MinecraftService
+
+                self.minecraft = MinecraftService(self, config.minecraft, clock=self._clock)
+                attestation = config.minecraft.attestation
+                if attestation.enabled:
+                    import os
+
+                    from app.integrations.minecraft.session_attestation import (
+                        SessionAttestationClient,
+                    )
+
+                    token = os.environ.get("CATOO_ATTESTATION_TOKEN", "").strip()
+                    if not token or not attestation.expected_server_scope:
+                        # Explicitly fail closed: never silently downgrade to EVENT_ONLY.
+                        self.log.error(
+                            "Minecraft attestation enabled without token/scope; "
+                            "protected tasks stay denied"
+                        )
+                        self.minecraft.attestation_required = True
+                    else:
+                        try:
+                            client = SessionAttestationClient(
+                                base_url=attestation.endpoint,
+                                token=token,
+                                server_scope=attestation.expected_server_scope,
+                            )
+                            self.minecraft.configure_attestation(
+                                client,
+                                required=True,
+                                refresh_interval_seconds=attestation.refresh_interval_seconds,
+                                proof_max_age_seconds=attestation.proof_max_age_seconds,
+                            )
+                            self.minecraft.auto_attest_on_join = True
+                        except Exception:  # noqa: BLE001 - bad config must fail closed
+                            self.log.exception("Minecraft attestation configuration rejected")
+                            self.minecraft.attestation_required = True
+                # Phase 3E：LLM Tool 的唯一入口（判定 → Service → 结构化结果）
+                from app.integrations.minecraft.agent import MinecraftAgentBridge
+                from app.integrations.minecraft.chat_bridge import MinecraftChatBridge
+
+                self.minecraft.agent = MinecraftAgentBridge(self.minecraft, clock=self._clock)
+                # Phase 4A：游戏内玩家聊天 → USER 回合（与沙盒外部事件链并存）
+                self.minecraft.chat_bridge = MinecraftChatBridge(self, self.minecraft)
+                # Agent Bridge 暴露给工具上下文 / 每轮 prompt 上下文
+                self.character.minecraft_agent = self.minecraft.agent
+                # Phase 5C 的记忆桥**不在这里**装配：它要用角色名做记忆 scope，
+                # 而人设是 start() 里才从磁盘读进来的（放在这里会得到 "default"）。
+            except Exception:  # noqa: BLE001 - minecraft trouble must not stop startup
+                self.log.exception("Minecraft bridge initialization failed; continuing without it")
+                self.minecraft = None
+
+        self.lifecycle = Lifecycle(self)
+        self.router = CommandRouter(self, self.commands, prefix=config.bot.command_prefix)
+        self.core_router = CoreRouter(self)
+        self.plugins = PluginLoader(self)
+        self.api = BotApi(self)
+        # Single AuthService instance: the WebServer logs users in with it and the
+        # config page changes passwords through it.
+        from app.web.auth import AuthService
+
+        self.web_auth = AuthService(config.web, self.database)
+        self.web: WebServer | None = None  # attached in start() when enabled
+        self.started_at: float | None = None
+
+    # ------------------------------------------------------------- identity
+
+    @property
+    def name(self) -> str:
+        return self.config.bot.name
+
+    @property
+    def self_id(self) -> int | None:
+        return self.adapter.self_id
+
+    @property
+    def is_connected(self) -> bool:
+        return self.adapter.connected
+
+    # ------------------------------------------------------------------ API
+
+    async def call_api(
+        self,
+        action: str,
+        params: dict[str, Any] | None = None,
+        timeout: float | None = None,
+    ) -> Any:
+        """Raw OneBot API passthrough (plugins should prefer ``bot.api``)."""
+        return await self.adapter.call_api(action, params, timeout)
+
+    async def handle_event(self, event: Event) -> None:
+        """Adapter sink: every parsed protocol event enters the bus here."""
+        await self.event_bus.emit(event)
+
+    def _on_router_event(self, event: str, model_name: str | None) -> None:
+        """Model-router events feed the dashboard counters.
+
+        ``request`` fires per provider attempt (including the one transient
+        retry) and ``failed`` once per request that could not be answered by
+        any model, so 请求/失败 ratio stays meaningful.
+        """
+        if event == "request":
+            self.metrics.inc("ai_requests")
+        elif event == "rate_limited":
+            self.metrics.inc("rate_limited")
+        elif event == "empty_finish_length":
+            self.metrics.inc("ai_empty_finish_length")
+        elif event == "failed":
+            self.metrics.inc("ai_errors")
+
+    # ------------------------------------------------------------ lifecycle
+
+    async def _sync_sandbox_state(self, activity: str, location: str, energy: float) -> None:
+        """沙盒报来的"她现在在做什么" → Episode（活动状态的唯一来源，Phase 6A §一/§十四）。
+
+        沙盒仍然是她虚拟生活的模拟器，但它**不再**直接写 ``CharacterState.activity``：
+        那个字段只由 ActivityEpisode 的投影写。没有 Activity 能力（关掉/装配失败）时，
+        退回旧行为（直接写状态）—— 这是明确的降级路径，不是两套并行的系统。
+        """
+        adapter = getattr(self, "activity_sandbox", None)
+        if adapter is None:
+            await self.character.states.update(
+                activity=activity, location=location, energy=energy, reason="sandbox"
+            )
+            return
+        await adapter.observe_virtual_life(activity, location=location)
+        # 位置与精力仍然直接同步（它们是沙盒自己的状态，不是"活动"）
+        await self.character.states.update(location=location, energy=energy, reason="sandbox")
+
+    def _sandbox_asleep(self) -> bool | None:
+        """Presence's source of truth for sleep: sandbox state, or None (off)."""
+        sandbox = getattr(self, "sandbox", None)
+        if sandbox is None or not getattr(sandbox, "enabled", False):
+            return None
+        return bool(sandbox.is_asleep())
+
+    def is_core_friend(self, user_id: int | str) -> bool:
+        """True for the QQ ids explicitly configured as core friends.
+
+        Works with or without the sandbox: the answer comes from configuration
+        (``sandbox.core_friend_identities`` / ``core_friend_ids``) resolved at
+        startup, so the chat side and the world agree on who she lives around.
+        """
+        return str(user_id) in getattr(self, "core_friend_ids", set())
+
+    async def _apply_prompt_overrides(self) -> None:
+        """Push the stored WebUI prompt overrides into the memory extractor.
+
+        The 提示词 page (v0.8 的 /prompts，v1 在 AI · 提示词) persists
+        ``prompt_overrides.memory_extraction_prompt``; without this the setting
+        would be stored but never used — the extractor keeps the built-in text.
+        """
+        extractor = getattr(self, "extractor", None)
+        if extractor is None:
+            return
+        try:
+            overrides = await self.database.get_setting_json("prompt_overrides")
+            prompt = str((overrides or {}).get("memory_extraction_prompt", "") or "")
+            extractor.set_system_prompt(prompt)
+            if prompt:
+                self.log.info("[Memory] custom extraction prompt applied (%d chars)", len(prompt))
+        except Exception:  # noqa: BLE001 - an optional prompt must not stop startup
+            self.log.exception("Failed to apply the extraction prompt override")
+
+    async def _reload_config_from_disk(self) -> None:
+        """Hot-reload a hand-edited config.yaml (Task 23 config watching).
+
+        Runs the full load → models expansion → model-reference validation, then
+        pushes the result through the config admin service. A broken edit is
+        reported and the previous config stays live.
+        """
+        from app.config.settings import load_config
+        from app.web.services.config_admin import ConfigAdminService
+
+        try:
+            new_config = load_config()
+        except SystemExit as exc:
+            self.log.error("[Config.Watch] 配置改动未生效（语法错误）：%s", exc)
+            return
+        except Exception:  # noqa: BLE001
+            self.log.exception("[Config.Watch] 配置重载失败")
+            return
+        notes = await ConfigAdminService(self).apply(new_config)
+        if notes:
+            self.log.info("[Config.Watch] 配置已热重载；%s", "；".join(notes))
+        else:
+            self.log.info("[Config.Watch] 配置已热重载")
+
+    async def _boot_sandbox(self) -> None:
+        """Start (or reset-and-seed) the character life sandbox (v2.0 §120)."""
+        assert self.sandbox is not None
+        sandbox = self.sandbox
+        stored_version = await sandbox.store.state_get("bible_version")
+        first_v2_boot = not stored_version
+        changed = bool(stored_version) and stored_version != sandbox.bible.version
+        # v2.0 §3/§120: v2.0's first boot (or a changed bible) wipes the old
+        # character's data once — archived to data/character_reset_backup first.
+        if (changed or first_v2_boot) and self.config.sandbox.reset_on_bible_change:
+            assert self.lifecycle_manager is not None
+            self.log.warning(
+                "[Sandbox] %s; resetting character data",
+                (
+                    f"bible changed ({stored_version} → {sandbox.bible.version})"
+                    if changed
+                    else "first v2.0 boot"
+                ),
+            )
+            report = await self.lifecycle_manager.reset_character(confirm=True)
+            await sandbox.store.state_set("bible_version", sandbox.bible.version)
+            self.log.info(
+                "[Sandbox] character reset: %d tables cleared (backup=%s)",
+                len(report.get("removed", {})),
+                report.get("backup", "-"),
+            )
+            if self.continuity is not None:
+                await self.continuity.reload()
+        await sandbox.start()
+        # v2.0 §2: the bible is the canonical source for who she is — the WebUI
+        # /character page and the chat prompt both read this persona.
+        if self.config.sandbox.sync_persona_from_bible:
+            try:
+                from app.character.persona import Persona
+                from app.sandbox.persona import build_persona_payload
+
+                synced_version = await sandbox.store.state_get("persona_synced_version")
+                needs_sync = (
+                    not self.personas.persona.is_configured()
+                    or synced_version != sandbox.bible.version
+                )
+                if needs_sync:
+                    payload = build_persona_payload(sandbox.bible)
+                    await self.personas.save(Persona.model_validate(payload))
+                    await self.character.personas.load()
+                    await sandbox.store.state_set("persona_synced_version", sandbox.bible.version)
+                    self.log.info("[Sandbox] persona synced from bible %s", sandbox.bible.version)
+            except Exception:  # noqa: BLE001 - persona sync must not stop boot
+                self.log.exception("[Sandbox] persona sync from bible failed")
+        narrate().world(
+            f"她已经在过自己的日子了（{sandbox.status_line()}）",
+            detail=f"沙盒就绪 · 模式 {'+'.join(sandbox.modes.ids()) or 'home'}",
+        )
+
+    async def start(self) -> None:
+        """Load DB + plugins, wire the event bus, start adapter and WebUI."""
+        self.started_at = time.time()
+
+        story = narrate()
+        try:
+            await self.database.connect()
+            story.boot_step("数据库已连接", detail=str(self.config.database.sqlite_path))
+        except Exception:  # noqa: BLE001 - DB trouble must not stop startup
+            self.log.exception("Database unavailable, continuing without persistence")
+            story.boot_step("数据库不可用（继续运行，但不会落盘）", ok=False)
+
+        # QQ surface: message recording + character chat. No command dispatch.
+        self.event_bus.on("message", self.core_router.on_message)
+        # Phase 5C §七/§八：身份绑定命令（更具体 → 排在任务入口之前；认不出来就不认领）。
+        self.event_bus.on("message", self._dispatch_identity_message)
+        # Phase 5B §二十二/§二十三：QQ 任务入口排在**人格插件之前** —— 只有确认是任务
+        # 请求（或任务控制命令）时它才认领这条消息；否则原样交给正常对话管线。
+        self.event_bus.on("message", self._dispatch_task_message)
+
+        await self.plugins.load_all()
+        loaded = list(self.plugins.loaded)
+        story.boot_step(
+            "插件已加载", detail=", ".join(loaded) if loaded else "无（内置功能已就绪）"
+        )
+
+        try:
+            await self.character.start()
+            # Configured core friends hold the top ``core`` stage from the very
+            # first boot — the table is corrected here so every reader (WebUI
+            # included) sees the same identity without waiting for a message.
+            changed = await self.character.relationships.sync_core_stages()
+            if changed:
+                self.log.info("[Relationship] core friend stages synced: %d row(s)", changed)
+            await self._apply_prompt_overrides()
+            persona = self.character.personas.persona
+            story.boot_step(
+                "角色已就绪",
+                detail=f"{persona.identity.name or persona.name}"
+                + (
+                    "（人设已配置）"
+                    if persona.is_configured()
+                    else "（人设待配置: WebUI /character）"
+                ),
+            )
+        except Exception:  # noqa: BLE001
+            self.log.exception("Character runtime failed to start (chat continues without persona)")
+            story.boot_step("角色运行时启动失败（降级为普通聊天）", ok=False)
+
+        # v2.0: bible change → one clean character reset, then seed the sandbox.
+        if self.sandbox is not None:
+            try:
+                await self._boot_sandbox()
+            except Exception:  # noqa: BLE001
+                self.log.exception("Sandbox boot failed; chat continues without it")
+                self.sandbox = None
+
+        # v1.2 continuity state loads from DB (with TTL decay) before chatting.
+        if self.continuity is not None:
+            try:
+                await self.continuity.start()
+                story.boot_step("角色延续状态已就绪", detail="continuity loaded")
+            except Exception:  # noqa: BLE001
+                self.log.exception("Continuity failed to start (chat continues without it)")
+                self.continuity = None
+
+        # Memory wiring: topic-aware retrieval + background consolidation.
+        self.character.topics = self.behavior.topics
+        if self.memory is not None and self.embeddings is not None:
+            semantic = self.embeddings.available
+            self.log.info(
+                "[Memory.Embedding] mode=%s",
+                "semantic+keyword" if semantic else "keyword only (fallback)",
+            )
+            story.boot_step(
+                "长期记忆已就绪",
+                detail="语义+关键词混合检索" if semantic else "关键词检索（Embedding 未启用/降级）",
+            )
+        shared_loop = self.behavior.enabled or self.sandbox is not None
+        if self.consolidation_scheduler is not None and self.consolidation_scheduler.enabled:
+            if shared_loop:
+                # Rides the shared scheduler instead of owning a second loop (v0.8 §34).
+                self.consolidation_scheduler.external_driver = True
+                self.scheduler.register_job(
+                    ScheduledJob(
+                        name="memory_consolidation",
+                        handler=self.consolidation_scheduler.tick,
+                        interval_seconds=float(self.consolidation_scheduler.interval_seconds),
+                        run_immediately=False,
+                        misfire_policy="skip",
+                    )
+                )
+            else:
+                await self.consolidation_scheduler.start()
+
+        # Task 14: replay writes the database refused (queued in the outbox).
+        # Rides the shared scheduler when it runs, otherwise gets one attempt
+        # right after startup — a leftover queue means a past outage.
+        if self.memory is not None and self.memory.outbox is not None:
+            if shared_loop:
+                self.scheduler.register_job(
+                    ScheduledJob(
+                        name="memory_outbox",
+                        handler=self.memory.replay_outbox,
+                        interval_seconds=120.0,
+                        run_immediately=True,
+                        misfire_policy="skip",
+                    )
+                )
+            else:
+                asyncio.create_task(self.memory.replay_outbox())
+
+        # Task 20: settle reply outcomes once their observation window passed.
+        if shared_loop and self.reply_feedback is not None:
+            social_engine = self.social
+
+            async def _apply_outcome(group_key: str, score: float) -> None:
+                """Fold a settled turn into the soft state (never the hard gate)."""
+                if social_engine is None:
+                    return
+                group_id = group_key.split(":", 1)[-1]
+                social_engine.attention.note_reply_outcome(group_id, score)
+                social_engine.engagement.note(group_id, score)
+
+            settler = ReplyFeedbackSettler(
+                self.reply_feedback,
+                getattr(self.social, "monitor", None),
+                metrics=self.metrics,
+                on_settled=_apply_outcome,
+            )
+
+            async def _settle_and_persist() -> None:
+                await settler.settle()
+                if social_engine is not None:
+                    await self.reply_feedback.save_engagement(social_engine.engagement.snapshot())
+
+            if social_engine is not None:
+                snapshot = await self.reply_feedback.load_engagement()
+                if snapshot is not None:
+                    social_engine.engagement.load(snapshot)
+
+            self.scheduler.register_job(
+                ScheduledJob(
+                    name="reply_feedback",
+                    handler=_settle_and_persist,
+                    interval_seconds=30.0,
+                    run_immediately=True,
+                    misfire_policy="skip",
+                )
+            )
+            self.scheduler.register_job(
+                ScheduledJob(
+                    name="reply_feedback_prune",
+                    handler=lambda: self.reply_feedback.prune(
+                        self.config.social.feedback_retention_days
+                    ),
+                    interval_seconds=86400.0,
+                    run_immediately=False,
+                    misfire_policy="skip",
+                )
+            )
+
+        # Task 15: model usage rows are pruned daily on the same loop.
+        if self.ai_usage is not None and shared_loop:
+            retention_days = self.config.ai.usage.retention_days
+            self.scheduler.register_job(
+                ScheduledJob(
+                    name="ai_usage_prune",
+                    handler=lambda: self.ai_usage.prune(retention_days),
+                    interval_seconds=86400.0,
+                    run_immediately=False,
+                    misfire_policy="skip",
+                )
+            )
+
+        if self.config.tools.enabled:
+            await self.tools.start()
+            self.log.info(
+                "[Tool] runtime ready: %d tool(s) enabled (%s), decision=%s, budget=%d/turn",
+                sum(1 for t in self.tools.registry.all() if self.tools.is_enabled(t.metadata.name)),
+                ", ".join(self.tools.registry.names()),
+                self.config.tools.decision_mode,
+                self.config.tools.max_calls_per_turn,
+            )
+            story.boot_step(
+                "工具运行时已就绪",
+                detail=", ".join(self.tools.registry.names()) or "无可用工具",
+            )
+
+        if self.agent.enabled:
+            paused = await self.agent.mark_running_tasks_paused()
+            self.log.info(
+                "[Agent] runtime ready (autonomy=%s, budget=%d steps/%d calls/%ds%s)",
+                self.config.agent.autonomy,
+                self.config.agent.budget.max_steps,
+                self.config.agent.budget.max_tool_calls,
+                int(self.config.agent.budget.max_execution_seconds),
+                f", {paused} interrupted task(s) paused" if paused else "",
+            )
+            story.boot_step(
+                "Agent 已就绪",
+                detail=f"autonomy={self.config.agent.autonomy}"
+                + (f", {paused} 个未完成任务已暂停" if paused else ""),
+            )
+
+        if self.behavior.enabled:
+            state = await self.behavior.current_state()
+            self.log.info(
+                "[Behavior] active (tz=%s, activity=%s, initiative=%s, group=%s)",
+                self.presence.timezone_name,
+                state.activity or "-",
+                "on" if self.config.behavior.initiative.enabled else "off",
+                "on" if self.config.behavior.group.participation_enabled else "off",
+            )
+            story.boot_step(
+                "行为引擎已就绪",
+                detail=(
+                    f"时区 {self.presence.timezone_name}"
+                    f", 主动聊天{'开' if self.config.behavior.initiative.enabled else '关'}"
+                    f", 群聊参与"
+                    f"{'开' if self.config.behavior.group.participation_enabled else '关'}"
+                ),
+            )
+
+        await self._start_sandbox_jobs()
+
+        # v1.1: background sticker indexer (never blocks QQ from coming up, v1.1 §16).
+        if self.media.enabled and self.config.media.indexer_enabled:
+            asyncio.create_task(self._run_sticker_indexer())
+
+        # Task 12: derived memory indices (FTS keyword tokens + vector blobs)
+        # backfill rows written before them — in the background, so the first
+        # message never pays for it.
+        if self.memory is not None:
+            asyncio.create_task(self.memory.warm_indices())
+
+        # One scheduler for the whole process: behaviour, world, memory upkeep.
+        if self.behavior.enabled or self.sandbox is not None:
+            await self.scheduler.start()
+            story.boot_step(
+                "后台调度器已启动",
+                detail=", ".join(job.name for job in self.scheduler.jobs()) or "无任务",
+            )
+
+        if self.ai.enabled:
+            self.log.info(
+                "AI engine active with %d model(s): %s",
+                self.ai.router.model_count,
+                ", ".join(s.spec.name for s in self.ai.router.states.values()),
+            )
+            try:
+                from app.web.services.admin import AdminService
+
+                await AdminService(self).restore_model_overrides()
+            except Exception:  # noqa: BLE001
+                self.log.exception("Failed to restore model overrides")
+
+        try:
+            from app.web.services.behavior import BehaviorService
+
+            await BehaviorService(self).restore_overrides()
+        except Exception:  # noqa: BLE001
+            self.log.exception("Failed to restore behaviour overrides")
+
+        if self.runtime_scheduler is not None:
+            # §32: the world is loaded before anything may hand it a message
+            await self.runtime_scheduler.start()
+        if self.onebot_gateway is not None:
+            # registers the gateway as the message handler; the bot still owns
+            # the socket below (server mode)
+            await self.onebot_gateway.start()
+        if self.minecraft is not None:
+            try:
+                await self.minecraft.start()
+                story.boot_step("Minecraft 桥已启动", detail="连接层就绪（Phase 1）")
+            except Exception:  # noqa: BLE001 - minecraft trouble must not stop startup
+                self.log.exception("Minecraft bridge failed to start; continuing without it")
+                self.minecraft = None
+                story.boot_step("Minecraft 桥启动失败（QQ 聊天不受影响）", ok=False)
+        if self.minecraft is not None:
+            # Phase 5C：身份桥 + 记忆。放在**这里**有两个原因：
+            # 1) 记忆 scope 用角色名，而人设是这一轮 start() 里才读进来的
+            #    （放 __init__ 会拿到 "default" —— 真机上就这么错过一次）；
+            # 2) 连接层真的起来了才有记忆能力（起不来就干脆没有，不留半死对象）。
+            self._setup_minecraft_memory()
+            self._start_memory_reconcile()
+        if self.minecraft_memory is not None:
+            # Phase 5C §六 优先级 2：运维显式配置的 QQ → 玩家名。
+            # 玩家当时不在线就留着 —— 每次周期对账前会再试一次。
+            self._spawn_memory(self._apply_configured_links())
+        if self.minecraft is not None:
+            # Phase 5A：多步骤任务运行时（checkpoint 复用同一个 SQLite）。
+            # 装配失败 = 没有任务能力，单工具行为完全不受影响（§一百零二）。
+            try:
+                from app.integrations.minecraft.task_adapter import (
+                    MinecraftTaskInvoker,
+                    build_minecraft_task_runtime,
+                )
+                from app.integrations.minecraft.task_coordinator import MinecraftTaskCoordinator
+                from app.tasks.qq_entry import QQTaskEntry
+                from app.tasks.turn import TaskTurnHandler
+
+                self.tasks = await build_minecraft_task_runtime(
+                    self.minecraft,
+                    tools_config=self.config.tools,
+                    database=self.database,
+                    config=self.config.task,
+                    # §十三：任务事件走现有事件流；QQ 侧订阅它，而不是自己轮询
+                    publish=self._publish_task_event,
+                    life_guard=self._life_goal_guard,
+                    logger=self.log,
+                )
+                # Phase 7F.5 §五：Runtime 实例换了（成功的身份响应证明）→ 主动对账旧实例的
+                # 未决动作：无查询能力 ⇒ 一律进入明确歧义 + 人工核对，绝不重新派发。
+                self.minecraft.on_runtime_instance_changed = self.tasks.on_runtime_instance_changed
+                self.task_coordinator = MinecraftTaskCoordinator(self.tasks, self.minecraft)
+                self.task_coordinator.start()
+                self.minecraft.on_attested_identity_revoked = self._revoke_attested_tasks
+                # 观察与执行走同一条既有工具通道（TaskRuntime 绝不认识 Mineflayer）
+                invoker = MinecraftTaskInvoker(self.minecraft.agent)
+                observe = lambda tool, arguments: invoker(tool, dict(arguments))  # noqa: E731
+                # 两个入口共用**同一个** TaskRuntime（§十八）：QQ / 游戏内聊天
+                self.task_entry = QQTaskEntry(self, runtime=self.tasks, observe=observe)
+                self.task_turns = TaskTurnHandler(self.tasks, observe=observe)
+                # Phase 5A.1 §十三：进程重启过的任务在这里做安全恢复（旧动作一律作废）。
+                # 恢复失败**只降级恢复**，绝不把整个任务能力关掉（真机上踩过一次）。
+                try:
+                    recovered = await self.tasks.recover_persisted_tasks()
+                    if recovered:
+                        self.log.info(
+                            "[Task] recovered %d persisted task(s) after restart", len(recovered)
+                        )
+                except Exception:  # noqa: BLE001 - 恢复失败不拖垮任务运行时
+                    self.log.exception("Task recovery failed; keeping the runtime up")
+                story.boot_step(
+                    "多步骤任务运行时已就绪",
+                    detail=(
+                        f"TTL {int(self.config.task.ttl_seconds)}s"
+                        f"、最多 {int(self.config.task.max_steps)} 步"
+                    ),
+                )
+            except Exception:  # noqa: BLE001 - 任务装配失败不拖垮启动
+                self.log.exception("Task runtime initialization failed; continuing without it")
+                self.tasks = None
+                self.task_coordinator = None
+                self.task_turns = None
+                self.task_entry = None
+        # Phase 6A：世界活动（Episode 生命周期）。人设已载入、任务运行时也已就绪，
+        # 这时候才装 —— 失败**只**降级活动能力（§五十一：绝不阻断聊天/任务/启动）。
+        try:
+            await self._setup_world_activity()
+        except Exception:  # noqa: BLE001 - 活动装配失败不拖垮启动
+            self.log.exception("World activity initialization failed; continuing without it")
+            self.activity = None
+        # Phase 7A：Initiative Gate / LifeIntent（**只产生意图**，执行层 = NONE）。
+        # 装配点放在活动层之后：得先有"现在在做什么"，才谈得上"突然想做点别的"。
+        try:
+            await self._setup_world_initiative()
+        except Exception:  # noqa: BLE001 - 意图层装配失败不拖垮启动
+            self.log.exception("World initiative initialization failed; continuing without it")
+            self.initiative = None
+        # Phase 7C：TaskProposal（把意图/用户请求变成**可审计的提案**，到此为止 ——
+        # 执行层恒为 NONE）。装配点放在意图层之后：得先有"想做什么"，才谈得上"准备怎样做"。
+        try:
+            await self._setup_task_proposals()
+        except Exception:  # noqa: BLE001 - 提案层装配失败不拖垮启动
+            self.log.exception("Task proposals initialization failed; continuing without it")
+            self.proposals = None
+        await self.adapter.start()
+        story.boot_step("OneBot 适配器已监听", detail=self.config.onebot.url)
+        if self.watchdog is not None:
+            self.watchdog.start()
+            story.boot_step(
+                "事件循环看门狗已启动",
+                detail=f"超过 {self.config.logging.watchdog_threshold_ms} ms 的卡顿会告警",
+            )
+        if self.config_watcher is not None:
+            self.config_watcher.start()
+            story.boot_step(
+                "配置监听已启动",
+                detail="手改 config.yaml 后自动热重载（语法错误会提示并保留旧配置）",
+            )
+        self.lifecycle.mark_ready()
+
+        if self.config.web.enabled:
+            try:
+                from app.web.server import WebServer
+
+                self.web = WebServer(self.config.web, self)
+                await self.web.start()
+                story.boot_step(
+                    "WebUI 已启动",
+                    detail=f"http://{self.config.web.host}:{self.config.web.port}",
+                )
+            except Exception:  # noqa: BLE001 - WebUI failure must not kill the bot
+                self.log.exception("WebUI failed to start; QQ chat continues unaffected")
+                self.web = None
+                story.boot_step("WebUI 启动失败（QQ 聊天不受影响）", ok=False)
+        else:
+            self.log.info("WebUI disabled (set web.enabled: true to manage via browser)")
+            story.boot_step("WebUI 未启用", detail="web.enabled: true 可在浏览器里管理", ok=True)
+
+    async def print_ready_panel(self) -> None:
+        """The 'all set' box: where QQ connects, where to manage, how she is."""
+        story = narrate()
+        if not story.enabled:
+            return
+        lines: list[str] = []
+        lines.append(f"QQ 接入    {self.config.onebot.url}")
+        lines.append(
+            f"模型       {self.ai.router.model_count} 个"
+            + (
+                "  ·  " + ", ".join(state.spec.name for state in self.ai.router.states.values())
+                if self.ai.router.model_count
+                else "（AI 未启用）"
+            )
+        )
+        if self.web is not None:
+            lines.append(
+                f"管理后台   http://{self.config.web.host}:{self.config.web.port}"
+                f"  ·  账号 {self.config.web.username}"
+            )
+        else:
+            lines.append("管理后台   未启用（web.enabled: true 可打开）")
+        persona = self.character.personas.persona if self.character is not None else None
+        if persona is not None:
+            lines.append(
+                f"角色       {persona.identity.name or persona.name}"
+                f"  ·  {persona.identity.occupation or '——'}"
+            )
+        if self.sandbox is not None and self.sandbox.enabled:
+            context = self.sandbox.context()
+            lines.append(
+                f"沙盒       {context.get('location', '-')}"
+                f"  ·  {context.get('action') or '闲着'}"
+                f"  ·  {'+'.join(context.get('modes', [])) or '-'}"
+            )
+        jobs = ", ".join(job.name for job in self.scheduler.jobs())
+        lines.append(f"后台任务   {jobs or '无'}")
+        story.blank()
+        story.panel("CatooBot 已就绪 · developer Rinsora", lines, accent="bright_green")
+        story.blank()
+        story.say(
+            "world",
+            console.paint("她已经开始过自己的日子了", "bright_cyan"),
+            detail="QQ 里直接说话即可，管理看 WebUI /sandbox",
+        )
+
+    async def _run_sticker_indexer(self) -> None:
+        """Background scan of the sticker import directory (v1.1 §15-§17)."""
+        try:
+            stats = await self.media.indexer.scan()
+            self.log.info("[Media.Indexer] scan done: %s", stats)
+        except Exception:  # noqa: BLE001 - indexing must never kill the bot
+            self.log.exception("[Media.Indexer] startup scan failed")
+
+    async def _start_sandbox_jobs(self) -> None:
+        """Report the sandbox and leave world time to the RuntimeScheduler (14.1).
+
+        The legacy per-``tick_seconds`` world job is gone (Phase 14.1): from
+        Phase 14 the :class:`RuntimeScheduler` is the *only* owner of
+        ``SandboxRuntime.tick()`` and advances the world by real elapsed time.
+        The shared scheduler keeps its other jobs (memory, cleanup, feedback) but
+        never drives the world clock again.
+        """
+        sandbox = self.sandbox
+        if sandbox is None or not sandbox.enabled:
+            return
+        self.log.info(
+            "[Sandbox] active (world tick=RuntimeScheduler every %ss)"
+            " phase=%s modes=%s location=%s",
+            getattr(self.config.runtime, "tick_interval_seconds", 1.0),
+            sandbox.phase.value,
+            "+".join(sandbox.modes.ids()) or "-",
+            sandbox.character.location,
+        )
+
+    # ------------------------------------------------- Phase 6A：世界活动（Episode）
+
+    async def _setup_world_activity(self) -> None:
+        """装配 ActivityRuntime + 四个适配器（失败**只**降级活动能力，§五十一）。
+
+        装配点选择：人设已载入（角色名拿得到）、任务运行时已就绪（任务事件已经在发）、
+        沙盒已 boot（``character_id`` 是权威的那个 ``名字@圣经哈希``）。
+        """
+        config = getattr(getattr(self.config, "world", None), "activity", None)
+        if config is not None and not config.enabled:
+            self.log.info("[World.Activity] 已在配置里关闭")
+            return
+        from app.activity import (
+            ACTIVITY_EVENT_NAMES,
+            ActivityEventPublisher,
+            ActivityPlanner,
+            ActivityProjection,
+            ActivityRuntime,
+            AnchorBook,
+            MinecraftObservationAdapter,
+            SandboxActivityAdapter,
+            SandboxGoalSource,
+            SqliteActivityStore,
+            TaskActivityAdapter,
+            UserInteractionAdapter,
+            WorldClock,
+        )
+
+        world_config = getattr(self.config, "world", None)
+        timezone = str(getattr(world_config, "timezone", "") or "Asia/Singapore")
+        self.activity_clock = WorldClock(timezone)
+        character_id = self._activity_character_id()
+        # Phase 6C：Planner 的输入全部是**只读**的 —— 日程锚点（代码里的默认一天，§十二）、
+        # 角色状态（能量/专注），以及**复用**既有沙盒目标层（§二：不另造第二套 Goal 系统）。
+        sandbox_goals = getattr(self.sandbox, "goals", None)
+        planner = ActivityPlanner(
+            anchors=AnchorBook(),
+            goal_source=(
+                SandboxGoalSource(manager=sandbox_goals) if sandbox_goals is not None else None
+            ),
+            state_provider=self._activity_state,
+        )
+        # Phase 6D §四十一/§四十二：模型顾问默认关闭；开了但没配好 → 只告警 + 退回纯规则
+        from app.activity.model_advisor import build_advisor
+
+        advisor = build_advisor(getattr(config, "model_advisor", None), self.ai, logger=self.log)
+        runtime = ActivityRuntime(
+            store=SqliteActivityStore(self.database, logger=self.log),
+            clock=self.activity_clock,
+            character_id=character_id,
+            planner=planner,
+            publisher=ActivityEventPublisher(logger=self.log),
+            projection=ActivityProjection(self.character.states, logger=self.log),
+            recent_episode_limit=int(getattr(config, "recent_episode_limit", 5) or 5),
+            persistence_interval_seconds=float(
+                getattr(config, "persistence_interval_seconds", 60.0) or 60.0
+            ),
+            recovery_grace_seconds=float(getattr(config, "recovery_grace_seconds", 30.0) or 0.0),
+            # 重启对账时用它把活动与任务的权威状态对齐（只读探针）
+            task_state_probe=self._probe_task_state,
+            # Phase 6B：决策引擎的三个旋钮（§五十三）
+            transition_window_seconds=float(
+                getattr(config, "transition_window_minutes", 5.0) or 0.0
+            )
+            * 60.0,
+            max_extensions_per_episode=int(getattr(config, "max_extensions_per_episode", 2) or 0),
+            bounce_cooldown_seconds=float(getattr(config, "bounce_cooldown_minutes", 10.0) or 0.0)
+            * 60.0,
+            # Phase 6C：rolling horizon 的三个旋钮（§六十八）+ 只读状态输入
+            planning_horizon_seconds=float(
+                getattr(config, "planning_horizon_minutes", 240.0) or 240.0
+            )
+            * 60.0,
+            # 注意：0 是合法值（"不要冷却"），这里**不能**用 ``or`` 兜底
+            planner_refresh_min_seconds=float(getattr(config, "planner_refresh_min_minutes", 5.0))
+            * 60.0,
+            max_future_episodes=int(getattr(config, "max_future_episodes", 6) or 6),
+            state_provider=self._activity_state,
+            # Phase 6D：模型顾问（None = 纯规则，行为与 6B/6C 逐字一致）
+            advisor=advisor,
+            logger=self.log,
+        )
+        self.activity = runtime
+        self.activity_sandbox = SandboxActivityAdapter(runtime, logger=self.log)
+        self.activity_tasks = TaskActivityAdapter(runtime, logger=self.log)
+        self.activity_observation = MinecraftObservationAdapter(
+            runtime, self.minecraft, logger=self.log
+        )
+        self.activity_user = UserInteractionAdapter(runtime, logger=self.log)
+        # 角色运行时可以读它（§三十八/§三十九：QQ 与游戏内聊天都能读，但谁都不能改）
+        if self.character is not None:
+            self.character.activity = runtime
+        # 世界 tick 里推进 Episode 生命周期（§八：tick 只推进时间，不重新选活动）
+        if self.runtime_scheduler is not None:
+            self.runtime_scheduler.activity = runtime
+        recovered = await runtime.recover()
+        self.log.info(
+            "[World.Activity] ready character=%s recovered=%s events=%d",
+            character_id,
+            recovered.get("action", "none"),
+            len(ACTIVITY_EVENT_NAMES),
+        )
+
+    async def _setup_world_initiative(self) -> None:
+        """Phase 7A §二：把 Initiative Gate / LifeIntent 接上。
+
+        这一层只有**只读输入 + 一个状态存储**：没有 TaskRuntime / ActionRuntime /
+        MinecraftService / Policy / ConfirmationStore / QQ 发送器（§四十一/§四十三）。
+        """
+        config = getattr(getattr(self.config, "world", None), "initiative", None)
+        if config is None or not config.enabled:
+            self.initiative = None
+            self.log.info("[World.Initiative] 已在配置里关闭")
+            return
+        from app.initiative import (
+            INITIATIVE_EVENT_NAMES,
+            InitiativeContextAdapter,
+            InitiativeEventPublisher,
+            LifeIntentService,
+            SqliteLifeIntentStore,
+        )
+
+        character_id = self._activity_character_id()
+        sandbox = getattr(self, "sandbox", None)
+        planner = getattr(getattr(self, "activity", None), "planner", None)
+        # Phase 7F.2：把 minecraft 记忆域 scope 交给 context 适配器（只读、bounded）。
+        # 探索回流的可信事实写在这个 scope，通用记忆窗口可能被日常记忆挤掉。
+        mc_bridge = getattr(self, "minecraft_memory", None)
+        mc_scope = str(getattr(getattr(mc_bridge, "store", None), "scope_key", "") or "")
+        adapter = InitiativeContextAdapter(
+            character_id=character_id,
+            activity=getattr(self, "activity", None),
+            goals=getattr(sandbox, "goals", None),
+            commitments=getattr(sandbox, "commitments", None),
+            memory=getattr(self, "memory", None),
+            topics=getattr(getattr(self, "behavior", None), "topics", None),
+            social=getattr(self, "social", None),
+            presence=getattr(self, "presence", None),
+            minecraft=getattr(self, "minecraft", None),
+            state_provider=self._activity_state,
+            task_states_provider=self._active_task_states,
+            routine_table=getattr(planner, "routine_table", None),
+            minecraft_memory_scopes=(mc_scope,) if mc_scope else (),
+            logger=self.log,
+        )
+        service = LifeIntentService(
+            store=SqliteLifeIntentStore(self.database, logger=self.log),
+            config=config,
+            context_provider=adapter.collect,
+            character_id=character_id,
+            publisher=InitiativeEventPublisher(logger=self.log),
+            logger=self.log,
+        )
+        self.initiative = service
+        # Phase 7B §三：把意图建议接进 ActivityPlanner（**只读**；Planner 只在规划触发点读它，
+        # 而且只有"合格候选之间的软排序"会被它影响 —— 硬约束/资格/6B 护栏永远优先）。
+        activity = getattr(self, "activity", None)
+        planner = getattr(activity, "planner", None)
+        if planner is not None:
+            planner.intent_source = service
+        # 角色运行时可以**读**它（§五十：QQ 里说得出"最近想干嘛"），但不能改
+        if self.character is not None:
+            self.character.initiative = service
+        recovered = await service.recover()
+        self.log.info(
+            "[World.Initiative] ready character=%s recovered=%s proposed=%d events=%d",
+            character_id,
+            recovered.get("action", "none"),
+            int(recovered.get("proposed", 0) or 0),
+            len(INITIATIVE_EVENT_NAMES),
+        )
+
+    async def _setup_task_proposals(self) -> None:
+        """Phase 7C §一：把 TaskProposal 层接上。
+
+        这一层是**只读输入 + 一个状态存储 + 一个只读身份探针**（§四/§五/§八）：
+        没有 TaskRuntime / ActionRuntime 的动作面 / Policy / ConfirmationStore / QQ 发送器，
+        也没有 ``create_task`` / ``confirm_and_start`` 可调 —— 执行层恒为 ``NONE``。
+        """
+        from app.tasks.proposal_service import TaskProposalService
+        from app.tasks.proposal_store import SqliteTaskProposalStore
+
+        config = getattr(getattr(self.config, "world", None), "proposals", None)
+        if config is None or not getattr(config, "enabled", True):
+            self.proposals = None
+            self.log.info("[TaskProposal] 已在配置里关闭")
+            return
+        # §八：**真正的** IdentityStore（`minecraft_identity` 是 QQ 绑定命令处理器，
+        # 没有 `links_for`；存放在记忆桥的 `identities` 上 —— 真机门禁抓到的接线错误）
+        identity = getattr(getattr(self, "minecraft_memory", None), "identities", None)
+        service = TaskProposalService(
+            store=SqliteTaskProposalStore(self.database, logger=self.log),
+            config=config,
+            character_id=self._activity_character_id(),
+            identity=identity,
+            registry=getattr(getattr(self, "tools", None), "registry", None),
+            minecraft=getattr(self, "minecraft", None),
+            goal_source=getattr(
+                getattr(getattr(self, "sandbox", None), "goals", None), "open_goals", None
+            ),
+            logger=self.log,
+        )
+        self.proposals = service
+        recovered = await service.recover()
+        self.log.info(
+            "[TaskProposal] ready character=%s recovered=%s expired=%d open=%d",
+            service.character_id,
+            recovered.get("action", "none"),
+            int(recovered.get("expired", 0) or 0),
+            int(recovered.get("open", 0) or 0),
+        )
+        # Phase 7D：AgentPlan 层（规划 + 审计；执行永远走既有 TaskRuntime 链）。
+        # 装配点放在提案层之后：得先有"知道需要什么能力"，才谈得上"准备怎样做"。
+        try:
+            await self._setup_agent_plans()
+        except Exception:  # noqa: BLE001 - 计划层装配失败不拖垮启动
+            self.log.exception("Agent plans initialization failed; continuing without it")
+            self.agent_plans = None
+
+        # Phase 7E：程序性技能层（学习 / 检索 / 适用性；执行仍然只走既有 TaskRuntime 链）。
+        # 装配点放在计划层之后：技能需要"当前工具契约"和"真实的成功任务记录"。
+        try:
+            await self._setup_skills()
+        except Exception:  # noqa: BLE001 - 技能层装配失败不拖垮启动
+            self.log.exception("Procedural skills initialization failed; continuing without it")
+            self.skills = None
+
+    async def _setup_agent_plans(self) -> None:
+        """Phase 7D §三/§四：把 AgentPlan 层接上。
+
+        * 规划器只从已注册能力选操作（BoundedAgentPlanner）；
+        * USER 路径与待确认任务同建（一次确认）；LIFE 路径只规划，「批准」后才建任务；
+        * 执行永远走既有 TaskRuntime → Policy → ActionRuntime（这里没有任何执行入口）。
+        """
+        from app.tasks.agent_plan_store import SqliteAgentPlanStore
+        from app.tasks.agent_planner import BoundedAgentPlanner
+        from app.tasks.agent_service import AgentPlanService
+
+        plan_config = getattr(self.config, "agent_plans", None)
+        if plan_config is not None and not getattr(plan_config, "enabled", True):
+            self.log.info("[AgentPlan] 已在配置里关闭")
+            self.agent_plans = None
+            return
+        task_config = getattr(self.config, "task", None)
+        tools_config = getattr(
+            getattr(getattr(self.config, "minecraft", None), "agent", None), "tools", None
+        )
+        follow_timeout = 120.0
+        action_cfg = getattr(getattr(self.config, "minecraft", None), "action", None)
+        follow_cfg = getattr(action_cfg, "follow_player", None)
+        if follow_cfg is not None:
+            try:
+                follow_timeout = float(getattr(follow_cfg, "timeout", 120.0))
+            except (TypeError, ValueError):
+                follow_timeout = 120.0
+        planner = BoundedAgentPlanner(
+            allow_safe=bool(getattr(tools_config, "allow_safe", True)),
+            allow_low=bool(getattr(tools_config, "allow_low", True)),
+            allow_medium=bool(getattr(tools_config, "allow_medium", False)),
+            follow_timeout_seconds=follow_timeout,
+            # Phase 7F.3：有界多段探索的段数。默认 1（= Phase 7F.1/7F.2 的单段语义，
+            # 逐字节不变）；配置里给了 minecraft.agent.tools.explore_legs 才走多段。
+            explore_legs=int(getattr(tools_config, "explore_legs", 1) or 1),
+        )
+        # observe 复用与 TaskTurnHandler 同一条既有工具通道（绝不直连 mineflayer）
+        from app.integrations.minecraft.task_adapter import MinecraftTaskInvoker
+
+        minecraft_agent = getattr(getattr(self, "minecraft", None), "agent", None)
+        if minecraft_agent is None:
+            self.log.info("[AgentPlan] Minecraft 未启用：计划层只做 LIFE 规划与记账")
+            invoker = None
+        else:
+            invoker = MinecraftTaskInvoker(minecraft_agent)
+        service = AgentPlanService(
+            store=SqliteAgentPlanStore(self.database, logger=self.log),
+            planner=planner,
+            task_runtime=getattr(self, "tasks", None),
+            proposal_service=getattr(self, "proposals", None),
+            observe=None
+            if invoker is None
+            else (lambda tool, arguments: invoker(tool, dict(arguments))),
+            character_id=self._activity_character_id(),
+            plan_ttl_seconds=float(getattr(task_config, "ttl_seconds", 600.0)),
+            life_guard=self._life_goal_guard,
+            replan_budget=int(getattr(task_config, "max_replans", 2)),
+            view_limit=int(getattr(plan_config, "view_limit", 10)),
+            logger=self.log,
+        )
+        self.agent_plans = service
+        # TaskTurnHandler 拿到计划服务（USER 计划与待确认任务同建；鸭子类型注入）。
+        # 注意 QQ 入口用的是它**自己构造**的 handler 实例 —— 两个都要注入
+        # （真机门禁抓到：只注入 task_turns 会让 QQ 资源任务的计划漏记账）。
+        if self.task_turns is not None:
+            self.task_turns._plans = service  # noqa: SLF001 - 装配点注入
+        entry_handler = getattr(getattr(self, "task_entry", None), "handler", None)
+        if entry_handler is not None:
+            entry_handler._plans = service  # noqa: SLF001 - 装配点注入
+        recovered = await service.recover()
+        self.log.info(
+            "[AgentPlan] ready character=%s recovered=%s expired=%d open=%d",
+            service.character_id,
+            recovered.get("action", "none"),
+            int(recovered.get("expired", 0) or 0),
+            int(recovered.get("open", 0) or 0),
+        )
+
+    async def _setup_skills(self) -> None:
+        """Phase 7E §7.5：把程序性技能层接上（学习 + 有界复用）。
+
+        * 技能**没有**执行面：本层只读持久化 TaskRecord、只用既有 SAFE 观察通道、
+          只产出 ``PlannedTask``（计划候选）交给既有入口；
+        * 工具契约（名字 / 风险 / schema 指纹）来自**真实工具运行时**，技能无权修改；
+        * 计划层（``AgentPlanService``）与非 AgentPlan 的资源任务入口（``TaskTurnHandler``）
+          都注入同一个技能服务：前者用包装规划器，后者在模板之前问一次；
+        * 装配失败只降级：聊天、既有规划与任务链行为逐字不变。
+        """
+        from app.tasks.skill_service import SkillService, ToolsSnapshot, tools_signature_of
+        from app.tasks.skill_store import SqliteSkillStore
+
+        config = getattr(self.config, "skills", None)
+        if config is not None and not getattr(config, "enabled", True):
+            self.log.info("[Skill] 已在配置里关闭")
+            self.skills = None
+            return
+        from app.integrations.minecraft.agent import ACTION_RISK
+        from app.integrations.minecraft.task_adapter import _tool_of as mc_tool_of
+
+        registry = getattr(getattr(self, "tools", None), "registry", None)
+        names: list[str] = []
+        if registry is not None:
+            try:
+                names = sorted(str(item) for item in registry.names())
+            except Exception:  # noqa: BLE001 - 读不到工具面就当作"技能不可用"
+                names = []
+        # 风险用任务/策略的**权威表**（ACTION_RISK），不是工具元数据里的展示值；
+        # schema 用真实注册的工具定义（与 build_minecraft_task_runtime 同一读法）。
+        risk_table = {str(key): str(value) for key, value in ACTION_RISK.items()}
+        tool_runtime = getattr(self, "tools", None)
+
+        def _schema_for(tool: str) -> Any:
+            found = mc_tool_of(tool_runtime, tool) if tool_runtime is not None else None
+            if found is None:
+                return None
+            try:
+                return found.metadata.input_schema
+            except Exception:  # noqa: BLE001
+                return None
+
+        signature = tools_signature_of(names, risk_table, _schema_for)
+
+        def _snapshot() -> ToolsSnapshot:
+            #: 每次读都是**当前**的真实工具面（工具被禁用/改名 → 旧技能自动转 STALE）
+            current = (
+                sorted(str(item) for item in registry.names()) if registry is not None else names
+            )
+            return ToolsSnapshot(
+                registered=frozenset(current),
+                risks=dict(risk_table),
+                signature=signature,
+            )
+
+        from app.integrations.minecraft.task_adapter import MinecraftTaskInvoker
+        from app.tasks.turn import block_for
+
+        minecraft_agent = getattr(getattr(self, "minecraft", None), "agent", None)
+        invoker = None if minecraft_agent is None else MinecraftTaskInvoker(minecraft_agent)
+        observe = (
+            None if invoker is None else (lambda tool, arguments: invoker(tool, dict(arguments)))
+        )
+
+        def _classify(text: str) -> str:
+            """方法类键（确定性）：资源目标按"方块:掉落物"归类，其它只做空白归一。"""
+
+            from app.tasks.turn import DROP_OVERRIDES
+
+            block = block_for(text)
+            if not block:
+                return "text:" + " ".join(str(text or "").split()).lower()[:120]
+            return f"resource:{block}:{DROP_OVERRIDES.get(block, block)}"
+
+        # 风险开关与规划器**同源**（minecraft.agent.tools.*）——技能不得自己放宽
+        risk_tools = getattr(
+            getattr(getattr(self.config, "minecraft", None), "agent", None), "tools", None
+        )
+
+        def _allowed_risks(risk: str) -> bool:
+            allowed = {
+                "SAFE": bool(getattr(risk_tools, "allow_safe", True)),
+                "LOW": bool(getattr(risk_tools, "allow_low", True)),
+                "MEDIUM": bool(getattr(risk_tools, "allow_medium", False)),
+            }
+            return bool(allowed.get(str(risk).upper(), False))
+
+        service = SkillService(
+            store=SqliteSkillStore(self.database, logger=self.log),
+            config=config,
+            character_id=self._activity_character_id(),
+            observe=observe,
+            server_id=lambda: str(
+                getattr(getattr(self, "minecraft_memory", None), "server_id", lambda: "")() or ""
+            ),
+            tools_snapshot=_snapshot,
+            classify=_classify,
+            schema_of=_schema_for,
+            validate_arguments=None,
+            allowed_risks=_allowed_risks,
+            logger=self.log,
+        )
+        self.skills = service
+        # 计划层：技能优先（包装规划器），不适用/异常原样回退基规划器
+        plans = getattr(self, "agent_plans", None)
+        if plans is not None:
+            from app.tasks.skill_planner import SkillAwarePlanner
+
+            wrapper = SkillAwarePlanner(plans.planner, skills=service)
+            plans.planner = wrapper
+            self.skill_planner = wrapper
+            #: 任务建立后登记技能绑定（LIFE 批准 / USER follow 两条路径都要）
+            plans.skills = service  # noqa: SLF001 - 装配点注入（鸭子类型）
+        # 非 AgentPlan 的资源任务入口（QQ / 游戏内聊天）：模板之前问一次技能
+        for handler in (
+            getattr(self, "task_turns", None),
+            getattr(getattr(self, "task_entry", None), "handler", None),
+        ):
+            if handler is not None:
+                handler._skills = service  # noqa: SLF001 - 装配点注入（鸭子类型）
+        view = await service.view(limit=5)
+        self.log.info(
+            "[Skill] ready character=%s counts=%s degraded=%s",
+            service.character_id,
+            view.get("counts") or {},
+            view.get("degraded"),
+        )
+
+    async def _active_task_states(self) -> tuple[str, ...]:
+        """只读地问一句"现在有没有用户任务占着她"（§十一/§十二）。
+
+        读取失败必须标为 UNKNOWN，不能向 Life 声称空闲。
+        """
+        tasks = getattr(self, "tasks", None)
+        if tasks is None:
+            return ()
+        try:
+            record = await tasks.current()
+        except Exception:  # noqa: BLE001 - unknown is not idle
+            return ("UNKNOWN",)
+        if record is None:
+            return ()
+        state = getattr(getattr(record, "state", None), "value", "")
+        return (str(state).upper(),)
+
+    async def _life_goal_guard(
+        self, *, ignore_task_id: str = "", intent_id: str = ""
+    ) -> dict[str, Any]:
+        """Fresh read-only LIFE preconditions; never create, approve or execute a task."""
+        from dataclasses import replace
+
+        from app.tasks.life_guard import assess_life_facts
+
+        initiative = getattr(self, "initiative", None)
+        provider = getattr(initiative, "context_provider", None)
+        states = getattr(getattr(self, "character", None), "states", None)
+        tasks = getattr(self, "tasks", None)
+        minecraft = getattr(self, "minecraft", None)
+        presence = getattr(self, "presence", None)
+        if (
+            initiative is None
+            or provider is None
+            or states is None
+            or tasks is None
+            or minecraft is None
+        ):
+            return {"allowed": False, "reason": "life_context_unavailable"}
+        moment = time.time()
+        try:
+            if ignore_task_id and not intent_id:
+                plans = getattr(self, "agent_plans", None)
+                linked = await plans.plan_for_task(ignore_task_id) if plans is not None else None
+                if linked is None or linked.source != "LIFE":
+                    return {"allowed": False, "reason": "life_origin_unavailable"}
+                intent_id = str(linked.intent_id)
+            intent = await initiative.store.get(str(intent_id)) if intent_id else None
+            if intent is None or intent.character_id != self._activity_character_id():
+                return {"allowed": False, "reason": "life_origin_unavailable"}
+            if intent.expired_at(moment):
+                return {"allowed": False, "reason": "life_intent_expired"}
+            if str(getattr(intent.status, "value", intent.status)) != "PROPOSED":
+                return {"allowed": False, "reason": "life_intent_not_open"}
+            reader = getattr(states, "read_for_admission", None)
+            state = await reader() if callable(reader) else None
+            if state is None:
+                return {"allowed": False, "reason": "role_state_unavailable"}
+            if presence is None:
+                return {"allowed": False, "reason": "role_state_unavailable"}
+            sleeping = presence.is_sleeping()
+            quiet = presence.in_dnd() or presence.is_night()
+            if not isinstance(sleeping, bool) or not isinstance(quiet, bool):
+                return {"allowed": False, "reason": "role_state_unavailable"}
+            if sleeping:
+                return {"allowed": False, "reason": "role_sleeping"}
+            if quiet:
+                return {"allowed": False, "reason": "role_quiet_hours"}
+            context = await provider(moment)
+            if context is not None and not context.recovered_at:
+                context = replace(
+                    context, recovered_at=float(getattr(initiative, "recovered_at", 0.0))
+                )
+            blockers = await tasks.execution_blockers(ignore_task_id=ignore_task_id)
+            connection = await minecraft.live_connection_status()
+            world = minecraft.world_view()
+            connected_at = connection.get("connected_at") if isinstance(connection, dict) else None
+            layers = world.get("layers") if isinstance(world, dict) else None
+            near = layers.get("near") if isinstance(layers, dict) else None
+            captured_at = near.get("captured_at") if isinstance(near, dict) else None
+            if (
+                not isinstance(connection, dict)
+                or connection.get("status") != "ONLINE"
+                or isinstance(connected_at, bool)
+                or not isinstance(connected_at, int | float)
+                or not math.isfinite(connected_at)
+                or isinstance(captured_at, bool)
+                or not isinstance(captured_at, int | float)
+                or not math.isfinite(captured_at)
+                or captured_at + 0.5 < connected_at
+            ):
+                world = {"online": False, "available": False}
+        except Exception:  # noqa: BLE001 - no inference from unreadable state
+            return {"allowed": False, "reason": "life_context_unavailable"}
+        return assess_life_facts(
+            context,
+            energy=getattr(state, "energy", None),
+            world=world,
+            blockers=blockers,
+            now=moment,
+        )
+
+    async def _probe_task_state(self, task_id: str) -> str:
+        """只读地问一句"这个任务现在什么状态"（活动重启对账用；拿不到就返回空串）。"""
+        tasks = getattr(self, "tasks", None)
+        if tasks is None:
+            return ""
+        try:
+            record = await tasks.get(str(task_id))
+        except Exception:  # noqa: BLE001 - 探针故障只降级（活动按时间对账）
+            return ""
+        return str(getattr(getattr(record, "state", None), "value", "") or "")
+
+    def _activity_character_id(self) -> str:
+        """活动归属的角色 id。
+
+        优先用沙盒的 ``名字@圣经哈希``（项目既有的权威 character_id）—— 改角色名/改圣经时
+        她的"生活"是一个整体，Activity 不该和沙盒对同一个角色用两个 id。拿不到就退回角色名。
+        """
+        sandbox = getattr(self, "sandbox", None)
+        sandbox_id = str(getattr(sandbox, "character_id", "") or "")
+        if sandbox_id:
+            return sandbox_id
+        try:
+            return str(self.character.personas.persona.identity.name or "") or "unscoped"
+        except Exception:  # noqa: BLE001 - 拿不到名字就用兜底 id
+            return "unscoped"
+
+    def _activity_state(self) -> Any:
+        """只读角色状态（给 Planner 读能量/专注/作息）。
+
+        Phase 6C §二十六：**适配既有字段**（``energy`` / ``current_focus`` /
+        ``schedule_state`` / ``social_state`` / ``mood``），绝不新建一套并行的状态。
+        拿不到就返回 ``None`` —— Planner 会当中性状态，绝不因为读不到状态就不规划。
+        """
+        try:
+            states = getattr(getattr(self, "character", None), "states", None)
+            return states.state if states is not None else None
+        except Exception:  # noqa: BLE001 - 只读输入，失败即中性
+            return None
+
+    def _observe_activity_task_event(self, event: str, payload: dict[str, Any]) -> None:
+        """任务事件 → Episode（后台执行；活动层故障绝不影响任务）。"""
+        adapter = getattr(self, "activity_tasks", None)
+        if adapter is None:
+            return
+        self._spawn_activity(adapter.on_task_event(event, dict(payload)))
+
+    async def observe_activity_interaction(
+        self, *, session_id: str = "", source: str = "qq"
+    ) -> None:
+        """把"有人跟她说话了"记成观察（**不**改活动：QQ/游戏内都不能控制 Activity）。"""
+        adapter = getattr(self, "activity_user", None)
+        if adapter is None:
+            return
+        await adapter.note_interaction(session_id=session_id, source=source)
+
+    async def observe_minecraft_activity(self) -> None:
+        """让活动层看一眼 Minecraft 的**只读**现状（§十六/§十七：观察不是命令）。"""
+        observer = getattr(self, "activity_observation", None)
+        if observer is None:
+            return
+        task = None
+        tasks = getattr(self, "tasks", None)
+        if tasks is not None:
+            try:
+                task = await tasks.current()
+            except Exception:  # noqa: BLE001 - 拿不到任务不影响观察
+                task = None
+        await observer.observe(task=task)
+
+    def _spawn_activity(self, coro: Any) -> None:
+        """活动相关的后台工作（失败只记账，绝不阻塞任务事件通道）。"""
+        try:
+            task = asyncio.create_task(coro)
+        except RuntimeError:  # pragma: no cover - 没有事件循环时安静放弃
+            return
+        self._activity_tasks_running.add(task)
+        task.add_done_callback(self._activity_tasks_running.discard)
+
+    async def _stop_world_activity(self) -> None:
+        runtime = getattr(self, "activity", None)
+        if runtime is None:
+            return
+        try:
+            await runtime.shutdown()
+        except Exception:  # noqa: BLE001 - 关闭路径绝不抛
+            self.log.exception("[World.Activity] shutdown failed (ignored)")
+
+    # ------------------------------------------------- Phase 5C：身份桥/记忆
+
+    def _setup_minecraft_memory(self) -> None:
+        """装配身份桥 + Minecraft 记忆域（失败**只降级记忆**，绝不影响任务/聊天）。"""
+        memory_config = getattr(self.config.minecraft, "memory", None)
+        if memory_config is not None and not memory_config.enabled:
+            self.log.info("[Minecraft.Memory] disabled by configuration")
+            return
+        try:
+            from app.integrations.minecraft.identity_commands import (
+                MinecraftIdentityCommands,
+            )
+            from app.integrations.minecraft.identity_context import IdentityResolver
+            from app.integrations.minecraft.memory_bridge import MinecraftMemoryBridge
+
+            persona_name = ""
+            try:
+                persona_name = str(self.character.personas.persona.identity.name or "")
+            except Exception:  # noqa: BLE001 - 拿不到名字就用默认 scope
+                persona_name = ""
+            self.minecraft_memory = MinecraftMemoryBridge(
+                self.minecraft,
+                memory_manager=self.memory,
+                database=self.database,
+                # 兜底 key **故意不叫 default**：`character:default:minecraft` 是
+                # 缺陷期间留下的历史 scope（只作审计），兜底值绝不能落进那个抽屉。
+                character_key=persona_name or "unscoped",
+                character_label=persona_name or "罐头",
+                logger=self.log,
+            )
+            if self.character is not None:
+                # 回合上下文注入（QQ 与游戏内共用同一条 respond 路径）
+                self.character.minecraft_memory = self.minecraft_memory
+                # Phase 8B：只读跨平台身份解析器 —— 复用**同一个** IdentityStore
+                # （``minecraft_memory.identities``），不建第二套 Store、不缓存绑定、
+                # 不写 origin_metadata。它只产出上下文，权限仍由既有 Policy /
+                # trusted_players / 确认门 / 任务授权决定（任务书 §七）。
+                self.character.identity_resolver = IdentityResolver(
+                    bridge_getter=lambda: getattr(self, "minecraft_memory", None)
+                )
+            self.minecraft_identity = MinecraftIdentityCommands(
+                self, self.minecraft_memory, logger=self.log
+            )
+            # 玩家上线 → 记忆（与任务事件同一条事件通道，§三十）
+            self.minecraft.add_listener(self._on_minecraft_memory_event)
+            self.log.info("[Minecraft.Memory] identity bridge + world memory ready")
+        except Exception:  # noqa: BLE001 - 记忆装配失败不拖垮启动（§四十）
+            self.log.exception("Minecraft memory initialization failed; continuing without it")
+            self.minecraft_memory = None
+            self.minecraft_identity = None
+
+    def _start_memory_reconcile(self) -> None:
+        """周期对账（世界感知 → 记忆；绝不反向写世界）。没有记忆能力就什么都不做。"""
+        if self.minecraft_memory is None:
+            return
+        interval = 300.0
+        try:
+            interval = float(self.config.minecraft.memory.reconcile_interval_seconds)
+        except Exception:  # noqa: BLE001 - 配置缺失就用默认
+            interval = 300.0
+        try:
+            self._memory_reconcile_task = asyncio.create_task(
+                self._memory_reconcile_loop(max(30.0, interval))
+            )
+        except RuntimeError:  # pragma: no cover - 没有事件循环（测试）
+            self._memory_reconcile_task = None
+
+    async def _memory_reconcile_loop(self, interval: float) -> None:
+        while True:
+            try:
+                await asyncio.sleep(interval)
+                memory = getattr(self, "minecraft_memory", None)
+                if memory is None:
+                    return
+                await self._apply_configured_links()
+                await memory.reconcile()
+            except asyncio.CancelledError:
+                raise
+            except Exception:  # noqa: BLE001 - 对账失败只是记忆降级
+                self.log.exception("[Minecraft.Memory] reconcile failed (ignored)")
+
+    async def _apply_configured_links(self) -> None:
+        """运维显式配置的「QQ 号 → 玩家名」（§六 优先级 2；绝不越过用户自己的显式验证）。
+
+        只建立**身份关联**：不授予 trusted 权限，也不降低任何动作的确认要求（§十/§五十二）。
+        玩家不在线（拿不到真实 UUID）时什么都不做，等下一次对账再试。
+        """
+        memory = getattr(self, "minecraft_memory", None)
+        if memory is None:
+            return
+        try:
+            mapping = dict(getattr(self.config.minecraft.memory, "linked_players", {}) or {})
+        except Exception:  # noqa: BLE001 - 配置缺失就没有这条来源
+            return
+        for user_id, username in mapping.items():
+            try:
+                if await memory.link_for(platform="qq", user_id=str(user_id)) is not None:
+                    continue
+                if memory.player_named(str(username)) is None:
+                    continue
+                outcome = await memory.bind_configured(
+                    platform="qq", user_id=str(user_id), username=str(username)
+                )
+                if outcome is not None and not outcome.ok:
+                    self.log.warning(
+                        "[Minecraft.Memory] configured link rejected user=%s code=%s",
+                        user_id,
+                        outcome.code,
+                    )
+            except Exception:  # noqa: BLE001 - 单条配置失败不影响其它
+                self.log.exception("[Minecraft.Memory] configured link failed user=%s", user_id)
+
+    async def _stop_memory_reconcile(self) -> None:
+        task = self._memory_reconcile_task
+        self._memory_reconcile_task = None
+        if task is None:
+            return
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+        except Exception:  # noqa: BLE001 - 关闭路径绝不抛
+            pass
+
+    def _on_minecraft_memory_event(self, event: Any) -> None:
+        """只订阅「值得记住」的事件（§三十）；其它一律不写记忆。"""
+        memory = getattr(self, "minecraft_memory", None)
+        if memory is None:
+            return
+        name = str(getattr(event, "type_name", "") or "")
+        if name != "minecraft.player_joined":
+            return
+        data = dict(getattr(event, "data", None) or {})
+        self._spawn_memory(memory.on_player_joined(data))
+
+    def _spawn_memory(self, coro: Any) -> None:
+        """记忆写入放后台（失败只记账，绝不阻塞事件通道）。"""
+        try:
+            task = asyncio.create_task(coro)
+        except RuntimeError:  # pragma: no cover - 没有事件循环时安静放弃
+            return
+        self._memory_tasks.add(task)
+        task.add_done_callback(self._memory_tasks.discard)
+
+    async def _dispatch_identity_message(self, event: MessageEvent) -> bool:
+        """把消息先交给身份命令；返回 True = 它认领了（人格插件不再处理）。"""
+        commands = getattr(self, "minecraft_identity", None)
+        if commands is None:
+            return False
+        return bool(await commands.on_message(event))
+
+    # ------------------------------------------------- Phase 5B：任务入口/事件
+
+    def _remember_task_outcome(self, event: str, payload: dict[str, Any]) -> None:
+        """任务终态 → 记忆 + 技能学习（后台写；任一层故障都不影响任务）。
+
+        两条支路**互不依赖**：记忆桥没装配（memory 关闭 / 没接 Minecraft）时，
+        技能层照样能拿到终态记录去学习或回流（Phase 7E §7.2 第 1 条：学习证据来自
+        真实持久化记录，而不是"记忆服务恰好开着"）。
+        """
+        memory = getattr(self, "minecraft_memory", None)
+        skills = getattr(self, "skills", None)
+        tasks = getattr(self, "tasks", None)
+        if tasks is None or (memory is None and skills is None):
+            return
+        terminal = {"task.succeeded", "task.failed", "task.expired", "task.cancelled"}
+        if str(event) not in terminal:
+            return
+        task_id = str(payload.get("task_id") or "")
+        if not task_id:
+            return
+
+        async def write() -> None:
+            record = await tasks.get(task_id)
+            if record is None:
+                return
+            # 记忆桥只认它自己的终态集合（SUCCEEDED/FAILED/EXPIRED）；技能层额外收到
+            # cancelled —— 复用过的技能必须能看到反例（资格门自己拒绝"取消也算学会"）。
+            if memory is not None and str(event) in {
+                "task.succeeded",
+                "task.failed",
+                "task.expired",
+            }:
+                await memory.on_task_finished(record)
+            if skills is not None:
+                await skills.on_task_finished(record)
+
+        self._spawn_memory(write())
+
+    async def _dispatch_task_message(self, event: MessageEvent) -> bool:
+        """把消息先交给 QQ 任务入口；返回 True = 它认领了（人格插件不再处理）。"""
+        entry = getattr(self, "task_entry", None)
+        if entry is None:
+            return False
+        return bool(await entry.on_message(event))
+
+    def _publish_task_event(self, event: str, payload: dict[str, Any]) -> None:
+        """TaskRuntime → 任务入口（同步钩子）：入口自己决定排队还是后台发送。"""
+        payload = dict(payload)
+        # Phase 5C §三十一/§三十二：任务收尾 → 一条语义经验（后台写）。
+        # 与 QQ 通知**互不影响**：任务入口装配失败也不该让"记住这件事"跟着失效。
+        self._remember_task_outcome(event, payload)
+        # Phase 6A §十九/§四十二：任务生命周期 → Episode 生命周期（后台，失败只降级）
+        self._observe_activity_task_event(event, payload)
+        entry = getattr(self, "task_entry", None)
+        if entry is None:
+            return
+        try:
+            entry.publish(event, payload)
+        except Exception:  # noqa: BLE001 - 通知出问题绝不影响任务
+            self.log.exception("[Task] publish failed event=%s", event)
+
+    async def _revoke_attested_tasks(self, snapshot: dict[str, Any]) -> None:
+        """Cancel only tasks whose persisted actor ref matches the revoked proof."""
+        runtime = getattr(self, "tasks", None)
+        if runtime is None:
+            return
+        username = str(snapshot.get("username") or "")
+        revoked_ref = str(snapshot.get("actor_session_ref") or "")
+        if not username:
+            return
+        try:
+            records = await runtime.active_tasks_for_actor(username, revoked_ref)
+        except Exception:  # noqa: BLE001 - revocation is best effort
+            self.log.exception("[Task] attested revocation lookup failed")
+            return
+        for record in records:
+            try:
+                await runtime.cancel(record.task_id, reason="attested_session_invalidated")
+            except Exception:  # noqa: BLE001 - keep cancelling the rest
+                self.log.exception("[Task] attested task cancel failed: %s", record.task_id)
+
+    async def shutdown(self) -> None:
+        """Graceful stop: schedulers, plugins, web, adapter, database."""
+        if getattr(self, "_shutdown_started", False):
+            return
+        self._shutdown_started = True
+        # A2: freeze Minecraft world-write authority before any potentially long
+        # async cleanup. STOP/terminal handling/persistence stay available.
+        if self.minecraft is not None:
+            self.minecraft.begin_shutdown()
+        if self.task_coordinator is not None:
+            self.task_coordinator.freeze()
+        await self._stop_world_activity()
+        await self._stop_memory_reconcile()
+        if self.watchdog is not None:
+            await self.watchdog.stop()
+        if self.config_watcher is not None:
+            await self.config_watcher.stop()
+        if self.consolidation_scheduler is not None:
+            await self.consolidation_scheduler.stop()
+        await self.scheduler.stop()
+        if self.sandbox is not None:
+            try:
+                await self.sandbox.shutdown()
+            except Exception:  # noqa: BLE001
+                self.log.exception("[Sandbox] shutdown persist failed (ignored)")
+        await self.conversation.shutdown()
+        await self.plugins.unload_all()
+        if self.extractor is not None:
+            await self.extractor.wait_idle()
+        if self.embeddings is not None:
+            await self.embeddings.close()
+        await self.tools.close()
+        await self.ai.close()
+        try:
+            if self.onebot_gateway is not None:
+                await self.onebot_gateway.stop()
+            # A2: freeze dispatch and stop in-flight actions while the Node callback
+            # receiver and STOP channel are still alive; then disconnect/release owner.
+            if self.task_coordinator is not None:
+                timeout = float(getattr(self.config.runtime, "shutdown_timeout_seconds", 5.0))
+                await self.task_coordinator.begin_shutdown(timeout=timeout)
+            if self.minecraft is not None:
+                await self.minecraft.stop()
+            if self.task_coordinator is not None:
+                await self.task_coordinator.stop()
+            if self.runtime_scheduler is not None:
+                await self.runtime_scheduler.stop(
+                    timeout=float(getattr(self.config.runtime, "shutdown_timeout_seconds", 5.0))
+                )
+            await self.adapter.stop()
+        except Exception:  # noqa: BLE001
+            self.log.exception("Adapter stop raised (ignored during shutdown)")
+        if self.web is not None:
+            try:
+                await self.web.stop()
+            except Exception:  # noqa: BLE001
+                self.log.exception("WebUI stop raised (ignored)")
+        await self.database.close()
+        self.lifecycle.mark_stopped()
+        farewell = ""
+        if self.sandbox is not None and self.sandbox.enabled:
+            try:
+                farewell = f"下线前她正在{self.sandbox.status_line()}"
+            except Exception:  # noqa: BLE001 - cosmetic only
+                farewell = ""
+        narrate().quiet("世界已存档，CatooBot 退出了", detail=farewell)
+        self.log.info("CatooBot stopped.")

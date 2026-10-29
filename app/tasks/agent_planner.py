@@ -1,0 +1,615 @@
+"""Phase 7D §三：受限规划器 —— 把目标变成**有限、可检查**的步骤序列。
+
+只能从**当前已注册、实际支持**的能力中选操作（任务书 §三）：
+
+* 虚构工具/参数 → 校验器直接拒绝（复用 5A 的 `validate_plan`）；
+* UNKNOWN/UNSUPPORTED 绝不升级（复用 7C 的能力目录与缺口四值）；
+* 目标做不了 → 给**可审计**的 `PlanningOutcome`（六值，绝不硬编一个"看起来能跑"的计划）；
+* 目标实体只来自可信身份桥（修订 2），坐标只来自 SAFE 观察；
+* 这里**绝不执行**任何世界动作 —— SAFE 观察是唯一的例外（§五 的"真实状态"输入）。
+
+导入方向：本模块 → turn → planner（turn 不 import 本模块；服务经鸭子类型注入）。
+"""
+
+from __future__ import annotations
+
+from collections.abc import Awaitable, Callable, Mapping
+from dataclasses import dataclass, field
+from enum import Enum
+from typing import Any
+
+from app.integrations.minecraft.agent import ACTION_RISK
+from app.tasks.agent_plan import PlanTarget
+from app.tasks.craft_intent import parse_craft_request
+from app.tasks.planner import (
+    EXPLORE_MAX_LEGS,
+    ObservationFailed,
+    PlannedTask,
+    craft_plan_summary,
+    plan_craft_task,
+    plan_exploration_task,
+    plan_resource_task,
+    plan_wood_task,
+)
+from app.tasks.resource_intent import parse_collection_request
+from app.tasks.turn import DROP_OVERRIDES, block_for
+
+#: §五：SAFE 观察的签名（与 TaskTurnHandler 用的同一条既有工具通道）
+ObserveFn = Callable[[str, Mapping[str, Any]], Awaitable[Any]]
+
+
+class PlanningOutcome(str, Enum):  # noqa: UP042
+    """规划结论（任务书 §三 的六值；**可审计**，绝不"看起来能跑"）。"""
+
+    #: 计划已冻结，等用户批准（USER：与待确认任务同建；LIFE：只挂起）
+    READY_FOR_APPROVAL = "READY_FOR_APPROVAL"
+    NEEDS_MORE_INFORMATION = "NEEDS_MORE_INFORMATION"
+    UNSUPPORTED = "UNSUPPORTED"
+    BLOCKED_BY_POLICY = "BLOCKED_BY_POLICY"
+    BLOCKED_BY_PRECONDITION = "BLOCKED_BY_PRECONDITION"
+    #: 世界/授权变了，旧计划作废（由执行链触发重规划时用；规划器本身不返回它）
+    REPLAN_REQUIRED = "REPLAN_REQUIRED"
+
+
+@dataclass
+class PlanningResult:
+    """一次受限规划的全部可审计输出（§九：输入、结构化决策、检查结果）。"""
+
+    outcome: PlanningOutcome
+    reason: str = ""
+    plan: PlannedTask | None = None
+    target: PlanTarget = field(default_factory=PlanTarget)
+    checks: tuple[dict[str, Any], ...] = ()
+    risk_summary: dict[str, Any] = field(default_factory=dict)
+
+    @property
+    def ready(self) -> bool:
+        return self.outcome is PlanningOutcome.READY_FOR_APPROVAL
+
+
+#: 跟随意图（§八场景 B；与 7C 的 PLAYER_TARGET_KEYWORDS 同词表 —— 复用，不另立）
+FOLLOW_KEYWORDS: tuple[str, ...] = (
+    "跟着",
+    "跟住",
+    "跟随",
+    "跟我",
+    "跟过来",
+    "来我身边",
+    "带我去",
+    "带过来",
+)
+
+#: 跟随是**持续型**动作：它的期限来自 minecraft.action.follow_player.timeout（默认 120s），
+#: 与授权 TTL（60s）/ 任务 TTL（600s）是**三层不同的期限** —— 计划里如实展示这一层。
+FOLLOW_TIMEOUT_FALLBACK_SECONDS = 120.0
+
+#: Phase 7F.1：有界探索意图的确定性关键词（与 7A 的 EXPLORE_KEYWORDS 同词表 —— 复用，不另立）。
+#: 7A 的 EXPLORATION 意图由这些词从记忆里生成，所以同一份词表能把它的目标文本路由到探索模板。
+EXPLORE_KEYWORDS: tuple[str, ...] = (
+    "探索",
+    "去看看",
+    "远行",
+    "explore",
+    "探险",
+    "出去转转",
+    "转转",
+)
+
+#: 有界探索的默认上限（与 planner.EXPLORE_DEFAULT_DISTANCE 保持一致；这里只做展示）
+EXPLORE_DEFAULT_DISTANCE = 24.0
+
+
+def detect_shape(objective: str) -> str:
+    """Deterministic shape; resource includes the shared bounded log family."""
+    text = str(objective or "").strip()
+    if not text:
+        return "unknown"
+    if any(keyword in text for keyword in FOLLOW_KEYWORDS):
+        return "follow"
+    if parse_collection_request(text) is not None:
+        return "resource"
+    if any(keyword.lower() in text.lower() for keyword in EXPLORE_KEYWORDS):
+        return "explore"
+    return "unknown"
+
+
+def _risk_summary_of(plan: PlannedTask, risk_table: Mapping[str, str]) -> dict[str, Any]:
+    classes = sorted({str(risk_table.get(step.tool, "SAFE")) for step in plan.plan.steps})
+    return {
+        "classes": classes,
+        "max_risk": next(
+            (c for c in ("DESTRUCTIVE", "HIGH", "MEDIUM", "LOW", "SAFE") if c in classes), "SAFE"
+        ),
+        # 5A 的规矩：**整份冻结计划**都要用户确认一次（与风险等级无关）——这里如实写 True
+        "would_require_plan_confirmation": True,
+    }
+
+
+class BoundedAgentPlanner:
+    """确定性 + 模板化的规划器（不做自由生成；模型路径留给既有 ModelTaskPlanner）。"""
+
+    def __init__(
+        self,
+        *,
+        risk_table: Mapping[str, str] | None = None,
+        allow_safe: bool = True,
+        allow_low: bool = True,
+        allow_medium: bool = False,
+        follow_timeout_seconds: float = FOLLOW_TIMEOUT_FALLBACK_SECONDS,
+        explore_legs: int = 1,
+    ) -> None:
+        self.risk_table = dict(risk_table or ACTION_RISK)
+        self.allow_safe = bool(allow_safe)
+        self.allow_low = bool(allow_low)
+        self.allow_medium = bool(allow_medium)
+        self.follow_timeout_seconds = float(follow_timeout_seconds)
+        #: Phase 7F.3：探索计划请求几段移动（1..EXPLORE_MAX_LEGS）。默认 1 保持
+        #: Phase 7F.1/7F.2 的单段语义不变；多段是**显式请求**的能力，不是偷偷改行为。
+        #: 世界观察不足以安全规划多段时会自动缩短路线（绝不凑段数）。
+        self.explore_legs = max(1, min(int(explore_legs), EXPLORE_MAX_LEGS))
+
+    # ------------------------------------------------------------ 入口
+
+    async def plan(
+        self,
+        objective: str,
+        *,
+        target: PlanTarget | None = None,
+        observe: ObserveFn | None = None,
+        shape_hint: str = "",
+    ) -> PlanningResult:
+        """按形状路由（follow / wood / resource / explore / unknown），产出六值结论之一。
+
+        ``shape_hint`` 只接受调用方**已经用确定性规则判明**的形状（Phase 8D 的 MC 木材入口
+        就是这么做的）；留空时行为与 Phase 8D 之前**逐字一致**。
+        """
+        shape = str(shape_hint or "") or detect_shape(objective)
+        collection = parse_collection_request(objective)
+        if collection is not None and shape != "craft":
+            if collection.problem:
+                return PlanningResult(
+                    outcome=PlanningOutcome.NEEDS_MORE_INFORMATION,
+                    reason=f"resource.intent.{collection.problem}",
+                    checks=(
+                        {
+                            "check": "collection_intent",
+                            "ok": False,
+                            "detail": {"problem": collection.problem},
+                        },
+                    ),
+                )
+            shape = "wood" if collection.family == "log" else "resource"
+        if shape == "follow":
+            return self._plan_follow(objective, target or PlanTarget())
+        if shape == "wood":
+            return await self._plan_wood(objective, observe)
+        if shape == "craft":
+            return await self._plan_craft(objective, observe)
+        if shape == "resource":
+            return await self._plan_resource(objective, observe)
+        if shape == "explore":
+            return await self._plan_explore(objective, observe)
+        return self._plan_unknown(objective)
+
+    # ------------------------------------------------------------ follow（修订 2）
+
+    def _plan_follow(self, objective: str, target: PlanTarget) -> PlanningResult:
+        from app.tasks.models import TaskPlan, TaskStep
+
+        checks: list[dict[str, Any]] = []
+        # 1) 目标必须来自可信身份桥（§八/修订 2）——昵称猜测在这里就死掉
+        if not target.verified or not target.player_name:
+            checks.append({"check": "identity", "ok": False, "detail": target.to_payload()})
+            return PlanningResult(
+                outcome=PlanningOutcome.BLOCKED_BY_PRECONDITION
+                if target.status in {"MISSING", "REVOKED", "CONFLICT"}
+                else PlanningOutcome.NEEDS_MORE_INFORMATION,
+                reason=f"target_{str(target.status).lower()}",
+                target=target,
+                checks=tuple(checks),
+            )
+        target_source = (
+            "minecraft_chat_speaker"
+            if str(target.reason) == "minecraft_chat_speaker"
+            else "verified_identity_link"
+        )
+        checks.append(
+            {
+                "check": "identity",
+                "ok": True,
+                "detail": {
+                    "source": target_source,
+                    "player_name": target.player_name,
+                    "server_id": target.server_id,
+                    "uuid_suffix": target.player_uuid[-4:],
+                },
+            }
+        )
+        # 2) Policy 开关预检（只是**提前**如实说；真正的放行仍在执行链）
+        if not self.allow_low:
+            checks.append({"check": "risk_flag", "ok": False, "detail": {"allow_low": False}})
+            return PlanningResult(
+                outcome=PlanningOutcome.BLOCKED_BY_POLICY,
+                reason="allow_low_disabled",
+                target=target,
+                checks=tuple(checks),
+            )
+        checks.append({"check": "risk_flag", "ok": True, "detail": {"allow_low": True}})
+        # 3) 单步冻结计划；期限三层如实写进计划（执行瞬间 Policy 还会查 nearby_players）
+        step = TaskStep(
+            step_id="step_1",
+            tool="minecraft_follow_player",
+            arguments={"username": target.player_name},
+            risk="LOW",
+        )
+        plan = TaskPlan(
+            objective=" ".join(objective.split())[:120],
+            steps=[step],
+            observations=[
+                {
+                    "tool": "identity_link",
+                    "arguments": {},
+                    "result": target.to_payload(),
+                    "summary": (
+                        f"目标 {target.player_name} 来自当前服务器实体观察"
+                        if target_source == "minecraft_chat_speaker"
+                        else f"目标 {target.player_name} 来自 VERIFIED 身份绑定"
+                    ),
+                }
+            ],
+        )
+        planned = PlannedTask(objective=plan.objective, plan=plan)
+        return PlanningResult(
+            outcome=PlanningOutcome.READY_FOR_APPROVAL,
+            reason="follow_plan_ready",
+            plan=planned,
+            target=target,
+            checks=tuple(checks),
+            risk_summary={
+                "classes": ["LOW"],
+                "max_risk": "LOW",
+                "would_require_confirmation": True,
+                "duration_limit_seconds": self.follow_timeout_seconds,
+                "duration_note": (
+                    f"跟随最长 {self.follow_timeout_seconds:.0f} 秒（动作超时）；"
+                    "确认授权 60s 只管派发新步骤；任务总时限 600s"
+                ),
+            },
+        )
+
+    # ------------------------------------------------- explore（Phase 7F.1 有界自主探索）
+
+    async def _plan_explore(self, objective: str, observe: ObserveFn | None) -> PlanningResult:
+        """有界探索：只生成一个 SAFE 观察 + LOW 移动的**有限**计划，绝不在此执行世界动作。"""
+        checks: list[dict[str, Any]] = [
+            {"check": "shape", "ok": True, "detail": {"shape": "explore"}}
+        ]
+        if observe is None:
+            checks.append({"check": "observe", "ok": False, "detail": {}})
+            return PlanningResult(
+                outcome=PlanningOutcome.BLOCKED_BY_PRECONDITION,
+                reason="observe_unavailable",
+                checks=tuple(checks),
+            )
+        # 探索只用 SAFE 读 + LOW 移动；任一被关掉就如实说做不了（绝不偷偷放宽）
+        if not (self.allow_safe and self.allow_low):
+            checks.append(
+                {
+                    "check": "risk_flag",
+                    "ok": False,
+                    "detail": {"allow_safe": self.allow_safe, "allow_low": self.allow_low},
+                }
+            )
+            return PlanningResult(
+                outcome=PlanningOutcome.BLOCKED_BY_POLICY,
+                reason="explore_requires_safe_and_low",
+                checks=tuple(checks),
+            )
+        try:
+            planned = await plan_exploration_task(
+                objective, observe=observe, legs=self.explore_legs
+            )
+        except ObservationFailed as exc:
+            checks.append({"check": "observe", "ok": False, "detail": {"error": str(exc)[:200]}})
+            return PlanningResult(
+                outcome=PlanningOutcome.BLOCKED_BY_PRECONDITION,
+                reason=str(exc)[:200],
+                checks=tuple(checks),
+            )
+        except Exception as exc:  # noqa: BLE001 - 规划失败绝不假装可执行
+            checks.append(
+                {"check": "plan", "ok": False, "detail": {"error": f"{type(exc).__name__}"}}
+            )
+            return PlanningResult(
+                outcome=PlanningOutcome.NEEDS_MORE_INFORMATION,
+                reason=f"planning_failed:{type(exc).__name__}",
+                checks=tuple(checks),
+            )
+        blocked = self._policy_blocked(planned)
+        if blocked is not None:
+            checks.append({"check": "risk_flags", "ok": False, "detail": {"reason": blocked}})
+            return PlanningResult(
+                outcome=PlanningOutcome.BLOCKED_BY_POLICY,
+                reason=blocked,
+                plan=planned,
+                risk_summary=_risk_summary_of(planned, self.risk_table),
+                checks=tuple(checks),
+            )
+        checks.append({"check": "plan", "ok": True, "detail": {"steps": len(planned.plan.steps)}})
+        return PlanningResult(
+            outcome=PlanningOutcome.READY_FOR_APPROVAL,
+            reason="explore_plan_ready",
+            plan=planned,
+            target=PlanTarget(status="VERIFIED", reason="no_player_target"),
+            risk_summary=_risk_summary_of(planned, self.risk_table),
+            checks=tuple(checks),
+        )
+
+    # ------------------------------------------------------------ resource（复用 5A 模板）
+
+    async def _plan_resource(self, objective: str, observe: ObserveFn | None) -> PlanningResult:
+        block = block_for(objective)
+        if not block:  # detect_shape 已保证，这里只是护栏
+            return self._plan_unknown(objective)
+        if observe is None:
+            return PlanningResult(
+                outcome=PlanningOutcome.BLOCKED_BY_PRECONDITION,
+                reason="observe_unavailable",
+                checks=({"check": "observe", "ok": False, "detail": {}},),
+            )
+        try:
+            planned = await plan_resource_task(
+                objective,
+                observe=observe,
+                block_name=block,
+                drop_item=DROP_OVERRIDES.get(block, block),
+            )
+        except ObservationFailed as exc:
+            return PlanningResult(
+                outcome=PlanningOutcome.BLOCKED_BY_PRECONDITION,
+                reason=str(exc)[:200],
+                checks=({"check": "observe", "ok": False, "detail": {"error": str(exc)[:200]}},),
+            )
+        except Exception as exc:  # noqa: BLE001 - 规划失败绝不假装可执行
+            return PlanningResult(
+                outcome=PlanningOutcome.NEEDS_MORE_INFORMATION,
+                reason=f"planning_failed:{type(exc).__name__}",
+                checks=({"check": "plan", "ok": False, "detail": {"error": str(exc)[:200]}},),
+            )
+        blocked = self._policy_blocked(planned)
+        if blocked is not None:
+            return PlanningResult(
+                outcome=PlanningOutcome.BLOCKED_BY_POLICY,
+                reason=blocked,
+                plan=planned,
+                risk_summary=_risk_summary_of(planned, self.risk_table),
+                checks=({"check": "risk_flags", "ok": False, "detail": {"reason": blocked}},),
+            )
+        return PlanningResult(
+            outcome=PlanningOutcome.READY_FOR_APPROVAL,
+            reason="resource_plan_ready",
+            plan=planned,
+            risk_summary=_risk_summary_of(planned, self.risk_table),
+            checks=({"check": "plan", "ok": True, "detail": {"steps": len(planned.plan.steps)}},),
+        )
+
+    async def _plan_wood(self, objective: str, observe: ObserveFn | None) -> PlanningResult:
+        """有界木材采集（Phase 8D §2.2）：最多 2 根原木，目标必须来自真实观察。
+
+        **规划期就必须过 Policy 闸**（§3.1）：含 MEDIUM（dig / pickup）的木材计划在
+        allow_medium=false 时直接 BLOCKED_BY_POLICY，**不创建可执行任务** —— 这正是
+        旧的 MC 资源路径（turn.py 直接调 plan_resource_task）绕开的那道闸。
+        """
+        request = parse_collection_request(objective)
+        if request is None:
+            return self._plan_unknown(objective)
+        if request.problem:
+            problem_detail = {"problem": request.problem, "detail": request.detail}
+            return PlanningResult(
+                outcome=PlanningOutcome.BLOCKED_BY_PRECONDITION,
+                reason=f"{request.problem}:{request.detail}"[:200],
+                checks=({"check": "wood_intent", "ok": False, "detail": problem_detail},),
+            )
+        if observe is None:
+            return PlanningResult(
+                outcome=PlanningOutcome.BLOCKED_BY_PRECONDITION,
+                reason="observe_unavailable",
+                checks=({"check": "observe", "ok": False, "detail": {}},),
+            )
+        try:
+            planned = await plan_wood_task(
+                objective,
+                observe=observe,
+                candidates=request.candidates,
+                count=request.count,
+            )
+        except ObservationFailed as exc:
+            return PlanningResult(
+                outcome=PlanningOutcome.BLOCKED_BY_PRECONDITION,
+                reason=str(exc)[:200],
+                checks=({"check": "observe", "ok": False, "detail": {"error": str(exc)[:200]}},),
+            )
+        except Exception as exc:  # noqa: BLE001 - 规划失败绝不假装可执行
+            return PlanningResult(
+                outcome=PlanningOutcome.NEEDS_MORE_INFORMATION,
+                reason=f"planning_failed:{type(exc).__name__}",
+                checks=({"check": "plan", "ok": False, "detail": {"error": str(exc)[:200]}},),
+            )
+        blocked = self._policy_blocked(planned)
+        if blocked is not None:
+            return PlanningResult(
+                outcome=PlanningOutcome.BLOCKED_BY_POLICY,
+                reason=blocked,
+                plan=planned,
+                risk_summary=_risk_summary_of(planned, self.risk_table),
+                checks=(
+                    {
+                        "check": "risk_flags",
+                        "ok": False,
+                        "detail": {"reason": blocked, "capped": False},
+                    },
+                ),
+            )
+        targets = sum(1 for step in planned.plan.steps if step.tool == "minecraft_dig")
+        detail: dict[str, Any] = {
+            "steps": len(planned.plan.steps),
+            "targets": targets,
+            "requested": request.requested,
+            "capped": False,
+            "truncated": targets < request.count,
+        }
+        if targets < request.count:
+            # 请求 2 根、但只证明了 1 根：**绝不**假称识别了整棵树（§2.2 行 53）。
+            # 把稳定原因码写进 checks，回复层据此在确认前明确显示真实数量（§5.3 行 160）。
+            detail["reason"] = "wood_target_group_unproven"
+        return PlanningResult(
+            outcome=PlanningOutcome.READY_FOR_APPROVAL,
+            reason="wood_plan_ready",
+            plan=planned,
+            risk_summary=_risk_summary_of(planned, self.risk_table),
+            checks=({"check": "plan", "ok": True, "detail": detail},),
+        )
+
+    async def _plan_craft(self, objective: str, observe: ObserveFn | None) -> PlanningResult:
+        """有界简易合成（Phase 8F §4/§5）：配方与材料**必须**来自真实读取。
+
+        与 ``_plan_wood`` 同口径：**规划期就必须过 Policy 闸**（§6）—— 合成是 MEDIUM，
+        在 ``allow_medium=false``（生产默认）时直接 ``BLOCKED_BY_POLICY``，**不创建可执行任务**。
+        """
+        request = parse_craft_request(objective)
+        if request is None or request.problem or not request.item:
+            # 解析不出目标/数量，或命中歧义与否定 → 计划层**绝不猜**：交回既有澄清路径。
+            return self._plan_unknown(objective)
+        if observe is None:
+            return PlanningResult(
+                outcome=PlanningOutcome.BLOCKED_BY_PRECONDITION,
+                reason="observe_unavailable",
+                checks=({"check": "observe", "ok": False, "detail": {}},),
+            )
+        try:
+            planned = await plan_craft_task(
+                objective,
+                observe=observe,
+                item=request.item,
+                count=request.count,
+            )
+        except ObservationFailed as exc:
+            return PlanningResult(
+                outcome=PlanningOutcome.BLOCKED_BY_PRECONDITION,
+                reason=str(exc)[:200],
+                checks=({"check": "craft", "ok": False, "detail": {"error": str(exc)[:200]}},),
+            )
+        except Exception as exc:  # noqa: BLE001 - 规划失败绝不假装可执行
+            return PlanningResult(
+                outcome=PlanningOutcome.NEEDS_MORE_INFORMATION,
+                reason=f"planning_failed:{type(exc).__name__}",
+                checks=({"check": "plan", "ok": False, "detail": {"error": str(exc)[:200]}},),
+            )
+        blocked = self._policy_blocked(planned)
+        if blocked is not None:
+            return PlanningResult(
+                outcome=PlanningOutcome.BLOCKED_BY_POLICY,
+                reason=blocked,
+                plan=planned,
+                risk_summary=_risk_summary_of(planned, self.risk_table),
+                checks=(
+                    {
+                        "check": "risk_flags",
+                        "ok": False,
+                        "detail": {"reason": blocked, "requested": request.requested},
+                    },
+                ),
+            )
+        state = planned.plan.expected_final_state
+        produced = int(state.inventory_delta.get(request.item, 0))
+        batches = sum(1 for step in planned.plan.steps if step.tool == "minecraft_craft")
+        detail: dict[str, Any] = {
+            "steps": len(planned.plan.steps),
+            "batches": batches,
+            "produced": produced,
+            "requested": request.requested,
+            "item": request.item,
+            "materials": dict(state.inventory_consumed),
+            # 请求数超过本期上限时**如实标注**（由回复层说明，绝不假装做了那么多）。
+            "capped": bool(request.requested and produced < request.requested),
+            "default_batch": request.requested == 0,
+        }
+        summary = craft_plan_summary(planned)
+        if summary:
+            # Phase 8G：DAG 与工作台事实**全部来自计划里记录的观察**，不重新推导。
+            detail["planned_amount"] = int(summary.get("planned_amount") or produced)
+            detail["depth"] = int(summary.get("depth") or 0)
+            detail["craft_steps"] = int(summary.get("craft_steps") or batches)
+            detail["requires_table"] = bool(summary.get("requires_table"))
+            if isinstance(summary.get("workbench"), dict):
+                detail["workbench"] = summary["workbench"]
+            if isinstance(summary.get("nodes"), list):
+                detail["nodes"] = summary["nodes"]
+        return PlanningResult(
+            outcome=PlanningOutcome.READY_FOR_APPROVAL,
+            reason="craft_plan_ready",
+            plan=planned,
+            risk_summary=_risk_summary_of(planned, self.risk_table),
+            checks=({"check": "plan", "ok": True, "detail": detail},),
+        )
+
+    def _policy_blocked(self, planned: PlannedTask) -> str | None:
+        """计划里出现"当前配置不允许"的风险等级 → BLOCKED_BY_POLICY（提前如实说）。"""
+        for step in planned.plan.steps:
+            risk = str(self.risk_table.get(step.tool, "SAFE"))
+            allowed = {
+                "SAFE": self.allow_safe,
+                "LOW": self.allow_low,
+                "MEDIUM": self.allow_medium,
+                "HIGH": False,
+                "DESTRUCTIVE": False,
+            }.get(risk, False)
+            if not allowed:
+                return f"{step.tool}:{risk}"
+        return None
+
+    # ------------------------------------------------------------ unknown（§三：可审计地做不了）
+
+    def _plan_unknown(self, objective: str) -> PlanningResult:
+        from app.tasks.capabilities import (
+            capability_catalog,
+            needs_design_information,
+            required_capabilities,
+        )
+
+        wanted = list(required_capabilities(objective))
+        checks: list[dict[str, Any]] = [
+            {"check": "shape", "ok": False, "detail": {"shape": "unknown"}}
+        ]
+        if not wanted:
+            # 目标太模糊 / 纯聊天 → 信息不足（绝不编一个计划出来）
+            return PlanningResult(
+                outcome=PlanningOutcome.NEEDS_MORE_INFORMATION,
+                reason="objective_too_vague"
+                if not needs_design_information(objective)
+                else "needs_design",
+                checks=tuple(checks),
+            )
+        catalog = capability_catalog()
+        gaps = [
+            {"capability_id": name, "gap": "SUPPORTED", "risk_class": catalog[name].risk_class}
+            for name in wanted
+            if name in catalog
+        ]
+        missing = [name for name in wanted if name not in catalog]
+        if missing:
+            checks.append({"check": "capabilities", "ok": False, "detail": {"missing": missing}})
+            return PlanningResult(
+                outcome=PlanningOutcome.UNSUPPORTED,
+                reason="missing_capabilities",
+                checks=tuple(checks),
+                risk_summary={"gaps": gaps, "missing": missing},
+            )
+        # 能力都有、但本规划器没有对应模板 → 退回提案层（§六：能力不足不现场造工具）
+        checks.append({"check": "template", "ok": False, "detail": {"capabilities": wanted}})
+        return PlanningResult(
+            outcome=PlanningOutcome.UNSUPPORTED,
+            reason="no_plan_template",
+            checks=tuple(checks),
+            risk_summary={"gaps": gaps},
+        )

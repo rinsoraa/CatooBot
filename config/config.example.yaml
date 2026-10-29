@@ -1,0 +1,714 @@
+# CatooBot 配置示例
+# 复制为 config/config.yaml 后修改；敏感值建议放 .env（CATOOBOT_ONEBOT_ACCESS_TOKEN）
+
+bot:
+  name: CatooBot
+  debug: true
+  # 命令前缀：消息以该字符串开头才视为命令（群聊中允许前面 @机器人）
+  command_prefix: "/"
+
+onebot:
+  enabled: true
+  # CatooBot 作为 WebSocket Server，NapCat 作为客户端主动连接（反向 WS）
+  host: 127.0.0.1
+  port: 8080
+  path: /onebot/v11/ws
+  # 留空表示不校验 Token；推荐配置并与 NapCat 保持一致
+  # 敏感场景请使用 .env: CATOOBOT_ONEBOT_ACCESS_TOKEN
+  access_token: ""
+  # 调用 OneBot API 的超时时间（秒）
+  api_timeout: 10.0
+
+  # ---- Phase 13：真实外部网关（transport → Sandbox → 回复）----
+  # 开启后由 Sandbox 对话运行时回答 QQ 消息（v1.2 聊天回复路径让位；notice/meta 等仍走原路径）。
+  # 仍使用同一套反向 WS（NapCat 主动连本机），无需第二个端口。
+  gateway_enabled: false
+  # 本 runtime 服务的 bot 账号（self_id）；列出的账号之外的流量一律丢弃，绝不乱接
+  self_ids: []
+  # 入站去重（有界内存）：TTL 秒 + 容量上限；重启后缓存为空（不假装永久幂等）
+  dedupe_ttl: 600.0
+  dedupe_max_size: 2048
+  # 每个社交空间（群/私聊）的待处理上限；溢出时丢弃最旧的未开始回复，但其世界事实仍会入库
+  max_pending_per_lane: 20
+  # 出站发送的最大重试次数（0 = 不重试）；重试只重发同一条已提交回复
+  outbound_max_retries: 3
+  # 断线重连的退避上限（秒，1/2/4/8/16 递增后封顶）
+  reconnect_max_seconds: 30.0
+  # 优雅关闭的时间预算（秒）：先让已开始的工作收尾，再取消剩余
+  shutdown_timeout: 5.0
+
+# ============================================================
+# 长期在线运行时（Phase 14）：只负责"多久问一次世界"，不改变世界步长
+# sandbox.tick_seconds 仍是世界步长（10 分钟）；这里是调度间隔（默认 1 秒）。
+runtime:
+  enabled: true
+  # 调度频率（秒）：RuntimeScheduler 多久醒来一次；世界推进量=真实经过时间，
+  # 与这个数字无关（1 秒间隔 ≠ 1 分钟世界时间）。tick 也不等于每分钟都叫模型。
+  tick_interval_seconds: 1.0
+  # 停机后的追帧上限（秒）：超过也只走一次有界步进，绝不按秒重放
+  max_catchup_seconds: 300.0
+  # 停机时等待调度器收尾的预算（秒）
+  shutdown_timeout_seconds: 5.0
+
+logging:
+  level: INFO              # DEBUG / INFO / WARNING / ERROR
+  color: true              # 终端彩色日志（管道/重定向时自动变纯文本，NO_COLOR 优先）
+  narrate: true            # 打印角色的内心播报：心理历程 / 思考 / 心流 / 碎碎念 / 沙盒状态
+  narrate_world_ticks: false  # 每次沙盒心跳都打印状态（默认只在变化时打印）
+  narrate_thinking: true      # 控制台显示模型思路摘要（仅控制台：不写入日志文件、不入库）
+  watchdog_enabled: true      # 事件循环卡顿看门狗（单进程单循环，卡顿会同时冻结 QQ 与 WebUI）
+  watchdog_interval_seconds: 1.0  # 检测间隔
+  watchdog_threshold_ms: 500  # 超过这个延迟就告警（日志里能看到卡了多久）
+  log_dir: logs
+
+database:
+  url: sqlite:///data/catoobot.db
+
+permissions:
+  # 超级管理员 QQ 号（带引号的字符串或不带引号的数字都可以）
+  superusers: []
+    # - "123456789"
+  admins: []
+
+# ==================== AI 聊天（v0.2） ====================
+# 只有私聊、群里 @机器人、/chat 命令会触发 AI；普通群消息不会调用 API。
+ai:
+  # 改为 true 并配置好下方 models 后生效
+  enabled: false
+
+  # System Prompt（不要硬编码在代码里，在这里配置）
+  system_prompt: |
+    你是 CatooBot，一个运行在 QQ 上的 AI 助手。
+    使用自然、简洁、友好的中文回答。
+
+  # 调用 AI API 的超时时间（秒）
+  timeout: 60
+
+  # 默认采样温度
+  default_temperature: 0.8
+
+  # 输出预算：给 reasoning 模型留出「完成话」的预算，消除 finish=length 的空响应
+  # （推理模型可能把整段 completion 花在思考上、正文为空）。建议 2048 起；
+  # 0 = 由平台决定（等于未生效）。路由的空响应故障转移只是兜底，设这里才是根治。
+  max_tokens: 0
+
+  # 短期上下文：每个会话保留最近 N 条消息（user+assistant）
+  context:
+    enabled: true
+    max_messages: 20
+
+  # 模型冷却：收到 429 后该模型暂停参与路由的时间
+  cooldown:
+    rate_limit_seconds: 30
+    server_error_seconds: 10
+    retry_backoff_seconds: 0.5        # 瞬态失败重试的指数退避基数（另加等量抖动）
+    retry_backoff_max_seconds: 4.0    # 单次退避上限
+  concurrency:
+    max_parallel_per_provider: 4      # 同一 base_url 的并发上限（同一端点的所有模型共享）
+  usage:
+    enabled: true                     # 每次模型调用记一行（token/耗时/成败），模型页可看
+    retention_days: 30                # 用量记录保留天数，过期由调度器清理
+
+  # ↓ 模型与 provider 已统一放到下面的「models:」总表里配置。
+
+# ==================== 模型总表（所有 AI 模型只在这里配置） ====================
+# 全项目唯一的模型入口：聊天、视觉、embedding、记忆抽取、以及社交认知 / Agent /
+# 表情收藏用的内部"快模型"，全部在这里声明。其它配置节里散落的 providers / *_model
+# 字段都已移到这里；运行时由 load_config 自动展开回各内部小节。
+models:
+  # —— 服务商 Provider（每个平台的地址 + API Key 环境变量名）——
+  # API Key 只放 .env，不要写进本文件；这里只写"读哪个环境变量"。
+  providers:
+    siliconflow:
+      type: openai_compatible
+      base_url: "https://api.siliconflow.cn/v1"   # ← 换成你的平台 / 地址
+      api_key_env: "SILICONFLOW_API_KEY"
+    # 可继续添加其他平台（换 base_url 和 api_key_env 即可）：
+    # deepseek:
+    #   type: openai_compatible
+    #   base_url: "https://api.deepseek.com/v1"
+    #   api_key_env: "DEEPSEEK_API_KEY"
+
+  # —— 聊天模型（按顺序做故障转移：primary 失败(429/5xx/超时) → secondary → fallback）——
+  # name 自己起；provider 填上面 providers 里的名字；model 填平台提供的模型 ID。
+  # 以下是示例模型，请替换成你的平台真实模型。
+  chat:
+    - name: primary
+      provider: siliconflow
+      model: "Qwen/Qwen2.5-7B-Instruct"
+    - name: secondary
+      provider: siliconflow
+      model: "THUDM/glm-4-9b-chat"
+    - name: fallback
+      provider: siliconflow
+      model: "deepseek-ai/DeepSeek-V3"
+
+  # —— 额外注册的模型（按 name 供下面的 vision 等引用）——
+  # 视觉等多模态模型建议放这里，例如：
+  # extra:
+  #   - name: vision
+  #     provider: siliconflow
+  #     model: "Qwen/Qwen2.5-VL-72B-Instruct"
+  extra: []
+
+  # —— 视觉模型（图片 / 表情分析）：填上面 chat/extra 里已注册的 name；留空 = 用 chat 第一个 ——
+  vision: ""
+
+  # —— 语义记忆 Embedding ——
+  embedding:
+    provider: siliconflow    # 填上面 providers 里的名字（复用其地址与 Key）
+    model: "BAAI/bge-m3"     # ← embedding 模型 ID
+    dimensions: null         # 向量维度，留空由模型决定
+    timeout: 10
+
+  # —— 记忆抽取模型（把聊天沉淀成长记忆）：填 chat/extra 里的 name；留空 = 用 chat 第一个 ——
+  # 以实测延迟为准选模型：推理模型会"只思考不输出"（finish=length），但非推理小模型也不一定更快
+  # （实测 cn:glm-5.3-flash 抽取反而比 primary 更慢）。memory.extraction.timeout 默认已收紧到 12s。
+  extraction: ""
+
+  # —— 内部"快模型"（都填 chat/extra 里的 name；留空 = 用 chat 默认）——
+  # decision 建议填 "fallback"（cn:minimax-m3，非推理）。实测：fallback 3.4s/5 次全解析成功；
+  # small（cn:glm-5.3-flash）26s 且 2/5 空响应；primary 推理模型 4/5 finish=length 空响应。
+  decision: ""                # 社交认知：观察 / 续话判断
+  planner: ""                 # Agent：任务规划
+  evaluator: ""               # Agent：结果评估（默认用规则，不调模型）
+  acquisition: ""             # 表情收藏判断（默认用规则 + 视觉）
+
+# ==================== 角色系统（v0.3） ====================
+# 角色信息默认留空——全部通过 WebUI（/character 页面）填写并热加载。
+# 这里只作为初始默认值；WebUI 保存后会持久化到数据库。
+character:
+  timezone: "Asia/Shanghai"   # 角色时间感所用时区（不要写死在代码里）
+  identity: {}        # name / nickname / age / birthday / gender / occupation / location / background
+  personality: {}     # traits / likes / dislikes / habits / interests
+  speaking_style: {}  # language / tone / emoji / kaomoji / length_preference / notes
+  behavior_rules: []  # 角色必须遵守的硬规则（每行一条）
+  system_prompt: ""   # 角色自由补充 prompt
+
+# ==================== 语义长期记忆（v0.5） ====================
+# 混合检索：语义向量 + 关键词 + 重要度/置信度/新近度/关系，权重可调。
+memory:
+  retrieval:
+    top_k: 8
+    weights:
+      semantic: 0.40      # 语义相似度（需要 embedding）
+      keyword: 0.20
+      importance: 0.15
+      confidence: 0.10
+      recency: 0.10
+      relationship: 0.05
+    min_final_score: 0.18   # 低于此总分不注入（相关性下限）
+    min_relevance: 0.05     # 语义/关键词至少要有一点证据，元数据不能单独入选
+    keyword_candidates: 20
+    semantic_candidates: 20
+    topic_bonus: 0.12       # 命中当前话题时的加成
+    cache_ttl_seconds: 60   # 短时间内重复查询复用结果
+
+  # 语义检索（Embedding）。开启后能按"意思相近"召回记忆；未开启/调用失败时
+  # 自动降级为关键词+元数据检索，聊天不受影响。需要先在 models.embedding 里配好模型。
+  semantic:
+    enabled: false
+    # ↓ embedding 的 provider/model/dimensions/timeout 已移到 models.embedding
+
+  # 记忆巩固（后台执行，不阻塞聊天）
+  consolidation:
+    enabled: true
+    duplicate_threshold: 0.92   # 余弦相似度超过则视为重复并合并
+    conflict_threshold: 0.75    # 聚类/关联判定
+    schedule: daily             # daily | hourly | manual
+    compression_min_cluster: 5  # 多少条相关 episodic 压缩成 1 条 semantic
+    compression_use_llm: false  # 用模型把事件簇压成一条长期记忆（失败自动回退规则拼接）
+    max_scan: 500
+
+  retention:
+    episodic_days: 180      # 超过则归档（不删除）
+
+  policy:
+    max_active_per_user: 500
+    max_active_per_group: 300
+
+# ==================== 对话行为（v0.4 / v2.0 精简） ====================
+# 她的“生活”由生活沙盒（sandbox:）全权决定；这里只保留三个对话界面开关：
+#   私聊回复 / 群聊参与 / 主动回复。WebUI 在「沙盒 → 对话行为」页。
+behavior:
+  enabled: true
+
+  # ---------- 私聊回复（节奏 / 分段 / 作息门控） ----------
+  # 回复节奏：延迟是区间 + 抖动，不是固定值
+  reply:
+    enabled: true
+    min_delay: 0.8
+    max_delay: 8.0
+    per_char_delay: 0.045
+    busy_factor: 1.6        # 她在忙（沙盒里在打游戏等）时变慢
+    sleeping_factor: 2.2
+    jitter: 0.2
+
+  # 消息分段：像群聊一样偶尔分成两条，不是每次都拆
+  chunking:
+    enabled: true
+    chunk_probability: 0.20
+    max_chunks: 3
+    min_chunk_length: 6
+    paragraph_always_split: true
+
+  # 作息门控（只管回话节奏与主动聊天；她的生活作息由沙盒决定）
+  schedule:
+    sleep_enabled: true
+    sleep_start: "00:30"
+    sleep_end: "08:00"
+    dnd_enabled: false
+    dnd_start: "23:00"
+    dnd_end: "08:00"
+    dnd_blocks_replies: false
+    night_start: "23:00"
+    night_end: "06:00"
+
+  # ---------- 群聊参与 ----------
+  # @ 她 / 回复她 → 必回；以下只在“没 @ 她”时生效（直接进社交认知决策）。
+  # 参与频率是确定性的“额度累积”：每条合格消息攒一点额度，攒满 1 就参与一次。
+  #   1.0 ≈ 每条都参与（仍受社交认知的冷却/每日额度约束）；0 = 完全交给社交认知。
+  # 冷却与每日上限在 social.participation（WebUI 社交策略页）。
+  group:
+    participation_enabled: true
+    participation_probability: 0.04
+    min_message_length: 3
+
+  # ---------- 主动回复 ----------
+  # 没人找她时的主动消息；开启后仍受多重硬限制，额度见 sandbox.max_background_messages_per_day
+  initiative:
+    enabled: false
+    min_interval_minutes: 120
+    daily_limit: 3
+    hourly_limit: 1
+    min_relationship_stage: familiar
+    idle_hours: 6.0
+    base_probability: 0.35
+    relationship_bonus: 0.2
+    topic_bonus: 0.35
+    max_unanswered: 1
+    duplicate_similarity: 0.6
+
+    max_unanswered: 1                  # 未回复时不再追问
+    duplicate_similarity: 0.6
+
+# WebUI 管理后台（QQ 端没有任何管理指令，这里是唯一管理入口）
+web:
+  enabled: false      # 改为 true 后访问 http://127.0.0.1:8500
+  host: 127.0.0.1
+  port: 8500
+  username: admin
+  # 密码从环境变量读取（推荐写进 .env），只在首次启动创建账号时使用
+  password_env: "CATOOBOT_WEB_PASSWORD"
+  password: ""        # 不推荐直接写在这里
+
+# ==================== 工具运行时（v0.6） ====================
+# 角色可以在需要时调用工具（时间/计算/天气/搜索），QQ 用户看不到任何调用细节。
+# 工具管理、测试、执行日志、凭据全部在 WebUI（/tools、/credentials）。
+tools:
+  # 打开后角色才会使用工具；关闭时聊天完全不受影响
+  enabled: false
+
+  # json  = 模型输出结构化决策（任何模型都能用，默认）
+  # native = 使用平台原生的 function calling（需要模型支持）
+  decision_mode: json
+
+  # 每次最多把多少个相关工具介绍给模型（避免把全部工具塞进 prompt）
+  candidate_tools: 5
+
+  # 执行限制（全部由代码强制，不交给模型判断）
+  default_timeout: 10        # 单个工具默认超时（秒）
+  max_calls_per_turn: 3      # 一条消息内最多几次工具调用
+  max_execution_time: 30     # 一轮对话工具总耗时上限（秒）
+  max_concurrent: 4          # 并发执行的工具数上限
+  max_retries: 1             # 瞬时错误最多重试一次
+  cache_enabled: true        # 使用工具自己声明的缓存 TTL
+
+  # 限流（每个工具都可以在 WebUI 里单独覆盖）
+  rate_limit:
+    per_user_per_minute: 10
+    per_group_per_minute: 20
+    global_per_minute: 60
+
+  # 安全边界：v0.6 只允许 low-risk 工具；不存在 shell/代码执行类工具
+  permissions:
+    allowed_risk_levels: ["low"]
+    default_enabled: true
+
+  # 单个工具的覆盖配置（WebUI 保存后也会写在这里对应的小节）
+  configs:
+    weather:
+      enabled: true
+      timeout: 8
+      cache_ttl_seconds: 600
+      settings:
+        # open_meteo 免费且无需 Key；weatherapi 需要凭据（api_key_env）
+        provider: open_meteo
+        default_location: ""
+    web_search:
+      enabled: true
+      timeout: 12
+      cache_ttl_seconds: 300
+      settings:
+        # 未配置凭据时工具会明确说"查不到"，绝不编造结果
+        provider: ""
+        max_results: 5
+        api_key_env: "TAVILY_API_KEY"
+    time:
+      enabled: true
+    calculator:
+      enabled: true
+
+# ==================== Agent 运行时（v0.7） ====================
+# 多步任务才会进入 Agent：理解目标 → 规划 → 执行 → 观察 → 评估 → （必要时重规划）→ 结果。
+# QQ 用户只会看到自然回复；计划/步骤/工具调用只能在 WebUI 的 /agent 查看。
+agent:
+  enabled: true
+  # manual | assisted | normal（危险操作仍然被 Tool Policy 拦住）
+  autonomy: normal
+
+  # 哪些任务类别允许被 Agent 处理
+  mode:
+    simple: true
+    tool_assisted: true
+    multi_step: true
+    long_running: false    # v0.7 仅预留，不开放长期后台任务
+
+  # 硬上限：任何一项用完就立即停止（不会无限循环）
+  budget:
+    max_steps: 8
+    max_tool_calls: 6
+    max_replans: 2
+    max_execution_seconds: 60
+    max_parallel_tools: 3
+
+  # 规划/评估可以用单独的模型；留空则走 Model Router（默认）
+  planner:
+    timeout: 30
+    # model 已移到 models.planner
+  evaluator:
+    timeout: 20
+    use_llm: false         # 默认用规则判断是否完成
+    # model 已移到 models.evaluator
+
+  # 后台长期 Agent：v0.7 未开放
+  background:
+    enabled: false
+
+  # 喂回模型的观察数量上限（旧步骤会被压缩，不会无限塞 prompt）
+  max_observations_in_context: 6
+
+  # 自然语言控制（不是命令）：说这些话就能取消 / 暂停 / 继续
+  cancel_phrases: ["算了", "不用查了", "别查了", "不用继续了", "不用找了", "不查了", "取消"]
+  pause_phrases: ["先停一下", "停一下", "暂停", "先别查了", "等会儿再"]
+  resume_phrases: ["继续吧", "你继续", "接着查", "继续看看", "接着弄"]
+
+  # 判定为"多步任务"的信号词
+  multi_step_markers: ["然后", "再帮", "并且", "顺便", "比较", "对比", "哪个更", "哪个适合",
+                       "分别", "同时", "一次性", "都查", "和周日", "和明天", "之后再", "接着"]
+
+# ============================================================
+# 多步骤任务运行时（Phase 5A）
+# 跨多个行动步骤、需要异步等待与状态恢复的长期意图（例如「去砍一棵橡树，挖一块原木
+# 并捡回来」）。第一期只接在 Minecraft 工具循环上：计划先冻结、由用户确认一次整份计划，
+# MEDIUM 步骤靠这份授权放行；不提供通用回滚，失败只能停下 / 重规划 / 重新确认 / 取消。
+# 只有这四个旋钮可配，其余上限是代码常量。
+# ============================================================
+task:
+  ttl_seconds: 600        # 30~3600：一个任务最多活多久（到点 EXPIRED 并停掉正在跑的动作）
+  max_steps: 16           # 1~64：计划里最多几步（防「1000 步」）
+  max_replans: 2          # 0~5：最多重规划几次（每次重规划都要重新确认）
+  no_progress_limit: 3    # 1~10：连续几次「同一个工具 + 同一份参数 + 状态没变」就暂停任务
+
+# ============================================================
+# 程序性技能（Phase 7E）
+# 从**真实成功任务**里学可复用的方法，并在后续请求里检索/判断适用性；
+# 技能的唯一下游是「计划候选」——仍然要过既有批准/确认与任务执行链。
+# 学习资格门、dig 归因歧义隔离与适用性检查见 docs/MINECRAFT_PHASE_7E.md。
+# ============================================================
+skills:
+  enabled: true
+  retrieve_limit: 5              # 1~20：一次请求最多检索几条候选技能
+  promotion_min_successes: 2     # 2~10：晋升成 ACTIVE 需要几条独立合格证据
+  invalidate_after_failures: 2   # 1~5：复用后连续几条反例就 INVALIDATED
+  dig_short_ratio: 0.5           # 0.1~0.95：实测挖掘时长 < 预期 × 该比例 ⇒ 证据判为歧义
+
+# ============================================================
+# ============================================================
+# 角色生活沙盒（v2.0）
+# 她的世界核心：实体（自己/小喵/物品）、空间、库存、需求、动作、规则、模式。
+# 大部分 tick 只做 CPU/DB 计算，不调用模型；QQ 消息是外部事件。
+# 人物档案 config/character_bible.md 是唯一权威设定来源（改档案会自动重置旧角色数据）。
+# ============================================================
+sandbox:
+  enabled: true
+  # 世界时间由 RuntimeScheduler 按真实经过时间推进（见下方 runtime 段）。
+  # tick_seconds 只作为手动 tick / 恢复单次步进的上限兜底，不再是“十分钟刷新”。
+  tick_seconds: 600
+  simulation_seed: 0         # 可复现模拟种子
+  bible_path: "config/character_bible.md"
+  allow_ai_decisions: true   # 只在多个候选都合理时叫模型裁决；false = 纯规则
+  reset_on_bible_change: true
+  # ← 核心好友 QQ 号：更快回复 / 联机优先 / 深夜拉回。
+  # 单个核心好友用列表即可；多个核心好友请用「QQ号: 档案里的名字」映射，
+  # 避免全部绑到同一个人（歧义时程序只警告，不会乱绑）：
+  #   core_friend_ids:
+  #     "123456": "示例好友"
+  #     "234567": "另一个核心好友"
+  core_friend_ids: []
+  core_friend_identities: {}  # 等价写法（优先级更高）：{"123456": "示例好友"}
+  social_space_map: {}       # 例：QQ 群号 → "game_group"/"cat_group"/"minecraft_server"
+  # Phase 11：社交语境里“最近和这个人一起做过什么”的唯一时间窗（分钟，0 = 不限时只用条数）
+  social_context_recent_window_minutes: 2880
+  # Phase 12：单条回复字符上限（超长拒绝回退，不截断）与可选钉住的模型 name
+  conversation_max_response_chars: 400
+  conversation_model: ""
+
+# ============================================================
+# 对话轮次运行时（v1.2）
+# 连续发送的消息先合并成一个 Turn（动态 debounce，不是固定等待），
+# 一次 Turn 只产生一次自然回复；用户改口/打断时旧回复作废，绝不发出。
+# ============================================================
+conversation:
+  debounce:
+    enabled: true
+    direct_message_ms: 1200   # 私聊：连续消息的合并窗口（动态调整的基础值）
+    group_message_ms: 1800    # 群聊：同一个 burst 的合并窗口
+
+# ============================================================
+# 角色延续状态（v1.2）
+# 短时间尺度的“还是刚才那个我”：近期关注、未完成的事（Open Loop）、
+# 共同经历、用户聊天习惯、轮次级情感。全部结构化、按各自 TTL 衰减。
+# ============================================================
+continuity:
+  enabled: true
+  recent_emotion_ttl_minutes: 90      # 轮次级情绪的半衰期量级
+  current_interest_ttl_hours: 12      # “最近一直在关注”的存活时间
+  unfinished_thought_ttl_hours: 6
+  open_loop_ttl_days: 14              # 未完成的事过期即标记 expired
+  micro_event_ttl_minutes: 90         # 世界小事只在短期内有效
+  max_recent_events: 8
+  max_open_loops: 12
+  shared_experience_min_confidence: 0.60
+
+# ============================================================
+# 社交认知引擎（v0.9）
+# 把「群聊参与 = 概率随机」升级为结构化社交判断：她先听，再判断自己有没有必要说话。
+# 三件事：@ / 直接回复她的消息 → 必回；无 @ 的连续追问 → 续话识别；普通群聊 → 每 5 条观察一次。
+# 旧的 behavior.group.participation_probability 保留为低权重兜底，不再主导决策。
+# ============================================================
+social:
+  enabled: true
+  # decision_model 已移到 models.decision（观察/续话用的快速模型；留空走路由默认）
+
+  group_context:
+    max_messages: 30        # 每个群只保留最近 30 条（更早的历史由 Topic/Memory 提供）
+
+  continuation:
+    enabled: true
+    window_minutes: 10      # Bot 发言后多久内，无 @ 的消息会被识别为「在跟她继续说话」
+    max_messages: 8
+
+  observer:
+    batch_size: 5           # 每 5 条外部消息触发一次观察器（Bot 自己的消息不计数）
+    min_context_messages: 20
+    max_staleness_messages: 5
+
+  participation:
+    daily_limit: 30         # 每天的自主群聊参与上限（@ 与续话不受此限）
+    cooldown_seconds: 90
+
+  thresholds:               # 决策阈值——分数是规则，不是概率
+    follow_up: 0.75
+    topic_relevance: 0.70
+    social_fit: 0.65
+    contribution_value: 0.65
+
+  attention:
+    enabled: true           # 社交注意（动量/衰减）
+  fatigue:
+    enabled: true           # 社交疲劳（只软化判断，不强制沉默）
+  topic:
+    enabled: true
+
+  observation_retention_days: 30   # 观察记录保留天数
+
+# ============================================================
+# 多模态消息 + 表情包运行时（v1.1）
+# 角色能看懂图片、识别表情，能自主收藏/检索/选择表情包。
+# 硬边界：普通 image 永远不是表情包（除非来自 mface/face/带 emoji 元数据/手动导入）。
+# ============================================================
+media:
+  enabled: true
+  # vision_model / acquisition_model 已移到 models.vision / models.acquisition
+  sticker_dir: data/stickers  # 手动导入目录（放进来的文件 = 明确的表情包来源）
+  media_dir: data/media
+
+  expression_enabled: true    # 是否允许回复时自主附加表情
+  sticker_cooldown_seconds: 60
+  max_stickers_per_turn: 1
+
+  auto_collect: true          # 收到用户 mface/face 时，后台自主判断是否收藏
+  max_library_size: 5000
+
+  indexer_enabled: true       # 启动时后台增量扫描（不阻塞 QQ 上线）
+  analysis_version: "v1"
+  background_vision_enabled: true    # 群里没 @ 她时，图片/表情包也做后台识别（先识别再判断，不影响是否回复）
+  background_vision_max_per_hour: 20 # 每个会话每小时后台识别上限（省视觉调用）
+  recognition_timeout_seconds: 12    # 等识别结果最多几秒；超时先判断，结果出来后再收藏
+
+# Task 22：表达 / 口癖学习 —— 从群消息学短句式，回复时按群注入（可停用/可删除/可溯源）。
+# 默认关闭；开启后只在 config.expression.groups 白名单（或所有群）内学。
+expression:
+  enabled: false
+  learn_max_per_hour: 60      # 每群每小时最多入库候选
+  min_speakers: 2             # 跨 ≥N 个不同用户才激活
+  min_occurrences: 3          # 或出现 ≥M 次
+  max_patterns_per_group: 80  # 每群容量上限，超出淘汰到 archived
+  inject_max_items: 3         # 每次回复最多注入 K 条
+  inject_max_chars: 24        # 注入总长度上限
+  groups: []                  # 白名单（空 = 所有群）
+
+# ============================================================
+# 角色世界（Phase 6A）
+# "她此刻在做什么"由 ActivityEpisode 承载（唯一事实来源）：有一次开始、有生命周期、
+# 有结束原因，可重启恢复、可审计。虚拟活动（她的日常）与真实 Minecraft 行动严格分开 ——
+# 这一层**不会**产生任何世界动作（Minecraft 动作仍然只能由任务 + 确认门产生）。
+# 只有真正需要的旋钮；时区影响"她的时段"与"今天"的划分。
+# ============================================================
+world:
+  timezone: Asia/Singapore     # 世界时钟时区（活动时段与 Episode 编号按它算）
+  activity:
+    enabled: true              # 关掉 = 不再记录/推进她在做什么（任务与权限完全不受影响）
+    persistence_interval_seconds: 60   # 运行中的观察多久落一次盘（10~600；重大状态变化随时落盘）
+    recovery_grace_seconds: 30         # 重启宽限：计划结束时间离现在这么近就不算过期
+    recent_episode_limit: 5            # 最近活动读几条（1~10；对话上下文与界面默认窗口）
+    # ---- Phase 6B：活动决策（继续 / 延长 / 换活动）
+    transition_window_minutes: 5       # 结束前多久进入"准备换活动"窗口（窗口内只待命，不提前切）
+    max_extensions_per_episode: 2      # 一条活动最多自动延长几次（0~5；防无限续命）
+    bounce_cooldown_minutes: 10        # 刚做过的活动多久内不许立刻回来（防 A→B→A）
+    # ---- Phase 6C：未来一小段的规划（Rolling Horizon）
+    planning_horizon_minutes: 240      # 规划视野（60~720）：只保证未来 1~12 小时有计划，绝不排满全天
+    planner_refresh_min_minutes: 5     # 软触发重新规划的最短间隔（0 = 不设冷却）
+    max_future_episodes: 6             # 计划里最多排几条 future proposal（1~6）
+    # ---- Phase 6D：模型顾问（软判断的"参谋"；**关着 = 纯规则**，行为与 6B/6C 完全一致）
+    model_advisor:
+      enabled: false                   # 想试就改成 true，并填上下面的 provider / model
+      # ⚠️ 选一个**平均延迟明显低于 timeout_ms** 的模型：远程 provider 上 glm 系常常 8 秒+，
+      #    那样顾问会一直超时回退（代码默认仍按任务书用 1500；远程 provider 建议 4000~5000）
+      timeout_ms: 4000                 # 500~5000：单次顾问调用的墙钟上限
+      provider: null                   # 供应商标签（只出现在日志/trace 里）
+      model: null                      # 用哪个模型（既有 router 里的模型名）
+  # ---- Phase 7A：意图（Initiative / LifeIntent）
+  # 这一层只**产生意图**（提出 / 评估 / 记录 / 抑制 / 过期）：不建任务、不调工具、
+  # 不自动确认、不发消息、不动 Minecraft —— 执行层恒为 NONE，所以默认开着是安全的。
+  initiative:
+    enabled: true                      # 只表示"允许产生 LifeIntent"，不是允许自主执行
+    cooldown_minutes: 20               # 同类意图的冷却（0~720；0 = 不设冷却）
+    max_proposals_per_hour: 3          # 每小时最多产生几条（0~60；0 = 不限）
+    recent_interaction_suppress_minutes: 10   # 你刚说过话之后的抑制窗口（0~240）
+
+  # ---- Phase 7C：任务提案（TaskProposal）
+  # 把「意图 / 用户请求」变成一份**可审计、知道自身能力边界**的提案：
+  # 记录来源与目标、检查需要哪些能力、判可行性、给缺口建议、到点过期。
+  # 它**不会**创建任务、不会调用 Minecraft 工具、不会自动确认、不会改世界 —— 执行层恒为 NONE。
+  proposals:
+    enabled: true                      # 只表示"允许记成提案"，不是允许自主执行
+    recent_limit: 10                   # 只读视图一次显示几条（1~100）
+    max_per_pass: 3                    # 一次最多把几条新意图变成提案（1~20）
+    ttl_hours: 6                       # 存活小时数，到点即 EXPIRED 终态（1~168）
+
+  # ---- Phase 7D：任务计划（AgentPlan）
+  # 把提案/请求变成**结构化计划**（每步有工具、参数、风险与期限，全部可审计）。
+  # USER 请求与待确认任务同建（一次确认）；LIFE 计划只规划，需要你「批准」后才建任务，
+  # 之后再「确认」才执行 —— 两道门都走既有确认机制。执行永远走既有 TaskRuntime 链。
+  agent_plans:
+    enabled: true                      # 只表示"允许规划成结构化计划"，不是允许自主执行
+    view_limit: 10                     # 只读视图一次显示几条（1~100）
+
+# ============================================================
+# Minecraft 连接层（Phase 1）
+# 让罐头以配置好的账号加入 Minecraft Java 服务器，并把连接状态、
+# 进世界、聊天、被踢、断开等事件反馈给 CatooBot。只有连接与聊天；
+# 感知/寻路/Agent 属于 Phase 2+，这里一律不做。
+# 账号认证信息不写在这里：编辑 minecraft_runtime/auth.json
+# （参考 auth.example.json；该文件已 gitignore，绝不进 Git、不经 QQ/WebUI 收取）。
+# ============================================================
+minecraft:
+  attribution_strict: false     # P3 严格破坏归因；启用后通道不可用不回退推断成功
+  attribution_url: http://127.0.0.1:19132
+  # 密钥只配置在私有环境变量 CATOO_ATTRIBUTION_TOKEN，不通过工具或 WebUI 传输
+  enabled: false               # 总开关（WebUI /minecraft 页与 QQ 指令都依赖它）
+  runtime_dir: minecraft_runtime
+  node_executable: node        # Node.js ≥ 20
+  runtime_port: 25580          # Bridge runtime 本地 HTTP 端口（只绑定 127.0.0.1）
+  auto_start_runtime: true     # 由 CatooBot 托管 runtime 进程（启动/崩溃重启/回收）
+  startup_timeout_seconds: 30
+  request_timeout_seconds: 15
+  poll_interval_seconds: 5     # 状态对账轮询（事件以回调推送为主）
+  connect_timeout_seconds: 75  # 多久没进世界算连接失败
+  max_runtime_restarts: 3      # runtime 进程意外退出的自动重启预算
+  # ---- 世界感知（Phase 2，只读）
+  perception_enabled: true     # 进世界后持续构建 Raw Snapshot → 语义模型
+  near_interval_seconds: 1.0   # Near（~6 格）刷新周期
+  local_interval_seconds: 4.0  # Local（~32 格）刷新周期
+  extended_interval_seconds: 20.0  # Extended（~96 格摘要）刷新周期
+  world_event_cooldown_seconds: 5.0  # 感知事件去抖间隔
+  world_change_block_threshold: 10   # 触发 world.changed 的方块变化数
+  # ---- 动作安全门（Phase 3C）
+  action:
+    dig:
+      timeout: 30                # 单次挖掘最长秒数（5~120）；到点 TIMEOUT + 停止挖掘
+      max_distance: 5            # 最大挖掘距离（格，眼睛→方块中心）；超出的方块直接拒绝
+    place:
+      timeout: 30                # 单次放置最长秒数（5~120）
+      max_distance: 5            # 最大交互距离（格，眼睛→目标方块中心）；超出的直接拒绝
+    equip:
+      timeout: 30                # 单次换手最长秒数（5~120）；equip 只支持 destination=hand
+    inventory_move:
+      timeout: 30                # 单次搬运最长秒数（5~120）；单个物品、单个来源槽、单个目标槽、一个数量
+    container:
+      timeout: 30                # 单次容器动作（读 Chest/Barrel 或搬一格）最长秒数（5~120）
+      max_distance: 5            # 最大容器交互距离（格，眼睛→容器方块中心）；超出的直接拒绝
+    recipe_lookup:
+      timeout: 10                # 查 2×2 配方（纯本地计算：配方表 + 当前背包）最长秒数（1~60）
+    craft:
+      timeout: 30                # 单次合成（玩家自身 2×2 或指定工作台的 3×3）最长秒数（5~120）
+      crafting_table:
+        max_distance: 5          # 指定工作台时的最大交互距离（格，眼睛→方块中心）；超出的直接拒绝
+    find_blocks:
+      max_distance: 16           # 找方块的默认搜索半径（格，1~32）；硬上限 32，不允许"扫全世界"
+      max_results: 8             # 找方块默认最多返回几条（1~16）；硬上限 16
+    pickup:
+      max_distance: 16           # 掉落物最远多少格就去捡（1~64）；先太远直接拒绝，追的过程中被拉远也停
+      timeout: 30                # 单次拾取（一个明确实体）最长秒数（5~120）；到点 TIMEOUT + 收掉导航
+    move_to:
+      max_distance: 64           # 单次 move_to 的最大距离（格）；不允许数千米长距离
+    follow_player:
+      timeout: 120               # 跟随最长持续多少秒（10~600；到点自动停下并清 Goal）
+      max_chase_distance: 64     # 离目标超过多少格就放弃追逐（不追到世界尽头）
+  # ---- LLM 工具权限（Phase 3E 起）：模型能用哪些 Minecraft 动作
+  # 风险分级：SAFE（只读/说话/朝向/停止/看背包）、LOW（非破坏性移动与跟随，还需用户明确要求）、
+  # MEDIUM（会改状态：minecraft_dig 破坏单方块、minecraft_place 放单方块、minecraft_equip 换主手、
+  # minecraft_inventory_move 搬一格背包、minecraft_container_transfer 搬一格箱子/桶、
+  # minecraft_craft 做一次配方（2×2，或给出明确坐标的工作台 3×3）、
+  # minecraft_pickup_item 捡一个明确指定的掉落物（会走过去）—— 都必须用户确认），
+  # 而且一次只操作一个明确物品/槽位/配方/实体。
+  # 风险开关是"功能允许"这一层，不代替确认门：打开 allow_medium 后这七个动作仍要用户确认。
+  agent:
+    tools:
+      enabled: true          # 关掉 = 模型完全碰不到 Minecraft（WebUI 连接页不受影响）
+      allow_safe: true       # minecraft_world / chat / look_at / stop / inventory / dropped_items / dig_capability / find_blocks
+      allow_low: true        # minecraft_move_to / follow_player（非破坏性导航）
+      allow_medium: false    # dig / place / equip / inventory_move / container_transfer / craft / pickup_item 默认关闭；启用后仍需确认
+      allow_high: false      # 还没有 HIGH 级动作；保持关闭
+      allow_destructive: false  # 还没有 DESTRUCTIVE 级动作；保持关闭
+  # ---- 身份桥 + 持久世界记忆（Phase 5C）
+  # 记忆只提供"上下文"：它不授予任何权限，也不会降低 MEDIUM 动作的确认要求。
+  # 关掉这里 = 她"不记得"Minecraft 里的事，任务与动作权限一点都不受影响。
+  memory:
+    enabled: true              # 身份绑定 + 记忆写入/检索/对账的总开关
+    reconcile_interval_seconds: 300  # 多久拿当前世界核对一次记忆（30~3600）；对账只读、绝不反向写世界
+    context_items: 5           # 一次对话最多带几条 Minecraft 记忆（1~5）
+    linked_players: {}         # 运维直接写死的「QQ 号 → Minecraft 玩家名」，例：{"424242": "示例好友"}
+                               # 只在玩家在线时生效；已有的用户显式绑定绝不会被它覆盖；它不给任何权限

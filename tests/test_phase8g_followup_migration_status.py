@@ -1,0 +1,135 @@
+"""Phase 8G Follow-up F4：迁移演练状态表达（no-op / 成功 / 失败三态）。"""
+
+from __future__ import annotations
+
+from typing import Any
+
+from app.database.migration_report import (
+    STATUS_FAILED,
+    STATUS_MIGRATED,
+    STATUS_NO_OP,
+    rehearsal_report,
+    rehearsal_status,
+)
+
+#: 两个最小但**真实形态**的规范化快照（键 -> 规范化定义）。
+#: 测试显式声明「有没有 schema 变化」这份证据，而不是让实现去猜。
+SCHEMA_SAME = {
+    "table:t": "CREATE TABLE t (id INTEGER)",
+    "column:t.id": "cid=0;type=INTEGER;notnull=0;dflt=None;pk=1",
+}
+
+
+def _report(**overrides: Any) -> dict[str, Any]:
+    base: dict[str, Any] = {
+        "db": "copy.db",
+        "version_before": 36,
+        "version_after": 36,
+        "integrity_before": "ok",
+        "integrity_after": "ok",
+        "tables_before": 83,
+        "tables_after": 83,
+        "added_tables": [],
+        "lost_rows": {},
+        "log": [],
+        "schema_before": dict(SCHEMA_SAME),
+        "schema_after": dict(SCHEMA_SAME),
+    }
+    base.update(overrides)
+    return rehearsal_report(**base)
+
+
+def test_no_pending_migration_is_a_legal_no_op_not_a_failure() -> None:
+    """版本没变、完整性 ok、没有丢行 = **合法 no-op**（旧定义会误报 ok:false）。"""
+    report = _report()
+    assert report["status"] == STATUS_NO_OP
+    assert report["ok"] is True
+    assert report["version"] == [36, 36]
+
+
+def test_applied_migration_is_reported_as_migrated() -> None:
+    report = _report(version_before=35, version_after=36, added_tables=["new_table"])
+    assert report["status"] == STATUS_MIGRATED
+    assert report["ok"] is True
+    assert report["added_tables"] == ["new_table"]
+
+
+def test_broken_integrity_is_a_real_failure() -> None:
+    report = _report(integrity_after="corrupt")
+    assert report["status"] == STATUS_FAILED
+    assert report["ok"] is False
+    assert report["integrity"] == ["ok", "corrupt"]
+
+
+def test_lost_rows_are_a_real_failure() -> None:
+    report = _report(lost_rows={"sessions": (10, 7)})
+    assert report["status"] == STATUS_FAILED
+    assert report["ok"] is False
+    assert report["lost_rows"] == {"sessions": (10, 7)}
+
+
+def test_version_regression_is_a_real_failure() -> None:
+    """版本倒退（例如被降级）也是失败，绝不当成 no-op。"""
+    report = _report(version_before=36, version_after=35)
+    assert report["status"] == STATUS_FAILED
+    assert report["ok"] is False
+
+
+def test_status_helper_is_pure_and_covers_the_three_states() -> None:
+    base = {
+        "integrity_before": "ok",
+        "integrity_after": "ok",
+        "added_tables": [],
+        "lost_rows": {},
+        "schema_evidence_ok": True,
+        "schema_changed": False,
+    }
+    assert rehearsal_status(version_before=36, version_after=36, **base) == STATUS_NO_OP
+    assert rehearsal_status(version_before=35, version_after=36, **base) == STATUS_MIGRATED
+    assert (
+        rehearsal_status(
+            **{**base, "integrity_after": "corrupt"},
+            version_before=36,
+            version_after=36,
+        )
+        == STATUS_FAILED
+    )
+
+
+def test_report_keeps_the_legacy_fields() -> None:
+    """兼容：既有调用方读的字段一个都不能少（只新增 status）。"""
+    report = _report()
+    assert set(report) >= {
+        "db",
+        "version",
+        "integrity",
+        "tables",
+        "added_tables",
+        "lost_rows",
+        "log",
+        "ok",
+        "status",
+    }
+
+
+def test_schema_change_without_a_version_bump_is_not_a_legal_no_op() -> None:
+    """H3 边界：版本没变却出现新表 = 未受托管的 schema 变化，必须 fail（不能当 no-op）。"""
+    report = _report(schema_after={**SCHEMA_SAME, "table:rogue": "CREATE TABLE rogue (id INTEGER)"})
+    assert report["status"] == STATUS_FAILED
+    assert report["ok"] is False
+    assert report["schema_changed_without_version_bump"] is True
+
+
+def test_broken_database_before_the_run_is_not_a_healthy_conclusion() -> None:
+    """H3 边界：入口库本来就不完整时，演练不能给出健康结论。"""
+    report = _report(integrity_before="malformed")
+    assert report["status"] == STATUS_FAILED
+    assert report["ok"] is False
+
+
+def test_version_bump_with_new_tables_is_a_normal_migration() -> None:
+    """正常迁移路径不受 H3 收紧影响：版本上升 + 新表 = migrated。"""
+    report = _report(version_before=35, version_after=36, added_tables=["new_table"])
+    assert report["status"] == STATUS_MIGRATED
+    assert report["ok"] is True
+    assert report["schema_changed_without_version_bump"] is False

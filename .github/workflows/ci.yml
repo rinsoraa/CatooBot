@@ -1,0 +1,445 @@
+name: CI
+
+# Every job below is an independent, required gate. A failure in one gate (for
+# example the Python unit suite) no longer marks the other gates as skipped, so
+# lint/format/types, unit tests, the real Node runtime suite, the WebUI, the
+# browser E2E and the Minecraft runtime suite each publish their own conclusion
+# in the PR check list. No job uses continue-on-error: a red step fails its job.
+#
+# Failure evidence is uploaded from generated logs/reports only
+# (pytest JUnit + log, ruff/mypy output, vitest log, Playwright report and
+# traces, npm logs). Private trees (.env, config/, data/, docs/) and
+# node_modules are never uploaded; uploads use if-no-files-found: ignore.
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # Java 21 contract suite (unchanged): no live server required.
+  # ---------------------------------------------------------------------------
+  server-mod-contracts:
+    name: server mod · Java 21 contracts (no live server)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+      # Booking/Dimension/request/protocol and loopback resource lifecycle contracts. Full Fabric compilation, event JSON,
+      # thread bridge, class loading and E3 require the pinned local server dependencies.
+      - name: Booking, dimension, request, authenticated protocol and resource shutdown contracts
+        shell: pwsh
+        run: ./server_mod/test.ps1
+
+  # ---------------------------------------------------------------------------
+  # Fast Python static gates: lint, formatting and types only. No Node, no pytest.
+  # ---------------------------------------------------------------------------
+  python-quality:
+    name: python quality · ruff · format · mypy
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      # The lockfile is the single source of dependency truth: --frozen fails
+      # the job instead of silently re-resolving when pyproject.toml drifts.
+      - name: Install (frozen lockfile + dev extra)
+        run: uv sync --frozen --extra dev
+
+      # Each gate tees its own output into ci-artifacts/ so a red job always
+      # ships its full diagnosis (the runner log alone is not always reachable).
+      - name: Lint (ruff check)
+        run: |
+          mkdir -p ci-artifacts
+          uv run --frozen ruff check . > ci-artifacts/ruff-check.log 2>&1 || { cat ci-artifacts/ruff-check.log; exit 1; }
+          tail -5 ci-artifacts/ruff-check.log
+
+      - name: Format check (ruff format --check)
+        run: |
+          mkdir -p ci-artifacts
+          uv run --frozen ruff format --check . > ci-artifacts/ruff-format-check.log 2>&1 || { cat ci-artifacts/ruff-format-check.log; exit 1; }
+          tail -5 ci-artifacts/ruff-format-check.log
+
+      - name: Types (mypy app)
+        run: |
+          mkdir -p ci-artifacts
+          uv run --frozen mypy app > ci-artifacts/mypy-app.log 2>&1 || { cat ci-artifacts/mypy-app.log; exit 1; }
+          tail -5 ci-artifacts/mypy-app.log
+
+      - name: Upload failure evidence (python quality)
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: python-quality-evidence
+          path: ci-artifacts/
+          if-no-files-found: ignore
+          retention-days: 7
+
+  # ---------------------------------------------------------------------------
+  # Python unit suite. Real Node / real HTTP integration files are excluded by an
+  # explicit --ignore file list (never by deselect/mark skipping) and run in the
+  # separate real-node job instead.
+  # ---------------------------------------------------------------------------
+  python-tests:
+    name: python tests · unit suite (node-backed files excluded)
+    runs-on: ubuntu-latest
+    env:
+      # Test-only knob scoped to FIXTURE READINESS: shared runners need longer to
+      # reach READY (Node runtime boot, flying-squid server, controller claim, player
+      # entity sync). tests/conftest.py no longer patches asyncio.wait_for
+      # process-wide, so production deadlines (runtime client request timeout, STOP
+      # budget, bounded shutdown) and real elapsed-time assertions such as
+      # "elapsed < 20.0" stay unscaled. Consumers:
+      # tests/test_vnx_p0_gate_a_real_http.py (_harness_timeout/_wait).
+      CATOOBOT_HARNESS_TIMEOUT_SCALE: "3"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Install (frozen lockfile + dev extra)
+        run: uv sync --frozen --extra dev
+
+      # The public mirror ships sources only, and two Python WebUI tests read a
+      # freshly built SPA (tests/test_web_v1_cutover.py, tests/test_web_spa.py):
+      # build webui/dist here, exactly as the previous single job did.
+      - name: Set up Node 22 (SPA build for the Python WebUI tests)
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: webui/package-lock.json
+
+      - name: Install WebUI dependencies
+        working-directory: webui
+        run: npm ci --no-audit --no-fund
+
+      - name: Build SPA for the Python WebUI tests
+        working-directory: webui
+        run: npm run build
+
+      # The real-node job runs exactly these four files; this job runs everything
+      # else under tests/. The two lists are the two halves of one partition, so
+      # no test is dropped and none is collected twice (verified locally with
+      # pytest --collect-only: full suite == this job's collection + real-node's).
+      - name: Tests (pytest tests, node-backed files excluded)
+        run: |
+          mkdir -p ci-artifacts
+          status=0
+          uv run --frozen pytest tests -q --tb=line -rf \
+            --junitxml=ci-artifacts/pytest-unit.xml \
+            --ignore=tests/test_vnx_p0_gate_a_real_http.py \
+            --ignore=tests/test_vnx_p0_gate_b.py \
+            --ignore=tests/test_vnx_p0_shutdown_e2.py \
+            --ignore=tests/test_controller_ownership_e2.py \
+            > ci-artifacts/pytest-unit.log 2>&1 || status=$?
+          if [ "$status" -ne 0 ]; then
+            if grep -qE '^(FAILED|ERROR)' ci-artifacts/pytest-unit.log; then
+              grep -E '^(FAILED|ERROR)' ci-artifacts/pytest-unit.log | head -25 | while IFS= read -r line; do
+                echo "::error title=pytest::${line}"
+              done
+            fi
+            tail -20 ci-artifacts/pytest-unit.log | while IFS= read -r line; do
+              echo "::warning::${line}"
+            done
+          else
+            tail -3 ci-artifacts/pytest-unit.log
+          fi
+          exit "$status"
+
+      - name: Upload failure evidence (python tests)
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: python-tests-evidence
+          path: ci-artifacts/
+          if-no-files-found: ignore
+          retention-days: 7
+
+  # ---------------------------------------------------------------------------
+  # Real Node runtime / real HTTP integration suite. Needs the locked
+  # minecraft_runtime dependencies (spawned harness) and a built SPA.
+  # ---------------------------------------------------------------------------
+  real-node:
+    name: real node runtime · gate A/B · shutdown · controller ownership
+    runs-on: ubuntu-latest
+    env:
+      # Test-only knob scoped to FIXTURE READINESS: shared runners need longer to
+      # reach READY (Node runtime boot, flying-squid server, controller claim, player
+      # entity sync). tests/conftest.py no longer patches asyncio.wait_for
+      # process-wide, so production deadlines (runtime client request timeout, STOP
+      # budget, bounded shutdown) and real elapsed-time assertions such as
+      # "elapsed < 20.0" stay unscaled. Consumers:
+      # tests/test_vnx_p0_gate_a_real_http.py (_harness_timeout/_wait).
+      CATOOBOT_HARNESS_TIMEOUT_SCALE: "3"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Install (frozen lockfile + dev extra)
+        run: uv sync --frozen --extra dev
+
+      - name: Set up Node 22 (SPA build + Minecraft runtime harness)
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: |
+            webui/package-lock.json
+            minecraft_runtime/package-lock.json
+
+      - name: Install WebUI dependencies
+        working-directory: webui
+        run: npm ci --no-audit --no-fund
+
+      - name: Build SPA for the harness
+        working-directory: webui
+        run: npm run build
+
+      # tests/test_vnx_p0_gate_a_real_http.py spawns
+      # minecraft_runtime/test/gate_a_harness.js with `node`, and the harness
+      # resolves mineflayer from minecraft_runtime/node_modules: the locked
+      # runtime dependencies must exist before pytest runs, otherwise every
+      # node-backed test fails with MODULE_NOT_FOUND.
+      - name: Install Minecraft runtime dependencies (node harness used by pytest)
+        working-directory: minecraft_runtime
+        run: npm ci --no-audit --no-fund
+
+      - name: Real Node integration tests (pytest)
+        run: |
+          mkdir -p ci-artifacts
+          status=0
+          uv run --frozen pytest \
+            tests/test_vnx_p0_gate_a_real_http.py \
+            tests/test_vnx_p0_gate_b.py \
+            tests/test_vnx_p0_shutdown_e2.py \
+            tests/test_controller_ownership_e2.py \
+            -q --tb=line -rf \
+            --junitxml=ci-artifacts/pytest-real-node.xml \
+            > ci-artifacts/pytest-real-node.log 2>&1 || status=$?
+          if [ "$status" -ne 0 ]; then
+            if grep -qE '^(FAILED|ERROR)' ci-artifacts/pytest-real-node.log; then
+              grep -E '^(FAILED|ERROR)' ci-artifacts/pytest-real-node.log | head -25 | while IFS= read -r line; do
+                echo "::error title=pytest::${line}"
+              done
+            fi
+            tail -20 ci-artifacts/pytest-real-node.log | while IFS= read -r line; do
+              echo "::warning::${line}"
+            done
+          else
+            tail -3 ci-artifacts/pytest-real-node.log
+          fi
+          exit "$status"
+
+      - name: Upload failure evidence (real node)
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: real-node-evidence
+          path: ci-artifacts/
+          if-no-files-found: ignore
+          retention-days: 7
+
+  # ---------------------------------------------------------------------------
+  # WebUI typecheck / unit tests / build (unchanged content, now its own job).
+  # ---------------------------------------------------------------------------
+  webui:
+    name: webui · typecheck · tests · build
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: webui
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: webui/package-lock.json
+
+      - name: Install (npm ci)
+        run: npm ci --no-audit --no-fund
+
+      - name: Typecheck (vue-tsc)
+        run: |
+          mkdir -p ../ci-artifacts
+          npm run typecheck > ../ci-artifacts/webui-typecheck.log 2>&1 || { cat ../ci-artifacts/webui-typecheck.log; exit 1; }
+          tail -5 ../ci-artifacts/webui-typecheck.log
+
+      - name: Tests (vitest)
+        run: |
+          mkdir -p ../ci-artifacts
+          npm test > ../ci-artifacts/webui-vitest.log 2>&1 || { cat ../ci-artifacts/webui-vitest.log; exit 1; }
+          tail -5 ../ci-artifacts/webui-vitest.log
+
+      - name: Build (vite)
+        run: npm run build
+
+      # Source-only releases build dist in CI. Validate the current build
+      # rather than comparing it against untracked/absent generated files.
+      - name: Verify freshly built SPA assets
+        working-directory: .
+        run: |
+          test -s webui/dist/index.html
+          assets=$(grep -oE 'assets/[A-Za-z0-9_.-]+' webui/dist/index.html | sort -u)
+          test -n "$assets" || { echo "::error::No SPA assets referenced"; exit 1; }
+          for asset in $assets; do
+            test -s "webui/dist/$asset" || { echo "::error::Missing SPA asset: $asset"; exit 1; }
+          done
+          echo "Verified $(echo "$assets" | wc -l) SPA assets"
+
+      - name: Upload failure evidence (webui)
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: webui-evidence
+          path: ci-artifacts/
+          if-no-files-found: ignore
+          retention-days: 7
+
+  # ---------------------------------------------------------------------------
+  # W6: real browser E2E against a real Bot (Chromium + the WebUI build).
+  # Self-contained: it rebuilds the SPA instead of depending on the webui job.
+  # ---------------------------------------------------------------------------
+  browser-e2e:
+    name: browser e2e · Chromium · WebUI
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # webui/playwright.config.ts boots tests/webui_e2e_server.py, which needs
+      # the project dependencies from the uv venv.
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Install (frozen lockfile + dev extra)
+        run: uv sync --frozen --extra dev
+
+      - name: Set up Node 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: webui/package-lock.json
+
+      - name: Install WebUI dependencies
+        working-directory: webui
+        run: npm ci --no-audit --no-fund
+
+      # tests/webui_e2e_server.py refuses to boot without webui/dist/index.html.
+      - name: Build SPA for the E2E server
+        working-directory: webui
+        run: npm run build
+
+      - name: Install Chromium
+        working-directory: webui
+        run: npx playwright install --with-deps chromium
+
+      - name: Browser E2E (login → domains → mutation → gates → logout)
+        working-directory: webui
+        env:
+          CATOOBOT_E2E_PASSWORD: e2e-test-password
+        run: |
+          mkdir -p ../ci-artifacts
+          npm run test:e2e > ../ci-artifacts/playwright-e2e.log 2>&1 || { cat ../ci-artifacts/playwright-e2e.log; exit 1; }
+          tail -10 ../ci-artifacts/playwright-e2e.log
+
+      - name: Upload failure evidence (browser e2e)
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: browser-e2e-evidence
+          path: |
+            ci-artifacts/
+            webui/test-results/
+            webui/playwright-report/
+          if-no-files-found: ignore
+          retention-days: 7
+
+  # ---------------------------------------------------------------------------
+  # Minecraft connection layer (Phase 1): the Bridge runtime protocol suite
+  # (ActionRuntime unit tests + flying-squid E2E). Own lockfile, no live server.
+  # ---------------------------------------------------------------------------
+  minecraft-runtime:
+    name: minecraft runtime · npm ci + tests (no live server)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: minecraft_runtime
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: minecraft_runtime/package-lock.json
+
+      - name: Install dependencies (npm ci)
+        run: |
+          mkdir -p ../ci-artifacts
+          npm ci --no-audit --no-fund > ../ci-artifacts/minecraft-runtime-npm-ci.log 2>&1 || { cat ../ci-artifacts/minecraft-runtime-npm-ci.log; exit 1; }
+          tail -5 ../ci-artifacts/minecraft-runtime-npm-ci.log
+
+      - name: Runtime tests (npm test)
+        run: |
+          mkdir -p ../ci-artifacts
+          npm test > ../ci-artifacts/minecraft-runtime-npm-test.log 2>&1 || { cat ../ci-artifacts/minecraft-runtime-npm-test.log; exit 1; }
+          tail -10 ../ci-artifacts/minecraft-runtime-npm-test.log
+
+      - name: Upload failure evidence (minecraft runtime)
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: minecraft-runtime-evidence
+          path: ci-artifacts/
+          if-no-files-found: ignore
+          retention-days: 7

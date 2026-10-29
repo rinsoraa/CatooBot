@@ -1,0 +1,42 @@
+# 构建上下文必须排除的东西：密钥、运行期数据、本地环境与缓存。
+# 即使将来用 COPY . . 也不会把 .env / 数据库打进镜像。
+.env
+.env.*
+!.env.example
+
+config/config.yaml
+config/overrides.yaml
+config/character_bible.md
+minecraft_runtime/auth.json
+auth_cache/
+AGENTS.md
+agent.md
+
+data/
+logs/
+docs/
+
+.venv/
+.git/
+.github/
+.zcode/
+.zcodeignore
+
+__pycache__/
+*.py[cod]
+*.egg-info/
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+
+tests/
+
+# Always rebuild the public SPA from source in the isolated Node builder.
+webui/node_modules/
+webui/dist/
+webui/test-results/
+webui/playwright-report/
+minecraft_runtime/node_modules/
+.sync-backups/
+.fu4-mirror-work/
+.npm-tmp/

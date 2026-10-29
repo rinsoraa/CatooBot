@@ -1,0 +1,2160 @@
+"""Minecraft 玩家聊天 → 角色对话（Phase 4A §十六-§二十三）。
+
+游戏里玩家说话（``minecraft.chat``）此前只进沙盒外部事件链（世界认知/行为活动）。
+本模块是**第二个消费者**：把它当成一次真正的 **USER 回合**交给
+:class:`~app.character.runtime.CharacterRuntime` —— 于是游戏内玩家可以用自然语言
+触发已有的 Minecraft Tools（SAFE 不限，LOW 需要可信玩家 + USER 回合）。
+
+两条消费者**并存、互不替代**（§十六/§二十九）：
+
+    minecraft.chat
+      ├── sandbox.submit_external（世界认知 / 行为活动，插件里做）
+      └── MinecraftChatBridge → CharacterRuntime.respond(turn_origin=USER) → 游戏内回复
+
+硬门禁（§三十）：**罐头自己的发言绝不进自己的 LLM 回合**，否则「她说话 → 收到自己的
+聊天 → 模型 → 再说话」会无限循环。判定用 runtime 上报的 username 与镜像里的
+``connection.username`` 双比对（拿不到自己的名字时，宁可不回）。
+
+本模块不碰 Mineflayer / Bridge HTTP：发言走 ``MinecraftService.send_chat``（Action Runtime）。
+"""
+
+from __future__ import annotations
+
+import asyncio
+import inspect
+import logging
+import re
+import time
+from collections.abc import Mapping
+from dataclasses import dataclass
+from enum import StrEnum
+from typing import TYPE_CHECKING, Any
+
+from app.character.runtime import CharacterTurnMode
+from app.character.turn import TurnOrigin
+from app.integrations.minecraft.agent import PLAYER_KEY
+from app.integrations.minecraft.events import MinecraftBridgeEvent
+from app.integrations.minecraft.identity_context import IdentityResolution
+from app.integrations.minecraft.speech_contract import (
+    ActionState,
+    SpeechClaim,
+    claim_for_state,
+    finalize_speech,
+)
+from app.tasks.agent_plan import IDENTITY_VERIFIED, PlanTarget
+from app.tasks.agent_planner import detect_shape
+from app.tasks.craft_intent import (
+    CraftRequest,
+    display_name_of,
+    parse_craft_request,
+)
+from app.tasks.intent import (
+    _ACTION_VERBS,
+    _RESOURCE_WORDS,
+    WOOD_SPECIES,
+    TaskIntentDetector,
+    WoodRequest,
+    acceptance_structure_violation,
+    explicit_log_count,
+    has_compound_connector,
+    mentions_wood,
+    parse_wood_request,
+    unexplained_acceptance_tail,
+)
+from app.tasks.resource_handoff import (
+    REASON_MATERIAL,
+    craft_gap_from_detail,
+    handoff_block_for,
+    propose_handoff,
+    unsupported_reason_for,
+)
+from app.tasks.turn_context import build_turn_context
+from app.tasks.turn_decision import (
+    REASON_ENGINE_MISSING,
+    TurnDecisionInterpreter,
+    TurnDecisionKind,
+    TurnDecisionOutcome,
+)
+from app.tasks.wood_intent import Polarity, WoodIntent, WoodIntentInterpreter
+from app.tools.models import RouteTarget, RouteTrace, ToolCall, new_route_id
+from app.tools.policy import TurnBudget
+
+if TYPE_CHECKING:  # pragma: no cover
+    from app.core.bot import Bot
+    from app.integrations.minecraft.service import MinecraftService
+
+log = logging.getLogger("CatooBot.Minecraft.Chat")
+
+#: Phase 8D：明确拒绝（不支持的树种/歧义）也必须有请求语气才算「在让罐头动手」，
+#: 否则会把「我昨天砍了两根竹子」这类闲聊当成指令。
+
+#: 会话命名（§十八）：Minecraft 世界有自己的会话，绝不塞进 QQ 的 private:/group:
+SESSION_PREFIX = "minecraft"
+#: 排队上限：短时间内大量聊天不会无限堆积（每条都在独立任务里跑）
+MAX_INFLIGHT = 4
+#: 一次回复最多发几行（任务确认摘要按行发，但不能无限刷屏）
+MAX_CHAT_LINES = 10
+#: Phase 8C：与任务入口**同一套**确定性识别器（不新增第二套意图判断，也不额外调模型）
+_DETECTOR = TaskIntentDetector()
+
+
+def chat_session_id(host: str | None, port: int | None, username: str) -> str:
+    """会话名：``minecraft:{host}:{port}:{username}``（缺服务器信息时只用用户名）。"""
+    if host and port:
+        return f"{SESSION_PREFIX}:{host}:{port}:{username}"
+    return f"{SESSION_PREFIX}:{username}"
+
+
+#: 明确的任务控制说法（§4.3）：以这些词开头的消息一律**交回**任务入口，Phase 8D
+#: Follow-up 2 的否定分支绝不截获它们。这里只用于「让路」，不会启动任何动作。
+_WOOD_CONTROL_PREFIXES = (
+    "取消",
+    "算了",
+    "确认",
+    "暂停",
+    "继续",
+    "恢复",
+    "停止",
+    "停下",
+    "不查了",
+    "别查了",
+    "不用查",
+    "不用继续",
+    "不用找",
+)
+
+
+class _WoodRoute(StrEnum):
+    """木材消息的**显式**路由结果（Phase 8E Follow-up §4.1）。
+
+    修复前 ``None`` 同时表示「交回任务入口」和「由普通聊天处理」：模型把木材消息判成
+    QUERY / NARRATION / OTHER 后仍会落回旧 ``TaskTurnHandler._create()`` →
+    ``plan_resource_task()``。这里把语义分开，任何一种都不再靠 ``None`` 猜。
+    """
+
+    NOT_WOOD = "not_wood"
+    HANDLED = "handled"
+    NORMAL_CHAT = "normal_chat"
+    DELEGATE_CONTROL = "delegate_control"
+    WOOD_POSITIVE_REQUEST = "wood_positive_request"
+    SAFE_CLARIFY = "safe_clarify"
+
+
+def _item_counts(raw: Any) -> dict[str, int]:
+    """把冻结计划里的增量/消耗映射整理成「裸物品名 → 正整数」（只读、绝不猜）。"""
+    counts: dict[str, int] = {}
+    if not isinstance(raw, Mapping):
+        return counts
+    for key, value in raw.items():
+        try:
+            count = int(value or 0)
+        except (TypeError, ValueError):
+            continue
+        if count > 0:
+            counts[str(key)] = count
+    return counts
+
+
+@dataclass(frozen=True)
+class _TurnReply:
+    """桥接层的回合结论（Phase 8E Follow-up 2 §4.1）。
+
+    ``reply`` 非空 = 本回合已由桥接层回答完毕（任务/木材/澄清），角色层不参与；
+    ``reply`` 为空 = 交给角色层生成，但必须按 ``mode`` 的**单回合能力模式**执行：
+    ``CHAT_ONLY`` 时角色层不得启动 Agent、不得进入 ToolOrchestrator。
+    """
+
+    reply: str | None = None
+    mode: CharacterTurnMode = CharacterTurnMode.NORMAL
+    claim: SpeechClaim | None = None
+
+
+@dataclass(frozen=True)
+class _WoodRouteDecision:
+    """一次木材路由的结论：``route`` 决定后续控制流，``reply`` 是已生成的回复。"""
+
+    route: _WoodRoute
+    reply: str | None = None
+
+
+def _is_new_craft_request(message: str) -> bool:
+    """message 本身是不是一次新的、可执行的**合成请求**（Phase 8I H3 判定）。
+
+    决策层会把「给我做 64 块橡木木板」和「好，去砍橡木原木」都判成 task_proposal。
+    前者是**新请求**，绝不是对上一轮资源提案的接受 —— 否则重复或无关的合成请求会在
+    没人接受的情况下把提案静默变成采集任务（真机门禁里真实发生过）。
+    """
+    craft = parse_craft_request(message)
+    return craft is not None and not craft.problem and bool(craft.item)
+
+
+#: Phase 8I Follow-up 3 §4：待决资源提案的**显式接受门**四态判定结果。
+ACCEPT_PROPOSAL = "accept_proposal"
+NEW_GOAL = "new_goal"
+REJECT_PROPOSAL = "reject_proposal"
+NOT_ACCEPT = "not_accept"
+
+#: 明确的接受表达（必须位于消息**起始**，且紧跟标点或结束）。
+#: 「好难」「好像不行」这类以「好」开头却不是接受的消息不会被匹配。
+_ACCEPT_HEADS = (
+    "同意",
+    "可以",
+    "没问题",
+    "就这样",
+    "就按这个",
+    "按这个",
+    "按你说的",
+    "好的",
+    "好",
+    "行",
+    "嗯",
+    "去吧",
+    "去砍吧",
+    "干吧",
+    "开工吧",
+    "动手吧",
+    "办吧",
+)
+_ACCEPT_BOUNDARY = "，,。！!~～、 \t"
+#: 明确的拒绝/取消/停止信号：绝不当作接受，并立即作废待决提案。
+_REJECTION_SIGNALS = (
+    "取消",
+    "停止",
+    "停下",
+    "别",
+    "不用",
+    "算了",
+    "不要",
+    "不行",
+    "否决",
+    "拒绝",
+    "先不",
+)
+#: 询问/不确定信号：fail closed（「可以吗？」不是接受）。
+_QUESTION_SIGNALS = (
+    "吗",
+    "?",
+    "？",
+    "什么",
+    "怎么",
+    "为什么",
+    "多久",
+    "多少",
+    "能不能",
+    "是不是",
+    "要不要",
+)
+
+
+def _is_acceptance(text: str) -> bool:
+    """消息是不是一个**明确的接受表达**（起始处出现接受词，且紧跟标点或结束）。"""
+    for head in _ACCEPT_HEADS:
+        if not text.startswith(head):
+            continue
+        rest = text[len(head) :]
+        if not rest or rest[0] in _ACCEPT_BOUNDARY:
+            return True
+    return False
+
+
+def classify_handoff_reply(message: str) -> str:
+    """存在待决资源提案时，判断一条用户消息是否**明确接受**了它（Phase 8I FU3 §4）。
+
+    返回四态之一：
+      * ACCEPT_PROPOSAL —— 明确的接受表达，可以消费待决提案（仍走既有两道门）；
+      * NEW_GOAL        —— 新的可执行目标（合成请求或采集请求），按**它自己**的语义
+        重新评估，并作废旧提案：绝不复用旧提案的目标与数量；
+      * REJECT_PROPOSAL —— 明确拒绝/取消/停止：立即作废待决提案，绝不复活；
+      * NOT_ACCEPT      —— 询问、不确定、无关消息：**fail closed，不消费提案**
+        （提案保留到被明确接受或过期）。
+
+    判定顺序固定为「拒绝 → 新合成目标 → 询问 → 接受 → 新采集目标 → 兜底」。
+    决策层把「给我做 64 块橡木木板」和「好，去砍橡木原木」都判成 task_proposal，
+    所以「判成 task_proposal」本身**不是**接受证据，这里必须自己判语义。
+    """
+    text = str(message or "").strip()
+    if not text:
+        return NOT_ACCEPT
+    if any(signal in text for signal in _REJECTION_SIGNALS):
+        return REJECT_PROPOSAL
+    if _is_new_craft_request(text):
+        return NEW_GOAL
+    if any(signal in text for signal in _QUESTION_SIGNALS):
+        return NOT_ACCEPT
+    if _is_acceptance(text):
+        return ACCEPT_PROPOSAL
+    if parse_wood_request(text) is not None:
+        return NEW_GOAL
+    return NOT_ACCEPT
+
+
+def _acceptance_remainder(text: str) -> str:
+    """接受词**之后**剩下的内容（``""`` = 纯接受，或整句不是接受表达）。"""
+    for head in _ACCEPT_HEADS:
+        if not text.startswith(head):
+            continue
+        rest = text[len(head) :]
+        if not rest or rest[0] in _ACCEPT_BOUNDARY:
+            return rest.lstrip(_ACCEPT_BOUNDARY).strip()
+    return ""
+
+
+def _is_pure_acceptance_tail(rest: str) -> bool:
+    """剩余内容本身还是接受/确认说法（例：「好，就按这个方案来」→「就按这个方案来」）。
+
+    只认「以另一个接受词开头」这种确认说法；不含新目标、也不是确认说法的内容一律
+    交由调用方 fail closed（不消费提案）。
+    """
+    return any(rest.startswith(head) for head in _ACCEPT_HEADS)
+
+
+_CLAUSE_SPLIT_RE = re.compile(r"[，,、；;。！!？?\n]+")
+#: 「再」不在这里 —— 它只有在后面确实跟着一个新目标时才算复合（见 ``_has_trailing_goal``），
+#: 否则「去砍橡木原木再回来」这种**单一任务**会被误判成复合意图。
+_TRAILING_MARKERS = ("再",)
+
+
+def _clause_is_goal(clause: str) -> bool:
+    """这个从句本身是不是一个可执行目标（全部复用既有、已审计的解析器）。"""
+    text = str(clause or "").strip()
+    if not text:
+        return False
+    wood = parse_wood_request(text)
+    if wood is not None and not wood.problem:
+        return True
+    craft = parse_craft_request(text)
+    if craft is not None and not craft.problem and craft.item:
+        return True
+    if _DETECTOR.detect_follow(text):
+        return True
+    reasons = tuple(getattr(_DETECTOR.detect(text), "reasons", ()) or ())
+    has_verb = any(str(reason).startswith("verb:") for reason in reasons)
+    has_resource = any(str(reason).startswith("resource:") for reason in reasons)
+    return has_verb and has_resource
+
+
+def _has_second_clause_goal(rest: str) -> bool:
+    """标点切分后，**第一个从句之外**还有从句本身是个可执行目标。
+
+    覆盖「好，去砍橡木原木，帮我挖附近的石头」这类**没有连接词**的复合指令：它既没有
+    「并/然后」也没有跟随/合成信号，此前会被当成对旧提案的接受。
+    """
+    clauses = [c for c in _CLAUSE_SPLIT_RE.split(str(rest or "")) if c.strip()]
+    return len(clauses) > 1 and any(_clause_is_goal(clause) for clause in clauses[1:])
+
+
+def _has_trailing_goal(rest: str, marker: str) -> bool:
+    """标记之后确实跟着一个新目标才算复合（例：「再去挖石头」✓，「再回来」✗）。"""
+    text = str(rest or "")
+    index = text.find(marker)
+    while index >= 0:
+        if _clause_is_goal(text[index + len(marker) :]):
+            return True
+        index = text.find(marker, index + 1)
+    return False
+
+
+def is_compound_acceptance(message: str) -> bool:
+    """消息是不是「既描述了提案目标、又带了另一个意图」的复合接受表达。
+
+    这种消息无法无歧义地当成单一接受：既不能消费旧提案，也不能替用户猜「只想做其中
+    一件」——调用方应当**澄清**（不消费、不执行，保留提案）。
+    """
+    rest = _acceptance_remainder(str(message or "").strip())
+    if not rest:
+        return False
+    wood = parse_wood_request(rest)
+    if wood is None or wood.problem:
+        return False
+    # FU5 Follow-up 3：除了既有信号，整段描述**未被许可语法解释**的部分同样算复合 ——
+    # 这样「未知尾部」也走同一条澄清路径，不再依赖关键词是否恰好命中。
+    # FU5 Follow-up 4：**结构违反**（词元都合法、却含第二个动作/目标）同样必须走澄清路径，
+    # 否则它会被当成「没有额外意图」而放行并消费旧提案。
+    tail = unexplained_acceptance_tail(rest)
+    structure = acceptance_structure_violation(rest)
+    return _has_extra_intent(rest) or tail is None or bool(tail) or bool(structure)
+
+
+def compound_clarify_text(pending: dict[str, Any] | None) -> str:
+    """复合接受表达的澄清话术（不猜测、不执行、明确提案仍在等）。"""
+    target = _handoff_pending_label(pending)
+    return (
+        "这句话里不止一件事，罐头一次只做一件，怕替你猜错就先不动手。"
+        "刚才的采集提案还留着（" + target + "）：你回一句只做哪一件，我就按那一件走既有流程。"
+    )
+
+
+def _handoff_pending_label(pending: dict[str, Any] | None) -> str:
+    """待决提案的展示标签（无则用中性措辞，绝不编造目标）。"""
+    item = str((pending or {}).get("item") or (pending or {}).get("block") or "").strip()
+    try:
+        amount = int((pending or {}).get("amount") or 0)
+    except (TypeError, ValueError):
+        amount = 0
+    return (item + " ×" + str(amount)) if item and amount else (item or "刚才那个目标")
+
+
+def handoff_mixed_intent(message: str) -> bool:
+    """R0 §3.1(5)：整条消息是否含**第二个动作/目标**或结构不唯一（冲突混合语义）。
+
+    与 ``is_compound_acceptance`` 的分工：后者只在「消息确实描述了提案目标」时成立，
+    用于**相容**的混合接受；本函数服务**新目标**路径 —— 那里消息已经与提案冲突，但可能
+    同时含第二个子目标，绝不能让第一个子目标被它自己的解析器静默执行。
+
+    复用既有确定性助手（不新增关键词表）：
+      * ``has_compound_connector``    —— 明确的并列/顺承连接词；
+      * ``_has_second_clause_goal``   —— 标点切分后第二个从句本身就是目标（**无连接词**）；
+      * ``_has_trailing_goal``        —— 「再」后面确实跟着新目标（「再回来」不算）；
+      * ``acceptance_structure_violation`` ∈ (``second_action``, ``second_target``)
+        —— 结构门已经证明存在第二个动作/目标；
+      * 未解释尾部含**目标词**（资源名词/动作动词）—— 覆盖既无标点也无连接词的第二目标
+        （例如「…去挖石头」残留的「石头」）。**只有**未知填充词（例如「改砍白桦」
+        里的「改」）不算第二个目标，因此干净的新目标仍走自己的路由而不被降级成澄清。
+    """
+    rest = _acceptance_remainder(str(message or "").strip())
+    if not rest:
+        return False
+    if has_compound_connector(rest) or _has_second_clause_goal(rest):
+        return True
+    if any(_has_trailing_goal(rest, marker) for marker in _TRAILING_MARKERS):
+        return True
+    if acceptance_structure_violation(rest) in ("second_action", "second_target"):
+        return True
+    tail = unexplained_acceptance_tail(rest)
+    if not tail:
+        return False
+    return any(word in tail for word in _RESOURCE_WORDS) or any(
+        word in tail for word in _ACTION_VERBS
+    )
+
+
+def conflict_compound_clarify_text(pending: dict[str, Any] | None) -> str:
+    """「冲突新目标 + 第二动作/目标」的澄清话术（旧提案已按用户新说法作废）。"""
+    return (
+        "这句话里不止一件事，罐头一次只做一件，怕替你猜错就先不动手。"
+        "你说的目标跟刚才那份提案不一致，那份提案（"
+        + _handoff_pending_label(pending)
+        + "）已按你的新说法作废："
+        "你回一句只做哪一件，我就按那一件走既有流程。"
+    )
+
+
+def _has_extra_intent(rest: str) -> bool:
+    """accept 之后的剩余内容里是否还有**别的可执行意图**（FU5-FU + 本轮补丁）。
+
+    复用既有、已审计的解析器（不新增内容黑名单）：
+      * ``_DETECTOR.detect_follow`` —— 跟随意图（既有 ``FOLLOW_INTENT_KEYWORDS``，含「跟我」）；
+      * ``parse_craft_request``     —— 合成意图；
+      * ``has_compound_connector``   —— 明确的并列/顺承连接词（「并/然后/接着/顺便」等）；
+      * ``_has_trailing_goal``      —— 「再」后面确实跟着新目标（「再回来」不算）；
+      * ``_has_second_clause_goal`` —— 标点切分后第二个从句本身就是目标（**无连接词**）。
+
+    任一命中就说明这条消息**不止一个意图片段**：一律不消费待决提案；调用方再用
+    ``is_compound_acceptance`` 区分「澄清」与「交回自己的路由」。
+    """
+    if _DETECTOR.detect_follow(rest):
+        return True
+    craft = parse_craft_request(rest)
+    if craft is not None and not craft.problem and craft.item:
+        return True
+    if has_compound_connector(rest):
+        return True
+    if any(_has_trailing_goal(rest, marker) for marker in _TRAILING_MARKERS):
+        return True
+    return _has_second_clause_goal(rest)
+
+
+def _normalized_block(name: Any) -> str:
+    """方块/物品名规范化（只处理大小写与 ``minecraft:`` 前缀，不做任何猜测映射）。"""
+    return str(name or "").strip().lower().removeprefix("minecraft:")
+
+
+def handoff_target_verdict(message: str, pending: dict[str, Any] | None) -> str:
+    """Phase 8I Follow-up 5 §3：把「接受表达」按**目标一致性**细分成三态。
+
+    FU3 的接受门只看「开头是不是接受词」，于是「好，去砍五根白桦原木」被当成对当前橡木
+    提案的接受，用户当轮明确的白桦目标被静默丢弃。这里补上确定性的一致性校验：
+
+    * ``ACCEPT_PROPOSAL`` —— 纯接受，或描述与待决提案**一致**（同树种且没有给出不同的
+      明确数量）；此时目标**只能**来自待决提案，调用方继续走既有接受路径；
+    * ``NEW_GOAL``        —— 消息自身给出与提案冲突的新目标（不同树种 / 不同的明确数量）：
+      新目标优先，旧提案不得被消费；
+    * ``NOT_ACCEPT``      —— 接受词后跟的是与提案无关的内容，或无法无歧义判定（fail closed）。
+
+    只读消息与待决提案；不调用模型、不创建任务、不新增授权机制。
+    """
+    text = str(message or "").strip()
+    rest = _acceptance_remainder(text)
+    if not rest:
+        return ACCEPT_PROPOSAL
+    wood = parse_wood_request(rest)
+    if wood is None:
+        # 接受词之后没有新采集目标：是确认说法就仍是纯接受，否则不消费（fail closed）。
+        return ACCEPT_PROPOSAL if _is_pure_acceptance_tail(rest) else NOT_ACCEPT
+    if wood.problem:
+        return NOT_ACCEPT
+    pending_block = ""
+    pending_amount = 0
+    if pending:
+        pending_block = _normalized_block(pending.get("block") or pending.get("item"))
+        try:
+            pending_amount = int(pending.get("amount") or 0)
+        except (TypeError, ValueError):
+            pending_amount = 0
+    # 只有消息**点名**了树种时才比对；泛称「原木」不构成冲突（沿用提案目标）。
+    if (
+        pending_block
+        and wood.species
+        and wood.candidates
+        and _normalized_block(wood.candidates[0]) != pending_block
+    ):
+        return NEW_GOAL
+    explicit = explicit_log_count(rest)
+    if explicit is not None and pending_amount and explicit != pending_amount:
+        return NEW_GOAL
+    # FU5 Follow-up 3 §4：目标相容还不够 —— 整段接受描述必须被**许可语法完整消费**。
+    # FU5 Follow-up 4 §4：完整消费是**必要但不足**的 —— 还必须符合**单目标结构**：
+    # `去砍橡木原木去砍橡木原木` 的每个词元都合法，却是两个动作目标。
+    # 任何未解释的剩余文本、任何结构违反（第二动作/第二目标/数量或收尾语错位）一律 fail closed。
+    # 既有关键词信号保留为**附加**护栏：它只会增加拒绝，不会放宽接受。
+    tail = unexplained_acceptance_tail(rest)
+    structure = acceptance_structure_violation(rest)
+    if tail is None or tail or structure or _has_extra_intent(rest):
+        return NOT_ACCEPT
+    return ACCEPT_PROPOSAL
+
+
+class MinecraftChatBridge:
+    """``minecraft.chat`` 事件 → USER 回合 → 游戏内回复。"""
+
+    #: Phase 8I：待用户决定的资源交接（H2）与已建立的合成目标（H4 关联）。
+    #: 只放内存：进程重启后丢失即要求重新确认，绝不自动恢复旧授权（任务书 §6）。
+    _HANDOFF_TTL_SECONDS = 600.0
+
+    def __init__(self, bot: Bot, service: MinecraftService) -> None:
+        self.bot = bot
+        self.service = service
+        #: (username, session_id) -> 待决资源交接 / 待续合成目标（Phase 8I）。
+        self._pending_handoffs: dict[tuple[str, str], dict[str, Any]] = {}
+        self._pending_craft_goals: dict[tuple[str, str], dict[str, Any]] = {}
+        self._inflight = 0
+        #: Phase 8E：木材意图解释器（**唯一决策源**）。可由装配/测试注入；
+        #: 未注入时用既有 AIEngine 惰性构造（不新建 provider 或凭据）。
+        self.wood_intent: Any = None
+        #: Phase 8E Follow-up 3：**统一**回合决策解释器（所有 MC 自然语言消息先经它）。
+        #: 同样支持注入；未注入时用同一个既有 AIEngine 惰性构造。
+        self.turn_decisions: Any = None
+
+    # ------------------------------------------------------------ 配置/门禁
+
+    @property
+    def enabled(self) -> bool:
+        return bool(self.service.enabled and self.service.config.agent.chat.enabled)
+
+    def self_username(self) -> str:
+        """罐头自己的 MC 名字（镜像里的 connection.username）。"""
+        try:
+            return str(self.service.snapshot()["connection"].get("username") or "").strip()
+        except Exception:  # noqa: BLE001 - 镜像坏了也不该让聊天崩
+            return ""
+
+    def is_self_speech(self, username: str) -> bool:
+        """§三十：她自己发的聊天绝不能回到她自己的 LLM 回合。"""
+        mine = self.self_username()
+        if not username:
+            return True
+        if not mine:
+            # 拿不到自己的名字时保守处理：宁可不回，也不冒无限循环的风险
+            log.info("[MC Chat] 跳过（镜像里还没有自己的 username）：%s", username)
+            return True
+        return username == mine
+
+    # ------------------------------------------------------------- 事件入口
+
+    def apply_event(self, event: MinecraftBridgeEvent) -> asyncio.Task[None] | None:
+        """MinecraftService 的监听器（只处理 ``minecraft.chat``）。
+
+        **不阻塞事件通道**：真正的回合在后台任务里跑（返回该任务，测试可以 await；
+        事件分发方不会等它 —— WorldPerception 绝不能被 LLM 拖住）。
+        """
+        if event.type_name != "minecraft.chat":
+            return None
+        if not self.enabled:
+            # Phase 8A：丢包也要有**可诊断的原因码**（以前这里什么都不留）。
+            self._route(reason_code="mc_chat_disabled", route_target=RouteTarget.BLOCKED.value)
+            return None
+        username = str(event.data.get("username") or "").strip()
+        message = str(event.data.get("message") or "").strip()
+        if not username or not message:
+            self._route(reason_code="mc_chat_unusable", route_target=RouteTarget.BLOCKED.value)
+            return None
+        if self.is_self_speech(username):
+            self._route(
+                reason_code="mc_chat_self_speech",
+                route_target=RouteTarget.BLOCKED.value,
+                session_id=self._session_id(username),
+                text_chars=len(message),
+            )
+            return None
+        if event.data.get("private"):
+            # 悄悄话不公开回：本阶段只有公共聊天发送能力（见文档「已知限制」）
+            log.info("[MC Chat] 跳过一条悄悄话（%s）", username)
+            self._route(
+                reason_code="mc_chat_private",
+                route_target=RouteTarget.BLOCKED.value,
+                session_id=self._session_id(username),
+                text_chars=len(message),
+            )
+            return None
+        if self._inflight >= MAX_INFLIGHT:
+            log.info("[MC Chat] 忙不过来，跳过一条（%s）：%.40s", username, message)
+            self._route(
+                reason_code="mc_chat_busy",
+                route_target=RouteTarget.BLOCKED.value,
+                session_id=self._session_id(username),
+                text_chars=len(message),
+            )
+            return None
+        self._inflight += 1
+        task = asyncio.create_task(self._reply(username, message))
+        task.add_done_callback(lambda _task: self._done())
+        return task
+
+    def _done(self) -> None:
+        self._inflight = max(0, self._inflight - 1)
+
+    # --------------------------------------------------------------- 回合
+
+    async def _reply(self, username: str, message: str) -> None:
+        """一次完整的 USER 回合：历史 → 角色回复 → 回游戏内 + 记入会话。"""
+        bot = self.bot
+        try:
+            session_id = self._session_id(username)
+            history = await bot.ai.conversations.get_context(session_id)
+            log.info(
+                "[MC Chat] %s: %.80s（session=%s, history=%d）",
+                username,
+                message,
+                session_id,
+                len(history),
+            )
+            # Phase 5A：这句话是不是在指挥一个多步骤任务（确认/暂停/继续/取消，
+            # 或者"去砍棵树把木头带回来"这类需要编排的请求）。命中就由任务侧回答，
+            # 不再丢给模型自由发挥；没命中（绝大多数聊天）照常走角色回合。
+            handled = await self._task_reply(username, session_id, message)
+            if handled.reply is not None:
+                reply_text = handled.reply
+                if handled.claim is not None:
+                    reply_text, verdict = finalize_speech(reply_text, handled.claim)
+                    log.info(
+                        "[MC Speech] state=%s verdict=%s allowed=%s",
+                        verdict.action_state.value,
+                        verdict.speech_claim_verdict.value,
+                        verdict.allowed_claim,
+                    )
+                await bot.ai.conversations.append_user_message(session_id, message)
+                await bot.ai.conversations.append_assistant_message(session_id, reply_text)
+                await self._say(reply_text)
+                return
+            reply = await bot.character.respond(
+                session_id,
+                username,
+                message,
+                # §十九：游戏内玩家说话就是 USER 回合（可信门在策略层，不在这里）
+                turn_origin=TurnOrigin.USER,
+                # §二十/§二十一：把「谁在说话」作为运输层事实带进工具上下文
+                origin_metadata={PLAYER_KEY: username},
+                history=history,
+                user_name=username,
+                is_group=False,
+                time_context=self._time_context(),
+                extra_instruction=(
+                    "（这条消息来自 Minecraft 游戏内聊天，是服务器里的人在跟你说话；"
+                    "回复要短，像游戏里随口说的话。）"
+                ),
+                # Phase 8E Follow-up 2：单回合能力模式（CHAT_ONLY = 无 Agent/无工具）
+                mode=handled.mode,
+            )
+            if not reply:
+                return
+            await bot.ai.conversations.append_user_message(session_id, message)
+            await bot.ai.conversations.append_assistant_message(session_id, reply)
+            await self._say(reply)
+        except Exception as exc:  # noqa: BLE001 - 游戏内聊天故障绝不拖垮事件通道/世界感知
+            log.warning("[MC Chat] 处理 %s 的聊天失败：error_type=%s", username, type(exc).__name__)
+
+    def _session_id(self, username: str) -> str:
+        connection = self.service.snapshot().get("connection") or {}
+        return chat_session_id(connection.get("host"), connection.get("port"), username)
+
+    async def _task_reply(self, username: str, session_id: str, message: str) -> _TurnReply:
+        """统一回合决策入口（Phase 8E Follow-up 3，见 docs/MINECRAFT_PHASE8E.md §16）。
+
+        顺序（任务书 §4.1 / §7.1）：
+
+        1. **确定性控制优先**：停止/取消/确认/状态查询/活动任务 busy 由既有确定性检测器
+           判定并交回既有任务入口 —— **绝不等待模型**（停止不依赖 LLM 的可用性/速度）；
+        2. 其余自然语言消息**一律**先经 ``TurnDecisionInterpreter``（统一 LLM 决策入口）；
+        3. 按 9 类 kind 路由到**既有**审计过的路径；任何失败都安全澄清。
+
+        模型只决定「用户想表达什么」：权限、参数校验、Policy、确认门、步骤授权、冻结
+        计划、TaskRuntime 与最终库存验证全部仍由既有确定性链路负责。
+        """
+        handler = getattr(self.bot, "task_turns", None)
+        if handler is None:
+            return _TurnReply()
+        # 1) 确定性控制（不等待模型）。
+        control = await self._control_turn(handler, username, session_id, message)
+        if control is not None:
+            return control
+        # 2) 统一 LLM 决策入口 —— **带本回合真实上下文**（FU4 §4.1/§4.2）。
+        decision_outcome = await self._decide_turn(
+            session_id, message, handler=handler, username=username
+        )
+        if not decision_outcome.ok:
+            # R0 §3.1：待决提案的**确定性仲裁不依赖模型**。FU4 把仲裁点放在 _route_turn
+            # 顶部，但这条「模型输出无效」的早退路径根本不经过它 —— 于是「同意」这种
+            # 最基础的接受会被一起丢掉（提案留着、用户的话被当成无法理解的闲聊）。
+            # 先跑真实仲裁（CANCEL/STOP 已由第 1 步确定性控制处理，不会走到这里），
+            # 再决定是否安全澄清。
+            arbitrated = await self._arbitrate_pending_handoff(
+                username, session_id, message, TurnDecisionKind.CHAT
+            )
+            if arbitrated is not None:
+                return arbitrated
+            # §3.3：无效输出/超时/未知能力等一律**安全澄清**，绝不降级进执行路径。
+            return _TurnReply(
+                self._decision_clarify(session_id, message, decision_outcome.reason_code)
+            )
+        # §5.1：这里**没有**关键词主分流闸。木材解析只在 TASK_PROPOSAL 分支里参与
+        # （目标解析 + 额外安全否决，见 _route_turn）；含木材关键词的 CHAT/QUERY/
+        # NARRATION 一律遵从已经校验的决策类别。
+        kind = (
+            decision_outcome.decision.kind
+            if decision_outcome.decision is not None
+            else TurnDecisionKind.CHAT
+        )
+        routed = await self._route_turn(
+            handler, username, session_id, message, kind, decision_outcome
+        )
+        if routed is not None:
+            return routed
+        # 3) CANCEL/STOP（模型报告）与木材 DELEGATE_CONTROL：交回既有任务入口。
+        try:
+            outcome = await self._call_task_turn(
+                handler,
+                session_id=session_id,
+                user_id=username,
+                text=message,
+            )
+        except Exception as exc:  # noqa: BLE001 - 任务入口坏了也不能让游戏内聊天没反应
+            log.warning(
+                "[MC Chat] 任务入口处理失败（%s）：error_type=%s", username, type(exc).__name__
+            )
+            return _TurnReply()
+        if not outcome.handled or not outcome.reply:
+            return _TurnReply()
+        # Phase 8A：任务侧接走这句话也是一条**路由结论**（TASK + 任务 ID 可关联）。
+        self._route(
+            reason_code="task_handled",
+            route_target=RouteTarget.TASK.value,
+            session_id=session_id,
+            task_id=str(outcome.task_id or ""),
+            text_chars=len(message),
+        )
+        log.info(
+            "[MC Task] action=%s task=%s state=%s（%s）",
+            outcome.action,
+            outcome.task_id or "-",
+            outcome.state or "-",
+            username,
+        )
+        return _TurnReply(outcome.reply)
+
+    # ------------------------------------------ Phase 8E Follow-up 3：统一决策入口
+
+    async def _control_turn(
+        self, handler: Any, username: str, session_id: str, message: str
+    ) -> _TurnReply | None:
+        """确定性控制优先（``None`` = 不是控制/状态/忙碌，继续走统一决策）。
+
+        控制权在**确定性检测器**手里，绝不因为要等模型而延迟停止（§7.1）。
+        """
+        # 极简替身（测试里的 handler 只有 handle()）：回退到同一个模块级确定性检测器，
+        # 而不是把控制权让给模型 —— §7.1 要求停止/取消永远不依赖模型。
+        detector = getattr(handler, "detector", None) or _DETECTOR
+        reader = getattr(handler, "current_task", None)
+        if callable(reader):
+            try:
+                current = await reader(session_id)
+            except Exception:  # noqa: BLE001 - 取当前任务失败就按「没有活动任务」处理
+                current = None
+        else:
+            current = None
+        active = current is not None and not bool(getattr(current.state, "terminal", True))
+        # 控制词出现在句首（如「取消，别砍树了」）也算控制命令：停止/取消**绝不等模型**。
+        stripped = str(message or "").strip()
+        prefix_control = any(stripped.startswith(item) for item in _WOOD_CONTROL_PREFIXES)
+        try:
+            command = detector.control_command(message)
+            if prefix_control or (command and command != "confirm"):
+                # 停止/取消/暂停/继续：**绝不回落给模型**（§7.1），也绝不因为任务入口
+                # 没处理就沉默 —— 既有语义是这里直接收尾。
+                delegated = await self._delegate_task(handler, username, session_id, message)
+                return delegated if delegated is not None else _TurnReply()
+            if command == "confirm":
+                delegated = await self._delegate_task(handler, username, session_id, message)
+                if delegated is not None:
+                    return delegated
+                # R0 §3.1：命中「确认」词、但任务入口明确**没有**待确认事项时（handled=False）
+                # 绝不能吞掉这一回合：「同意」也可能是在接受待决的采集提案，必须继续走
+                # 待决仲裁与统一决策。
+            if current is not None and detector.status_query(message):
+                # 状态查询由既有入口回答（含**已结束**的任务）—— 这条既有语义不变，
+                # 也绝不因为入口「没处理」就把状态问句丢给模型。
+                delegated = await self._delegate_task(handler, username, session_id, message)
+                return delegated if delegated is not None else _TurnReply()
+        except Exception as exc:  # noqa: BLE001
+            log.warning("[MC Chat] 控制判定失败：error_type=%s", type(exc).__name__)
+            return None
+        if active:
+            # 活动任务期间保持既有 busy 语义（不因等模型而延迟或叠加新工作）。
+            delegated = await self._delegate_task(handler, username, session_id, message)
+            return delegated if delegated is not None else _TurnReply()
+        return None
+
+    async def _call_task_turn(self, handler: Any, **kwargs: Any) -> Any:
+        params: Any = {}
+        try:
+            params = inspect.signature(handler.handle).parameters
+        except (TypeError, ValueError):
+            pass
+        if "actor_session" in params:
+            kwargs["actor_session"] = self._capture_actor_session(str(kwargs.get("user_id") or ""))
+        return await handler.handle(**kwargs)
+
+    async def _delegate_task(
+        self, handler: Any, username: str, session_id: str, message: str
+    ) -> _TurnReply | None:
+        """交回既有任务入口（控制/状态/忙碌的唯一权威）。
+
+        R0 §3.1：``None`` = 任务入口**明确没处理**这条消息（例如「同意」命中了确认词、但当前
+        没有待确认事项）—— 调用方据此继续走待决仲裁 + 统一决策，绝不吞掉整回合；
+        ``_TurnReply()``（空回复）= 已处理但没有话要说，保持既有静默语义。
+        """
+        try:
+            outcome = await self._call_task_turn(
+                handler, session_id=session_id, user_id=username, text=message
+            )
+        except Exception as exc:  # noqa: BLE001
+            log.warning(
+                "[MC Chat] 任务入口处理失败（%s）：error_type=%s", username, type(exc).__name__
+            )
+            return _TurnReply()
+        if not outcome.handled:
+            return None
+        if not outcome.reply:
+            return _TurnReply()
+        self._turn_route(
+            session_id,
+            message,
+            RouteTarget.TASK.value,
+            "task_handled",
+            task_id=str(outcome.task_id or ""),
+        )
+        log.info(
+            "[MC Task] action=%s task=%s state=%s（%s）",
+            outcome.action,
+            outcome.task_id or "-",
+            outcome.state or "-",
+            username,
+        )
+        return _TurnReply(outcome.reply)
+
+    def _decision_interpreter(self) -> Any:
+        """统一决策解释器（可注入；否则用同一个既有 AIEngine 惰性构造）。"""
+        injected = getattr(self, "turn_decisions", None)
+        if injected is not None:
+            return injected
+        engine = getattr(self.bot, "ai", None)
+        if engine is None or not callable(getattr(engine, "chat", None)):
+            return None
+        self.turn_decisions = TurnDecisionInterpreter(engine)
+        return self.turn_decisions
+
+    async def _decide_turn(
+        self,
+        session_id: str,
+        message: str,
+        *,
+        handler: Any = None,
+        username: str = "",
+    ) -> TurnDecisionOutcome:
+        """一次有界的统一决策（解释器契约是永不抛，这里再兜一层）。
+
+        FU4 §4.2：决策前先构造**本回合真实上下文**（世界观察/背包/记忆/身份/活动任务/
+        能力目录），交给解释器作为 ``task_context``；上下文组装失败只减少上下文，
+        绝不影响安全路径（控制优先已在 ``_control_turn`` 返回，早于这里）。
+        """
+        interpreter = self._decision_interpreter()
+        if interpreter is None:
+            return TurnDecisionOutcome(None, REASON_ENGINE_MISSING, 0, 0.0, {})
+        recent: list[str] = []
+        try:
+            context = await self.bot.ai.conversations.get_context(session_id)
+            recent = [str(item)[:240] for item in list(context)[-4:]]
+        except Exception:  # noqa: BLE001 - 拿不到上下文就少给一点，不影响安全
+            recent = []
+        task_context = ""
+        try:
+            turn_context = await build_turn_context(
+                service=self.service,
+                character=getattr(self.bot, "character", None),
+                handler=handler,
+                session_id=session_id,
+                username=username,
+                message=message,
+                recent=tuple(recent),
+            )
+            task_context = turn_context.render()
+            # §7/§8：只记状态、来源类别与稳定原因码（不含记忆正文/上下文原文）。
+            log.info("[MC Turn] ctx=%s", turn_context.log_fields())
+        except Exception as exc:  # noqa: BLE001 - 上下文不是决策前提，缺了也要能决策
+            log.warning("[MC Turn] 上下文构造失败：error_type=%s", type(exc).__name__)
+        try:
+            return await interpreter.decide(
+                message=message,
+                recent_context=tuple(recent),
+                task_context=task_context,
+            )
+        except Exception as exc:  # noqa: BLE001
+            log.warning("[MC Turn] 决策异常：error_type=%s", type(exc).__name__)
+            return TurnDecisionOutcome(None, REASON_ENGINE_MISSING, 0, 0.0, {})
+
+    async def _arbitrate_pending_handoff(
+        self, username: str, session_id: str, message: str, kind: Any
+    ) -> _TurnReply | None:
+        """Phase 8I FU4 §3：待决提案的**确定性仲裁点** —— 早于所有 kind 分支执行。
+
+        ``None`` = 不接管，消息继续走它自己的既有路由。只有「明确接受 + 同用户同
+        session 的有效待决提案」才消费提案并交**既有**资源入口（仍过既有批准门与执行
+        确认门）。本方法从不创建任务，因此普通聊天不会因此获得任何执行能力。
+        CANCEL/STOP 类由既有控制路径保持权威：即便措辞命中接受词也不消费提案。
+        """
+        key = (str(username), str(session_id))
+        verdict = classify_handoff_reply(message)
+        if verdict == REJECT_PROPOSAL:
+            if self._pending_handoffs.pop(key, None) is not None:
+                self._route(
+                    reason_code="handoff_reject_proposal",
+                    route_target=RouteTarget.CHAT_ONLY.value,
+                    session_id=session_id,
+                    text_chars=len(message),
+                )
+            return None
+        if verdict == NEW_GOAL:
+            # R0 §3.1(5)：明确冲突的新目标 → 旧提案作废（不复活）。但若整条消息还含
+            # 第二个动作/目标，绝不能把它未经结构校验地交给第一个解析器执行 —— 那会
+            # 静默丢掉用户说的另一件事。此时作废 + 澄清。
+            voided = self._pending_handoffs.pop(key, None)
+            if voided is not None:
+                if handoff_mixed_intent(message):
+                    self._route(
+                        reason_code="handoff_conflict_compound_clarify",
+                        route_target=RouteTarget.CHAT_ONLY.value,
+                        session_id=session_id,
+                        text_chars=len(message),
+                    )
+                    return _TurnReply(conflict_compound_clarify_text(voided))
+                self._route(
+                    reason_code="handoff_new_goal",
+                    route_target=RouteTarget.TASK.value,
+                    session_id=session_id,
+                    text_chars=len(message),
+                )
+            return None
+        if verdict == ACCEPT_PROPOSAL:
+            control = (TurnDecisionKind.CANCEL, TurnDecisionKind.STOP)
+            if kind in control:
+                return None
+            pending = self._pending_handoffs.get(key)
+            if pending is None:
+                return None
+            # FU5 §3：只有与待决提案**目标一致**的明确接受才能消费它；冲突的新目标
+            # 一律作废旧提案并继续走自己的路由（绝不复用旧目标或旧数量）。
+            target = handoff_target_verdict(message, pending)
+            if target == NEW_GOAL:
+                voided = self._pending_handoffs.pop(key, None)
+                # R0 §3.1(5)：旧提案作废（用户已明确表达不同目标）；若整条消息还含
+                # 第二个动作/目标，同样不得放它去执行第一个子目标 → 澄清。
+                if handoff_mixed_intent(message):
+                    self._route(
+                        reason_code="handoff_conflict_compound_clarify",
+                        route_target=RouteTarget.CHAT_ONLY.value,
+                        session_id=session_id,
+                        text_chars=len(message),
+                    )
+                    return _TurnReply(conflict_compound_clarify_text(voided or pending))
+                self._route(
+                    reason_code="handoff_new_goal",
+                    route_target=RouteTarget.TASK.value,
+                    session_id=session_id,
+                    text_chars=len(message),
+                )
+                return None
+            if target != ACCEPT_PROPOSAL:
+                self._route(
+                    reason_code=f"handoff_{target}",
+                    route_target=RouteTarget.CHAT_ONLY.value,
+                    session_id=session_id,
+                    text_chars=len(message),
+                )
+                # 本轮补丁：复合接受表达（既描述提案目标、又带另一个意图）**不**交回
+                # 它自己的路由 —— 那会把第二个目标静默丢掉。改为澄清：不消费、不执行、
+                # 保留提案，明确请用户指定只做哪一件。
+                if is_compound_acceptance(message):
+                    self._route(
+                        reason_code="handoff_compound_clarify",
+                        route_target=RouteTarget.CHAT_ONLY.value,
+                        session_id=session_id,
+                        text_chars=len(message),
+                    )
+                    return _TurnReply(compound_clarify_text(pending))
+                return None
+            return await self._accept_pending_handoff(username, session_id, message)
+        if key in self._pending_handoffs:
+            self._route(
+                reason_code=f"handoff_{verdict}",
+                route_target=RouteTarget.CHAT_ONLY.value,
+                session_id=session_id,
+                text_chars=len(message),
+            )
+        return None
+
+    async def _route_turn(
+        self,
+        handler: Any,
+        username: str,
+        session_id: str,
+        message: str,
+        kind: Any,
+        outcome: TurnDecisionOutcome,
+    ) -> _TurnReply | None:
+        """九类决策 → 既有路径（``None`` = 交回既有任务入口）。"""
+        decision = outcome.decision
+        # Phase 8I FU4 §3：待决提案的含义必须在这里判定 —— 早于 CHAT/CLARIFY/
+        # UNSUPPORTED/QUERY/ATOMIC_ACTION 等所有提前返回分支，绝不依赖上游是否恰好
+        # 判成 task_proposal（FU3 的真实缺陷：接受门只在 TASK_PROPOSAL 分支内）。
+        arbitrated = await self._arbitrate_pending_handoff(username, session_id, message, kind)
+        if arbitrated is not None:
+            return arbitrated
+        if kind in (TurnDecisionKind.CHAT, TurnDecisionKind.NARRATION):
+            self._turn_route(
+                session_id, message, RouteTarget.CHAT_ONLY.value, f"decision_{kind.value}"
+            )
+            return _TurnReply(None, CharacterTurnMode.CHAT_ONLY)
+        if kind is TurnDecisionKind.CLARIFY:
+            question = str(getattr(decision, "clarification_question", "") or "")
+            self._turn_route(session_id, message, RouteTarget.CLARIFY.value, "decision_clarify")
+            return _TurnReply(question or "我不太确定你想让我做什么，可以说得再具体一点吗？")
+        if kind is TurnDecisionKind.UNSUPPORTED:
+            self._turn_route(session_id, message, RouteTarget.BLOCKED.value, "decision_unsupported")
+            # 决策器偶尔一边判 unsupported、一边生成「行/我来做」的承诺文本；
+            # 既然本回合不会创建任务或调用任何工具，就绝不能把这种假承诺发给玩家。
+            return _TurnReply(
+                "这件事我现在还做不到，所以没有开始动手。",
+                claim=claim_for_state(ActionState.UNSUPPORTED),
+            )
+        if kind is TurnDecisionKind.ATOMIC_ACTION and _DETECTOR.detect_follow(message):
+            # 模型偶尔把「跟着我」判成 atomic_action；跟随是持续动作，必须走计划层，
+            # 不能降级成一次无约束的 minecraft_follow_player 原子调用（也会绕过确认）。
+            planned = await self._plan_reply(username, session_id, message)
+            if planned is not None:
+                return _TurnReply(planned)
+        if kind in (TurnDecisionKind.QUERY, TurnDecisionKind.ATOMIC_ACTION):
+            return await self._run_capability(username, session_id, message, kind, decision)
+        if kind is TurnDecisionKind.TASK_PROPOSAL:
+            # Phase 8F §3.1：**合成解析先于木材解析** —— 「做成木板」含木材名词，木材入口
+            # 会把它当成「不支持的木材种类」直接拒掉（那是采集语义，不是合成语义）。
+            # Phase 8I FU4 §3：接受/拒绝/新目标的仲裁已在 `_route_turn` 入口统一完成
+            # （早于所有 kind 分支）；本分支只负责「这句话本身要做什么」的路由。
+            craft = parse_craft_request(message)
+            if craft is not None:
+                return await self._craft_turn(username, session_id, message, craft)
+            # FU4 §5.2：木材解析**只在这里**参与 —— 作为目标解析 + 额外安全否决：
+            #   HANDLED           → 否定请求，明确「不做」（绝不升级成行动）
+            #   SAFE_CLARIFY      → 歧义/非法参数/解释器不可用 → 澄清
+            #   NORMAL_CHAT       → 与木材有关的普通提及 → 聊天（CHAT_ONLY）
+            #   DELEGATE_CONTROL  → 控制/状态/忙碌 → 既有任务入口
+            #   WOOD_POSITIVE_REQUEST → 既有木材校验 + 计划链（授权/后置验证不变）
+            #   NOT_WOOD          → 继续既有入口与 follow/explore 计划层
+            wood = _WoodRouteDecision(_WoodRoute.NOT_WOOD)
+            if mentions_wood(message) or parse_wood_request(message) is not None:
+                wood = await self._wood_route(handler, username, session_id, message)
+            if wood.route is _WoodRoute.HANDLED and wood.reply is not None:
+                return _TurnReply(wood.reply)
+            if wood.route is _WoodRoute.SAFE_CLARIFY:
+                return _TurnReply(
+                    wood.reply or self._decision_text(decision, "这件事我需要你说得更具体一点。")
+                )
+            if wood.route is _WoodRoute.NORMAL_CHAT:
+                return _TurnReply(None, CharacterTurnMode.CHAT_ONLY)
+            if wood.route is _WoodRoute.DELEGATE_CONTROL:
+                return await self._delegate_task(handler, username, session_id, message)
+            if wood.route is _WoodRoute.WOOD_POSITIVE_REQUEST:
+                if wood.reply is not None:
+                    return _TurnReply(wood.reply)
+                return _TurnReply(self._decision_text(decision, "这件事我还没有能安全执行的做法。"))
+            # 先给**既有任务入口**一次机会：资源任务/控制/状态的既有权威路径就是它
+            # （8D 的单目标资源模板），跳过它会直接砍掉既有能力。
+            delegated = await self._delegate_task(handler, username, session_id, message)
+            if delegated is not None and delegated.reply is not None:
+                return delegated
+            # 再走 follow/explore 计划层；两者都不认 → 安全澄清（绝不回落工具执行）。
+            planned = await self._plan_reply(username, session_id, message)
+            if planned is not None:
+                return _TurnReply(planned)
+            # 8C Follow-up 语义：形状已识别但计划层没装配 → plan_service_unavailable；
+            # 其余情况才是「这个目标我还没有安全做法」。
+            layer_missing = getattr(self.bot, "agent_plans", None) is None
+            self._turn_route(
+                session_id,
+                message,
+                RouteTarget.BLOCKED.value,
+                "plan_service_unavailable" if layer_missing else "decision_unsupported",
+            )
+            return _TurnReply(self._decision_text(decision, "这件事我还没有能安全执行的做法。"))
+        if kind in (TurnDecisionKind.CANCEL, TurnDecisionKind.STOP):
+            return None  # 交回既有控制路径（唯一权威）
+        return _TurnReply(None, CharacterTurnMode.CHAT_ONLY)
+
+    async def _run_capability(
+        self, username: str, session_id: str, message: str, kind: Any, decision: Any
+    ) -> _TurnReply:
+        """执行**单个**已审计能力：schema 校验 → Policy → 工具 → AgentBridge → Service。
+
+        走的是既有 ``ToolExecutor.execute``（它自己会做参数校验与 ``policy.authorize``），
+        不新增任何执行旁路；能力白名单由 ``turn_decision`` 的可信常量界定。
+        """
+        capability = str(getattr(decision, "capability_id", "") or "")
+        arguments = dict(getattr(decision, "arguments", {}) or {})
+        spoken = self._decision_text(decision, "")
+        executor = getattr(
+            getattr(getattr(self.bot, "character", None), "tools", None), "executor", None
+        )
+        context = await self._turn_context(username, session_id)
+        if executor is None or not capability or context is None:
+            self._turn_route(session_id, message, RouteTarget.BLOCKED.value, "capability_disabled")
+            return _TurnReply(spoken or "我现在没法去做这件事。")
+        label = str(getattr(kind, "value", kind) or "action")
+        try:
+            result = await executor.execute(
+                ToolCall(name=capability, arguments=arguments, reason=f"decision_{label}"),
+                context,
+                TurnBudget(max_calls=1),
+            )
+        except Exception as exc:  # noqa: BLE001 - 工具层契约是不抛，这里再兜一层
+            log.warning("[MC Turn] 能力执行异常：error_type=%s", type(exc).__name__)
+            self._turn_route(session_id, message, RouteTarget.MINECRAFT_TOOL.value, "action_failed")
+            return _TurnReply(
+                spoken or "我试了一下，没成功。", claim=claim_for_state(ActionState.FAILED)
+            )
+        success = bool(getattr(result, "success", False))
+        self._turn_route(
+            session_id,
+            message,
+            RouteTarget.MINECRAFT_TOOL.value,
+            "action_succeeded"
+            if success
+            else str(getattr(result, "error_type", "") or "action_failed"),
+        )
+        if not success:
+            return _TurnReply(
+                spoken or "我试了一下，没成功。", claim=claim_for_state(ActionState.FAILED)
+            )
+        return _TurnReply(
+            spoken or self._observed_text(capability, result),
+            claim=claim_for_state(ActionState.SUCCEEDED),
+        )
+
+    async def _turn_context(self, username: str, session_id: str) -> Any:
+        """既有工具上下文（``INTENT_KEY`` 由 ``TurnOrigin`` 派生，调用方无法手写）。"""
+        character = getattr(self.bot, "character", None)
+        builder = getattr(character, "_tool_context", None)
+        if builder is None:
+            return None
+        try:
+            built = builder(
+                session_id=session_id,
+                user_id=username,
+                time_context=self._time_context(),
+                is_group=False,
+                turn_origin=TurnOrigin.USER,
+                origin_metadata={PLAYER_KEY: username},
+            )
+            if hasattr(built, "__await__"):
+                built = await built
+            return built
+        except Exception as exc:  # noqa: BLE001
+            log.warning("[MC Turn] 工具上下文构造失败：error_type=%s", type(exc).__name__)
+            return None
+
+    @staticmethod
+    def _decision_text(decision: Any, fallback: str) -> str:
+        text = str(getattr(decision, "reply_text", "") or "").strip()
+        return text or fallback
+
+    @staticmethod
+    def _observed_text(capability: str, result: Any) -> str:
+        """把**真实**工具结果说成人话（抽不出来就说不确定，绝不编造）。"""
+        if capability == "minecraft_stop":
+            return "停下来了。"
+        if capability == "minecraft_look_at":
+            return "我看过去了。"
+        data = getattr(result, "data", None)
+        if capability == "minecraft_find_blocks" and isinstance(data, dict):
+            matches = data.get("matches") or []
+            if not matches:
+                return "附近没看到这类方块。"
+            names = sorted(
+                {
+                    str((item.get("block") or {}).get("name") or "")
+                    for item in matches
+                    if isinstance(item, dict)
+                }
+                - {""}
+            )
+            label = "、".join(names) or "方块"
+            return f"附近看到 {len(matches)} 个{label}。"
+        if capability == "minecraft_inventory" and isinstance(data, dict):
+            items = data.get("items") or []
+            held = data.get("held_item")
+            held_name = str(held.get("name") or "") if isinstance(held, dict) else ""
+            if not items:
+                return "我身上现在是空的。"
+            return f"我身上有 {len(items)} 样东西" + (
+                f"，手里拿着 {held_name}。" if held_name else "。"
+            )
+        if capability == "minecraft_world" and isinstance(data, dict):
+            position = data.get("position")
+            if isinstance(position, dict) and position:
+                where = f"我在 ({position.get('x')}, {position.get('y')}, {position.get('z')})"
+                dimension = str(data.get("dimension") or "")
+                return where + (f"，{dimension}。" if dimension else "。")
+        summary = str(getattr(result, "summary", "") or "").strip()
+        return summary or "我看过了。"
+
+    def _decision_clarify(self, session_id: str, message: str, reason_code: str) -> str:
+        """决策失败/歧义 → 安全澄清（原因码由**可信代码**生成）。"""
+        raw = str(reason_code or "unknown")
+        code = raw if raw.startswith("decision_") else f"decision_{raw}"
+        self._turn_route(session_id, message, RouteTarget.CLARIFY.value, code)
+        if raw in ("decision_timeout", "decision_model_error", "decision_engine_unavailable"):
+            return "我刚才没想清楚，你再说一遍？"
+        return "这句话我没太理解，你是想让我做什么？"
+
+    def _turn_route(
+        self,
+        session_id: str,
+        message: str,
+        route_target: str,
+        reason_code: str,
+        *,
+        task_id: str = "",
+    ) -> None:
+        """结构化路由证据（记账失败绝不影响执行）。"""
+        try:
+            self._route(
+                reason_code=reason_code,
+                route_target=route_target,
+                session_id=session_id,
+                task_id=task_id,
+                text_chars=len(message),
+            )
+        except Exception as exc:  # noqa: BLE001
+            log.debug("[MC Turn] 路由记账失败：error_type=%s", type(exc).__name__)
+
+    # ---------------------------------------------------------- Phase 8D：木材采集
+
+    async def _wood_intent_preempts(self, handler: Any, session_id: str, message: str) -> bool:
+        """木材意图解释是否在入口之前接管（§5 控制优先级 / §5 活动任务边界）。
+
+        控制命令、有活动任务时的状态查询、以及会话里已有未终态任务（busy）都保持
+        既有顺序与文案，交回任务入口；其余木材相关消息交由解释器判定（唯一决策源）。
+        """
+        detector = getattr(handler, "detector", None)
+        current_task = getattr(handler, "current_task", None)
+        if detector is None or not callable(current_task):
+            return False
+        if detector.control_command(message):
+            return False
+        stripped = str(message or "").strip()
+        if any(stripped.startswith(word) for word in _WOOD_CONTROL_PREFIXES):
+            return False
+        current = await current_task(str(session_id))
+        if current is not None and detector.status_query(message):
+            return False
+        return current is None or bool(current.state.terminal)
+
+    def _wood_negated_reply(self, session_id: str, message: str) -> str:
+        """否定结论：零计划、零任务、零工具，只留稳定原因码。"""
+        self._route(
+            reason_code="wood_negated_intent",
+            route_target=RouteTarget.CHAT_ONLY.value,
+            session_id=session_id,
+            text_chars=len(message),
+        )
+        return "好，那我不砍了 —— 这次什么都没做。"
+
+    def _wood_interpreter(self) -> Any:
+        """解释器实例：优先用注入的（测试/装配），否则用既有 AIEngine 惰性构造。"""
+        injected = getattr(self, "wood_intent", None)
+        if injected is not None:
+            return injected
+        engine = getattr(self.bot, "ai", None)
+        if engine is None or not callable(getattr(engine, "chat", None)):
+            return None
+        self.wood_intent = WoodIntentInterpreter(engine)
+        return self.wood_intent
+
+    async def _wood_route(
+        self, handler: Any, username: str, session_id: str, message: str
+    ) -> _WoodRouteDecision:
+        """按解释器结论给出**显式**路由结果（§4.1/§4.2 行为矩阵）。
+
+        返回对象而不是 ``None``：调用方据此决定「终止任务路由走普通对话」还是
+        「交回确定性控制入口」，两者不再共用一种返回值。
+        """
+        if not await self._wood_intent_preempts(handler, session_id, message):
+            # 控制命令 / 状态查询 / 活动任务 busy —— 一律交回既有入口（§4.3）。
+            return _WoodRouteDecision(_WoodRoute.DELEGATE_CONTROL)
+        interpreter = self._wood_interpreter()
+        if interpreter is None:
+            return _WoodRouteDecision(
+                _WoodRoute.SAFE_CLARIFY,
+                self._wood_intent_clarify(session_id, message, "wood_interpreter_unavailable"),
+            )
+        try:
+            result = await interpreter.interpret(message=message)
+        except Exception as exc:  # noqa: BLE001 - 解释器损坏也绝不让聊天没反应
+            # §5.3：只记异常**类型名**（异常正文可能夹带 provider 响应/请求上下文）。
+            log.warning(
+                "[MC Chat] 木材意图解释器失败：error_type=%s（%s）",
+                type(exc).__name__,
+                username,
+            )
+            return _WoodRouteDecision(
+                _WoodRoute.SAFE_CLARIFY,
+                self._wood_intent_clarify(session_id, message, "wood_intent_error"),
+            )
+        if result is None:
+            return _WoodRouteDecision(
+                _WoodRoute.SAFE_CLARIFY,
+                self._wood_intent_clarify(session_id, message, "wood_intent_invalid_result"),
+            )
+        reason = str(getattr(result, "reason_code", "") or "")
+        intent = str(getattr(result, "intent", "") or "")
+        polarity = str(getattr(result, "polarity", "") or "")
+        if intent == WoodIntent.AMBIGUOUS_INTENT.value:
+            # 沿用 Phase 8D Follow-up 2 已确立的稳定原因码（审计连续性）。
+            return _WoodRouteDecision(
+                _WoodRoute.SAFE_CLARIFY,
+                self._wood_intent_clarify(session_id, message, "wood_negation_ambiguous"),
+            )
+        if bool(getattr(result, "needs_clarification", False)):
+            return _WoodRouteDecision(
+                _WoodRoute.SAFE_CLARIFY,
+                self._wood_intent_clarify(session_id, message, reason or "clarify"),
+            )
+        if intent == WoodIntent.NEGATED_REQUEST.value:
+            return _WoodRouteDecision(
+                _WoodRoute.HANDLED, self._wood_negated_reply(session_id, message)
+            )
+        if intent == WoodIntent.WOOD_COLLECTION_REQUEST.value:
+            if polarity != Polarity.POSITIVE.value:
+                return _WoodRouteDecision(
+                    _WoodRoute.SAFE_CLARIFY,
+                    self._wood_intent_clarify(session_id, message, "conflict"),
+                )
+            # 只有 schema + 矛盾校验都通过的肯定结果，且下一步仍过确定性参数校验。
+            return _WoodRouteDecision(
+                _WoodRoute.WOOD_POSITIVE_REQUEST,
+                await self._wood_positive_reply(username, session_id, message, result),
+            )
+        if intent in (WoodIntent.QUERY.value, WoodIntent.NARRATION.value):
+            # §4.2：查询/叙述 → 普通对话语义，**绝不**经过可创建任务的旧入口。
+            return _WoodRouteDecision(_WoodRoute.NORMAL_CHAT)
+        if intent == WoodIntent.TASK_CONTROL.value:
+            # §4.3：模型标签不构成控制权限；确定性检测器没认出来就必须澄清。
+            return _WoodRouteDecision(
+                _WoodRoute.SAFE_CLARIFY,
+                self._wood_intent_clarify(session_id, message, "wood_intent_task_control"),
+            )
+        # OTHER 或未知枚举：明确策略 = 安全澄清并终止任务创建路由（不猜任务、不回旧模板）。
+        return _WoodRouteDecision(
+            _WoodRoute.SAFE_CLARIFY,
+            self._wood_intent_clarify(session_id, message, reason or "wood_intent_other"),
+        )
+
+    async def _wood_positive_reply(
+        self, username: str, session_id: str, message: str, result: Any
+    ) -> str:
+        """肯定请求：确定性解析 + 支持树种矩阵**校验参数**（冲突 → 澄清）。"""
+        wood = parse_wood_request(message)
+        if wood is None:
+            return self._wood_intent_clarify(session_id, message, "parameters_unresolved")
+        conflict = self._wood_parameter_conflict(wood, result)
+        if conflict:
+            return self._wood_intent_clarify(session_id, message, conflict)
+        return await self._wood_reply(username, session_id, message, wood)
+
+    def _wood_parameter_conflict(self, wood: WoodRequest, result: Any) -> str:
+        """§6.1：模型提取值与确定性解析**冲突时澄清**，不任选其一。"""
+        model_count = getattr(result, "requested_count", None)
+        if model_count is not None and int(model_count) != int(wood.requested):
+            return "count_conflict"
+        raw_species = str(getattr(result, "target_species", None) or "").strip()
+        if not raw_species or not wood.species:
+            return ""
+        probe = parse_wood_request("帮我砍一根" + raw_species)
+        if probe is None or not probe.species:
+            return "target_unverified"
+        if tuple(probe.candidates) != tuple(wood.candidates):
+            return "target_conflict"
+        return ""
+
+    def _wood_intent_clarify(self, session_id: str, message: str, reason_code: str) -> str:
+        """歧义/失败关闭的澄清回复（零计划、零任务、零工具；原因码稳定可审计）。"""
+        code = reason_code if reason_code.startswith("wood_") else "wood_intent_" + reason_code
+        self._route(
+            reason_code=code,
+            route_target=RouteTarget.CLARIFY.value,
+            session_id=session_id,
+            text_chars=len(message),
+        )
+        return (
+            "我先不动手：这件事我还判断不准（是不砍、砍什么、还是砍几根）。"
+            "你直接说「砍一根橡木原木」或者「先不砍」就行。"
+        )
+
+    async def _wood_reply(
+        self, username: str, session_id: str, message: str, wood: WoodRequest
+    ) -> str:
+        """把木材请求交给既有有界计划层（shape_hint=wood）—— 失败**绝不**回落工具链。"""
+        if wood.problem == "unsupported_species":
+            self._route(
+                reason_code="wood_unsupported_species",
+                route_target=RouteTarget.BLOCKED.value,
+                session_id=session_id,
+                text_chars=len(message),
+            )
+            return (
+                f"「{wood.detail}」这类木头我现在采不了（只做已验证的树干原木），所以我什么都没动。"
+            )
+        if wood.problem == "zero_count":
+            self._route(
+                reason_code="wood_zero_count",
+                route_target=RouteTarget.CLARIFY.value,
+                session_id=session_id,
+                text_chars=len(message),
+            )
+            return "「0 根」我没法当成一次采集请求 —— 你想要几根？我一次最多采 2 根。"
+        if wood.problem:
+            self._route(
+                reason_code="wood_ambiguous_species",
+                route_target=RouteTarget.CLARIFY.value,
+                session_id=session_id,
+                text_chars=len(message),
+            )
+            return f"要采哪一种？你提到的树不止一种（{wood.detail}），我不替你挑。"
+        from app.tasks.resource_intent import parse_collection_request
+
+        collection = parse_collection_request(message)
+        if collection is None or collection.problem:
+            if collection is not None and collection.problem == "quantity_out_of_budget":
+                self._route(
+                    reason_code="resource_quantity_out_of_budget",
+                    route_target=RouteTarget.CLARIFY.value,
+                    session_id=session_id,
+                    text_chars=len(message),
+                )
+                return "我一次最多采 2 根原木。这次要采 1 根还是 2 根？确认数量前我先不动手。"
+            return self._wood_intent_clarify(
+                session_id,
+                message,
+                "resource_" + (collection.problem if collection else "target_unresolved"),
+            )
+        plans = getattr(self.bot, "agent_plans", None)
+        plan_goal = getattr(plans, "plan_goal_from_user", None)
+        if not callable(plan_goal):
+            return self._plan_failure(
+                session_id,
+                message,
+                reason_code="plan_service_unavailable",
+                text="我这条采木头计划现在排不了（计划服务没装配），所以我什么都没做。",
+            )
+        try:
+            out = await plan_goal(
+                objective=str(message),
+                user_id=str(username),
+                session_id=str(session_id),
+                target=PlanTarget(),
+                source="minecraft",
+                actor_session=self._capture_actor_session(username),
+                shape_hint="wood",
+            )
+        except Exception as exc:  # noqa: BLE001 - 计划层故障只影响这一条消息
+            log.warning(
+                "[MC Plan] 木材计划接线失败（%s）：error_type=%s", username, type(exc).__name__
+            )
+            return self._plan_failure(
+                session_id,
+                message,
+                reason_code="plan_service_error",
+                text="这条采木头计划没排成功（计划层出错），我没有执行任何动作。",
+            )
+        return self._plan_reply_text(username, session_id, message, "wood", out)
+
+    async def _plan_reply(self, username: str, session_id: str, message: str) -> str | None:
+        """Phase 8C：游戏内提出的**多步目标**交给既有计划层（QQ 路径零影响）。
+
+        ``None`` = 这句话不归计划层管，照常走角色回合。只接管两种**当前已支持**的形状：
+        跟随（目标只能来自已验证身份，绝不从文本猜玩家名）与有界探索；纯查询、闲聊、
+        控制命令与状态查询一律不接管（§五 路由矩阵）。
+        """
+        bot = self.bot
+        intent = _DETECTOR.detect(message)
+        if "query_only" in intent.reasons:
+            return None
+        if _DETECTOR.control_command(message) or _DETECTOR.status_query(message):
+            return None
+        if _DETECTOR.detect_follow(message):
+            shape = "follow"
+        elif detect_shape(message) == "explore":
+            shape = "explore"
+        else:
+            return None
+        # 到这里已经确认「这是她支持的受支持多步目标」。此后**任何**失败都必须如实回话并记
+        # BLOCKED 路由，绝不再返回 None —— 返回 None 会回落到普通角色回合，进而可能进入
+        # ToolOrchestrator 的单步工具链，等于把多步目标降级成一次无约束的原子调用。
+        plans = getattr(bot, "agent_plans", None)
+        plan_goal = getattr(plans, "plan_goal_from_user", None)
+        if not callable(plan_goal):
+            return self._plan_failure(
+                session_id,
+                message,
+                reason_code="plan_service_unavailable",
+                text="我这条多步计划现在排不了（计划服务没装配），所以我什么都没做。",
+            )
+        target: Any = PlanTarget()
+        if shape == "follow":
+            resolved = await self._follow_target(username, session_id)
+            if resolved is None:
+                # fail-closed：解析不出可信目标就说清原因，绝不跟着昵称猜的人走
+                self._route(
+                    reason_code="plan_target_unverified",
+                    route_target=RouteTarget.CLARIFY.value,
+                    session_id=session_id,
+                    text_chars=len(message),
+                )
+                return "我不知道你说的「跟着」是跟谁 —— 先绑定一下身份，我才能确认是你。"
+            target = resolved
+        try:
+            out = await plan_goal(
+                objective=str(message),
+                user_id=str(username),
+                session_id=str(session_id),
+                target=target,
+                source="minecraft",
+                actor_session=self._capture_actor_session(username),
+            )
+        except Exception as exc:  # noqa: BLE001 - 计划层故障只影响这一条消息
+            log.warning(
+                "[MC Plan] 计划层接线失败（%s）：error_type=%s", username, type(exc).__name__
+            )
+            return self._plan_failure(
+                session_id,
+                message,
+                reason_code="plan_service_error",
+                text="这条计划没排成功（计划层出错），我没有执行任何动作。",
+            )
+        return self._plan_reply_text(username, session_id, message, shape, out)
+
+    def _plan_failure(self, session_id: str, message: str, *, reason_code: str, text: str) -> str:
+        """已识别的多步目标在计划层不可用/出错时的**明确失败答复**（BLOCKED 路由）。
+
+        关键：这里必须返回字符串而不是 ``None`` —— ``None`` 会让这句话回落到普通角色回合，
+        进而可能进入 ``ToolOrchestrator`` 的单步工具链（把多步目标降级成原子调用）。
+        """
+        self._route(
+            reason_code=reason_code,
+            route_target=RouteTarget.BLOCKED.value,
+            session_id=session_id,
+            text_chars=len(message),
+        )
+        return text
+
+    def _capture_actor_session(self, username: str) -> dict[str, Any] | None:
+        """任务准入时捕获玩家当前可信连接；缺失返回 None（写任务随后 fail-closed）。"""
+        service = getattr(self.bot, "minecraft", None)
+        capture = getattr(service, "player_session_binding", None)
+        if not callable(capture):
+            return None
+        try:
+            binding = capture(str(username))
+        except Exception as exc:  # noqa: BLE001 - 绑定失败只影响受保护写任务
+            log.warning("[MC Plan] player session capture failed: %s", type(exc).__name__)
+            return None
+        return dict(binding) if binding else None
+
+    async def _follow_target(self, username: str, session_id: str) -> Any | None:
+        """游戏内说话者 → **已验证**的跟随目标（8B 身份解析 + 5C 目标解析）。
+
+        只有 VERIFIED 且能解析出对手平台（QQ）用户 ID 时才继续；其余一律 ``None``
+        （降级/撤销/冲突/跨服/缺权威 UUID 都算解析不出来，不猜）。
+        """
+        bot = self.bot
+        character = getattr(bot, "character", None)
+        resolver = getattr(character, "identity_resolver", None)
+        proposals = getattr(bot, "proposals", None)
+        resolve_target = getattr(proposals, "resolve_target", None)
+        if resolver is None or not callable(resolve_target):
+            return None
+        try:
+            context = await resolver.resolve(
+                session_id=str(session_id),
+                user_id=str(username),
+                user_name=str(username),
+                origin_metadata={PLAYER_KEY: username},
+            )
+        except Exception as exc:  # noqa: BLE001 - 身份解析故障只降级
+            log.warning("[MC Plan] 身份解析失败（%s）：error_type=%s", username, type(exc).__name__)
+            return None
+        if (
+            context.resolution is IdentityResolution.VERIFIED
+            and str(context.platform) == "qq"
+            and str(context.platform_user_id)
+        ):
+            try:
+                return await resolve_target(
+                    platform="qq",
+                    user_id=str(context.platform_user_id),
+                    server_id=str(context.server_id),
+                )
+            except Exception as exc:  # noqa: BLE001
+                log.warning(
+                    "[MC Plan] 目标解析失败（%s）：error_type=%s", username, type(exc).__name__
+                )
+        # 协议边界：跨平台绑定不是「跟着这个在服务器里说话的人」的必要条件。
+        # 游戏内说话者已经由 Minecraft 服务器连接本身认证；只要当前实体观察能按用户名
+        # 唯一匹配到 is_player 的真实实体，就用服务器侧 username/UUID 作为目标。
+        # 这仍然拒绝昵称猜测：没有任何实体观察结果时照旧 fail-closed。
+        return await self._speaker_target(username)
+
+    async def _speaker_target(self, username: str) -> PlanTarget | None:
+        """游戏内说话者 → 服务器实体观察确认的目标（无跨平台绑定也可跟随）。
+
+        只接受当前实体列表里唯一一个匹配 username 且 is_player 的实体；没有 UUID、
+        观察失败、重名多项都不猜。服务器连接本身已认证该玩家，因此这里的授权边界是
+        Minecraft 服务器，而不是 QQ 身份绑定。
+        """
+        bot = self.bot
+        service = getattr(bot, "minecraft", None)
+        observe = getattr(service, "entities", None)
+        if not callable(observe):
+            return None
+        try:
+            view = await observe()
+        except Exception as exc:  # noqa: BLE001 - 观察故障只回退到澄清，不猜目标
+            log.warning(
+                "[MC Plan] 说话者实体观察失败（%s）：error_type=%s", username, type(exc).__name__
+            )
+            return None
+        rows = view.get("entities") if isinstance(view, Mapping) else None
+        if rows is None and isinstance(view, Mapping):
+            nested = view.get("result")
+            rows = nested.get("entities") if isinstance(nested, Mapping) else None
+        if not isinstance(rows, list):
+            return None
+        wanted = str(username or "").casefold()
+        matches = [
+            row
+            for row in rows
+            if isinstance(row, Mapping)
+            and row.get("is_player") is True
+            and str(row.get("username") or "").casefold() == wanted
+            and str(row.get("entity_uuid") or "")
+        ]
+        if len(matches) != 1:
+            return None
+        row = matches[0]
+        return PlanTarget(
+            status=IDENTITY_VERIFIED,
+            server_id=self._server_id(),
+            player_uuid=str(row.get("entity_uuid") or ""),
+            player_name=str(row.get("username") or username),
+            reason="minecraft_chat_speaker",
+        )
+
+    def _server_id(self) -> str:
+        memory = getattr(self.bot, "minecraft_memory", None)
+        getter = getattr(memory, "server_id", None)
+        try:
+            return str(getter() or "") if callable(getter) else ""
+        except Exception:  # noqa: BLE001 - 只用于审计/适用性，不阻断跟随
+            return ""
+
+    def _plan_reply_text(
+        self, username: str, session_id: str, message: str, shape: str, out: Any
+    ) -> str:
+        """计划层结果 → 游戏内回话，并留下一条可审计的路由结论（§六）。"""
+        action = str((out or {}).get("action") or "")
+        record = (out or {}).get("record")
+        plan = (out or {}).get("plan")
+        task_id = str(getattr(record, "task_id", "") or "")
+        if action == "created":
+            self._route(
+                reason_code="plan_created",
+                route_target=RouteTarget.TASK.value,
+                session_id=session_id,
+                task_id=task_id,
+                text_chars=len(message),
+            )
+            log.info(
+                "[MC Plan] shape=%s action=created task=%s（%s）", shape, task_id or "-", username
+            )
+            if shape == "wood":
+                # 数量一律取自**冻结的计划**（用户说的数不一定等于计划里的数）。
+                return (
+                    self._wood_summary(record, plan)
+                    + "\n需要你确认后我才会动手。\n回复「确认」开始。"
+                )
+            if shape == "craft":
+                return (
+                    self._craft_summary(record, plan)
+                    + "\n需要你确认后我才会动手。\n回复「确认」开始。"
+                )
+            target_name = str(getattr(getattr(plan, "target", None), "player_name", "") or "")
+            if shape == "follow" and target_name:
+                duration = dict(getattr(plan, "risk_summary", {}) or {}).get("duration_note")
+                text = f"罐头准备这样做：跟随 {target_name}（来自当前服务器确认的玩家身份）。"
+                if duration:
+                    text += f"\n期限：{duration}"
+                return text + "\n需要你确认后我才会动。\n回复「确认」开始。"
+            return str(out.get("reply") or "计划已经排好，回复「确认」我就开始。")
+        route_target = (
+            RouteTarget.BLOCKED.value
+            if action in {"busy", "create_failed"}
+            else RouteTarget.CLARIFY.value
+        )
+        self._route(
+            reason_code=f"plan_{action or 'rejected'}",
+            route_target=route_target,
+            session_id=session_id,
+            task_id=task_id,
+            text_chars=len(message),
+        )
+        log.info(
+            "[MC Plan] shape=%s action=%s outcome=%s（%s）",
+            shape,
+            action or "rejected",
+            (out or {}).get("outcome") or "-",
+            username,
+        )
+        text = str(out.get("reply") or "这件事现在做不了。")
+        if shape == "craft":
+            hint = self._craft_failure_hint(text)
+            if hint:
+                text = f"{text}\n{hint}"
+        return text
+
+    def _craft_failure_hint(self, raw: str) -> str:
+        """把合成失败的稳定原因码翻译成玩家能懂的一句话（工作台状态如实说明）。"""
+        if "crafting_table_required" in raw:
+            if "NOT_FOUND" in raw:
+                return (
+                    "这个配方要工作台，但罐头附近没有找到工作台 —— 你可以在罐头旁边放一个，"
+                    "再说一次；罐头不会自己放、也不会去挖方块。"
+                )
+            if "UNREACHABLE" in raw:
+                return "这个配方要工作台，罐头看到了但过不去（本阶段不会自己绕路）。"
+            if "STALE" in raw:
+                return "这个配方要工作台：上一次的定位已经过期，重说一次我再重新确认。"
+            return (
+                "这个配方要工作台，但罐头现在确认不了工作台状态（世界观察不可用或结果不确定），"
+                "所以我什么都没做。"
+            )
+        if "insufficient_material" in raw:
+            return "材料不够 —— 罐头不会自己去开箱、挖矿，也不会用别的东西顶替。"
+        if "count_out_of_bounds" in raw or "step_budget_exceeded" in raw:
+            return "这个数量超出本阶段一次能安全做完的范围，缩小一点我再排。"
+        if "no_recipe" in raw:
+            return "罐头没有这个物品的可信配方（配方只来自真实查询，不会猜）。"
+        return ""
+
+    def _wood_summary(self, record: Any, plan: Any) -> str:
+        """如实说明这一份木材计划采几根、什么木头（数字来自冻结计划，不是用户说的数）。"""
+        task_plan = getattr(record, "plan", None)
+        state = getattr(task_plan, "expected_final_state", None)
+        expected = getattr(state, "inventory_delta", None)
+        items: dict[str, int] = {}
+        if isinstance(expected, dict):
+            for key, value in expected.items():
+                try:
+                    count = int(value or 0)
+                except (TypeError, ValueError):
+                    continue
+                if count > 0:
+                    items[str(key)] = count
+        total = sum(items.values())
+        names = "、".join(f"{name} x{count}" for name, count in sorted(items.items()))
+        detail: dict[str, Any] = {}
+        checks = getattr(plan, "checks", None) or ()
+        if checks and isinstance(checks[-1], dict):
+            raw = checks[-1].get("detail")
+            if isinstance(raw, dict):
+                detail = dict(raw)
+        text = f"罐头准备这样做：采集 {names or '原木'}（共 {total} 个，来自真实观察确认的目标）。"
+        if detail.get("capped"):
+            text += "你说的比这个多 —— 本期一次最多采 2 根，这一份计划只采上面这些。"
+        return text
+
+    def _remember_craft_goal(self, username: str, session_id: str, message: str) -> None:
+        """Phase 8I H4：记住**原始合成目标**（资源任务完成后据此重新规划，绝不复用旧 DAG）。"""
+        self._pending_craft_goals[(str(username), str(session_id))] = {
+            "objective": str(message),
+            "at": time.monotonic(),
+        }
+
+    #: 规划层稳定原因码前缀（Phase 8F/8H/8I 的 craft_plan 原因码）。
+    _CRAFT_REASON_PREFIXES = (
+        "insufficient_material",
+        "crafting_table_required",
+        "inventory_unavailable",
+        "search_budget_exceeded",
+        "count_out_of_bounds",
+        "step_budget_exceeded",
+        "workbench_unavailable",
+        "no_recipe",
+        "recipe_cycle",
+    )
+
+    @classmethod
+    def _gap_detail_of(cls, out: Any) -> str:
+        """从计划层结论里取出**稳定原因码 detail**。
+
+        Phase 8I 真机门禁暴露：真实 plan_rejected 的结果形态是
+        ``{"action": "plan_rejected", "reply": "现在排不了这件事：<reason>:<detail>"}``，
+        **没有** checks 字段 —— 只读 checks 会让缺料诊断与资源交接提案在真机上永不触发。
+        所以先读 checks（保留既有兼容），再从真实 reply 里按**稳定原因码前缀**取出 detail。
+        """
+        data = out if isinstance(out, dict) else {}
+        checks = data.get("checks") or ()
+        if checks and isinstance(checks[-1], dict):
+            detail = checks[-1].get("detail")
+            if isinstance(detail, str) and detail:
+                return detail
+            if isinstance(detail, dict):
+                reason = str(detail.get("reason") or "")
+                raw = str(detail.get("detail") or "")
+                if reason and raw:
+                    return f"{reason}:{raw}"
+                if reason:
+                    return reason
+        reply = str(data.get("reply") or "")
+        for line in reply.splitlines():
+            text = line.strip()
+            for prefix in cls._CRAFT_REASON_PREFIXES:
+                index = text.find(prefix)
+                if index >= 0:
+                    return text[index:].strip()
+        return ""
+
+    def _no_target_note(self, detail: str) -> str:
+        """H2：确认不到目标或不在既有能力里时如实说明（绝不假设附近一定有）。"""
+        gap = craft_gap_from_detail(detail)
+        if gap.reason != REASON_MATERIAL or not gap.missing:
+            return ""
+        item = gap.missing[0][0]
+        if handoff_block_for(item) is None:
+            code = unsupported_reason_for(item) or "unsupported"
+            return (
+                f"缺的 {item} 不在罐头现有的资源能力里（原因码 {code}）—— 罐头不会把它包装成"
+                "已有能力，也不会自己去开箱或拿别的东西顶替。"
+            )
+        block = handoff_block_for(item) or item
+        return (
+            f"缺的 {item} 理论上可以采（{block}），但罐头在附近真实观察不到可处理的目标，"
+            "所以现在建立不了可执行的资源计划（不会假设附近一定有）。"
+        )
+
+    async def _craft_handoff(self, username: str, session_id: str, message: str, out: Any) -> str:
+        """H1/H2：缺料诊断 + 经**真实观察**确认的资源提案；只提案，绝不执行。"""
+        detail = self._gap_detail_of(out)
+        if not detail:
+            return ""
+        note = self._no_target_note(detail)
+        plans = getattr(self.bot, "agent_plans", None)
+        observe = getattr(plans, "observe", None)
+        if not callable(observe):
+            return note
+        try:
+            proposal = await propose_handoff(
+                detail=detail, observe=observe, craft_goal=str(message)
+            )
+        except Exception as exc:  # noqa: BLE001 - 观察故障只影响这条回话
+            log.warning(
+                "[MC Plan] 资源交接提案失败（%s）：error_type=%s", username, type(exc).__name__
+            )
+            return note
+        if proposal is None:
+            return note
+        self._pending_handoffs[(str(username), str(session_id))] = {
+            "item": proposal.item,
+            "block": proposal.block,
+            "amount": proposal.amount,
+            "requested": proposal.requested_amount,
+            "craft_goal": str(message),
+            "at": time.monotonic(),
+        }
+        self._route(
+            reason_code="handoff_proposed",
+            route_target=RouteTarget.TASK.value,
+            session_id=session_id,
+            text_chars=len(message),
+        )
+        log.info(
+            "[MC Plan] 资源交接提案 item=%s amount=%s（%s）",
+            proposal.item,
+            proposal.amount,
+            username,
+        )
+        return (
+            proposal.to_text()
+            + "如果你要我去采，明确说一声（例如「好，去砍」）；罐头会按既有批准与确认流程排计划。"
+        )
+
+    def _canonical_wood_objective(self, block: str, amount: int) -> str:
+        """把交接目标转成**既有木材入口**能解析的规范说法（不新增入口）。"""
+        target = block if block.startswith("minecraft:") else f"minecraft:{block}"
+        for aliases, species in WOOD_SPECIES:
+            if species == target:
+                return f"砍{aliases[0]}原木 {max(1, int(amount))} 根"
+        return ""
+
+    async def _accept_pending_handoff(
+        self, username: str, session_id: str, message: str
+    ) -> _TurnReply | None:
+        """H3：用户明确接受（决策层已判为 task_proposal）→ 走**既有**木材/资源入口与两道门。"""
+        key = (str(username), str(session_id))
+        pending = self._pending_handoffs.pop(key, None)
+        if not pending:
+            return None
+        if time.monotonic() - float(pending.get("at") or 0.0) > self._HANDOFF_TTL_SECONDS:
+            return _TurnReply(
+                "那份资源方案已经过期了 —— 你再说一次要什么，罐头重新看一遍现在的真实情况。"
+            )
+        objective = self._canonical_wood_objective(
+            str(pending.get("block") or ""), int(pending.get("amount") or 1)
+        )
+        wood = parse_wood_request(objective) if objective else None
+        if wood is None:
+            return _TurnReply("这份资源方案没法接进既有采集入口，所以罐头什么都没做。")
+        self._pending_craft_goals[key] = {
+            "objective": str(pending.get("craft_goal") or ""),
+            "handoff_item": str(pending.get("item") or ""),
+            "at": time.monotonic(),
+        }
+        self._route(
+            reason_code="handoff_accepted",
+            route_target=RouteTarget.TASK.value,
+            session_id=session_id,
+            text_chars=len(message),
+        )
+        return _TurnReply(await self._wood_reply(username, session_id, objective, wood))
+
+    async def _craft_turn(
+        self, username: str, session_id: str, message: str, request: CraftRequest
+    ) -> _TurnReply:
+        """Phase 8F §9.1：合成请求 → 澄清 / 安全拒绝 / 既有计划链（shape_hint=craft）。
+
+        澄清与拒绝分支**不建任务、不调工具**；肯定请求走既有计划链 + 既有两道确认门。
+        """
+        if request.problem == "negated":
+            self._turn_route(session_id, message, RouteTarget.CHAT_ONLY.value, "craft_negated")
+            return _TurnReply("好，那我不做这个了。")
+        if request.problem == "zero_count":
+            self._turn_route(session_id, message, RouteTarget.CLARIFY.value, "craft_zero_count")
+            return _TurnReply("「0 个」我没法当成一次合成请求 —— 你想要几个？")
+        if request.problem == "unknown_item":
+            self._turn_route(session_id, message, RouteTarget.CLARIFY.value, "craft_unknown_item")
+            return _TurnReply("你想让我做什么？我现在只会做木棍、木板这类基础物品。")
+        if request.problem:
+            names = request.detail or "这个"
+            self._turn_route(session_id, message, RouteTarget.CLARIFY.value, "craft_ambiguous_item")
+            return _TurnReply(f"「{names}」指的是哪一种？说清树种我才能算配方（我不替你挑）。")
+        plans = getattr(self.bot, "agent_plans", None)
+        plan_goal = getattr(plans, "plan_goal_from_user", None)
+        if not callable(plan_goal):
+            return _TurnReply(
+                self._plan_failure(
+                    session_id,
+                    message,
+                    reason_code="plan_service_unavailable",
+                    text="我这条合成计划现在排不了（计划服务没装配），所以我什么都没做。",
+                )
+            )
+        try:
+            out = await plan_goal(
+                objective=str(message),
+                user_id=str(username),
+                session_id=str(session_id),
+                target=PlanTarget(),
+                source="minecraft",
+                shape_hint="craft",
+            )
+        except Exception as exc:  # noqa: BLE001 - 计划层故障只影响这一条消息
+            log.warning(
+                "[MC Plan] 合成计划接线失败（%s）：error_type=%s", username, type(exc).__name__
+            )
+            return _TurnReply(
+                self._plan_failure(
+                    session_id,
+                    message,
+                    reason_code="plan_service_error",
+                    text="这条合成计划没排成功（计划层出错），我没有执行任何动作。",
+                )
+            )
+        reply = self._plan_reply_text(username, session_id, message, "craft", out)
+        if str(out.get("action") or "") == "created":
+            # Phase 8I H4：上一轮资源任务之后**重新**规划（配方/预算/工作台/后置条件全部按
+            # 现在的真实背包重算，绝不复用旧 DAG；新计划仍要重新确认）。
+            key = (str(username), str(session_id))
+            prior = self._pending_craft_goals.pop(key, None)
+            self._remember_craft_goal(username, session_id, message)
+            if prior and prior.get("handoff_item"):
+                reply = (
+                    f"（上一轮采到手的 {prior['handoff_item']} 已经按现在的真实背包重新算过，"
+                    "下面这份是**新**计划，需要你重新确认。）" + "\n" + reply
+                )
+            return _TurnReply(reply)
+        # Phase 8I H1/H2：缺料时给出可解释诊断 + 经真实观察确认的资源提案（**只提案**）。
+        extra = await self._craft_handoff(username, session_id, message, out)
+        if extra:
+            return _TurnReply(f"{reply}\n{extra}")
+        return _TurnReply(reply)
+
+    def _craft_summary(self, record: Any, plan: Any) -> str:
+        """如实说明这一份合成计划做什么、用多少材料（数字全部取自**冻结计划**）。"""
+        task_plan = getattr(record, "plan", None)
+        state = getattr(task_plan, "expected_final_state", None)
+        produced = _item_counts(getattr(state, "inventory_delta", None))
+        consumed = _item_counts(getattr(state, "inventory_consumed", None))
+        steps = list(getattr(task_plan, "steps", None) or [])
+        batches = sum(1 for step in steps if getattr(step, "tool", "") == "minecraft_craft")
+        detail: dict[str, Any] = {}
+        checks = getattr(plan, "checks", None) or ()
+        if checks and isinstance(checks[-1], dict):
+            raw_detail = checks[-1].get("detail")
+            if isinstance(raw_detail, dict):
+                detail = dict(raw_detail)
+        made = "、".join(
+            f"{display_name_of(name)} x{count}" for name, count in sorted(produced.items())
+        )
+        used = "、".join(
+            f"{display_name_of(name)} x{count}" for name, count in sorted(consumed.items())
+        )
+        target_name = made or "目标物品"
+        text = (
+            f"罐头准备这样做：用 {used or '现有材料'} 合成 {target_name}"
+            f"（一共 {batches} 刀，材料以服务器实际配方为准）。"
+        )
+        requested = int(detail.get("requested") or 0)
+        total = sum(produced.values())
+        if detail.get("default_batch"):
+            text += "\n你没说数量，我按**一次合成**算（就是上面的产出量）。"
+        if requested and total > requested:
+            extra = total - requested
+            text += (
+                f"\n合成是按整刀做的，所以这一份会产出 {total} 个，"
+                f"比你说的 {requested} 个多 {extra} 个（不会额外多做）。"
+            )
+        if detail.get("capped"):
+            planned_amount = int(detail.get("planned_amount") or total)
+            text += (
+                "\n你说的比这个多：为了避免一次堆太多操作，"
+                f"这一份计划先做上面这些（{planned_amount} 个）。你可以分几次让我做。"
+            )
+        workbench = detail.get("workbench")
+        if isinstance(workbench, dict):
+            wb_status = str(workbench.get("status") or "")
+            if wb_status == "AVAILABLE":
+                text += "\n这次要用工作台（3x3）：罐头已经确认附近有可用的工作台。"
+            elif wb_status == "UNREACHABLE":
+                text += (
+                    "\n这次要用工作台：罐头会先走到你确认过的那个工作台旁边，"
+                    "再开始合成（到位后由运行时再复核一次真实方块）。"
+                )
+        return text
+
+    def _route(
+        self,
+        *,
+        reason_code: str,
+        route_target: str = RouteTarget.CHAT_ONLY.value,
+        session_id: str = "",
+        task_id: str = "",
+        text_chars: int = 0,
+    ) -> None:
+        """记一条结构化路由证据（Phase 8A §五）。
+
+        桥接层的**丢包**（自身发言 / 悄悄话 / 忙碌 / 未启用）与**任务路由**也必须可诊断 ——
+        以前这些路径一行记录都不留，用户只能看到"她没反应/只聊天"。
+        记账失败绝不影响聊天本身（fail-open 只针对诊断，不针对权限）。
+        """
+        character = getattr(self.bot, "character", None)
+        recorder = getattr(character, "record_route", None) if character is not None else None
+        if recorder is None:
+            return
+        try:
+            recorder(
+                RouteTrace(
+                    route_id=new_route_id(),
+                    session_id=session_id,
+                    source="minecraft_chat",
+                    turn_origin=TurnOrigin.USER.value,
+                    route_target=route_target,
+                    reason_code=reason_code,
+                    task_id=task_id,
+                    text_chars=text_chars,
+                )
+            )
+        except Exception:  # noqa: BLE001 - 诊断记账失败绝不能拖垮聊天
+            log.debug("[MC Chat] 路由记账失败（忽略）", exc_info=True)
+
+    def _time_context(self) -> Any:
+        behavior = getattr(self.bot, "behavior", None)
+        if behavior is None:
+            return None
+        try:
+            return behavior.time_context()
+        except Exception:  # noqa: BLE001 - 时间只是礼貌
+            return None
+
+    async def _say(self, reply: str) -> None:
+        """把回复发回游戏（走 Service → Action Runtime，绝不直接碰 runtime）。
+
+        多行回复**按行发**：Minecraft 的聊天一行就是一条消息，任务确认摘要这种
+        "每一步都要让用户看见"的内容不能被压成一行截断（§十一）。
+        """
+        limit = self.service.config.agent.chat.max_reply_chars
+        lines = [line.strip() for line in str(reply).splitlines() if line.strip()]
+        for line in lines[:MAX_CHAT_LINES]:
+            text = line
+            if len(text) > limit:
+                text = text[: limit - 1].rstrip() + "…"
+            try:
+                await self.service.send_chat(text)
+            except Exception as exc:  # noqa: BLE001 - 发不出去只记一笔（她还在世界里）
+                log.warning("[MC Chat] 回复发送失败：error_type=%s", type(exc).__name__)
+                return
